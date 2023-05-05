@@ -12,7 +12,7 @@ For instance:
 
 <ADD EXAMPLE>
 
-See the documentation for more information and examples. Contributions are also welcome, see open issues for requested features.
+See the documentation for more information and examples. If you encounter a big, you can make an issue so we can improve the software over time. Contributions are also welcome, see open issues for current bugs and requested features.
 
 ### Background
 
