@@ -2,7 +2,7 @@
   <img src="meshwell.png" width="300" height="300">
 </p>
 
-===================================================
+==========================================================================
 
 Meshwell is a Python wrapper around [GMSH](https://gitlab.onelab.info/gmsh/gmsh) that provides:
 
