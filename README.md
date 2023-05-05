@@ -1,6 +1,6 @@
 # meshwell
 
-![meshwell_logo](meshwell.png)
+<img src="meshwell.png" width="100" height="100">
 
 Meshwell is a Python wrapper around [GMSH](https://gitlab.onelab.info/gmsh/gmsh) that provides:
 
