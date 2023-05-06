@@ -3,9 +3,11 @@ install:
 	pip install -e .[dev]
 	pre-commit install
 
+full:
+	pip install -e .[dev,full]
+
 dev:
 	pip install -e .[dev,docs]
-
 
 test:
 	pytest -s
@@ -49,8 +51,10 @@ jupytext:
 notebooks:
 	jupytext docs/**/*.py --to ipynb
 
-
 docs:
 	jb build docs
 
 .PHONY: drc doc docs
+
+gmsh-ubuntu:
+	sudo apt-get install libglu1-mesa
