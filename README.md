@@ -4,7 +4,7 @@
 
 ---
 
-Meshwell is a Python wrapper around [GMSH](https://gitlab.onelab.info/gmsh/gmsh) that provides:
+Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that provides:
 
 (1) a Prism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions;
 
