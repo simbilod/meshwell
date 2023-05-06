@@ -4,5 +4,4 @@
 format: jb-book
 root: index
 chapters:
-  - file: api
   - file: changelog
