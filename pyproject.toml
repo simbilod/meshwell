@@ -21,8 +21,6 @@ authors = [
 keywords = ["python"]
 license = {file = "LICENSE"}
 dependencies = [
-    "matplotlib",
-    "numpy",
     "shapely",
     "gmsh",
 ]
@@ -37,14 +35,21 @@ dev = [
     "pytest-cov",
     "pytest_regressions",
     ]
+full = [
+    "matplotlib",
+    "scikit-fem",
+    "meshio"
+]
 docs = [
     "jupytext",
     "autodoc_pydantic",
-    "matplotlib",
     "jupytext",
     "jupyter-book==0.15.1",
     "sphinx-autodoc-typehints",
     "sphinx-click",
+    "matplotlib",
+    "scikit-fem",
+    "meshio"
     ]
 
 
