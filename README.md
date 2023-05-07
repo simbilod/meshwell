@@ -1,10 +1,14 @@
 # Meshwell
-![Logo](https://raw.githubusercontent.com/simbilod/meshwell/main/meshwell.png)
-![Docs](https://github.com/github/docs/actions/workflows/pages.yml/badge.svg)(https://simbilod.github.io/meshwell/)
-![Tests](https://github.com/github/docs/actions/workflows/test_code.yml/badge.svg)(https://github.com/simbilod/meshwell/actions/workflows/test_code.yml)
+<p align="center">
+  <img src="meshwell.png" width="300" height="300">
+</p>
+
+---
+
+![Docs](https://github.com/github/docs/actions/workflows/docs.yml/badge.svg)(https://simbilod.github.io/meshwell/)
+![Tests](https://github.com/github/docs/actions/workflows/tests.yml/badge.svg)(https://github.com/simbilod/meshwell/actions/workflows/test_code.yml)
 [![PiPy](https://img.shields.io/pypi/v/meshwell)](https://pypi.org/project/meshwell/)
 [![Downloads](https://static.pepy.tech/badge/meshwell/month)](https://pepy.tech/project/meshwell)
-
 
 Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that provides:
 
@@ -33,6 +37,5 @@ This code was originally developed to define meshes out of the GDSII description
 * [objectgmsh](https://github.com/nemocrys/objectgmsh): class wrappers around entities
 
 ### Contributors
-* Simon Bilodeau (Princeton): maintainer
 * Helge Gehring (Google X): beta testing, use cases, bug fixes
 * Joaquin Matres Abril (Google X): code improvements
