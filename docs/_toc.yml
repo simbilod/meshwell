@@ -6,9 +6,9 @@ root: index
 parts:
   - caption: Quickstart
     chapters:
-      - file: 00_installation
-      - file: 01_quickstart
+      - file: api/00_installation
+      - file: api/01_quickstart
   - caption: API
     chapters:
-      - file: 02_polysurfaces
-      - file: 03_prisms
+      - file: api/02_polysurfaces
+      - file: api/03_prisms
