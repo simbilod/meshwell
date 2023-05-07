@@ -31,6 +31,7 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install dependencies
         run: |
+          make gmsh-ubuntu
           pip install -e .[tests]
       - name: Test with pytest
         run: pytest
