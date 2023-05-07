@@ -4,7 +4,7 @@ meshwell
 Config
 ---------------------
 
-.. automodule:: meshwell.config
+.. automodule:: meshwell
 
 Config
 ---------------------

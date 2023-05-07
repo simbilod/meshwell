@@ -5,3 +5,7 @@ format: jb-book
 root: index
 chapters:
   - file: changelog
+  - file: 00_installation.py
+  - file: 01_quickstart.py
+  - file: 02_polysurfaces.py
+  - file: 03_prisms.py
