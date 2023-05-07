@@ -10,6 +10,8 @@
 [![Tests](https://github.com/simbilod/meshwell/actions/workflows/test_code.yml/badge.svg)](https://github.com/simbilod/meshwell/actions/workflows/test_code.yml)
 [![PiPy](https://img.shields.io/pypi/v/meshwell)](https://pypi.org/project/meshwell/)
 
+**Project is under active development, stay tuned for improved features, documentation, and releases!**
+
 Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that provides:
 
 (1) a Prism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions;
