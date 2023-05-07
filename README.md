@@ -32,5 +32,6 @@ This code was originally developed to define meshes out of the GDSII description
 * [objectgmsh](https://github.com/nemocrys/objectgmsh): class wrappers around entities
 
 ### Contributors
+* Simon Bilodeau (Princeton): maintainer
 * Helge Gehring (Google X): beta testing, use cases, bug fixes
 * Joaquin Matres Abril (Google X): code improvements
