@@ -56,7 +56,6 @@ plt.show()
 # +
 
 # Some GMSH boilerplate
-gmsh.clear()
 gmsh.initialize()
 occ = gmsh.model.occ
 
@@ -101,7 +100,7 @@ gmsh.model.mesh.generate(3)
 gmsh.write("mesh3D.msh")
 # -
 
-# These do not plot well with current tools, but checking the file with gmsh confirms the meshing:
+# These do not plot well with current tools, but checking the file with the gmsh GUI (execute `gmsh` on command line) confirms the meshing
 
 # ## Some notes
 #
