@@ -1,6 +1,7 @@
 # Meshwell
 <p align="center">
-  <img src="meshwell.png" width="300" height="300">
+  <img src=https://raw.githubusercontent.com/simbilod/meshwell/main/meshwell.png
+ width="300" height="300">
 </p>
 
 ---
