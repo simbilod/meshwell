@@ -15,12 +15,12 @@ jobs:
       - uses: pre-commit/action@v3.0.0
   test_code:
     needs: [pre-commit]
-    runs-on: ${{ matrix.os }}
+    runs-on: [ubuntu-latest]
     strategy:
       max-parallel: 12
       matrix:
         python-version: ["3.10"]
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python ${{ matrix.python-version }}
