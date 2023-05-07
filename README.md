@@ -5,10 +5,9 @@
 
 ---
 
-![Docs](https://github.com/github/docs/actions/workflows/docs.yml/badge.svg)(https://simbilod.github.io/meshwell/)
-![Tests](https://github.com/github/docs/actions/workflows/tests.yml/badge.svg)(https://github.com/simbilod/meshwell/actions/workflows/test_code.yml)
+[![Docs](https://github.com/simbilod/meshwell/actions/workflows/pages.yml/badge.svg)](https://github.com/simbilod/meshwell/actions/workflows/pages.yml)
+[![Tests](https://github.com/simbilod/meshwell/actions/workflows/test_code.yml/badge.svg)](https://github.com/simbilod/meshwell/actions/workflows/test_code.yml)
 [![PiPy](https://img.shields.io/pypi/v/meshwell)](https://pypi.org/project/meshwell/)
-[![Downloads](https://static.pepy.tech/badge/meshwell/month)](https://pepy.tech/project/meshwell)
 
 Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that provides:
 
