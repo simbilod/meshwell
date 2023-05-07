@@ -1,5 +1,3 @@
-# ruff: noqa: E402
-
 # ---
 # jupyter:
 #   jupytext:
@@ -15,15 +13,24 @@
 # ---
 
 # # Polysurfaces
-#
+
+# + tags=["hide-input"]
+import shapely
+from shapely.plotting import plot_polygon
+import matplotlib.pyplot as plt
+import gmsh
+from meshwell.polysurface import PolySurface
+from skfem.visuals.matplotlib import draw_mesh2d
+from skfem.io.meshio import from_meshio
+import meshio
+
+# -
+
 # GMSH is a powerful meshing engine, but non-standard shapes (e.g. arbitrary polygons) are still most easily described from the bottom-up, by defining vertices, lines, and closed loops.
 #
 # Meshwell has a "PolySurface" object simplifying this process. It takes as an argument a shapely (Multi)Polygon:
 
 # +
-import shapely
-from shapely.plotting import plot_polygon
-import matplotlib.pyplot as plt
 
 polygon_with_holes = shapely.Polygon(
     [[-2, -2], [3, -2], [3, 2], [-2, 2], [-2, -2]],
@@ -47,11 +54,6 @@ plot_polygon(polygon_with_holes_boolean, ax=ax, add_points=False)
 plt.show()
 
 # +
-import gmsh
-from meshwell.polysurface import PolySurface
-from skfem.visuals.matplotlib import draw_mesh2d
-from skfem.io.meshio import from_meshio
-import meshio
 
 # Some GMSH boilerplate
 gmsh.clear()

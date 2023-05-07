@@ -1,5 +1,3 @@
-# ruff: noqa: E402
-
 # ---
 # jupyter:
 #   jupytext:
@@ -15,7 +13,21 @@
 # ---
 
 # # Quickstart
-#
+
+# + tags=["hide-input"]
+import shapely
+from shapely.plotting import plot_polygon
+import matplotlib.pyplot as plt
+import gmsh
+from meshwell.polysurface import PolySurface
+from skfem.visuals.matplotlib import draw_mesh2d
+from skfem.io.meshio import from_meshio
+import meshio
+from skfem.visuals.matplotlib import draw_mesh3d
+from meshwell.prism import Prism
+
+# -
+
 # Meshwell is a Python wrapper around GMSH that provides:
 #
 # (1) a Prism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions
@@ -23,9 +35,6 @@
 # For instance, consider some complicated polygon resulting from some upstream calculation:
 
 # +
-import shapely
-from shapely.plotting import plot_polygon
-import matplotlib.pyplot as plt
 
 polygon_with_holes = shapely.Polygon(
     [[-2, -2], [3, -2], [3, 2], [-2, 2], [-2, -2]],
@@ -50,11 +59,6 @@ plt.show()
 # Meshwell's PolySurface can easily convert this to a 2D GMSH entity:
 
 # +
-import gmsh
-from meshwell.polysurface import PolySurface
-from skfem.visuals.matplotlib import draw_mesh2d
-from skfem.io.meshio import from_meshio
-import meshio
 
 # Some GMSH boilerplate
 gmsh.initialize()
@@ -75,8 +79,6 @@ mesh = from_meshio(meshio.read("mesh2D.msh"))
 draw_mesh2d(mesh)
 
 # +
-from skfem.visuals.matplotlib import draw_mesh3d
-from meshwell.prism import Prism
 
 polygon1 = shapely.Point(0, 0).buffer(2)
 polygon2 = shapely.Point(3, 3).buffer(1)
