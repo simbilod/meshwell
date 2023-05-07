@@ -57,7 +57,6 @@ from skfem.io.meshio import from_meshio
 import meshio
 
 # Some GMSH boilerplate
-gmsh.clear()
 gmsh.initialize()
 occ = gmsh.model.occ
 

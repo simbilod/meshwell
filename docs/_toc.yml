@@ -3,9 +3,12 @@
 
 format: jb-book
 root: index
-chapters:
-  - file: changelog
-  - file: 00_installation.py
-  - file: 01_quickstart.py
-  - file: 02_polysurfaces.py
-  - file: 03_prisms.py
+parts:
+  - caption: Quickstart
+    chapters:
+      - file: 00_installation
+      - file: 01_quickstart
+  - caption: API
+    chapters:
+      - file: 02_polysurfaces
+      - file: 03_prisms
