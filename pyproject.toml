@@ -23,6 +23,7 @@ license = {file = "LICENSE"}
 dependencies = [
     "shapely",
     "gmsh",
+    "meshio"
 ]
 readme = "README.md"
 requires-python = ">=3.7"
@@ -38,7 +39,6 @@ dev = [
 full = [
     "matplotlib",
     "scikit-fem",
-    "meshio"
 ]
 docs = [
     "jupytext",
