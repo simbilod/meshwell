@@ -57,13 +57,11 @@ buffers = {
 
 # Some GMSH boilerplate
 gmsh.initialize()
-occ = gmsh.model.occ
 
 # This package
-poly3D = Prism(polygons=polygon, buffers=buffers, model=occ)
+poly3D = Prism(polygons=polygon, buffers=buffers)
 
 # More GMSH boilerplate
-occ.synchronize()
 gmsh.option.setNumber("General.Terminal", 0)
 gmsh.model.mesh.generate(3)
 gmsh.write("mesh3D.msh")

@@ -1,3 +1,6 @@
+import gmsh
+
+
 class Geometry:
     """
     Base Geometry class inherited by Prism and PolySurface.
@@ -10,12 +13,9 @@ class Geometry:
 
     def __init__(
         self,
-        model,
         polygons,
         buffers,
     ):
-        self.model = model
-
         # Parse buffers
         self.buffered_polygons = self._get_buffered_polygons(polygons, buffers)
 
@@ -33,7 +33,7 @@ class Geometry:
             ID of the added or retrieved point
         """
         if (x, y, z) not in self.points.keys():
-            self.points[(x, y, z)] = self.model.add_point(x, y, z)
+            self.points[(x, y, z)] = gmsh.model.occ.add_point(x, y, z)
         return self.points[(x, y, z)]
 
     def _add_get_segment(self, xyz1, xyz2):
@@ -50,7 +50,7 @@ class Geometry:
         elif (xyz2, xyz1) in self.segments.keys():
             return self.segments[(xyz2, xyz1)]
         else:
-            self.segments[(xyz1, xyz2)] = self.model.add_line(
+            self.segments[(xyz1, xyz2)] = gmsh.model.occ.add_line(
                 self._add_get_point(xyz1[0], xyz1[1], xyz1[2]),
                 self._add_get_point(xyz2[0], xyz2[1], xyz2[2]),
             )
@@ -70,7 +70,7 @@ class Geometry:
         ]:
             gmsh_line = self._add_get_segment(vertex1, vertex2)
             edges.append(gmsh_line)
-        return self.model.add_curve_loop(edges)
+        return gmsh.model.occ.add_curve_loop(edges)
 
     def _add_surface(self, vertices):
         """Add a surface composed of the segments formed by vertices.
@@ -81,4 +81,4 @@ class Geometry:
             ID of the added surface
         """
         channel_loop = self._channel_loop_from_vertices(vertices)
-        return self.model.add_plane_surface([channel_loop])
+        return gmsh.model.occ.add_plane_surface([channel_loop])

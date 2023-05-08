@@ -15,10 +15,9 @@ def test_prism():
 
     buffers = {0.0: 0.0, 0.3: 0.1, 1.0: -0.2}
 
-    occ = gmsh.model.occ
     gmsh.initialize()
 
-    Prism(polygons=polygon, buffers=buffers, model=occ)
-    occ.synchronize()
+    Prism(polygons=polygon, buffers=buffers)
+    gmsh.model.occ.synchronize()
 
     gmsh.model.mesh.generate(3)

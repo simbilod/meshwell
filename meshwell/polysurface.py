@@ -1,5 +1,5 @@
-import shapely
 from meshwell.geometry import Geometry
+import gmsh
 
 
 class PolySurfaceClass(Geometry):
@@ -13,11 +13,8 @@ class PolySurfaceClass(Geometry):
 
     def __init__(
         self,
-        model,
         polygons,
     ):
-        self.model = model
-
         # Parse (multi)polygons
         self.polygons = list(
             polygons.geoms if hasattr(polygons, "geoms") else [polygons]
@@ -32,8 +29,18 @@ class PolySurfaceClass(Geometry):
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
 
     def get_gmsh_polygons(self):
-        """Returns the GMSH surfaces within model from the polygons."""
-        return [self._add_surface_with_holes(polygon) for polygon in self.polygons]
+        """Returns the fused GMSH surfaces within model from the polygons."""
+        surfaces = [self._add_surface_with_holes(entry) for entry in self.polygons]
+        if len(surfaces) <= 1:
+            return surfaces
+        dimtags = gmsh.model.occ.fuse(
+            [(2, surfaces[0])],
+            [(2, tag) for tag in surfaces[1:]],
+            removeObject=True,
+            removeTool=True,
+        )[0]
+        gmsh.model.occ.synchronize()
+        return [tag for dim, tag in dimtags]
 
     def _add_surface_with_holes(self, polygon):
         """Returns surface, removing intersection with hole surfaces."""
@@ -47,40 +54,18 @@ class PolySurfaceClass(Geometry):
             for interior in polygon.interiors
         ]
         for interior_tag in interior_tags:
-            exterior = self.model.cut(
+            exterior = gmsh.model.occ.cut(
                 [(2, exterior)], [(2, interior_tag)], removeObject=True, removeTool=True
             )
-            self.model.synchronize()
+            gmsh.model.occ.synchronize()
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
 
 def PolySurface(
-    model,
     polygons,
 ):
     """Functional wrapper around PolySurfaceClass."""
-    polysurface = PolySurfaceClass(polygons=polygons, model=model).get_gmsh_polygons()
-    model.synchronize()
+    polysurface = PolySurfaceClass(polygons=polygons).get_gmsh_polygons()
+    gmsh.model.occ.synchronize()
     return polysurface
-
-
-if __name__ == "__main__":
-    polygon1 = shapely.Polygon(
-        [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
-        holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
-    )
-    polygon2 = shapely.Polygon([[-1, -1], [-2, -1], [-2, -2], [-1, -2], [-1, -1]])
-    polygon = shapely.MultiPolygon([polygon1, polygon2])
-
-    import gmsh
-
-    occ = gmsh.model.occ
-    gmsh.initialize()
-    gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
-
-    poly2D = PolySurface(polygons=polygon, model=occ)
-    occ.synchronize()
-
-    gmsh.model.mesh.generate(3)
-    gmsh.write("mesh.msh")

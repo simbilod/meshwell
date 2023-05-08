@@ -1,5 +1,5 @@
-import shapely
 from meshwell.geometry import Geometry
+import gmsh
 
 
 class PrismClass(Geometry):
@@ -9,17 +9,13 @@ class PrismClass(Geometry):
     Attributes:
         polygons: list of shapely (Multi)Polygon
         buffers: dict of {z: buffer} used to shrink/grow base polygons at specified z-values
-        model: GMSH model to synchronize
     """
 
     def __init__(
         self,
-        model,
         polygons,
         buffers,
     ):
-        self.model = model
-
         # Parse buffers
         self.buffered_polygons = self._get_buffered_polygons(polygons, buffers)
 
@@ -28,8 +24,21 @@ class PrismClass(Geometry):
         self.segments = {}
 
     def get_gmsh_volumes(self):
-        """Returns the GMSH volumes within model from the polygons and buffers."""
-        return [self._add_volume_with_holes(entry) for entry in self.buffered_polygons]
+        """Returns the fused GMSH volumes within model from the polygons and buffers."""
+        volumes = [
+            self._add_volume_with_holes(entry) for entry in self.buffered_polygons
+        ]
+        if len(volumes) <= 1:
+            gmsh.model.occ.synchronize()
+            return volumes
+        dimtags = gmsh.model.occ.fuse(
+            [(3, volumes[0])],
+            [(3, tag) for tag in volumes[1:]],
+            removeObject=True,
+            removeTool=True,
+        )[0]
+        gmsh.model.occ.synchronize()
+        return [tag for dim, tag in dimtags]
 
     def _get_buffered_polygons(self, polygons, buffers):
         """Break up polygons on each layer into lists of polygons:z tuples according to buffer entries.
@@ -103,8 +112,8 @@ class PrismClass(Geometry):
                 gmsh_surfaces.append(self._add_surface(facet_vertices))
 
         # Return volume from closed shell
-        surface_loop = self.model.add_surface_loop(gmsh_surfaces)
-        return self.model.add_volume([surface_loop])
+        surface_loop = gmsh.model.occ.add_surface_loop(gmsh_surfaces)
+        return gmsh.model.occ.add_volume([surface_loop])
 
     def xy_surface_vertices(self, entry, arg1, exterior, interior_index):
         """"""
@@ -132,49 +141,19 @@ class PrismClass(Geometry):
         ]
         if interiors:
             for interior in interiors:
-                exterior = self.model.cut(
+                exterior = gmsh.model.occ.cut(
                     [(3, exterior)], [(3, interior)], removeObject=True, removeTool=True
                 )
-                self.model.synchronize()
+                gmsh.model.occ.synchronize()
                 exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
 
 def Prism(
-    model,
     polygons,
     buffers=None,
 ):
     """Functional wrapper around PrismClass."""
-    prism = PrismClass(
-        polygons=polygons, buffers=buffers, model=model
-    ).get_gmsh_volumes()
-    model.synchronize()
+    prism = PrismClass(polygons=polygons, buffers=buffers).get_gmsh_volumes()
+    gmsh.model.occ.synchronize()
     return prism
-
-
-if __name__ == "__main__":
-    polygon1 = shapely.Polygon(
-        [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
-        holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
-    )
-    polygon2 = shapely.Polygon([[-1, -1], [-2, -1], [-2, -2], [-1, -2], [-1, -1]])
-    polygon = shapely.MultiPolygon([polygon1, polygon2])
-
-    # buffers = {0.0: 0.0,
-    #            0.3: 0.1,
-    #            1.0: -0.2
-    #            }
-    buffers = None
-
-    import gmsh
-
-    occ = gmsh.model.occ
-    gmsh.initialize()
-    gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
-
-    poly3D = Prism(polygons=polygon, buffers=buffers, model=occ)
-    occ.synchronize()
-
-    gmsh.model.mesh.generate(3)
-    gmsh.write("mesh.msh")

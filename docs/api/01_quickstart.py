@@ -15,14 +15,77 @@
 # # Quickstart
 
 # + tags=["hide-input"]
-
+import shapely
+import gmsh
+from meshwell.prism import Prism
+from meshwell.mesh import mesh
+from collections import OrderedDict
+from skfem.visuals.matplotlib import draw_mesh3d
+from skfem.io.meshio import from_meshio
+import meshio
 
 # -
 
-# Meshwell is a Python wrapper around GMSH that provides:
+# # Step 0
 #
-# (1) a Prism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions
+# Initialize the CAD engine:
+
+gmsh.initialize()
+
+# ## Step 1: define GMSH entites
 #
-# For instance, consider some complicated polygon resulting from some upstream calculation:
+# You can use any object or transformation from the GMSH OCC kernel directly:
+
+mysphere = gmsh.model.occ.addSphere(0, 0, 0, 1)
+
+# Meshwell also introduces new object classes (PolySurfaces and Prisms) that simplify definition of complex shapes:
+
+# +
+# We use shapely as the interface to describe polygons
+mypolygon = shapely.Polygon(
+    [
+        [-1, -1],
+        [-1, 1],
+        [1, 1],
+        [1, -1],
+    ]
+)
+# We can "extrude" the polygon in 3D, with offsets
+buffers = {
+    -0.5: 1.0,
+    0.5: 0.0,
+}
+
+mywedge = Prism(polygons=mypolygon, buffers=buffers)
+# -
+
+# ## Step 2: define the mesh
 #
-# (under construction)
+# Provide meshwell with an Ordered dictionary, with physical labels as keys and a list of GMSH entities as values. Entities higher in the dict take precedence; you can perform your own GMSH booleans prior to the meshing to more finely control subregion names.
+
+# +
+dimtags_dict = OrderedDict(
+    {
+        "wedge": [(3, mywedge)],
+        "sphere": [(3, mysphere)],
+    }
+)
+
+geometry = mesh(dimtags_dict=dimtags_dict, verbosity=False, filename="quickmesh.msh")
+# -
+
+# This yields:
+
+mesh = from_meshio(meshio.read("quickmesh.msh"))
+draw_mesh3d(mesh)
+
+# The gmsh gui (`gmsh quickmesh.msh` in terminal) allows easy inspection of the mesh.
+
+# ## Step 3: use the mesh
+#
+# The returned mesh has all maximum dimension entities (volumes for 3D, surfaces for 2D) and [maximum - 1] dimension (surfaces for 3D, lines for 2D) properly labeled:
+#
+
+geometry.cell_sets.keys()
+
+# The mesh() function has many more arguments that can give you more control on the mesh and labels generated.

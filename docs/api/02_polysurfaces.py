@@ -14,7 +14,7 @@
 
 # # Polysurfaces
 
-# + tags=["hide-input"]
+# + tags=["hide-input"] vscode={"languageId": "python"}
 import shapely
 from shapely.plotting import plot_polygon
 import matplotlib.pyplot as plt
@@ -30,7 +30,7 @@ import meshio
 #
 # Meshwell has a "PolySurface" object simplifying this process. It takes as an argument a shapely (Multi)Polygon:
 
-# +
+# + vscode={"languageId": "python"}
 
 polygon_with_holes = shapely.Polygon(
     [[-2, -2], [3, -2], [3, 2], [-2, 2], [-2, -2]],
@@ -53,17 +53,15 @@ ax = fig.add_subplot()
 plot_polygon(polygon_with_holes_boolean, ax=ax, add_points=False)
 plt.show()
 
-# +
+# + vscode={"languageId": "python"}
 
 # Some GMSH boilerplate
 gmsh.initialize()
-occ = gmsh.model.occ
 
 # This package
-poly2D = PolySurface(polygons=polygon_with_holes_boolean, model=occ)
+poly2D = PolySurface(polygons=polygon_with_holes_boolean)
 
 # More GMSH boilerplate
-occ.synchronize()
 gmsh.option.setNumber("General.Terminal", 0)
 gmsh.model.mesh.generate(2)
 gmsh.write("mesh2D.msh")
@@ -76,12 +74,10 @@ draw_mesh2d(mesh)
 
 # Although shapely does not work in 3D, it accepts 3D coordinates, which we use here to define 2D surfaces in 3D space:
 
-# +
-
+# + vscode={"languageId": "python"}
 # Some GMSH boilerplate
 gmsh.clear()
 gmsh.initialize()
-occ = gmsh.model.occ
 
 # This package
 surface_3D_1 = shapely.Polygon(
@@ -91,10 +87,10 @@ surface_3D_2 = shapely.Polygon(
     [[-2, -2, 5], [3, -2, 5], [3, 2, 5], [-2, 2, 5], [-2, -2, 5]],
 )
 surfaces = shapely.MultiPolygon([surface_3D_1, surface_3D_2])
-poly2D = PolySurface(polygons=surfaces, model=occ)
+poly2D = PolySurface(polygons=surfaces)
 
 # More GMSH boilerplate
-occ.synchronize()
+gmsh.model.occ.synchronize()
 gmsh.option.setNumber("General.Terminal", 0)
 gmsh.model.mesh.generate(3)
 gmsh.write("mesh3D.msh")

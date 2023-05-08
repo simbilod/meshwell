@@ -19,13 +19,12 @@ def test_mesh_3D():
     buffers = {0.0: 0.0, 1.0: -0.1}
 
     gmsh.initialize()
-    occ = gmsh.model.occ
-    poly3D = Prism(polygons=polygon, buffers=buffers, model=occ)
+    poly3D = Prism(polygons=polygon, buffers=buffers)
 
     dimtags_dict = OrderedDict(
         {
             "first_physical": [(3, poly3D)],
-            "second_entity": [(3, occ.addSphere(0, 0, 0, 1))],
+            "second_entity": [(3, gmsh.model.occ.addSphere(0, 0, 0, 1))],
         }
     )
 
@@ -35,7 +34,6 @@ def test_mesh_3D():
 
     mesh(
         dimtags_dict=dimtags_dict,
-        model=occ,
         resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
@@ -55,13 +53,12 @@ def test_mesh_2D():
     buffers = {0.0: 0.0, 1.0: -0.1}
 
     gmsh.initialize()
-    occ = gmsh.model.occ
-    poly3D = Prism(polygons=polygon, buffers=buffers, model=occ)
+    poly3D = Prism(polygons=polygon, buffers=buffers)
 
     dimtags_dict = OrderedDict(
         {
             "first_physical": [(3, poly3D)],
-            "second_entity": [(3, occ.addSphere(0, 0, 0, 1))],
+            "second_entity": [(3, gmsh.model.occ.addSphere(0, 0, 0, 1))],
         }
     )
 
@@ -71,7 +68,6 @@ def test_mesh_2D():
 
     mesh(
         dimtags_dict=dimtags_dict,
-        model=occ,
         resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
