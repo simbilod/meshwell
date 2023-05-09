@@ -23,7 +23,7 @@ def mesh(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
 ):
-    """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list(GMSH entities)}.
+    """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
     Args:
         dimtags_dict: OrderedDict of key: physical name, and value: (dim, tags) of  GMSH entities
@@ -38,6 +38,9 @@ def mesh(
         meshio object with mesh information
     """
     resolutions = resolutions if resolutions else {}
+
+    # Initial synchronization
+    gmsh.model.occ.synchronize()
 
     # Validate and unpack dim tags, and detect mesh dimension
     max_dim = 0
