@@ -12,3 +12,6 @@ parts:
     chapters:
       - file: api/02_polysurfaces
       - file: api/03_prisms
+  - caption: Meshing
+    chapters:
+      - file: api/04_resolution
