@@ -70,3 +70,13 @@ gmsh.write("mesh3D.msh")
 mesh = from_meshio(meshio.read("mesh3D.msh"))
 
 draw_mesh3d(mesh)
+
+# ## Some notes
+#
+# * All polygon vertices, for each buffered copy of the polygon, are instanciated as 0-D points in the GMSH model
+# * All polygon edges (interior and exterior) are instanciated as 1-D lines in the GMSH model
+# * Vertical lines between neighbouring buffered polygons are also instanciated as 1D-lines
+# * All neighbouring vertical and horizontal lines forming closed loops are instanciated as 2-D surfaces
+# * "Prism" returns the ID(s) of the polygon volumes, but instanciating the object is enough to add the entity to the GMSH model
+# * Ill-formed polygons will cause meshing to fail.
+# * Ill-formed extrusions (e.g. buffering causing a change of the number of vertices) will cause meshing to fail.
