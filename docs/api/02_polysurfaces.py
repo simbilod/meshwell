@@ -14,11 +14,11 @@
 
 # # Polysurfaces
 
-# + tags=["hide-input"] vscode={"languageId": "python"}
+# + tags=["hide-input"]
 import shapely
 from shapely.plotting import plot_polygon
 import matplotlib.pyplot as plt
-import gmsh
+from meshwell.model import Model
 from meshwell.polysurface import PolySurface
 from skfem.visuals.matplotlib import draw_mesh2d
 from skfem.io.meshio import from_meshio
@@ -30,7 +30,7 @@ import meshio
 #
 # Meshwell has a "PolySurface" object simplifying this process. It takes as an argument a shapely (Multi)Polygon:
 
-# + vscode={"languageId": "python"}
+# +
 
 polygon_with_holes = shapely.Polygon(
     [[-2, -2], [3, -2], [3, 2], [-2, 2], [-2, -2]],
@@ -53,18 +53,12 @@ ax = fig.add_subplot()
 plot_polygon(polygon_with_holes_boolean, ax=ax, add_points=False)
 plt.show()
 
-# + vscode={"languageId": "python"}
+# +
+model = Model()
 
-# Some GMSH boilerplate
-gmsh.initialize()
+poly2D = PolySurface(polygons=polygon_with_holes_boolean, model=model)
 
-# This package
-poly2D = PolySurface(polygons=polygon_with_holes_boolean)
-
-# More GMSH boilerplate
-gmsh.option.setNumber("General.Terminal", 0)
-gmsh.model.mesh.generate(2)
-gmsh.write("mesh2D.msh")
+model.mesh(dimtags_dict={"polygon": [(2, poly2D)]}, filename="mesh2D.msh")
 
 # Plotting courtesy of scikit-fem
 mesh = from_meshio(meshio.read("mesh2D.msh"))
@@ -72,31 +66,7 @@ mesh = from_meshio(meshio.read("mesh2D.msh"))
 draw_mesh2d(mesh)
 # -
 
-# Although shapely does not work in 3D, it accepts 3D coordinates, which we use here to define 2D surfaces in 3D space:
-
-# + vscode={"languageId": "python"}
-# Some GMSH boilerplate
-gmsh.clear()
-gmsh.initialize()
-
-# This package
-surface_3D_1 = shapely.Polygon(
-    [[0, 0, 0], [0, 1, 0], [0, 1, 1], [0, 0, 1], [0, 0, 0]],
-)
-surface_3D_2 = shapely.Polygon(
-    [[-2, -2, 5], [3, -2, 5], [3, 2, 5], [-2, 2, 5], [-2, -2, 5]],
-)
-surfaces = shapely.MultiPolygon([surface_3D_1, surface_3D_2])
-poly2D = PolySurface(polygons=surfaces)
-
-# More GMSH boilerplate
-gmsh.model.occ.synchronize()
-gmsh.option.setNumber("General.Terminal", 0)
-gmsh.model.mesh.generate(3)
-gmsh.write("mesh3D.msh")
-# -
-
-# These do not plot well with current tools, but checking the file with the gmsh GUI (execute `gmsh` on command line) confirms the meshing
+# Although shapely does not work in 3D, it accepts 3D coordinates, which are used here to define surfaces in 3D space.
 
 # ## Some notes
 #

@@ -17,7 +17,7 @@
 # The main value of this package is the automatic tagging of complex combinations of GMSH physical entities, which allows areas of the mesh to be easily accessed for later simulation definition.
 
 # + tags=["hide-input"]
-from meshwell.mesh import mesh
+from meshwell.model import Model
 import gmsh
 from collections import OrderedDict
 
@@ -32,7 +32,7 @@ from collections import OrderedDict
 # Seeing this in action:
 
 # +
-gmsh.initialize()
+model = Model()
 
 box1 = gmsh.model.occ.addBox(0, 0, 0, 2, 2, 2)
 box2 = gmsh.model.occ.addBox(1, 1, 1, 2, 2, 2)
@@ -44,13 +44,15 @@ entities = OrderedDict(
     }
 )
 
-mesh_out = mesh(dimtags_dict=entities, verbosity=True, filename="mesh.msh")
+mesh_out = model.mesh(dimtags_dict=entities, verbosity=True, filename="mesh.msh")
 # -
 
 
 # Uncomment below to dynamically inspect the mesh.
 
-# !gmsh mesh.msh
+# +
+# # !gmsh mesh.msh
+# -
 
 # You should see the following (toggling 3D element edges and 3D element faces):
 #
