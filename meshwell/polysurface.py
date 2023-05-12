@@ -1,8 +1,7 @@
-from meshwell.geometry import Geometry
 import gmsh
 
 
-class PolySurfaceClass(Geometry):
+class PolySurfaceClass:
     """
     Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
 
@@ -14,6 +13,7 @@ class PolySurfaceClass(Geometry):
     def __init__(
         self,
         polygons,
+        model,
     ):
         # Parse (multi)polygons
         self.polygons = list(
@@ -21,8 +21,7 @@ class PolySurfaceClass(Geometry):
         )
 
         # Track gmsh entities for bottom-up volume definition
-        self.points = {}
-        self.segments = {}
+        self.model = model
 
     def _parse_coords(self, coords):
         """Chooses z=0 if the provided coordinates are 2D."""
@@ -44,11 +43,11 @@ class PolySurfaceClass(Geometry):
 
     def _add_surface_with_holes(self, polygon):
         """Returns surface, removing intersection with hole surfaces."""
-        exterior = self._add_surface(
+        exterior = self.model._add_surface(
             [self._parse_coords(coords) for coords in polygon.exterior.coords]
         )
         interior_tags = [
-            self._add_surface(
+            self.model._add_surface(
                 [self._parse_coords(coords) for coords in interior.coords],
             )
             for interior in polygon.interiors
@@ -64,8 +63,9 @@ class PolySurfaceClass(Geometry):
 
 def PolySurface(
     polygons,
+    model,
 ):
     """Functional wrapper around PolySurfaceClass."""
-    polysurface = PolySurfaceClass(polygons=polygons).get_gmsh_polygons()
+    polysurface = PolySurfaceClass(polygons=polygons, model=model).get_gmsh_polygons()
     gmsh.model.occ.synchronize()
     return polysurface

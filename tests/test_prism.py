@@ -3,6 +3,7 @@ from __future__ import annotations
 import gmsh
 import shapely
 from meshwell.prism import Prism
+from meshwell.model import Model
 
 
 def test_prism():
@@ -15,9 +16,9 @@ def test_prism():
 
     buffers = {0.0: 0.0, 0.3: 0.1, 1.0: -0.2}
 
-    gmsh.initialize()
+    model = Model()
 
-    Prism(polygons=polygon, buffers=buffers)
+    Prism(polygons=polygon, buffers=buffers, model=model)
     gmsh.model.occ.synchronize()
 
     gmsh.model.mesh.generate(3)

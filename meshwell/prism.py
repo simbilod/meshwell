@@ -1,8 +1,7 @@
-from meshwell.geometry import Geometry
 import gmsh
 
 
-class PrismClass(Geometry):
+class PrismClass:
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
 
@@ -15,13 +14,13 @@ class PrismClass(Geometry):
         self,
         polygons,
         buffers,
+        model,
     ):
+        # Model
+        self.model = model
+
         # Parse buffers
         self.buffered_polygons = self._get_buffered_polygons(polygons, buffers)
-
-        # Track gmsh entities for bottom-up volume definition
-        self.points = {}
-        self.segments = {}
 
     def get_gmsh_volumes(self):
         """Returns the fused GMSH volumes within model from the polygons and buffers."""
@@ -70,12 +69,12 @@ class PrismClass(Geometry):
         bottom_polygon_vertices = self.xy_surface_vertices(
             entry, 0, exterior, interior_index
         )
-        gmsh_surfaces = [self._add_surface(bottom_polygon_vertices)]
+        gmsh_surfaces = [self.model._add_surface(bottom_polygon_vertices)]
 
         top_polygon_vertices = self.xy_surface_vertices(
             entry, -1, exterior, interior_index
         )
-        gmsh_surfaces.append(self._add_surface(top_polygon_vertices))
+        gmsh_surfaces.append(self.model._add_surface(top_polygon_vertices))
 
         # Draw vertical surfaces
         for pair_index in range(len(entry) - 1):
@@ -109,7 +108,7 @@ class PrismClass(Geometry):
                     top_z,
                 )
                 facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(self._add_surface(facet_vertices))
+                gmsh_surfaces.append(self.model._add_surface(facet_vertices))
 
         # Return volume from closed shell
         surface_loop = gmsh.model.occ.add_surface_loop(gmsh_surfaces)
@@ -151,9 +150,12 @@ class PrismClass(Geometry):
 
 def Prism(
     polygons,
+    model,
     buffers=None,
 ):
     """Functional wrapper around PrismClass."""
-    prism = PrismClass(polygons=polygons, buffers=buffers).get_gmsh_volumes()
+    prism = PrismClass(
+        polygons=polygons, buffers=buffers, model=model
+    ).get_gmsh_volumes()
     gmsh.model.occ.synchronize()
     return prism

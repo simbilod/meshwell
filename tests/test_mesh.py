@@ -3,9 +3,8 @@ from __future__ import annotations
 import gmsh
 import shapely
 from meshwell.prism import Prism
+from meshwell.model import Model
 from collections import OrderedDict
-
-from meshwell.mesh import mesh
 
 
 def test_mesh_3D():
@@ -18,8 +17,8 @@ def test_mesh_3D():
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
-    gmsh.initialize()
-    poly3D = Prism(polygons=polygon, buffers=buffers)
+    model = Model()
+    poly3D = Prism(polygons=polygon, buffers=buffers, model=model)
 
     dimtags_dict = OrderedDict(
         {
@@ -32,11 +31,12 @@ def test_mesh_3D():
         "first_physical": {"resolution": 0.3},
     }
 
-    mesh(
+    model.mesh(
         dimtags_dict=dimtags_dict,
         resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
+        filename="mesh2D.msh",
     )
 
     pass
@@ -52,8 +52,8 @@ def test_mesh_2D():
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
-    gmsh.initialize()
-    poly3D = Prism(polygons=polygon, buffers=buffers)
+    model = Model()
+    poly3D = Prism(polygons=polygon, buffers=buffers, model=model)
 
     dimtags_dict = OrderedDict(
         {
@@ -66,11 +66,12 @@ def test_mesh_2D():
         "first_physical": {"resolution": 0.3},
     }
 
-    mesh(
+    model.mesh(
         dimtags_dict=dimtags_dict,
         resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
+        filename="mesh3D.msh",
     )
 
     pass
