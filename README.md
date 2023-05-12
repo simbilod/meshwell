@@ -37,6 +37,7 @@ This code was originally developed to define meshes out of the GDSII description
 * [gmsh](https://gitlab.onelab.info/gmsh/gmsh): the gmsh Python API itself has significantly improved over the years
 * [pygmsh](https://github.com/meshpro/pygmsh): manipulate Python objects instead of gmsh entity tags
 * [objectgmsh](https://github.com/nemocrys/objectgmsh): class wrappers around entities
+* [gyptis](https://gyptis.gitlab.io/): uses basic gmsh for photonic geometries
 
 ###
 * Simon Bilodeau (Princeton): maintainer
