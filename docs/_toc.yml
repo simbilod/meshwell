@@ -15,3 +15,4 @@ parts:
   - caption: Meshing
     chapters:
       - file: api/04_basics
+      - file: api/05_boundary_conditions
