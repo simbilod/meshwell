@@ -147,8 +147,9 @@ class Model:
         # Parse structural and boundary entities
         full_dimtag_dict = OrderedDict()
         keep = False
-        for key, value in boundary_tags.items():
-            full_dimtag_dict[key] = (value, keep)
+        if boundary_tags is not None:
+            for key, value in boundary_tags.items():
+                full_dimtag_dict[key] = (value, keep)
         keep = True
         for key, value in dimtags_dict.items():
             full_dimtag_dict[key] = (value, keep)
