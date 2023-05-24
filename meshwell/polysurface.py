@@ -1,6 +1,3 @@
-import gmsh
-
-
 class PolySurfaceClass:
     """
     Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
@@ -29,34 +26,34 @@ class PolySurfaceClass:
 
     def get_gmsh_polygons(self):
         """Returns the fused GMSH surfaces within model from the polygons."""
-        surfaces = [self._add_surface_with_holes(entry) for entry in self.polygons]
+        surfaces = [self.add_surface_with_holes(entry) for entry in self.polygons]
         if len(surfaces) <= 1:
             return surfaces
-        dimtags = gmsh.model.occ.fuse(
+        dimtags = self.model.occ.fuse(
             [(2, surfaces[0])],
             [(2, tag) for tag in surfaces[1:]],
             removeObject=True,
             removeTool=True,
         )[0]
-        gmsh.model.occ.synchronize()
+        self.model.occ.synchronize()
         return [tag for dim, tag in dimtags]
 
-    def _add_surface_with_holes(self, polygon):
+    def add_surface_with_holes(self, polygon):
         """Returns surface, removing intersection with hole surfaces."""
-        exterior = self.model._add_surface(
+        exterior = self.model.add_surface(
             [self._parse_coords(coords) for coords in polygon.exterior.coords]
         )
         interior_tags = [
-            self.model._add_surface(
+            self.model.add_surface(
                 [self._parse_coords(coords) for coords in interior.coords],
             )
             for interior in polygon.interiors
         ]
         for interior_tag in interior_tags:
-            exterior = gmsh.model.occ.cut(
+            exterior = self.model.occ.cut(
                 [(2, exterior)], [(2, interior_tag)], removeObject=True, removeTool=True
             )
-            gmsh.model.occ.synchronize()
+            self.model.occ.synchronize()
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
@@ -67,5 +64,5 @@ def PolySurface(
 ):
     """Functional wrapper around PolySurfaceClass."""
     polysurface = PolySurfaceClass(polygons=polygons, model=model).get_gmsh_polygons()
-    gmsh.model.occ.synchronize()
+    model.occ.synchronize()
     return polysurface

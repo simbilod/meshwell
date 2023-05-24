@@ -1,6 +1,3 @@
-import gmsh
-
-
 class PrismClass:
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
@@ -28,15 +25,15 @@ class PrismClass:
             self._add_volume_with_holes(entry) for entry in self.buffered_polygons
         ]
         if len(volumes) <= 1:
-            gmsh.model.occ.synchronize()
+            self.model.occ.synchronize()
             return volumes
-        dimtags = gmsh.model.occ.fuse(
+        dimtags = self.model.occ.fuse(
             [(3, volumes[0])],
             [(3, tag) for tag in volumes[1:]],
             removeObject=True,
             removeTool=True,
         )[0]
-        gmsh.model.occ.synchronize()
+        self.model.occ.synchronize()
         return [tag for dim, tag in dimtags]
 
     def _get_buffered_polygons(self, polygons, buffers):
@@ -69,12 +66,12 @@ class PrismClass:
         bottom_polygon_vertices = self.xy_surface_vertices(
             entry, 0, exterior, interior_index
         )
-        gmsh_surfaces = [self.model._add_surface(bottom_polygon_vertices)]
+        gmsh_surfaces = [self.model.add_surface(bottom_polygon_vertices)]
 
         top_polygon_vertices = self.xy_surface_vertices(
             entry, -1, exterior, interior_index
         )
-        gmsh_surfaces.append(self.model._add_surface(top_polygon_vertices))
+        gmsh_surfaces.append(self.model.add_surface(top_polygon_vertices))
 
         # Draw vertical surfaces
         for pair_index in range(len(entry) - 1):
@@ -108,11 +105,11 @@ class PrismClass:
                     top_z,
                 )
                 facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(self.model._add_surface(facet_vertices))
+                gmsh_surfaces.append(self.model.add_surface(facet_vertices))
 
         # Return volume from closed shell
-        surface_loop = gmsh.model.occ.add_surface_loop(gmsh_surfaces)
-        return gmsh.model.occ.add_volume([surface_loop])
+        surface_loop = self.model.occ.add_surface_loop(gmsh_surfaces)
+        return self.model.occ.add_volume([surface_loop])
 
     def xy_surface_vertices(self, entry, arg1, exterior, interior_index):
         """"""
@@ -140,10 +137,10 @@ class PrismClass:
         ]
         if interiors:
             for interior in interiors:
-                exterior = gmsh.model.occ.cut(
+                exterior = self.model.occ.cut(
                     [(3, exterior)], [(3, interior)], removeObject=True, removeTool=True
                 )
-                gmsh.model.occ.synchronize()
+                self.model.occ.synchronize()
                 exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
@@ -157,5 +154,5 @@ def Prism(
     prism = PrismClass(
         polygons=polygons, buffers=buffers, model=model
     ).get_gmsh_volumes()
-    gmsh.model.occ.synchronize()
+    model.occ.synchronize()
     return prism

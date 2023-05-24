@@ -26,11 +26,24 @@ def tag_interfaces(entity_list, max_dim, boundary_delimiter):
             # Remember which boundaries were interfaces with another entity
             entity1.interfaces.extend(common_interfaces)
             entity2.interfaces.extend(common_interfaces)
-            gmsh.model.addPhysicalGroup(
-                max_dim - 1,
-                common_interfaces,
-                name=f"{entity1.label}{boundary_delimiter}{entity2.label}",
-            )
+            if entity1.keep is False:
+                gmsh.model.addPhysicalGroup(
+                    max_dim - 1,
+                    common_interfaces,
+                    name=f"{entity1.label}",
+                )
+            elif entity2.keep is False:
+                gmsh.model.addPhysicalGroup(
+                    max_dim - 1,
+                    common_interfaces,
+                    name=f"{entity2.label}",
+                )
+            else:
+                gmsh.model.addPhysicalGroup(
+                    max_dim - 1,
+                    common_interfaces,
+                    name=f"{entity1.label}{boundary_delimiter}{entity2.label}",
+                )
 
     return entity_list
 

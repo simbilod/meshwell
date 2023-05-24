@@ -4,13 +4,14 @@ import gmsh
 class LabeledEntities:
     """Class to track entities, boundaries, and physical labels."""
 
-    def __init__(self, index, dimtags, label, base_resolution):
+    def __init__(self, index, dimtags, label, base_resolution, keep):
         self.index = index
         self.dimtags = self._fuse_self(dimtags)
         self.label = label
         self.base_resolution = base_resolution
         self.boundaries = self.update_boundaries()
         self.interfaces = []
+        self.keep = keep
 
     def _fuse_self(self, dimtags):
         if len(dimtags) != 1:
