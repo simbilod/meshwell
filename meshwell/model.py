@@ -19,16 +19,35 @@ class Model:
 
     def __init__(
         self,
+        point_tolerance=1e-3,
     ):
         # Initialize model
         if not gmsh.isInitialized():
             gmsh.initialize()
 
+        # Point snapping
+        self.point_tolerance = point_tolerance
+
+        # CAD engine
+        self.occ = gmsh.model.occ
+
         # Track some gmsh entities for bottom-up volume definition
         self.points = {}
         self.segments = {}
+        # self.points_coordinates = np.empty((1,3))
+        # self.points_entities = []
+        # self.segment_coordinates =  np.empty((1,6))
+        # self.segment_entities = []
 
-    def _add_get_point(self, x, y, z):
+    # def find_point(self, xyz):
+    #     """Returns an existing point entity if the provided point coordinates are within atol of the entity coordinates.
+
+    #     TODO
+    #     """
+    #     diffs = np.array(xyz) - self.points_coordinates
+    #     mask = np.where(diffs < self.point_tolerance)
+
+    def add_get_point(self, x, y, z):
         """Add a point to the model, or reuse a previously-defined point.
         Args:
             x: float, x-coordinate
@@ -38,10 +57,10 @@ class Model:
             ID of the added or retrieved point
         """
         if (x, y, z) not in self.points.keys():
-            self.points[(x, y, z)] = gmsh.model.occ.add_point(x, y, z)
+            self.points[(x, y, z)] = self.occ.add_point(x, y, z)
         return self.points[(x, y, z)]
 
-    def _add_get_segment(self, xyz1, xyz2):
+    def add_get_segment(self, xyz1, xyz2):
         """Add a segment (2-point line) to the gmsh model, or retrieve a previously-defined segment.
         The OCC kernel does not care about orientation.
         Args:
@@ -55,16 +74,15 @@ class Model:
         elif (xyz2, xyz1) in self.segments.keys():
             return self.segments[(xyz2, xyz1)]
         else:
-            self.segments[(xyz1, xyz2)] = gmsh.model.occ.add_line(
-                self._add_get_point(xyz1[0], xyz1[1], xyz1[2]),
-                self._add_get_point(xyz2[0], xyz2[1], xyz2[2]),
+            self.segments[(xyz1, xyz2)] = self.occ.add_line(
+                self.add_get_point(xyz1[0], xyz1[1], xyz1[2]),
+                self.add_get_point(xyz2[0], xyz2[1], xyz2[2]),
             )
             return self.segments[(xyz1, xyz2)]
 
     def _channel_loop_from_vertices(self, vertices):
         """Add a curve loop from the list of vertices.
         Args:
-            model: GMSH model
             vertices: list of [x,y,z] coordinates
         Returns:
             ID of the added curve loop
@@ -73,11 +91,11 @@ class Model:
         for vertex1, vertex2 in [
             (vertices[i], vertices[i + 1]) for i in range(len(vertices) - 1)
         ]:
-            gmsh_line = self._add_get_segment(vertex1, vertex2)
+            gmsh_line = self.add_get_segment(vertex1, vertex2)
             edges.append(gmsh_line)
-        return gmsh.model.occ.add_curve_loop(edges)
+        return self.occ.add_curve_loop(edges)
 
-    def _add_surface(self, vertices):
+    def add_surface(self, vertices):
         """Add a surface composed of the segments formed by vertices.
 
         Args:
@@ -86,11 +104,12 @@ class Model:
             ID of the added surface
         """
         channel_loop = self._channel_loop_from_vertices(vertices)
-        return gmsh.model.occ.add_plane_surface([channel_loop])
+        return self.occ.add_plane_surface([channel_loop])
 
     def mesh(
         self,
         dimtags_dict: OrderedDict,
+        boundary_tags: Dict = None,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         filename: Optional[str] = None,
@@ -116,25 +135,39 @@ class Model:
         """
         resolutions = resolutions if resolutions else {}
         gmsh.option.setNumber(
+            "General.Terminal", 1 if verbosity else 0
+        )  # 1 verbose, 0 otherwise
+        gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
 
         # Initial synchronization
-        gmsh.model.occ.synchronize()
+        self.occ.synchronize()
+
+        # Parse structural and boundary entities
+        full_dimtag_dict = OrderedDict()
+        keep = False
+        for key, value in boundary_tags.items():
+            full_dimtag_dict[key] = (value, keep)
+        keep = True
+        for key, value in dimtags_dict.items():
+            full_dimtag_dict[key] = (value, keep)
 
         # Validate and unpack dim tags, and detect mesh dimension
         max_dim = 0
-        for label, dimtags in dimtags_dict.items():
-            dim = validate_dimtags(dimtags)
+        for key, (value, keep) in full_dimtag_dict.items():
+            dim = validate_dimtags(value)
             max_dim = max(dim, max_dim)
-            dimtags_dict[label] = unpack_dimtags(dimtags)
+            full_dimtag_dict[key] = (unpack_dimtags(value), keep)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
 
+        # Main loop:
         # Iterate through OrderedDict of entities, logging the volumes/surfaces in order
+        # Pure fragment operations are unreliable for complex geometries, so we manually fragment using fuses and cuts
         final_entity_list = []
-        for index, (label, dimtags) in enumerate(dimtags_dict.items()):
+        for index, (label, (dimtags, keep)) in enumerate(full_dimtag_dict.items()):
             base_resolution = (
                 resolutions[label]["resolution"]
                 if label in resolutions
@@ -145,21 +178,27 @@ class Model:
                 dimtags=dimtags,
                 label=label,
                 base_resolution=base_resolution,
+                keep=keep,
             )
             if index != 0:
                 current_dimtags_cut = []
                 for current_dimtags in current_entities.dimtags:
                     for previous_entities in final_entity_list:
-                        if cut := gmsh.model.occ.cut(
-                            [current_dimtags],
-                            previous_entities.dimtags,
-                            removeObject=True,  # Only keep the difference
-                            removeTool=False,  # Tool (previous entities) should remain untouched
-                        ):
-                            current_dimtags_cut.append(cut[0])
-                        gmsh.model.occ.synchronize()
-                        gmsh.model.occ.removeAllDuplicates()  # Heal interfaces now
-                        gmsh.model.occ.synchronize()
+                        # If same dimensionality,  remove intersection
+                        if current_entities.get_dim() == previous_entities.get_dim():
+                            if cut := self.occ.cut(
+                                [current_dimtags],
+                                previous_entities.dimtags,
+                                removeObject=True,  # Only keep the difference
+                                removeTool=False,  # Tool (previous entities) should remain untouched
+                            ):
+                                current_dimtags_cut.append(cut[0])
+                            self.occ.synchronize()
+                        # If not, apply the cut on the proper boundary entities
+                        else:
+                            current_dimtags_cut.append([current_dimtags])
+                        self.occ.removeAllDuplicates()  # Heal interfaces now
+                        self.occ.synchronize()
                         previous_entities.update_boundaries()
                 current_entities.dimtags = [
                     item for sublist in current_dimtags_cut for item in sublist
@@ -175,6 +214,11 @@ class Model:
         tag_boundaries(
             final_entity_list, max_dim, interface_delimiter, boundary_delimiter
         )
+
+        # Remove boundary entities
+        for entity in final_entity_list:
+            if not entity.keep:
+                gmsh.model.occ.remove(entity.dimtags, recursive=True)
 
         # Perform refinement
         refinement_fields = []
@@ -196,11 +240,7 @@ class Model:
         gmsh.model.mesh.MeshSizeFromCurvature = 0
         gmsh.model.mesh.MeshSizeExtendFromBoundary = 0
 
-        gmsh.model.occ.synchronize()
-
-        gmsh.option.setNumber(
-            "General.Terminal", 1 if verbosity else 0
-        )  # 1 verbose, 0 otherwise
+        self.occ.synchronize()
         gmsh.model.mesh.generate(max_dim)
 
         if filename:
