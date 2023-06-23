@@ -4,7 +4,7 @@ from typing import Dict, Optional
 
 import gmsh
 from meshwell.validation import validate_dimtags, unpack_dimtags
-from meshwell.entity import LabeledEntities
+from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
 from meshwell.refinement import constant_refinement
 from collections import OrderedDict
@@ -29,6 +29,7 @@ class Model:
         self.point_tolerance = point_tolerance
 
         # CAD engine
+        self.model = gmsh.model
         self.occ = gmsh.model.occ
 
         # Track some gmsh entities for bottom-up volume definition
@@ -106,14 +107,36 @@ class Model:
         channel_loop = self._channel_loop_from_vertices(vertices)
         return self.occ.add_plane_surface([channel_loop])
 
+    def sync_model(self):
+        """Synchronize the CAD model, and update points and lines vertex mapping."""
+        self.occ.synchronize()
+        cad_points = self.model.getEntities(dim=0)
+        new_points = {}
+        for _, cad_point in cad_points:
+            # OCC kernel can do whatever, so just read point coordinates
+            vertices = tuple(self.model.getValue(0, cad_point, []))
+            new_points[vertices] = cad_point
+        cad_lines = self.model.getEntities(dim=1)
+        new_segments = {}
+        for _, cad_line in cad_lines:
+            try:
+                key = list(self.segments.keys())[
+                    list(self.segments.values()).index(cad_line)
+                ]
+                cad_lines[key] = cad_line
+            except Exception:
+                continue
+        self.points = new_points
+        self.segments = new_segments
+
     def mesh(
         self,
-        dimtags_dict: OrderedDict,
-        boundary_tags: Dict = None,
+        entities_dict: OrderedDict,
+        boundaries_dict: Dict = None,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         filename: Optional[str] = None,
-        verbosity: Optional[bool] = False,
+        verbosity: Optional[int] = 0,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         finalize: bool = True,
@@ -121,7 +144,7 @@ class Model:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
         Args:
-            dimtags_dict: OrderedDict of key: physical name, and value: (dim, tags) of  GMSH entities
+            entities_dict: OrderedDict of key: physical name, and value: meshwell entity
             resolutions (Dict): Pairs {"physical name": {"resolution": float, "distance": "float}}
             default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
             filename (str, path): if True, filepath where to save the mesh
@@ -134,9 +157,7 @@ class Model:
             meshio object with mesh information
         """
         resolutions = resolutions if resolutions else {}
-        gmsh.option.setNumber(
-            "General.Terminal", 1 if verbosity else 0
-        )  # 1 verbose, 0 otherwise
+        gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
@@ -144,31 +165,51 @@ class Model:
         # Initial synchronization
         self.occ.synchronize()
 
-        # Parse structural and boundary entities
-        full_dimtag_dict = OrderedDict()
+        # Parse strutural and boundary entities
+        full_entities_dict = OrderedDict()
         keep = False
-        if boundary_tags is not None:
-            for key, value in boundary_tags.items():
-                full_dimtag_dict[key] = (value, keep)
+        if boundaries_dict is not None:
+            for key, value in boundaries_dict.items():
+                full_entities_dict[key] = (value, keep)
         keep = True
-        for key, value in dimtags_dict.items():
-            full_dimtag_dict[key] = (value, keep)
+        for key, value in entities_dict.items():
+            full_entities_dict[key] = (value, keep)
 
-        # Validate and unpack dim tags, and detect mesh dimension
-        max_dim = 0
-        for key, (value, keep) in full_dimtag_dict.items():
-            dim = validate_dimtags(value)
-            max_dim = max(dim, max_dim)
-            full_dimtag_dict[key] = (unpack_dimtags(value), keep)
+        # # Parse structural and boundary entities
+        # full_dimtag_dict = OrderedDict()
+        # keep = False
+        # if boundary_tags is not None:
+        #     for key, value in boundary_tags.items():
+        #         full_dimtag_dict[key] = (value, keep)
+        # keep = True
+        # for key, value in dimtags_dict.items():
+        #     full_dimtag_dict[key] = (value, keep)
+
+        # # Validate and unpack dim tags, and detect mesh dimension
+        # max_dim = 0
+        # for key, (value, keep) in full_dimtag_dict.items():
+        #     dim = validate_dimtags(value)
+        #     max_dim = max(dim, max_dim)
+        #     full_dimtag_dict[key] = (unpack_dimtags(value), keep)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
 
         # Main loop:
-        # Iterate through OrderedDict of entities, logging the volumes/surfaces in order
+        # Iterate through OrderedDict of entities, generating and logging the volumes/surfaces in order
         # Pure fragment operations are unreliable for complex geometries, so we manually fragment using fuses and cuts
+
         final_entity_list = []
-        for index, (label, (dimtags, keep)) in enumerate(full_dimtag_dict.items()):
+        max_dim = 0
+        for index, (label, (entity_obj, keep)) in enumerate(full_entities_dict.items()):
+            # First create the shape
+            dimtags_out = entity_obj.instanciate()
+            # Parse dimension
+            dim = validate_dimtags(dimtags_out)
+            max_dim = max(dim, max_dim)
+            dimtags = unpack_dimtags(dimtags_out)
+
+            # Assemble with other shapes
             base_resolution = (
                 resolutions[label]["resolution"]
                 if label in resolutions
@@ -194,12 +235,12 @@ class Model:
                                 removeTool=False,  # Tool (previous entities) should remain untouched
                             ):
                                 current_dimtags_cut.append(cut[0])
-                            self.occ.synchronize()
+                            self.sync_model()
                         # If not, apply the cut on the proper boundary entities
                         else:
                             current_dimtags_cut.append([current_dimtags])
                         self.occ.removeAllDuplicates()  # Heal interfaces now
-                        self.occ.synchronize()
+                        self.sync_model()
                         previous_entities.update_boundaries()
                 current_entities.dimtags = [
                     item for sublist in current_dimtags_cut for item in sublist

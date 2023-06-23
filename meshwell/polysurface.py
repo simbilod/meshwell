@@ -1,4 +1,4 @@
-class PolySurfaceClass:
+class PolySurface:
     """
     Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
 
@@ -57,12 +57,17 @@ class PolySurfaceClass:
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
+    def instanciate(self):
+        polysurface = self.get_gmsh_polygons()
+        self.model.occ.synchronize()
+        return [(2, polysurface)]
 
-def PolySurface(
-    polygons,
-    model,
-):
-    """Functional wrapper around PolySurfaceClass."""
-    polysurface = PolySurfaceClass(polygons=polygons, model=model).get_gmsh_polygons()
-    model.occ.synchronize()
-    return polysurface
+
+# def PolySurface(
+#     polygons,
+#     model,
+# ):
+#     """Functional wrapper around PolySurfaceClass."""
+#     polysurface = PolySurfaceClass(polygons=polygons, model=model).get_gmsh_polygons()
+#     model.occ.synchronize()
+#     return polysurface

@@ -1,4 +1,4 @@
-class PrismClass:
+class Prism:
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
 
@@ -144,15 +144,21 @@ class PrismClass:
                 exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
+    def instanciate(self):
+        """Returns dim tag from entity."""
+        prism = self.get_gmsh_volumes()
+        self.model.occ.synchronize()
+        return [(3, prism)]
 
-def Prism(
-    polygons,
-    model,
-    buffers=None,
-):
-    """Functional wrapper around PrismClass."""
-    prism = PrismClass(
-        polygons=polygons, buffers=buffers, model=model
-    ).get_gmsh_volumes()
-    model.occ.synchronize()
-    return prism
+
+# def Prism(
+#     polygons,
+#     model,
+#     buffers=None,
+# ):
+#     """Functional wrapper around PrismClass."""
+#     prism = PrismClass(
+#         polygons=polygons, buffers=buffers, model=model
+#     ).get_gmsh_volumes()
+#     model.occ.synchronize()
+#     return prism
