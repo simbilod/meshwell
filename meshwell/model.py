@@ -22,8 +22,8 @@ class Model:
         point_tolerance=1e-3,
     ):
         # Initialize model
-        if not gmsh.isInitialized():
-            gmsh.initialize()
+        gmsh.clear()
+        gmsh.initialize()
 
         # Point snapping
         self.point_tolerance = point_tolerance
@@ -244,7 +244,7 @@ class Model:
         refinement_fields = []
         refinement_index = 0
         refinement_fields_constant, refinement_index = constant_refinement(
-            final_entity_list, refinement_field_index=0
+            final_entity_list, refinement_field_index=0, model=self.model
         )
         refinement_fields.extend(refinement_fields_constant)
 
