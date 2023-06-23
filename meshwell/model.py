@@ -175,30 +175,12 @@ class Model:
         for key, value in entities_dict.items():
             full_entities_dict[key] = (value, keep)
 
-        # # Parse structural and boundary entities
-        # full_dimtag_dict = OrderedDict()
-        # keep = False
-        # if boundary_tags is not None:
-        #     for key, value in boundary_tags.items():
-        #         full_dimtag_dict[key] = (value, keep)
-        # keep = True
-        # for key, value in dimtags_dict.items():
-        #     full_dimtag_dict[key] = (value, keep)
-
-        # # Validate and unpack dim tags, and detect mesh dimension
-        # max_dim = 0
-        # for key, (value, keep) in full_dimtag_dict.items():
-        #     dim = validate_dimtags(value)
-        #     max_dim = max(dim, max_dim)
-        #     full_dimtag_dict[key] = (unpack_dimtags(value), keep)
-
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
 
         # Main loop:
         # Iterate through OrderedDict of entities, generating and logging the volumes/surfaces in order
-        # Pure fragment operations are unreliable for complex geometries, so we manually fragment using fuses and cuts
-
+        # Manually remove intersections so that BooleanFragments from removeAllDuplicates does not reassign entity tags
         final_entity_list = []
         max_dim = 0
         for index, (label, (entity_obj, keep)) in enumerate(full_entities_dict.items()):
@@ -221,30 +203,26 @@ class Model:
                 label=label,
                 base_resolution=base_resolution,
                 keep=keep,
+                model=self.model,
             )
             if index != 0:
                 current_dimtags_cut = []
                 for current_dimtags in current_entities.dimtags:
                     for previous_entities in final_entity_list:
-                        # If same dimensionality,  remove intersection
-                        if current_entities.get_dim() == previous_entities.get_dim():
+                        for previous_dimtags in previous_entities.dimtags:
                             if cut := self.occ.cut(
                                 [current_dimtags],
-                                previous_entities.dimtags,
+                                [previous_dimtags],
                                 removeObject=True,  # Only keep the difference
                                 removeTool=False,  # Tool (previous entities) should remain untouched
                             ):
-                                current_dimtags_cut.append(cut[0])
+                                current_dimtags_cut.extend(cut[0])
                             self.sync_model()
-                        # If not, apply the cut on the proper boundary entities
-                        else:
-                            current_dimtags_cut.append([current_dimtags])
-                        self.occ.removeAllDuplicates()  # Heal interfaces now
-                        self.sync_model()
-                        previous_entities.update_boundaries()
-                current_entities.dimtags = [
-                    item for sublist in current_dimtags_cut for item in sublist
-                ]
+                    # Heal interfaces now that there are no volume conflicts
+                    self.occ.removeAllDuplicates()
+                    self.sync_model()
+                    previous_entities.update_boundaries()
+                current_entities.dimtags = current_dimtags_cut
             current_entities.update_boundaries()
             final_entity_list.append(current_entities)
 

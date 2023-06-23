@@ -4,8 +4,9 @@ import gmsh
 class LabeledEntities:
     """Class to track entities, boundaries, and physical labels during meshing."""
 
-    def __init__(self, index, dimtags, label, base_resolution, keep):
+    def __init__(self, index, dimtags, label, base_resolution, keep, model):
         self.index = index
+        self.model = model
         self.dimtags = self._fuse_self(dimtags)
         self.label = label
         self.base_resolution = base_resolution
@@ -14,14 +15,16 @@ class LabeledEntities:
         self.keep = keep
 
     def _fuse_self(self, dimtags):
-        if len(dimtags) != 1:
+        if len(dimtags) == 0:
+            return []
+        elif len(dimtags) != 1:
             dimtags = gmsh.model.occ.fuse(
                 [dimtags[0]],
                 dimtags[1:],
                 removeObject=True,
                 removeTool=True,
             )[0]
-            gmsh.model.occ.synchronize()
+            self.model.occ.synchronize()
         return dimtags
 
     def get_tags(self):
