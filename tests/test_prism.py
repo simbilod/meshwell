@@ -18,7 +18,7 @@ def test_prism():
 
     model = Model()
 
-    Prism(polygons=polygon, buffers=buffers, model=model)
-    gmsh.model.occ.synchronize()
+    Prism(polygons=polygon, buffers=buffers, model=model).instanciate()
 
+    gmsh.model.occ.synchronize()
     gmsh.model.mesh.generate(3)
