@@ -29,17 +29,20 @@ See the documentation for more information and examples. If you encounter a big,
 This code was originally developed to define meshes out of the GDSII descriptions of integrated photonic circuits. A particularity of such devices is rich 2.5D topology, featuring multiple layers of smooth curves in the plane and etching profiles vertically.  Maxwell's equations (hence the name) are solved on these geometries to study how light propagates. It is also of critical interest to simulate how this is affected under other physical effects that can be resolved through finite-element or finite-volume analysis.
 
 ### Related projects
+
 * [gdsfactory](https://github.com/gdsfactory/gdsfactory): open-source plugin-rich layout software
 * [femwell](https://github.com/HelgeGehring/femwell): open-source scikit-fem based finite-element simulations, with emphasis on photonics
 * [DEVSIM](https://github.com/devsim/devsim): open-source finite-volume simulator, with emphasis on semiconductor TCAD
 
 ### Other notable GMSH Python interfaces:
+
 * [gmsh](https://gitlab.onelab.info/gmsh/gmsh): the gmsh Python API itself has significantly improved over the years
 * [pygmsh](https://github.com/meshpro/pygmsh): manipulate Python objects instead of gmsh entity tags
 * [objectgmsh](https://github.com/nemocrys/objectgmsh): class wrappers around entities
 * [gyptis](https://gyptis.gitlab.io/): uses basic gmsh for photonic geometries
 
-###
+### Acknowledgements
+
 * Simon Bilodeau (Princeton): maintainer
 * Helge Gehring (Google X): beta testing, use cases, bug fixes
 * Joaquin Matres Abril (Google X): code improvements
