@@ -52,13 +52,22 @@ fig = plt.figure()
 ax = fig.add_subplot()
 plot_polygon(polygon_with_holes_boolean, ax=ax, add_points=False)
 plt.show()
+# -
+
+# Create the PolySurface:
 
 # +
 model = Model()
 
 poly2D = PolySurface(polygons=polygon_with_holes_boolean, model=model)
+# -
 
-model.mesh(dimtags_dict={"polygon": [(2, poly2D)]}, filename="mesh2D.msh")
+# PolySurfaces (as well as Prisms, and meshwell GMSH_entities) are not added to the CAD model upon definition, so they must be instanciated:
+
+# +
+poly2D.instanciate()
+
+model.mesh(entities_dict={"polygon": poly2D}, filename="mesh2D.msh")
 
 # Plotting courtesy of scikit-fem
 mesh = from_meshio(meshio.read("mesh2D.msh"))
