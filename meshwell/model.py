@@ -22,7 +22,8 @@ class Model:
         point_tolerance=1e-3,
     ):
         # Initialize model
-        gmsh.clear()
+        if gmsh.is_initialized():
+            gmsh.clear()
         gmsh.initialize()
 
         # Point snapping
@@ -30,23 +31,11 @@ class Model:
 
         # CAD engine
         self.model = gmsh.model
-        self.occ = gmsh.model.occ
+        self.occ = self.model.occ
 
         # Track some gmsh entities for bottom-up volume definition
         self.points = {}
         self.segments = {}
-        # self.points_coordinates = np.empty((1,3))
-        # self.points_entities = []
-        # self.segment_coordinates =  np.empty((1,6))
-        # self.segment_entities = []
-
-    # def find_point(self, xyz):
-    #     """Returns an existing point entity if the provided point coordinates are within atol of the entity coordinates.
-
-    #     TODO
-    #     """
-    #     diffs = np.array(xyz) - self.points_coordinates
-    #     mask = np.where(diffs < self.point_tolerance)
 
     def add_get_point(self, x, y, z):
         """Add a point to the model, or reuse a previously-defined point.
@@ -186,6 +175,7 @@ class Model:
         for index, (label, (entity_obj, keep)) in enumerate(full_entities_dict.items()):
             # First create the shape
             dimtags_out = entity_obj.instanciate()
+
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
@@ -221,6 +211,7 @@ class Model:
                     # Heal interfaces now that there are no volume conflicts
                     self.occ.removeAllDuplicates()
                     self.sync_model()
+                    # Make sure the most up-to-date surfaces are logged as boundaries
                     previous_entities.update_boundaries()
                 current_entities.dimtags = current_dimtags_cut
             current_entities.update_boundaries()
@@ -238,7 +229,7 @@ class Model:
         # Remove boundary entities
         for entity in final_entity_list:
             if not entity.keep:
-                gmsh.model.occ.remove(entity.dimtags, recursive=True)
+                self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Perform refinement
         refinement_fields = []
@@ -249,19 +240,19 @@ class Model:
         refinement_fields.extend(refinement_fields_constant)
 
         # Use the smallest element size overall
-        gmsh.model.mesh.field.add("Min", refinement_index)
-        gmsh.model.mesh.field.setNumbers(
+        self.model.mesh.field.add("Min", refinement_index)
+        self.model.mesh.field.setNumbers(
             refinement_index, "FieldsList", refinement_fields
         )
-        gmsh.model.mesh.field.setAsBackgroundMesh(refinement_index)
+        self.model.mesh.field.setAsBackgroundMesh(refinement_index)
 
         # Turn off default meshing options
-        gmsh.model.mesh.MeshSizeFromPoints = 0
-        gmsh.model.mesh.MeshSizeFromCurvature = 0
-        gmsh.model.mesh.MeshSizeExtendFromBoundary = 0
+        self.model.mesh.MeshSizeFromPoints = 0
+        self.model.mesh.MeshSizeFromCurvature = 0
+        self.model.mesh.MeshSizeExtendFromBoundary = 0
 
         self.occ.synchronize()
-        gmsh.model.mesh.generate(max_dim)
+        self.model.mesh.generate(max_dim)
 
         if filename:
             gmsh.write(f"{filename}")
