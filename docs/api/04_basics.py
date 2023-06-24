@@ -18,14 +18,15 @@
 
 # + tags=["hide-input"]
 from meshwell.model import Model
-import gmsh
 from collections import OrderedDict
+from meshwell.gmsh_entity import GMSH_entity
 
 # +
-# mesh?
+model = Model()
+# model.mesh?
 # -
 
-# The keys of the ordered dictionary `dimtags_dict` are associated to the corresponding values (list of entities). The values are input as a list of GMSH (dim,tag). `dim` is the dimension of the entity (0 for a 0D-point, 1 for a 1D-line, 2 for a 2D-surface, 3 for a 3D-volume). `tag` is the integer associated with the entity, which is the value returned when it is instanciated. The dimension of the returned mesh is set by the maximum `dim` across all entries.
+# The keys of the ordered dictionary `entities_dict` are associated to the corresponding values (list of entities). The values are input as a list of meshwell entities (PolySurfaces, Prisms, or GMSH_entities). The dimension of the returned mesh is set by the maximum entity dimension across all entries.
 #
 # The interfaces between different entries are tagged as `{entity1_key}{interface_delimiter}{entity2_key}`, defaulting to `___`. The interface between entities and the mesh boundaries are `{entity_key}{interface_delimiter}{boundary_delimiter}`, defaulting to `None`
 
@@ -34,13 +35,24 @@ from collections import OrderedDict
 # +
 model = Model()
 
-box1 = gmsh.model.occ.addBox(0, 0, 0, 2, 2, 2)
-box2 = gmsh.model.occ.addBox(1, 1, 1, 2, 2, 2)
+box1 = GMSH_entity(
+    gmsh_function=model.occ.addBox,
+    gmsh_function_kwargs={"x": 0, "y": 0, "z": 0, "dx": 2, "dy": 2, "dz": 2},
+    dim=3,
+    model=model,
+)
+
+box2 = GMSH_entity(
+    gmsh_function=model.occ.addBox,
+    gmsh_function_kwargs={"x": 1, "y": 1, "z": 1, "dx": 2, "dy": 2, "dz": 2},
+    dim=3,
+    model=model,
+)
 
 entities = OrderedDict(
     {
-        "box1": [(3, box1)],
-        "box2": [(3, box2)],
+        "box1": box1,
+        "box2": box2,
     }
 )
 
