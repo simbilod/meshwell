@@ -56,7 +56,7 @@ entities = OrderedDict(
     }
 )
 
-mesh_out = model.mesh(dimtags_dict=entities, verbosity=True, filename="mesh.msh")
+mesh_out = model.mesh(entities_dict=entities, verbosity=True, filename="mesh.msh")
 # -
 
 
