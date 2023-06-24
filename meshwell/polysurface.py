@@ -61,13 +61,3 @@ class PolySurface:
         polysurface = self.get_gmsh_polygons()
         self.model.occ.synchronize()
         return [(2, polysurface)]
-
-
-# def PolySurface(
-#     polygons,
-#     model,
-# ):
-#     """Functional wrapper around PolySurfaceClass."""
-#     polysurface = PolySurfaceClass(polygons=polygons, model=model).get_gmsh_polygons()
-#     model.occ.synchronize()
-#     return polysurface

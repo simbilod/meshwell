@@ -58,8 +58,10 @@ if __name__ == "__main__":
         dim=3,
         model=model,
     )
-    gmsh_entity2.instanciate()
 
-    gmsh_entity1.instanciate()
+    tag1 = gmsh_entity1.instanciate()
+    tag2 = gmsh_entity2.instanciate()
+    print(tag1, tag2)
+
     model.model.mesh.generate(3)
     gmsh.write("mesh.msh")

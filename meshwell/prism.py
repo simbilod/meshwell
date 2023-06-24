@@ -149,16 +149,3 @@ class Prism:
         prism = self.get_gmsh_volumes()
         self.model.occ.synchronize()
         return [(3, prism)]
-
-
-# def Prism(
-#     polygons,
-#     model,
-#     buffers=None,
-# ):
-#     """Functional wrapper around PrismClass."""
-#     prism = PrismClass(
-#         polygons=polygons, buffers=buffers, model=model
-#     ).get_gmsh_volumes()
-#     model.occ.synchronize()
-#     return prism
