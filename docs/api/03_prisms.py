@@ -18,9 +18,9 @@
 #
 # This extrusion is coupled to morphological grow/shrink operations ("buffers") to define complex shapes.
 #
-# THe Prism object takes in a (Multi)Polygon and a dict of z-values: buffer-values. A buffer value of 0 keeps the polygon intact; a negative value shrink the polygon by this amounts; and a positive value grows the polygon similarly.
+# THe Prism object takes in a (Multi)Polygon and a dict of z-values: buffer-values. A buffer value of 0 keeps the polygon intact; a negative value shrink the polygon by this amount; and a positive value grows the polygon similarly.
 
-# + tags=["hide-input"] vscode={"languageId": "python"}
+# + tags=["hide-input"]
 import shapely
 from shapely.plotting import plot_polygon
 import matplotlib.pyplot as plt
@@ -34,7 +34,7 @@ from meshwell.prism import Prism
 
 # First define some polygon:
 
-# + vscode={"languageId": "python"}
+# +
 polygon = shapely.Point(0, 0).buffer(2)
 
 fig = plt.figure()
@@ -43,7 +43,7 @@ plot_polygon(polygon, ax=ax, add_points=False)
 plt.show()
 
 
-# + vscode={"languageId": "python"}
+# +
 # Combine with "buffers" to richly extrude in 3D as a Prism
 buffers = {
     -2.0: 1.0,  # at z = -2, grow the polygon by 1 unit
@@ -58,10 +58,12 @@ buffers = {
 model = Model()
 
 poly3D = Prism(polygons=polygon, buffers=buffers, model=model)
+poly3D.instanciate()
 
-model.mesh(dimtags_dict={"poly3D": [(3, poly3D)]}, filename="mesh3D.msh")
+model.mesh(entities_dict={"poly3D": poly3D}, filename="mesh3D.msh")
 
 # Plotting courtesy of scikit-fem
 mesh = from_meshio(meshio.read("mesh3D.msh"))
 
 draw_mesh3d(mesh)
+# -
