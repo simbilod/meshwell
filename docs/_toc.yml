@@ -18,4 +18,4 @@ parts:
       - file: api/05_boundary_conditions
   - caption: Reference
     chapters:
-      - file: CHANGELOG
+      - file: changelog
