@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from os import cpu_count
 from typing import Dict, Optional
 
 import gmsh
@@ -19,12 +20,19 @@ class Model:
 
     def __init__(
         self,
-        point_tolerance=1e-3,
+        point_tolerance: float = 1e-3,
+        n_threads: int = cpu_count(),
     ):
         # Initialize model
         if gmsh.is_initialized():
             gmsh.clear()
         gmsh.initialize()
+
+        # Set paralllel processing
+        gmsh.option.setNumber("General.NumThreads", n_threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads1D", n_threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads2D", n_threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads3D", n_threads)
 
         # Point snapping
         self.point_tolerance = point_tolerance
