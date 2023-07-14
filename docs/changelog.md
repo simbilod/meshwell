@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- number of threads [PR#9](https://github.com/simbilod/meshwell/pull/9)
+
 ## 0.0.3
 
 - global mesh scaling option
