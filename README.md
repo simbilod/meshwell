@@ -46,3 +46,4 @@ This code was originally developed to define meshes out of the GDSII description
 * Simon Bilodeau (Princeton): maintainer
 * Helge Gehring (Google X): beta testing, use cases, bug fixes
 * Joaquin Matres Abril (Google X): code improvements
+* Niko Savola (Google): API improvements
