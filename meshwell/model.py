@@ -133,6 +133,8 @@ class Model:
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
+        global_2D_algorithm: int = 6,
+        global_3D_algorithm: int = 1,
         filename: Optional[str] = None,
         verbosity: Optional[int] = 0,
         interface_delimiter: str = "___",
@@ -146,6 +148,8 @@ class Model:
             resolutions (Dict): Pairs {"physical name": {"resolution": float, "distance": "float}}
             default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
             global_scaling: factor to scale all mesh coordinates by (e.g. 1E-6 to go from um to m)
+            global_2D_algorithm: gmsh surface default meshing algorithm, see https://gmsh.info/doc/texinfo/gmsh.html#Mesh-options
+            global_3D_algorithm: gmsh volume default meshing algorithm, see https://gmsh.info/doc/texinfo/gmsh.html#Mesh-options
             filename (str, path): if True, filepath where to save the mesh
             verbosity: GMSH stdout while meshing (True or False)
             interface_delimiter: string characters to use when naming interfaces between entities
@@ -160,6 +164,8 @@ class Model:
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
+        gmsh.option.setNumber("Mesh.Algorithm", global_2D_algorithm)
+        gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
 
         # Initial synchronization
         self.occ.synchronize()
