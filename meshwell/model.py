@@ -223,7 +223,7 @@ class Model:
                     self.sync_model()
                     # Make sure the most up-to-date surfaces are logged as boundaries
                     previous_entities.update_boundaries()
-                current_entities.dimtags = current_dimtags_cut
+                current_entities.dimtags = list(set(current_dimtags_cut))
             current_entities.update_boundaries()
             final_entity_list.append(current_entities)
 
