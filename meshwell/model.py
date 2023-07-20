@@ -210,6 +210,12 @@ class Model:
                 for current_dimtags in current_entities.dimtags:
                     for previous_entities in final_entity_list:
                         for previous_dimtags in previous_entities.dimtags:
+                            print(
+                                label,
+                                previous_entities.label,
+                                index,
+                                gmsh.model.getEntities(dim=3),
+                            )
                             if cut := self.occ.cut(
                                 [current_dimtags],
                                 [previous_dimtags],
@@ -225,7 +231,8 @@ class Model:
                     previous_entities.update_boundaries()
                 current_entities.dimtags = current_dimtags_cut
             current_entities.update_boundaries()
-            final_entity_list.append(current_entities)
+            if current_entities.dimtags:
+                final_entity_list.append(current_entities)
 
         # Tag entities, interfaces, and boundaries
         tag_entities(final_entity_list)
