@@ -216,12 +216,6 @@ class Model:
                 for current_dimtags in current_entities.dimtags:
                     for previous_entities in final_entity_list:
                         for previous_dimtags in previous_entities.dimtags:
-                            print(
-                                label,
-                                previous_entities.label,
-                                index,
-                                gmsh.model.getEntities(dim=3),
-                            )
                             if cut := self.occ.cut(
                                 [current_dimtags],
                                 [previous_dimtags],
