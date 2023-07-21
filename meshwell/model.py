@@ -4,7 +4,7 @@ from os import cpu_count
 from typing import Dict, Optional
 
 import gmsh
-from meshwell.validation import validate_dimtags, unpack_dimtags
+from meshwell.validation import validate_dimtags, unpack_dimtags, parse_entities
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
 from meshwell.refinement import constant_refinement
@@ -129,7 +129,6 @@ class Model:
     def mesh(
         self,
         entities_dict: OrderedDict,
-        boundaries_dict: Dict = None,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
@@ -170,15 +169,18 @@ class Model:
         # Initial synchronization
         self.occ.synchronize()
 
-        # Parse strutural and boundary entities
-        full_entities_dict = OrderedDict()
-        keep = False
-        if boundaries_dict is not None:
-            for key, value in boundaries_dict.items():
-                full_entities_dict[key] = (value, keep)
-        keep = True
-        for key, value in entities_dict.items():
-            full_entities_dict[key] = (value, keep)
+        # Parse dimensionality of entries
+        entities_3D, entities_2D, entities_1D, entities_0D = parse_entities(entities_dict)
+        
+        # Parse mesh dimension
+        if entities_3D:
+            max_dim = 3
+        elif entities_2D:
+            max_dim = 2
+        elif entities_1D:
+            max_dim = 1
+        else:
+            max_dim = 0
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
