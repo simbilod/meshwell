@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from os import cpu_count
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 
 import gmsh
 from meshwell.validation import validate_dimtags, unpack_dimtags
@@ -140,6 +140,7 @@ class Model:
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         finalize: bool = True,
+        periodic_entities: List[Tuple[str, str]] = None,
     ):
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
@@ -155,6 +156,7 @@ class Model:
             interface_delimiter: string characters to use when naming interfaces between entities
             boundary_delimiter: string characters to use when defining an interface between an entity and nothing (simulation boundary)
             finalize: if True (default), finalizes the GMSH model after execution
+            periodic_entities: enforces mesh periodicity between the physical entities
 
         Returns:
             meshio object with mWesh information
@@ -242,6 +244,36 @@ class Model:
         tag_boundaries(
             final_entity_list, max_dim, interface_delimiter, boundary_delimiter
         )
+
+        # Enforce periodic boundaries
+        mapping = {}
+        for dimtag in self.model.getPhysicalGroups():
+            mapping[self.model.getPhysicalName(dimtag[0], dimtag[1])] = dimtag
+        if periodic_entities:
+            for label1, label2, vector in periodic_entities:
+                self.model.mesh.setPeriodic(
+                    mapping[label1][0],
+                    [mapping[label1][1]],
+                    [mapping[label2][1]],
+                    [
+                        1,
+                        0,
+                        0,
+                        vector[0],
+                        0,
+                        1,
+                        0,
+                        vector[1],
+                        0,
+                        0,
+                        1,
+                        vector[2],
+                        0,
+                        0,
+                        0,
+                        1,
+                    ],
+                )
 
         # Remove boundary entities
         for entity in final_entity_list:

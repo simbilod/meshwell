@@ -149,4 +149,5 @@ if __name__ == "__main__":
         boundaries_dict=boundary_entities,
         verbosity=0,
         filename="mesh.msh",
+        periodic_entities=[("cladding___right", "cladding___left", [0, 1, 0])],
     )
