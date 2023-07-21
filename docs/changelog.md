@@ -1,6 +1,7 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
+## 0.0.7
 
-
+- add samples
 ## 0.0.6
 
 - fix boundaries tagging
