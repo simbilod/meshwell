@@ -244,13 +244,9 @@ class Model:
         )
 
         # Remove boundary entities
-        print("before removal")
-        print(gmsh.model.occ.getEntities(dim=2))
         for entity in final_entity_list:
             if not entity.keep:
                 self.model.occ.remove(entity.dimtags, recursive=True)
-        print("after removal")
-        print(gmsh.model.occ.getEntities(dim=2))
 
         # Perform refinement
         refinement_fields = []
