@@ -1,7 +1,13 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## [Unreleased]
+## 0.0.5
 
+- fix boundaries tagging
+- check for empty entities to reduce errors
+
+## 0.0.4
+
+- choose meshing algorithm
 - number of threads [PR#9](https://github.com/simbilod/meshwell/pull/9)
 
 ## 0.0.3
