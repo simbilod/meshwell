@@ -157,7 +157,7 @@ class Model:
             finalize: if True (default), finalizes the GMSH model after execution
 
         Returns:
-            meshio object with mesh information
+            meshio object with mWesh information
         """
         resolutions = resolutions if resolutions else {}
         gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
@@ -172,13 +172,13 @@ class Model:
 
         # Parse strutural and boundary entities
         full_entities_dict = OrderedDict()
+        keep = True
+        for key, value in entities_dict.items():
+            full_entities_dict[key] = (value, keep)
         keep = False
         if boundaries_dict is not None:
             for key, value in boundaries_dict.items():
                 full_entities_dict[key] = (value, keep)
-        keep = True
-        for key, value in entities_dict.items():
-            full_entities_dict[key] = (value, keep)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
@@ -225,11 +225,17 @@ class Model:
                                 current_dimtags_cut.extend(cut[0])
                             self.sync_model()
                     # Heal interfaces now that there are no volume conflicts
+                    print(label)
+                    print(gmsh.model.occ.getEntities(dim=2))
                     self.occ.removeAllDuplicates()
                     self.sync_model()
+                    print(gmsh.model.occ.getEntities(dim=2))
                     # Make sure the most up-to-date surfaces are logged as boundaries
                     previous_entities.update_boundaries()
                 current_entities.dimtags = list(set(current_dimtags_cut))
+            else:
+                print(label)
+                print(gmsh.model.occ.getEntities(dim=2))
             current_entities.update_boundaries()
             if current_entities.dimtags:
                 final_entity_list.append(current_entities)
@@ -244,9 +250,13 @@ class Model:
         )
 
         # Remove boundary entities
+        print("before removal")
+        print(gmsh.model.occ.getEntities(dim=2))
         for entity in final_entity_list:
             if not entity.keep:
                 self.model.occ.remove(entity.dimtags, recursive=True)
+        print("after removal")
+        print(gmsh.model.occ.getEntities(dim=2))
 
         # Perform refinement
         refinement_fields = []
