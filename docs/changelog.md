@@ -1,6 +1,7 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## 0.0.5
+
+## 0.0.6
 
 - fix boundaries tagging
 - check for empty entities to reduce errors
