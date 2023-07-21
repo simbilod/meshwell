@@ -225,17 +225,11 @@ class Model:
                                 current_dimtags_cut.extend(cut[0])
                             self.sync_model()
                     # Heal interfaces now that there are no volume conflicts
-                    print(label)
-                    print(gmsh.model.occ.getEntities(dim=2))
                     self.occ.removeAllDuplicates()
                     self.sync_model()
-                    print(gmsh.model.occ.getEntities(dim=2))
                     # Make sure the most up-to-date surfaces are logged as boundaries
                     previous_entities.update_boundaries()
                 current_entities.dimtags = list(set(current_dimtags_cut))
-            else:
-                print(label)
-                print(gmsh.model.occ.getEntities(dim=2))
             current_entities.update_boundaries()
             if current_entities.dimtags:
                 final_entity_list.append(current_entities)
