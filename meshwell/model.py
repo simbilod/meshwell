@@ -139,6 +139,7 @@ class Model:
         verbosity: Optional[int] = 0,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
+        gmsh_version: Optional[float] = None,
         finalize: bool = True,
     ):
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
@@ -154,6 +155,8 @@ class Model:
             verbosity: GMSH stdout while meshing (True or False)
             interface_delimiter: string characters to use when naming interfaces between entities
             boundary_delimiter: string characters to use when defining an interface between an entity and nothing (simulation boundary)
+            gmsh_version: Gmsh mesh format version. For example, Palace requires an older version of 2.2,
+                see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
             finalize: if True (default), finalizes the GMSH model after execution
 
         Returns:
@@ -166,6 +169,8 @@ class Model:
         )
         gmsh.option.setNumber("Mesh.Algorithm", global_2D_algorithm)
         gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
+        if gmsh_version is not None:
+            gmsh.option.setNumber('Mesh.MshFileVersion', gmsh_version)
 
         # Initial synchronization
         self.occ.synchronize()
