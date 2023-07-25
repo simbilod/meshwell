@@ -1,4 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
+
+## 0.0.8
+
+- tqdm [PR#16](https://github.com/simbilod/meshwell/pull/16)
+- choose gmsh version [PR#15](https://github.com/simbilod/meshwell/pull/15)
 ## 0.0.7
 
 - add samples
