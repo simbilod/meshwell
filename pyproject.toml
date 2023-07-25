@@ -23,7 +23,8 @@ license = {file = "LICENSE"}
 dependencies = [
     "shapely",
     "gmsh",
-    "meshio"
+    "meshio",
+    "tqdm"
 ]
 readme = "README.md"
 requires-python = ">=3.7"
