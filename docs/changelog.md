@@ -1,5 +1,8 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 0.0.9
+
+- tqdm requirement
 ## 0.0.8
 
 - tqdm [PR#16](https://github.com/simbilod/meshwell/pull/16)
