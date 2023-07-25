@@ -170,7 +170,7 @@ class Model:
         gmsh.option.setNumber("Mesh.Algorithm", global_2D_algorithm)
         gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
         if gmsh_version is not None:
-            gmsh.option.setNumber('Mesh.MshFileVersion', gmsh_version)
+            gmsh.option.setNumber("Mesh.MshFileVersion", gmsh_version)
 
         # Initial synchronization
         self.occ.synchronize()
