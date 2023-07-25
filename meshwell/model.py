@@ -137,6 +137,7 @@ class Model:
         global_3D_algorithm: int = 1,
         filename: Optional[str] = None,
         verbosity: Optional[int] = 0,
+        progress_bars: bool = True,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         finalize: bool = True,
@@ -188,7 +189,13 @@ class Model:
         # Manually remove intersections so that BooleanFragments from removeAllDuplicates does not reassign entity tags
         final_entity_list = []
         max_dim = 0
-        for index, (label, (entity_obj, keep)) in enumerate(full_entities_dict.items()):
+
+        enumerator = enumerate(full_entities_dict.items())
+        if progress_bars:
+            from tqdm import tqdm
+            enumerator = tqdm(list(enumerator))
+
+        for index, (label, (entity_obj, keep)) in enumerator:
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
