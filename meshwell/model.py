@@ -240,12 +240,13 @@ class Model:
                     # Heal interfaces now that there are no volume conflicts
                     self.occ.removeAllDuplicates()
                     self.sync_model()
-                    # Make sure the most up-to-date surfaces are logged as boundaries
-                    previous_entities.update_boundaries()
                 current_entities.dimtags = list(set(current_dimtags_cut))
-            current_entities.update_boundaries()
             if current_entities.dimtags:
                 final_entity_list.append(current_entities)
+
+        # Make sure the most up-to-date surfaces are logged as boundaries
+        for entity in final_entity_list:
+            entity.update_boundaries()
 
         # Tag entities, interfaces, and boundaries
         tag_entities(final_entity_list)
