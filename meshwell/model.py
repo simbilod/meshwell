@@ -221,6 +221,7 @@ class Model:
                 dimtags=dimtags,
                 label=label,
                 base_resolution=base_resolution,
+                resolution=resolutions.get(label, None),
                 keep=keep,
                 model=self.model,
             )
