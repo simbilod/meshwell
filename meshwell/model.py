@@ -213,7 +213,7 @@ class Model:
 
             # Assemble with other shapes
             base_resolution = (
-                resolutions[label]["resolution"]
+                resolutions[label].get("resolution", default_characteristic_length)
                 if label in resolutions
                 else default_characteristic_length
             )
