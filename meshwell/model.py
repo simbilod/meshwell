@@ -33,6 +33,7 @@ class Model:
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", n_threads)
+        gmsh.option.setNumber("Geometry.OCCParallel", n_threads>1)
 
         # Point snapping
         self.point_tolerance = point_tolerance
