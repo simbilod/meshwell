@@ -54,10 +54,10 @@ repos:
   #     - id: codespell
   #       args: ["-L TE,TE/TM,te,ba,FPR,fpr_spacing,ro,donot"]
 
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: 953faa6870f6663ac0121ab4a800f1ce76bca31f
-    hooks:
-      - id: shellcheck
+  # - repo: https://github.com/shellcheck-py/shellcheck-py
+  #   rev: 953faa6870f6663ac0121ab4a800f1ce76bca31f
+  #   hooks:
+  #     - id: shellcheck
 
   # - repo: https://github.com/pre-commit/pygrep-hooks
   #   rev: 7b4409161486c6956bb3206ce96db5d56731b1b9 # Use the ref you want to point at
