@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from os import cpu_count
 from typing import Dict, Optional, List, Tuple
+import numpy as np
 
 import gmsh
 from meshwell.validation import validate_dimtags, unpack_dimtags
@@ -250,11 +251,17 @@ class Model:
         for dimtag in self.model.getPhysicalGroups():
             mapping[self.model.getPhysicalName(dimtag[0], dimtag[1])] = dimtag
         if periodic_entities:
-            for label1, label2, vector in periodic_entities:
+            for label1, label2 in periodic_entities:
+                tags1 = self.model.getEntitiesForPhysicalGroup(*mapping[label1])
+                tags2 = self.model.getEntitiesForPhysicalGroup(*mapping[label2])
+
+                vector1 = self.occ.getCenterOfMass(mapping[label1][0], tags1[0])
+                vector2 = self.occ.getCenterOfMass(mapping[label1][0], tags2[0])
+                vector = np.subtract(vector1, vector2)
                 self.model.mesh.setPeriodic(
                     mapping[label1][0],
-                    [mapping[label1][1]],
-                    [mapping[label2][1]],
+                    tags1,
+                    tags2,
                     [
                         1,
                         0,
