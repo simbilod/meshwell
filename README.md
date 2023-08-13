@@ -30,7 +30,7 @@ This code was originally developed to define meshes out of the GDSII description
 
 ### Related projects
 
-* [gdsfactory](https://github.com/gdsfactory/gdsfactory): open-source plugin-rich layout software
+* [gdsfactory](https://github.com/gdsfactory/gdsfactory): open-source plugin-rich layout software; meshwell is the backend to [gplugins](https://github.com/gdsfactory/gplugins)' gmsh module
 * [femwell](https://github.com/HelgeGehring/femwell): open-source scikit-fem based finite-element simulations, with emphasis on photonics
 * [DEVSIM](https://github.com/devsim/devsim): open-source finite-volume simulator, with emphasis on semiconductor TCAD
 
