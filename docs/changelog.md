@@ -1,5 +1,12 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 0.1.0
+
+- periodic boundaries [PR#25](https://github.com/simbilod/meshwell/pull/25)
+- default resolution [PR#24](https://github.com/simbilod/meshwell/pull/24/files)
+- parallelize CAD operations [PR#22](https://github.com/simbilod/meshwell/pull/22)
+- more resolution flags [PR#21](https://github.com/simbilod/meshwell/pull/21)
+
 ## 0.0.9
 
 - tqdm requirement
