@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from os import cpu_count
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
+import numpy as np
 
 import gmsh
 from meshwell.validation import validate_dimtags, unpack_dimtags
@@ -143,6 +144,7 @@ class Model:
         boundary_delimiter: str = "None",
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
+        periodic_entities: List[Tuple[str, str]] = None,
     ):
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
@@ -160,6 +162,7 @@ class Model:
             gmsh_version: Gmsh mesh format version. For example, Palace requires an older version of 2.2,
                 see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
             finalize: if True (default), finalizes the GMSH model after execution
+            periodic_entities: enforces mesh periodicity between the physical entities
 
         Returns:
             meshio object with mWesh information
@@ -258,6 +261,42 @@ class Model:
         tag_boundaries(
             final_entity_list, max_dim, interface_delimiter, boundary_delimiter
         )
+
+        # Enforce periodic boundaries
+        mapping = {}
+        for dimtag in self.model.getPhysicalGroups():
+            mapping[self.model.getPhysicalName(dimtag[0], dimtag[1])] = dimtag
+        if periodic_entities:
+            for label1, label2 in periodic_entities:
+                tags1 = self.model.getEntitiesForPhysicalGroup(*mapping[label1])
+                tags2 = self.model.getEntitiesForPhysicalGroup(*mapping[label2])
+
+                vector1 = self.occ.getCenterOfMass(mapping[label1][0], tags1[0])
+                vector2 = self.occ.getCenterOfMass(mapping[label1][0], tags2[0])
+                vector = np.subtract(vector1, vector2)
+                self.model.mesh.setPeriodic(
+                    mapping[label1][0],
+                    tags1,
+                    tags2,
+                    [
+                        1,
+                        0,
+                        0,
+                        vector[0],
+                        0,
+                        1,
+                        0,
+                        vector[1],
+                        0,
+                        0,
+                        1,
+                        vector[2],
+                        0,
+                        0,
+                        0,
+                        1,
+                    ],
+                )
 
         # Remove boundary entities
         for entity in final_entity_list:
