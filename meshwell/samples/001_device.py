@@ -149,5 +149,9 @@ if __name__ == "__main__":
         boundaries_dict=boundary_entities,
         verbosity=0,
         filename="mesh.msh",
-        periodic_entities=[(x+"___"+s1, x+"___"+s2) for x in ('cladding', 'substrate', 'PML_cladding', 'PML_substrate') for (s1,s2) in (('left', 'right'), ('up', 'down'))],
+        periodic_entities=[
+            (x + "___" + s1, x + "___" + s2)
+            for x in ("cladding", "substrate", "PML_cladding", "PML_substrate")
+            for (s1, s2) in (("left", "right"), ("up", "down"))
+        ],
     )
