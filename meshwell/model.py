@@ -232,20 +232,20 @@ class Model:
                 model=self.model,
             )
             if index != 0:
-                current_dimtags_cut = []
-                for previous_entities in final_entity_list:
-                    if cut := self.occ.cut(
-                        current_entities.dimtags,
-                        previous_entities.dimtags,
-                        removeObject=True,  # Only keep the difference
-                        removeTool=False,  # Tool (previous entities) should remain untouched
-                    ):
-                        current_dimtags_cut.extend(cut[0])
-                        self.sync_model()
+                cut = self.occ.cut(
+                    current_entities.dimtags,
+                    [
+                        dimtag
+                        for previous_entities in final_entity_list
+                        for dimtag in previous_entities.dimtags
+                    ],
+                    removeObject=True,  # Only keep the difference
+                    removeTool=False,  # Tool (previous entities) should remain untouched
+                )
                 # Heal interfaces now that there are no volume conflicts
                 self.occ.removeAllDuplicates()
                 self.sync_model()
-                current_entities.dimtags = list(set(current_dimtags_cut))
+                current_entities.dimtags = list(set(cut[0]))
             if current_entities.dimtags:
                 final_entity_list.append(current_entities)
 
