@@ -123,7 +123,7 @@ class Model:
                     list(self.segments.values()).index(cad_line)
                 ]
                 cad_lines[key] = cad_line
-            except Exception:
+            except (TypeError, ValueError):
                 continue
         self.points = new_points
         self.segments = new_segments
