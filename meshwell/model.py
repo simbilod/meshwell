@@ -201,11 +201,13 @@ class Model:
 
         enumerator = enumerate(full_entities_dict.items())
         if progress_bars:
-            from tqdm import tqdm
+            from tqdm.auto import tqdm
 
             enumerator = tqdm(list(enumerator))
 
         for index, (label, (entity_obj, keep)) in enumerator:
+            if progress_bars:
+                enumerator.set_description(f"{label:<30}")
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
@@ -231,7 +233,13 @@ class Model:
             )
             if index != 0:
                 current_dimtags_cut = []
-                for current_dimtags in current_entities.dimtags:
+                enumerator2 = (
+                    current_entities.dimtags
+                    if not progress_bars
+                    else tqdm(current_entities.dimtags, leave=False)
+                )
+                enumerator2.set_description(f'{"":<30}')
+                for current_dimtags in enumerator2:
                     for previous_entities in final_entity_list:
                         for previous_dimtags in previous_entities.dimtags:
                             if cut := self.occ.cut(
