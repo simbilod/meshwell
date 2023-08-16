@@ -327,7 +327,21 @@ class Model:
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
 
         self.occ.synchronize()
+        if global_3D_algorithm == 1 and verbosity:
+            gmsh.logger.start()
         self.model.mesh.generate(max_dim)
+        if global_3D_algorithm == 1 and verbosity:
+            for line in gmsh.logger.get():
+                if "Optimizing volume " in str(line):
+                    number = int(str(line).split("Optimizing volume ")[1])
+                    physicalTags = gmsh.model.getPhysicalGroupsForEntity(3, number)
+                    physicals = []
+                    if len(physicalTags):
+                        for p in physicalTags:
+                            physicals.append(gmsh.model.getPhysicalName(dim, p))
+                if "ill-shaped tets are" in str(line):
+                    print(",".join(physicals))
+                    print(str(line))
 
         if filename:
             gmsh.write(f"{filename}")
