@@ -233,26 +233,19 @@ class Model:
             )
             if index != 0:
                 current_dimtags_cut = []
-                enumerator2 = (
-                    current_entities.dimtags
-                    if not progress_bars
-                    else tqdm(current_entities.dimtags, leave=False)
-                )
-                enumerator2.set_description(f'{"":<30}')
-                for current_dimtags in enumerator2:
-                    for previous_entities in final_entity_list:
-                        for previous_dimtags in previous_entities.dimtags:
-                            if cut := self.occ.cut(
-                                [current_dimtags],
-                                [previous_dimtags],
-                                removeObject=True,  # Only keep the difference
-                                removeTool=False,  # Tool (previous entities) should remain untouched
-                            ):
-                                current_dimtags_cut.extend(cut[0])
-                            self.sync_model()
-                    # Heal interfaces now that there are no volume conflicts
-                    self.occ.removeAllDuplicates()
-                    self.sync_model()
+                for previous_entities in final_entity_list:
+                    for previous_dimtags in previous_entities.dimtags:
+                        if cut := self.occ.cut(
+                            current_entities.dimtags,
+                            [previous_dimtags],
+                            removeObject=True,  # Only keep the difference
+                            removeTool=False,  # Tool (previous entities) should remain untouched
+                        ):
+                            current_dimtags_cut.extend(cut[0])
+                        self.sync_model()
+                # Heal interfaces now that there are no volume conflicts
+                self.occ.removeAllDuplicates()
+                self.sync_model()
                 current_entities.dimtags = list(set(current_dimtags_cut))
             if current_entities.dimtags:
                 final_entity_list.append(current_entities)
