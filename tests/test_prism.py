@@ -22,3 +22,8 @@ def test_prism():
 
     gmsh.model.occ.synchronize()
     gmsh.model.mesh.generate(3)
+    gmsh.write("mesh.msh")
+
+
+if __name__ == "__main__":
+    test_prism()

@@ -83,29 +83,27 @@ class Prism:
                 top_polygon = entry[pair_index + 1][1].interiors[interior_index].coords
             bottom_z = entry[pair_index][0]
             top_z = entry[pair_index + 1][0]
-            for facet_pt_ind in range(len(bottom_polygon) - 1):
-                facet_pt1 = (
-                    bottom_polygon[facet_pt_ind][0],
-                    bottom_polygon[facet_pt_ind][1],
-                    bottom_z,
-                )
-                facet_pt2 = (
-                    bottom_polygon[facet_pt_ind + 1][0],
-                    bottom_polygon[facet_pt_ind + 1][1],
-                    bottom_z,
-                )
-                facet_pt3 = (
-                    top_polygon[facet_pt_ind + 1][0],
-                    top_polygon[facet_pt_ind + 1][1],
-                    top_z,
-                )
-                facet_pt4 = (
-                    top_polygon[facet_pt_ind][0],
-                    top_polygon[facet_pt_ind][1],
-                    top_z,
-                )
-                facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(self.model.add_surface(facet_vertices))
+
+            # Define sidewalls
+            bottom_polygon_points = [(x, y, bottom_z) for x, y in bottom_polygon]
+            top_polygon_points = [(x, y, top_z) for x, y in top_polygon]
+            # Large facet
+            facet_vertices = (
+                bottom_polygon_points[:-1]
+                + top_polygon_points[:-1][::-1]
+                + bottom_polygon_points[0:1]
+            )
+            print(facet_vertices)
+            gmsh_surfaces.append(self.model.add_surface(facet_vertices))
+            # Small facet
+            facet_vertices = (
+                bottom_polygon_points[0:1]
+                + bottom_polygon_points[-1:]
+                + top_polygon_points[-1:]
+                + top_polygon_points[0:1]
+                + bottom_polygon_points[0:1]
+            )
+            gmsh_surfaces.append(self.model.add_surface(facet_vertices))
 
         # Return volume from closed shell
         surface_loop = self.model.occ.add_surface_loop(gmsh_surfaces)
