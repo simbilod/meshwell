@@ -131,6 +131,7 @@ class Model:
     def mesh(
         self,
         entities_dict: OrderedDict,
+        entities_keep: List,
         boundaries_dict: Dict = None,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
@@ -184,7 +185,7 @@ class Model:
         full_entities_dict = OrderedDict()
         keep = True
         for key, value in entities_dict.items():
-            full_entities_dict[key] = (value, keep)
+            full_entities_dict[key] = (value, not entities_keep or key in entities_keep)
         keep = False
         if boundaries_dict is not None:
             for key, value in boundaries_dict.items():
@@ -327,28 +328,30 @@ class Model:
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
 
         self.occ.synchronize()
-        if global_3D_algorithm == 1 and verbosity:
-            gmsh.logger.start()
-        self.model.mesh.generate(max_dim)
-        if global_3D_algorithm == 1 and verbosity:
-            for line in gmsh.logger.get():
-                if "Optimizing volume " in str(line):
-                    number = int(str(line).split("Optimizing volume ")[1])
-                    physicalTags = gmsh.model.getPhysicalGroupsForEntity(3, number)
-                    physicals = []
-                    if len(physicalTags):
-                        for p in physicalTags:
-                            physicals.append(gmsh.model.getPhysicalName(dim, p))
-                if "ill-shaped tets are" in str(line):
-                    print(",".join(physicals))
-                    print(str(line))
+        if not filename.endswith(".step"):
+            if global_3D_algorithm == 1 and verbosity:
+                gmsh.logger.start()
+            self.model.mesh.generate(max_dim)
+            if global_3D_algorithm == 1 and verbosity:
+                for line in gmsh.logger.get():
+                    if "Optimizing volume " in str(line):
+                        number = int(str(line).split("Optimizing volume ")[1])
+                        physicalTags = gmsh.model.getPhysicalGroupsForEntity(3, number)
+                        physicals = []
+                        if len(physicalTags):
+                            for p in physicalTags:
+                                physicals.append(gmsh.model.getPhysicalName(dim, p))
+                    if "ill-shaped tets are" in str(line):
+                        print(",".join(physicals))
+                        print(str(line))
 
         if filename:
             gmsh.write(f"{filename}")
 
-        with contextlib.redirect_stdout(None):
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                gmsh.write(f"{tmpdirname}/mesh.msh")
-                if finalize:
-                    gmsh.finalize()
-                return meshio.read(f"{tmpdirname}/mesh.msh")
+        if not filename.endswith(".step"):
+            with contextlib.redirect_stdout(None):
+                with tempfile.TemporaryDirectory() as tmpdirname:
+                    gmsh.write(f"{tmpdirname}/mesh.msh")
+                    if finalize:
+                        gmsh.finalize()
+                    return meshio.read(f"{tmpdirname}/mesh.msh")
