@@ -8,12 +8,12 @@ import gmsh
 from meshwell.validation import (
     validate_dimtags,
     unpack_dimtags,
+    sort_entities_by_mesh_order,
     consolidate_entities_by_physical_name,
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
 from meshwell.refinement import constant_refinement
-from collections import OrderedDict
 
 import contextlib
 import tempfile
@@ -134,8 +134,7 @@ class Model:
 
     def mesh(
         self,
-        entities_dict: OrderedDict,
-        boundaries_dict: Dict = None,
+        entities_list: List,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
@@ -153,7 +152,7 @@ class Model:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
         Args:
-            entities_dict: OrderedDict of key: physical name, and value: meshwell entity
+            entities_list: list of meshwell entities (GMSH_entity, Prism, or PolySurface)
             resolutions (Dict): Pairs {"physical name": {"resolution": float, "distance": "float}}
             default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
             global_scaling: factor to scale all mesh coordinates by (e.g. 1E-6 to go from um to m)
@@ -184,15 +183,8 @@ class Model:
         # Initial synchronization
         self.occ.synchronize()
 
-        # Parse strutural and boundary entities
-        full_entities_dict = OrderedDict()
-        keep = True
-        for key, value in entities_dict.items():
-            full_entities_dict[key] = (value, keep)
-        keep = False
-        if boundaries_dict is not None:
-            for key, value in boundaries_dict.items():
-                full_entities_dict[key] = (value, keep)
+        # Order the entities
+        entities_list = sort_entities_by_mesh_order(entities_list)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
@@ -203,13 +195,13 @@ class Model:
         final_entity_list = []
         max_dim = 0
 
-        enumerator = enumerate(full_entities_dict.items())
+        enumerator = enumerate(entities_list)
         if progress_bars:
             from tqdm.auto import tqdm
 
             enumerator = tqdm(list(enumerator))
 
-        for index, (physical_name, (entity_obj, keep)) in enumerator:
+        for index, entity_obj in enumerator:
             physical_name = entity_obj.physical_name
             keep = entity_obj.mesh_bool
             if progress_bars:
