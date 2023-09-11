@@ -14,3 +14,8 @@ def unpack_dimtags(dimtags):
     if any(isinstance(el, list) for el in tags):
         tags = [item for sublist in tags for item in sublist]
     return [(dim, tag) for tag in tags]
+
+
+def sort_entities_by_mesh_order(entities):
+    """Returns a list of entities, sorted by mesh_order."""
+    return sorted(entities, key=lambda entity: entity.mesh_order)

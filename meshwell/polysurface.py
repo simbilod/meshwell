@@ -1,3 +1,6 @@
+import numpy as np
+
+
 class PolySurface:
     """
     Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
@@ -5,12 +8,16 @@ class PolySurface:
     Attributes:
         polygons: list of shapely (Multi)Polygon
         model: GMSH model to synchronize
+        physical_name: name of the physical this entity wil belong to
+        mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
     """
 
     def __init__(
         self,
         polygons,
         model,
+        physical_name,
+        mesh_order=np.inf,
     ):
         # Parse (multi)polygons
         self.polygons = list(
@@ -19,6 +26,10 @@ class PolySurface:
 
         # Track gmsh entities for bottom-up volume definition
         self.model = model
+
+        # Mesh order and name
+        self.mesh_order = mesh_order
+        self.physical_name = physical_name
 
     def _parse_coords(self, coords):
         """Chooses z=0 if the provided coordinates are 2D."""

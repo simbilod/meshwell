@@ -1,3 +1,6 @@
+import numpy as np
+
+
 class Prism:
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
@@ -5,6 +8,8 @@ class Prism:
     Attributes:
         polygons: list of shapely (Multi)Polygon
         buffers: dict of {z: buffer} used to shrink/grow base polygons at specified z-values
+        physical_name: name of the physical this entity wil belong to
+        mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
     """
 
     def __init__(
@@ -12,12 +17,18 @@ class Prism:
         polygons,
         buffers,
         model,
+        physical_name,
+        mesh_order=np.inf,
     ):
         # Model
         self.model = model
 
         # Parse buffers
         self.buffered_polygons = self._get_buffered_polygons(polygons, buffers)
+
+        # Mesh order and name
+        self.mesh_order = mesh_order
+        self.physical_name = physical_name
 
     def get_gmsh_volumes(self):
         """Returns the fused GMSH volumes within model from the polygons and buffers."""
@@ -149,3 +160,38 @@ class Prism:
         prism = self.get_gmsh_volumes()
         self.model.occ.synchronize()
         return [(3, prism)]
+
+
+if __name__ == "__main__":
+    # Create ring
+    from shapely.geometry import Point, box
+    from meshwell.model import Model
+
+    inner_radius = 3
+    outer_radius = 5
+
+    inner_circle = Point(0, 0).buffer(inner_radius)
+    outer_circle = Point(0, 0).buffer(outer_radius)
+    opening = box(minx=-2, miny=-6, maxx=2, maxy=-2)
+
+    ring = outer_circle.difference(inner_circle)  # .difference(opening)
+
+    from shapely.plotting import plot_polygon
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure()
+    ax = fig.add_subplot()
+    # plot_polygon(outer_circle, ax=ax, add_points=False, color="blue")
+    # plot_polygon(inner_circle, ax=ax, add_points=False, color="green")
+    plot_polygon(ring, ax=ax, add_points=False, color="red")
+    plt.show()
+
+    # Test the Prism class
+    polygons = ring  # Add your polygons here
+    buffers = {0: 0, -1: 0, -1.001: 1, -5: 0}  # Add your buffers here
+
+    model = Model()
+
+    poly3D = Prism(polygons=polygons, buffers=buffers, model=model)
+
+    model.mesh(entities_dict={"poly3D": poly3D}, filename="mesh3D.msh")

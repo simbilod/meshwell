@@ -1,4 +1,5 @@
 import gmsh
+import numpy as np
 
 
 class GMSH_entity:
@@ -10,6 +11,8 @@ class GMSH_entity:
         gmsh_function_kwargs: dict of keyword arguments for gmsh_function
         dim: dimension of the object (to properly generate dimtag)
         model: meshwell model
+        physical_name: name of the physical this entity wil belong to
+        mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
     """
 
     def __init__(
@@ -18,11 +21,15 @@ class GMSH_entity:
         gmsh_function_kwargs,
         dim,
         model,
+        physical_name,
+        mesh_order=np.inf,
     ):
         self.gmsh_function = gmsh_function
         self.gmsh_function_kwargs = gmsh_function_kwargs
         self.dim = dim
         self.model = model
+        self.mesh_order = mesh_order
+        self.physical_name = physical_name
 
     def instanciate(self):
         """Returns dim tag from entity."""
