@@ -5,7 +5,11 @@ from typing import Dict, Optional, List, Tuple
 import numpy as np
 
 import gmsh
-from meshwell.validation import validate_dimtags, unpack_dimtags
+from meshwell.validation import (
+    validate_dimtags,
+    unpack_dimtags,
+    consolidate_entities_by_physical_name,
+)
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
 from meshwell.refinement import constant_refinement
@@ -255,6 +259,7 @@ class Model:
                 final_entity_list.append(current_entities)
 
         # Make sure the most up-to-date surfaces are logged as boundaries
+        final_entity_list = consolidate_entities_by_physical_name(final_entity_list)
         for entity in final_entity_list:
             entity.update_boundaries()
 
