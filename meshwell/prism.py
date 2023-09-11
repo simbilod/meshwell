@@ -10,6 +10,7 @@ class Prism:
         buffers: dict of {z: buffer} used to shrink/grow base polygons at specified z-values
         physical_name: name of the physical this entity wil belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
+        mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
     """
 
     def __init__(
@@ -17,8 +18,9 @@ class Prism:
         polygons,
         buffers,
         model,
-        physical_name,
+        physical_name=None,
         mesh_order=np.inf,
+        mesh_bool=True,
     ):
         # Model
         self.model = model
@@ -29,6 +31,7 @@ class Prism:
         # Mesh order and name
         self.mesh_order = mesh_order
         self.physical_name = physical_name
+        self.mesh_bool = mesh_bool
 
     def get_gmsh_volumes(self):
         """Returns the fused GMSH volumes within model from the polygons and buffers."""

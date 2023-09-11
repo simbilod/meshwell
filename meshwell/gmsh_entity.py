@@ -13,6 +13,7 @@ class GMSH_entity:
         model: meshwell model
         physical_name: name of the physical this entity wil belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
+        mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
     """
 
     def __init__(
@@ -21,8 +22,9 @@ class GMSH_entity:
         gmsh_function_kwargs,
         dim,
         model,
-        physical_name,
+        physical_name=None,
         mesh_order=np.inf,
+        mesh_bool=True,
     ):
         self.gmsh_function = gmsh_function
         self.gmsh_function_kwargs = gmsh_function_kwargs
@@ -30,6 +32,7 @@ class GMSH_entity:
         self.model = model
         self.mesh_order = mesh_order
         self.physical_name = physical_name
+        self.mesh_bool = mesh_bool
 
     def instanciate(self):
         """Returns dim tag from entity."""

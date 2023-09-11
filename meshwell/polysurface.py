@@ -16,8 +16,9 @@ class PolySurface:
         self,
         polygons,
         model,
-        physical_name,
+        physical_name=None,
         mesh_order=np.inf,
+        mesh_bool=True,
     ):
         # Parse (multi)polygons
         self.polygons = list(
@@ -30,6 +31,9 @@ class PolySurface:
         # Mesh order and name
         self.mesh_order = mesh_order
         self.physical_name = physical_name
+
+        # Mesh boolean
+        self.mesh_bool = mesh_bool
 
     def _parse_coords(self, coords):
         """Chooses z=0 if the provided coordinates are 2D."""
