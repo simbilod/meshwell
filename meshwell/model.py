@@ -205,9 +205,12 @@ class Model:
 
             enumerator = tqdm(list(enumerator))
 
-        for index, (label, (entity_obj, keep)) in enumerator:
+        for index, (physical_name, (entity_obj, keep)) in enumerator:
+            physical_name = entity_obj.physical_name
+            keep = entity_obj.mesh_bool
             if progress_bars:
-                enumerator.set_description(f"{label:<30}")
+                if physical_name:
+                    enumerator.set_description(f"{physical_name:<30}")
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
@@ -218,16 +221,18 @@ class Model:
 
             # Assemble with other shapes
             base_resolution = (
-                resolutions[label].get("resolution", default_characteristic_length)
-                if label in resolutions
+                resolutions[physical_name].get(
+                    "resolution", default_characteristic_length
+                )
+                if physical_name in resolutions
                 else default_characteristic_length
             )
             current_entities = LabeledEntities(
                 index=index,
                 dimtags=dimtags,
-                label=label,
+                physical_name=physical_name,
                 base_resolution=base_resolution,
-                resolution=resolutions.get(label, None),
+                resolution=resolutions.get(physical_name, None),
                 keep=keep,
                 model=self.model,
             )

@@ -4,11 +4,13 @@ import gmsh
 class LabeledEntities:
     """Class to track entities, boundaries, and physical labels during meshing."""
 
-    def __init__(self, index, dimtags, label, base_resolution, resolution, keep, model):
+    def __init__(
+        self, index, dimtags, physical_name, base_resolution, resolution, keep, model
+    ):
         self.index = index
         self.model = model
         self.dimtags = self._fuse_self(dimtags)
-        self.label = label
+        self.physical_name = physical_name
         self.base_resolution = base_resolution
         self.resolution = resolution
         self.boundaries = self.update_boundaries()

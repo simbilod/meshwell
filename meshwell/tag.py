@@ -5,15 +5,16 @@ from itertools import combinations
 def tag_entities(entity_list):
     """Adds physical labels to the entities in the model."""
     for entities in entity_list:
-        gmsh.model.addPhysicalGroup(
-            entities.get_dim(), entities.get_tags(), name=entities.label
-        )
+        if entities.physical_name:
+            gmsh.model.addPhysicalGroup(
+                entities.get_dim(), entities.get_tags(), name=entities.physical_name
+            )
 
 
 def tag_interfaces(entity_list, max_dim, boundary_delimiter):
     """Adds physical labels to the interfaces between entities in entity_list."""
     for entity1, entity2 in combinations(entity_list, 2):
-        if entity1.label == entity2.label:
+        if entity1.physical_name == entity2.physical_name:
             continue
         elif entity1.get_dim() != entity2.get_dim():
             continue
@@ -29,7 +30,7 @@ def tag_interfaces(entity_list, max_dim, boundary_delimiter):
             gmsh.model.addPhysicalGroup(
                 max_dim - 1,
                 common_interfaces,
-                name=f"{entity1.label}{boundary_delimiter}{entity2.label}",
+                name=f"{entity1.physical_name}{boundary_delimiter}{entity2.physical_name}",
             )
 
     return entity_list
@@ -44,5 +45,5 @@ def tag_boundaries(entity_list, max_dim, boundary_delimiter, mesh_edge_name):
         gmsh.model.addPhysicalGroup(
             max_dim - 1,
             boundaries,
-            name=f"{entity.label}{boundary_delimiter}{mesh_edge_name}",
+            name=f"{entity.physical_name}{boundary_delimiter}{mesh_edge_name}",
         )

@@ -2,7 +2,7 @@ def validate_dimtags(dimtags):
     dims = [dim for dim, tag in dimtags]
     if len(set(dims)) != 1:
         raise ValueError(
-            "All the entities corresponding to a mesh label must be of the same dimension."
+            "All the entities corresponding to a mesh physical_name must be of the same dimension."
         )
     else:
         return dims[0]
