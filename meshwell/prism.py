@@ -28,6 +28,10 @@ class Prism:
         # Parse buffers
         self.buffered_polygons = self._get_buffered_polygons(polygons, buffers)
 
+        # Validate the input
+        if not self._validate_polygon_buffers():
+            raise ValueError("The buffer has modified the polygon vertices!")
+
         # Mesh order and name
         self.mesh_order = mesh_order
         self.physical_name = physical_name
@@ -51,10 +55,10 @@ class Prism:
         return [tag for dim, tag in dimtags]
 
     def _get_buffered_polygons(self, polygons, buffers):
-        """Break up polygons on each layer into lists of polygons:z tuples according to buffer entries.
+        """Break up polygons on each layer into lists of (z,polygon) tuples according to buffer entries.
 
         Arguments (implicit):
-            polygons: polygons to bufferize
+            polygons: list of (Multi)Polygons to bufferize
             buffers: {z: buffer} values to apply to the polygons
 
         Returns:
@@ -163,6 +167,34 @@ class Prism:
         prism = self.get_gmsh_volumes()
         self.model.occ.synchronize()
         return [(3, prism)]
+
+    def _validate_polygon_buffers(self):
+        """Check if any buffering operation changes the topology of the polygon."""
+        reference_exterior_vertices = len(
+            self.buffered_polygons[0][0][1].exterior.coords
+        )
+        reference_interiors_vertices = [
+            len(interior.coords)
+            for interior in self.buffered_polygons[0][0][1].interiors
+        ]
+        for buffered_polygon in self.buffered_polygons[0][1:]:
+            num_points_exterior = len(buffered_polygon[1].exterior.coords)
+            num_points_interiors = (
+                [
+                    len(interior.coords) if interior else 0
+                    for interior in buffered_polygon[1].interiors
+                ]
+                if buffered_polygon[1].interiors
+                else [0]
+            )
+            if num_points_exterior != reference_exterior_vertices:
+                return False
+            for num_points_interior, reference_interior_vertices in zip(
+                num_points_interiors, reference_interiors_vertices
+            ):
+                if num_points_interior != reference_interior_vertices:
+                    return False
+        return True
 
 
 if __name__ == "__main__":
