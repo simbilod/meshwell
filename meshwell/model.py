@@ -48,10 +48,12 @@ class Model:
         self.occ = self.model.occ
 
         # Track some gmsh entities for bottom-up volume definition
-        self.points = {}
-        self.segments = {}
+        self.points: Dict[Tuple[float, float, float], int] = {}
+        self.segments: Dict[
+            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
+        ] = {}
 
-    def add_get_point(self, x, y, z):
+    def add_get_point(self, x: float, y: float, z: float) -> int:
         """Add a point to the model, or reuse a previously-defined point.
         Args:
             x: float, x-coordinate
@@ -64,7 +66,9 @@ class Model:
             self.points[(x, y, z)] = self.occ.add_point(x, y, z)
         return self.points[(x, y, z)]
 
-    def add_get_segment(self, xyz1, xyz2):
+    def add_get_segment(
+        self, xyz1: Tuple[float, float, float], xyz2: Tuple[float, float, float]
+    ) -> int:
         """Add a segment (2-point line) to the gmsh model, or retrieve a previously-defined segment.
         The OCC kernel does not care about orientation.
         Args:
@@ -84,7 +88,9 @@ class Model:
             )
             return self.segments[(xyz1, xyz2)]
 
-    def _channel_loop_from_vertices(self, vertices):
+    def _channel_loop_from_vertices(
+        self, vertices: List[Tuple[float, float, float]]
+    ) -> int:
         """Add a curve loop from the list of vertices.
         Args:
             vertices: list of [x,y,z] coordinates
@@ -99,7 +105,7 @@ class Model:
             edges.append(gmsh_line)
         return self.occ.add_curve_loop(edges)
 
-    def add_surface(self, vertices):
+    def add_surface(self, vertices: List[Tuple[float, float, float]]) -> int:
         """Add a surface composed of the segments formed by vertices.
 
         Args:
@@ -114,13 +120,15 @@ class Model:
         """Synchronize the CAD model, and update points and lines vertex mapping."""
         self.occ.synchronize()
         cad_points = self.model.getEntities(dim=0)
-        new_points = {}
+        new_points: Dict[Tuple[float, float, float], int] = {}
         for _, cad_point in cad_points:
             # OCC kernel can do whatever, so just read point coordinates
             vertices = tuple(self.model.getValue(0, cad_point, []))
             new_points[vertices] = cad_point
         cad_lines = self.model.getEntities(dim=1)
-        new_segments = {}
+        new_segments: Dict[
+            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
+        ] = {}
         for _, cad_line in cad_lines:
             try:
                 key = list(self.segments.keys())[
@@ -148,7 +156,7 @@ class Model:
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
-    ):
+    ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
         Args:

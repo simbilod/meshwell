@@ -1,8 +1,9 @@
+from typing import List
 import gmsh
 from itertools import combinations
 
 
-def tag_entities(entity_list):
+def tag_entities(entity_list: List):
     """Adds physical labels to the entities in the model."""
     for entities in entity_list:
         if entities.physical_name:
@@ -11,7 +12,7 @@ def tag_entities(entity_list):
             )
 
 
-def tag_interfaces(entity_list, max_dim, boundary_delimiter):
+def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
     """Adds physical labels to the interfaces between entities in entity_list."""
     for entity1, entity2 in combinations(entity_list, 2):
         if entity1.physical_name == entity2.physical_name:
@@ -36,7 +37,9 @@ def tag_interfaces(entity_list, max_dim, boundary_delimiter):
     return entity_list
 
 
-def tag_boundaries(entity_list, max_dim, boundary_delimiter, mesh_edge_name):
+def tag_boundaries(
+    entity_list: List, max_dim: int, boundary_delimiter: str, mesh_edge_name: str
+):
     """Adds physical labels to the boundaries of the entities in entity_list."""
     for entity in entity_list:
         if entity.get_dim() != max_dim:

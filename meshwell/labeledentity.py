@@ -1,23 +1,24 @@
+from pydantic import BaseModel, ConfigDict
 import gmsh
+from typing import List, Union, Any, Tuple
 
 
-class LabeledEntities:
+class LabeledEntities(BaseModel):
     """Class to track entities, boundaries, and physical labels during meshing."""
 
-    def __init__(
-        self, index, dimtags, physical_name, base_resolution, resolution, keep, model
-    ):
-        self.index = index
-        self.model = model
-        self.dimtags = self._fuse_self(dimtags)
-        self.physical_name = physical_name
-        self.base_resolution = base_resolution
-        self.resolution = resolution
-        self.boundaries = self.update_boundaries()
-        self.interfaces = []
-        self.keep = keep
+    index: int
+    model: Any
+    dimtags: List[Tuple[int, int]]
+    physical_name: str
+    base_resolution: float
+    resolution: Any
+    keep: bool
+    boundaries: List[int] = []
+    interfaces: List = []
 
-    def _fuse_self(self, dimtags):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def _fuse_self(self, dimtags: List[Union[int, str]]) -> List[Union[int, str]]:
         if len(dimtags) == 0:
             return []
         elif len(dimtags) != 1:
@@ -30,17 +31,18 @@ class LabeledEntities:
             self.model.occ.synchronize()
         return dimtags
 
-    def get_tags(self):
+    def get_tags(self) -> List[int]:
         tags = [tag for dim, tag in self.dimtags]
         if any(isinstance(el, list) for el in tags):
             tags = [item for sublist in tags for item in sublist]
         return tags
 
-    def get_dim(self):
+    def get_dim(self) -> int:
         return [dim for dim, tag in self.dimtags][0]
 
-    def update_boundaries(self):
+    def update_boundaries(self) -> List[int]:
         self.boundaries = [
             tag
             for dim, tag in gmsh.model.getBoundary(self.dimtags, False, False, False)
         ]
+        return self.boundaries

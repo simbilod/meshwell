@@ -1,7 +1,10 @@
 import numpy as np
+from typing import List, Dict, Optional, Tuple, Union, Any
+from pydantic import BaseModel, Field, ConfigDict
+from shapely.geometry import Polygon, MultiPolygon
 
 
-class Prism:
+class Prism(BaseModel):
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
 
@@ -13,20 +16,43 @@ class Prism:
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
     """
 
+    polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]] = Field(
+        ...
+    )
+    buffers: Dict[float, float] = Field(...)
+    model: Any
+    physical_name: Optional[str] = Field(None)
+    mesh_order: float = Field(np.inf)
+    mesh_bool: bool = Field(True)
+    buffered_polygons: List[Tuple[float, Polygon]] = []
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     def __init__(
         self,
-        polygons,
-        buffers,
-        model,
-        physical_name=None,
-        mesh_order=np.inf,
-        mesh_bool=True,
+        polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
+        buffers: Dict[float, float],
+        model: Any,
+        physical_name: Optional[str] = None,
+        mesh_order: float = np.inf,
+        mesh_bool: bool = True,
     ):
+        super().__init__(
+            polygons=polygons,
+            buffers=buffers,
+            model=model,
+            physical_name=physical_name,
+            mesh_order=mesh_order,
+            mesh_bool=mesh_bool,
+        )
+
         # Model
         self.model = model
 
         # Parse buffers
-        self.buffered_polygons = self._get_buffered_polygons(polygons, buffers)
+        self.buffered_polygons: List[
+            Tuple[float, Polygon]
+        ] = self._get_buffered_polygons(polygons, buffers)
 
         # Validate the input
         if not self._validate_polygon_buffers():
@@ -37,7 +63,7 @@ class Prism:
         self.physical_name = physical_name
         self.mesh_bool = mesh_bool
 
-    def get_gmsh_volumes(self):
+    def get_gmsh_volumes(self) -> List[int]:
         """Returns the fused GMSH volumes within model from the polygons and buffers."""
         volumes = [
             self._add_volume_with_holes(entry) for entry in self.buffered_polygons
@@ -54,7 +80,9 @@ class Prism:
         self.model.occ.synchronize()
         return [tag for dim, tag in dimtags]
 
-    def _get_buffered_polygons(self, polygons, buffers):
+    def _get_buffered_polygons(
+        self, polygons: List[Polygon], buffers: Dict[float, float]
+    ) -> List[Tuple[float, Polygon]]:
         """Break up polygons on each layer into lists of (z,polygon) tuples according to buffer entries.
 
         Arguments (implicit):
@@ -73,7 +101,12 @@ class Prism:
 
         return all_polygons_list
 
-    def _add_volume(self, entry, exterior=True, interior_index=0):
+    def _add_volume(
+        self,
+        entry: List[Tuple[float, Polygon]],
+        exterior: bool = True,
+        interior_index: int = 0,
+    ) -> int:
         """Create shape from a list of the same buffered polygon and a list of z-values.
         Args:
             polygons: shapely polygons from the GDS
@@ -129,7 +162,13 @@ class Prism:
         surface_loop = self.model.occ.add_surface_loop(gmsh_surfaces)
         return self.model.occ.add_volume([surface_loop])
 
-    def xy_surface_vertices(self, entry, arg1, exterior, interior_index):
+    def xy_surface_vertices(
+        self,
+        entry: List[Tuple[float, Polygon]],
+        arg1: int,
+        exterior: bool,
+        interior_index: int,
+    ) -> List[Tuple[float, float, float]]:
         """"""
         # Draw xy surface
         polygon = entry[arg1][1]
@@ -142,7 +181,7 @@ class Prism:
             ]
         )
 
-    def _add_volume_with_holes(self, entry):
+    def _add_volume_with_holes(self, entry: List[Tuple[float, Polygon]]) -> int:
         """Returns volume, removing intersection with hole volumes."""
         exterior = self._add_volume(entry, exterior=True)
         interiors = [
@@ -162,13 +201,13 @@ class Prism:
                 exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
-    def instanciate(self):
+    def instanciate(self) -> List[Tuple[int, int]]:
         """Returns dim tag from entity."""
         prism = self.get_gmsh_volumes()
         self.model.occ.synchronize()
         return [(3, prism)]
 
-    def _validate_polygon_buffers(self):
+    def _validate_polygon_buffers(self) -> bool:
         """Check if any buffering operation changes the topology of the polygon."""
         reference_exterior_vertices = len(
             self.buffered_polygons[0][0][1].exterior.coords
