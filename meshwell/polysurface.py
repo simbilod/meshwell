@@ -1,17 +1,46 @@
-class PolySurface:
+import numpy as np
+from pydantic import BaseModel, Field, ConfigDict
+from shapely.geometry import Polygon, MultiPolygon
+from typing import List, Optional, Union, Any, Tuple
+
+
+class PolySurface(BaseModel):
     """
     Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
 
     Attributes:
         polygons: list of shapely (Multi)Polygon
         model: GMSH model to synchronize
+        physical_name: name of the physical this entity wil belong to
+        mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
     """
+
+    polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]] = Field(
+        ...
+    )
+    model: Any
+    physical_name: Optional[str] = Field(None)
+    mesh_order: float = Field(np.inf)
+    mesh_bool: bool = Field(True)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(
         self,
-        polygons,
-        model,
+        polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
+        model: Any,
+        physical_name: Optional[str] = None,
+        mesh_order: float = np.inf,
+        mesh_bool: bool = True,
     ):
+        super().__init__(
+            polygons=polygons,
+            model=model,
+            physical_name=physical_name,
+            mesh_order=mesh_order,
+            mesh_bool=mesh_bool,
+        )
+
         # Parse (multi)polygons
         self.polygons = list(
             polygons.geoms if hasattr(polygons, "geoms") else [polygons]
@@ -20,11 +49,18 @@ class PolySurface:
         # Track gmsh entities for bottom-up volume definition
         self.model = model
 
-    def _parse_coords(self, coords):
+        # Mesh order and name
+        self.mesh_order = mesh_order
+        self.physical_name = physical_name
+
+        # Mesh boolean
+        self.mesh_bool = mesh_bool
+
+    def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
         """Chooses z=0 if the provided coordinates are 2D."""
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
 
-    def get_gmsh_polygons(self):
+    def get_gmsh_polygons(self) -> List[int]:
         """Returns the fused GMSH surfaces within model from the polygons."""
         surfaces = [self.add_surface_with_holes(entry) for entry in self.polygons]
         if len(surfaces) <= 1:
@@ -38,7 +74,7 @@ class PolySurface:
         self.model.occ.synchronize()
         return [tag for dim, tag in dimtags]
 
-    def add_surface_with_holes(self, polygon):
+    def add_surface_with_holes(self, polygon: Polygon) -> int:
         """Returns surface, removing intersection with hole surfaces."""
         exterior = self.model.add_surface(
             [self._parse_coords(coords) for coords in polygon.exterior.coords]
@@ -57,7 +93,7 @@ class PolySurface:
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
-    def instanciate(self):
+    def instanciate(self) -> List[Tuple[int, int]]:
         polysurface = self.get_gmsh_polygons()
         self.model.occ.synchronize()
         return [(2, polysurface)]
