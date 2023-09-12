@@ -2,7 +2,11 @@ import gmsh
 import numpy as np
 
 
-class GMSH_entity:
+from typing import Any, Dict, Optional
+from pydantic import BaseModel
+
+
+class GMSH_entity(BaseModel):
     """
     Delayed evaluation of a gmsh occ kernel entity.
 
@@ -16,23 +20,13 @@ class GMSH_entity:
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
     """
 
-    def __init__(
-        self,
-        gmsh_function,
-        gmsh_function_kwargs,
-        dim,
-        model,
-        physical_name=None,
-        mesh_order=np.inf,
-        mesh_bool=True,
-    ):
-        self.gmsh_function = gmsh_function
-        self.gmsh_function_kwargs = gmsh_function_kwargs
-        self.dim = dim
-        self.model = model
-        self.mesh_order = mesh_order
-        self.physical_name = physical_name
-        self.mesh_bool = mesh_bool
+    gmsh_function: Any
+    gmsh_function_kwargs: Dict[str, Any]
+    dim: int
+    model: Any
+    physical_name: Optional[str] = None
+    mesh_order: float = np.inf
+    mesh_bool: bool = True
 
     def instanciate(self):
         """Returns dim tag from entity."""
