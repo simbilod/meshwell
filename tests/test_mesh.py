@@ -5,7 +5,6 @@ from meshwell.prism import Prism
 from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
-from collections import OrderedDict
 
 
 def test_mesh_3D():
@@ -19,28 +18,31 @@ def test_mesh_3D():
     buffers = {0.0: 0.0, 1.0: -0.1}
 
     model = Model()
-    poly3D = Prism(polygons=polygon, buffers=buffers, model=model)
+    poly3D = Prism(
+        polygons=polygon,
+        buffers=buffers,
+        model=model,
+        physical_name="first_entity",
+        mesh_order=1,
+    )
 
     gmsh_entity = GMSH_entity(
         gmsh_function=model.occ.addSphere,
         gmsh_function_kwargs={"xc": 0, "yc": 0, "zc": 0, "radius": 1},
         dim=3,
         model=model,
+        physical_name="second_entity",
+        mesh_order=2,
     )
 
-    entities_dict = OrderedDict(
-        {
-            "first_entity": poly3D,
-            "second_entity": gmsh_entity,
-        }
-    )
+    entities_list = [poly3D, gmsh_entity]
 
     resolutions = {
         "first_entity": {"resolution": 0.3},
     }
 
     model.mesh(
-        entities_dict=entities_dict,
+        entities_list=entities_list,
         resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
@@ -59,28 +61,27 @@ def test_mesh_2D():
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
     model = Model()
-    poly2D = PolySurface(polygons=polygon, model=model)
+    poly2D = PolySurface(
+        polygons=polygon, model=model, physical_name="first_entity", mesh_order=1
+    )
 
     gmsh_entity = GMSH_entity(
         gmsh_function=model.occ.add_rectangle,
         gmsh_function_kwargs={"x": 3, "y": 3, "z": 0, "dx": 1, "dy": 1},
         dim=2,
         model=model,
+        physical_name="second_entity",
+        mesh_order=2,
     )
 
-    entities_dict = OrderedDict(
-        {
-            "first_entity": poly2D,
-            "second_entity": gmsh_entity,
-        }
-    )
+    entities_list = [poly2D, gmsh_entity]
 
     resolutions = {
         "first_entity": {"resolution": 0.3},
     }
 
     model.mesh(
-        entities_dict=entities_dict,
+        entities_list=entities_list,
         resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
@@ -92,4 +93,4 @@ def test_mesh_2D():
 
 if __name__ == "__main__":
     test_mesh_3D()
-    test_mesh_2D()
+    # test_mesh_2D()

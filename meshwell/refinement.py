@@ -1,4 +1,10 @@
-def constant_refinement(final_entity_list, refinement_field_index, model):
+from typing import List, Tuple
+import gmsh
+
+
+def constant_refinement(
+    final_entity_list: List, refinement_field_index: int, model: gmsh.model
+) -> Tuple[List[int], int]:
     # Refine
     n = refinement_field_index
     refinement_fields = []

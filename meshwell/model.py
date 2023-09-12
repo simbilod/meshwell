@@ -5,11 +5,15 @@ from typing import Dict, Optional, List, Tuple
 import numpy as np
 
 import gmsh
-from meshwell.validation import validate_dimtags, unpack_dimtags
+from meshwell.validation import (
+    validate_dimtags,
+    unpack_dimtags,
+    sort_entities_by_mesh_order,
+    consolidate_entities_by_physical_name,
+)
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
 from meshwell.refinement import constant_refinement
-from collections import OrderedDict
 
 import contextlib
 import tempfile
@@ -44,10 +48,12 @@ class Model:
         self.occ = self.model.occ
 
         # Track some gmsh entities for bottom-up volume definition
-        self.points = {}
-        self.segments = {}
+        self.points: Dict[Tuple[float, float, float], int] = {}
+        self.segments: Dict[
+            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
+        ] = {}
 
-    def add_get_point(self, x, y, z):
+    def add_get_point(self, x: float, y: float, z: float) -> int:
         """Add a point to the model, or reuse a previously-defined point.
         Args:
             x: float, x-coordinate
@@ -60,7 +66,9 @@ class Model:
             self.points[(x, y, z)] = self.occ.add_point(x, y, z)
         return self.points[(x, y, z)]
 
-    def add_get_segment(self, xyz1, xyz2):
+    def add_get_segment(
+        self, xyz1: Tuple[float, float, float], xyz2: Tuple[float, float, float]
+    ) -> int:
         """Add a segment (2-point line) to the gmsh model, or retrieve a previously-defined segment.
         The OCC kernel does not care about orientation.
         Args:
@@ -80,7 +88,9 @@ class Model:
             )
             return self.segments[(xyz1, xyz2)]
 
-    def _channel_loop_from_vertices(self, vertices):
+    def _channel_loop_from_vertices(
+        self, vertices: List[Tuple[float, float, float]]
+    ) -> int:
         """Add a curve loop from the list of vertices.
         Args:
             vertices: list of [x,y,z] coordinates
@@ -95,7 +105,7 @@ class Model:
             edges.append(gmsh_line)
         return self.occ.add_curve_loop(edges)
 
-    def add_surface(self, vertices):
+    def add_surface(self, vertices: List[Tuple[float, float, float]]) -> int:
         """Add a surface composed of the segments formed by vertices.
 
         Args:
@@ -110,13 +120,15 @@ class Model:
         """Synchronize the CAD model, and update points and lines vertex mapping."""
         self.occ.synchronize()
         cad_points = self.model.getEntities(dim=0)
-        new_points = {}
+        new_points: Dict[Tuple[float, float, float], int] = {}
         for _, cad_point in cad_points:
             # OCC kernel can do whatever, so just read point coordinates
             vertices = tuple(self.model.getValue(0, cad_point, []))
             new_points[vertices] = cad_point
         cad_lines = self.model.getEntities(dim=1)
-        new_segments = {}
+        new_segments: Dict[
+            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
+        ] = {}
         for _, cad_line in cad_lines:
             try:
                 key = list(self.segments.keys())[
@@ -130,8 +142,7 @@ class Model:
 
     def mesh(
         self,
-        entities_dict: OrderedDict,
-        boundaries_dict: Dict = None,
+        entities_list: List,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
@@ -145,11 +156,11 @@ class Model:
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
-    ):
+    ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
         Args:
-            entities_dict: OrderedDict of key: physical name, and value: meshwell entity
+            entities_list: list of meshwell entities (GMSH_entity, Prism, or PolySurface)
             resolutions (Dict): Pairs {"physical name": {"resolution": float, "distance": "float}}
             default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
             global_scaling: factor to scale all mesh coordinates by (e.g. 1E-6 to go from um to m)
@@ -180,15 +191,8 @@ class Model:
         # Initial synchronization
         self.occ.synchronize()
 
-        # Parse strutural and boundary entities
-        full_entities_dict = OrderedDict()
-        keep = True
-        for key, value in entities_dict.items():
-            full_entities_dict[key] = (value, keep)
-        keep = False
-        if boundaries_dict is not None:
-            for key, value in boundaries_dict.items():
-                full_entities_dict[key] = (value, keep)
+        # Order the entities
+        entities_list = sort_entities_by_mesh_order(entities_list)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
@@ -199,15 +203,18 @@ class Model:
         final_entity_list = []
         max_dim = 0
 
-        enumerator = enumerate(full_entities_dict.items())
+        enumerator = enumerate(entities_list)
         if progress_bars:
             from tqdm.auto import tqdm
 
             enumerator = tqdm(list(enumerator))
 
-        for index, (label, (entity_obj, keep)) in enumerator:
+        for index, entity_obj in enumerator:
+            physical_name = entity_obj.physical_name
+            keep = entity_obj.mesh_bool
             if progress_bars:
-                enumerator.set_description(f"{label:<30}")
+                if physical_name:
+                    enumerator.set_description(f"{physical_name:<30}")
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
@@ -218,16 +225,18 @@ class Model:
 
             # Assemble with other shapes
             base_resolution = (
-                resolutions[label].get("resolution", default_characteristic_length)
-                if label in resolutions
+                resolutions[physical_name].get(
+                    "resolution", default_characteristic_length
+                )
+                if physical_name in resolutions
                 else default_characteristic_length
             )
             current_entities = LabeledEntities(
                 index=index,
                 dimtags=dimtags,
-                label=label,
+                physical_name=physical_name,
                 base_resolution=base_resolution,
-                resolution=resolutions.get(label, None),
+                resolution=resolutions.get(physical_name, None),
                 keep=keep,
                 model=self.model,
             )
@@ -250,6 +259,7 @@ class Model:
                 final_entity_list.append(current_entities)
 
         # Make sure the most up-to-date surfaces are logged as boundaries
+        final_entity_list = consolidate_entities_by_physical_name(final_entity_list)
         for entity in final_entity_list:
             entity.update_boundaries()
 
