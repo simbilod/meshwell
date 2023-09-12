@@ -1,5 +1,16 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.0.0
+
+Refactoring release, with more to come.
+
+- change from dict to attributes [PR#36](https://github.com/simbilod/meshwell/pull/36)
+- more tests [PR#36](https://github.com/simbilod/meshwell/pull/36)
+- validation of buffers causing CAD failure [PR#36](https://github.com/simbilod/meshwell/pull/36)
+- pydantic coverage [PR#36](https://github.com/simbilod/meshwell/pull/35)
+- speedup the CAD operations [PR#31, see also #29, #30](https://github.com/simbilod/meshwell/pull/31)
+- photonic crystal sample [PR#35](https://github.com/simbilod/meshwell/pull/35)
+
 ## 0.1.0
 
 - periodic boundaries [PR#25](https://github.com/simbilod/meshwell/pull/25)
