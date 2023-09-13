@@ -22,6 +22,7 @@ class PolySurface(BaseModel):
     physical_name: Optional[str] = Field(None)
     mesh_order: float = Field(np.inf)
     mesh_bool: bool = Field(True)
+    dimension: int = Field(2)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -49,12 +50,10 @@ class PolySurface(BaseModel):
         # Track gmsh entities for bottom-up volume definition
         self.model = model
 
-        # Mesh order and name
         self.mesh_order = mesh_order
         self.physical_name = physical_name
-
-        # Mesh boolean
         self.mesh_bool = mesh_bool
+        self.dimension = 2
 
     def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
         """Chooses z=0 if the provided coordinates are 2D."""

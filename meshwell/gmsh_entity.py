@@ -22,7 +22,7 @@ class GMSH_entity(BaseModel):
 
     gmsh_function: Any
     gmsh_function_kwargs: Dict[str, Any]
-    dim: int
+    dimension: int
     model: Any
     physical_name: Optional[str] = None
     mesh_order: float = np.inf
@@ -32,7 +32,7 @@ class GMSH_entity(BaseModel):
         """Returns dim tag from entity."""
         entity = self.gmsh_function(**self.gmsh_function_kwargs)
         self.model.occ.synchronize()
-        return [(self.dim, entity)]
+        return [(self.dimension, entity)]
 
 
 if __name__ == "__main__":
