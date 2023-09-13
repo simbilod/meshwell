@@ -1,5 +1,11 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.0.1
+
+Refactoring release, with more to come.
+
+- resolution dict --> resolution attributes [PR#38](https://github.com/simbilod/meshwell/pull/38)
+
 ## 1.0.0
 
 Refactoring release, with more to come.
