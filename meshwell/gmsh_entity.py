@@ -27,6 +27,7 @@ class GMSH_entity(BaseModel):
     physical_name: Optional[str] = None
     mesh_order: float = np.inf
     mesh_bool: bool = True
+    resolution: Dict | None = None
 
     def instanciate(self):
         """Returns dim tag from entity."""
@@ -43,7 +44,7 @@ if __name__ == "__main__":
     gmsh_entity1 = GMSH_entity(
         gmsh_function=model.occ.add_box,
         gmsh_function_kwargs={"x": 0, "y": 0, "z": 0, "dx": 1, "dy": 1, "dz": 1},
-        dim=3,
+        dimension=3,
         model=model,
     )
 
@@ -59,7 +60,7 @@ if __name__ == "__main__":
             "r": 1,
             "angle": 1.0,
         },
-        dim=3,
+        dimension=3,
         model=model,
     )
 

@@ -29,7 +29,7 @@ def test_mesh_3D():
     gmsh_entity = GMSH_entity(
         gmsh_function=model.occ.addSphere,
         gmsh_function_kwargs={"xc": 0, "yc": 0, "zc": 0, "radius": 1},
-        dim=3,
+        dimension=3,
         model=model,
         physical_name="second_entity",
         mesh_order=2,
@@ -68,7 +68,7 @@ def test_mesh_2D():
     gmsh_entity = GMSH_entity(
         gmsh_function=model.occ.add_rectangle,
         gmsh_function_kwargs={"x": 3, "y": 3, "z": 0, "dx": 1, "dy": 1},
-        dim=2,
+        dimension=2,
         model=model,
         physical_name="second_entity",
         mesh_order=2,
@@ -93,4 +93,4 @@ def test_mesh_2D():
 
 if __name__ == "__main__":
     test_mesh_3D()
-    # test_mesh_2D()
+    test_mesh_2D()

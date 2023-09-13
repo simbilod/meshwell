@@ -39,7 +39,6 @@ def consolidate_entities_by_physical_name(entities):
                 index=existing_entity.index,
                 dimtags=combined_dimtags,
                 physical_name=existing_entity.physical_name,
-                base_resolution=existing_entity.base_resolution,
                 resolution=existing_entity.resolution,
                 keep=existing_entity.keep,
                 model=existing_entity.model,

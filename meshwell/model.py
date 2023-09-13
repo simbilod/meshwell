@@ -13,7 +13,6 @@ from meshwell.validation import (
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
-from meshwell.refinement import constant_refinement
 
 import contextlib
 import tempfile
@@ -155,6 +154,7 @@ class Model:
         boundary_delimiter: str = "None",
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
+        reinitialize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
     ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
@@ -178,6 +178,7 @@ class Model:
         Returns:
             meshio object with mWesh information
         """
+
         resolutions = resolutions if resolutions else {}
         gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
         gmsh.option.setNumber(
@@ -212,6 +213,7 @@ class Model:
         for index, entity_obj in enumerator:
             physical_name = entity_obj.physical_name
             keep = entity_obj.mesh_bool
+            resolution = entity_obj.resolution
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(f"{physical_name:<30}")
@@ -224,21 +226,13 @@ class Model:
             dimtags = unpack_dimtags(dimtags_out)
 
             # Assemble with other shapes
-            base_resolution = (
-                resolutions[physical_name].get(
-                    "resolution", default_characteristic_length
-                )
-                if physical_name in resolutions
-                else default_characteristic_length
-            )
             current_entities = LabeledEntities(
                 index=index,
                 dimtags=dimtags,
                 physical_name=physical_name,
-                base_resolution=base_resolution,
-                resolution=resolutions.get(physical_name, None),
                 keep=keep,
                 model=self.model,
+                resolution=resolution,
             )
             if index != 0:
                 cut = self.occ.cut(
@@ -314,19 +308,24 @@ class Model:
                 self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Perform refinement
-        refinement_fields = []
-        refinement_index = 0
-        refinement_fields_constant, refinement_index = constant_refinement(
-            final_entity_list, refinement_field_index=0, model=self.model
-        )
-        refinement_fields.extend(refinement_fields_constant)
+        refinement_field_indices = []
+        refinement_max_index = 0
+        for entity in final_entity_list:
+            (
+                refinement_field_indices,
+                refinement_max_index,
+            ) = entity.add_refinement_fields_to_model(
+                refinement_field_indices,
+                refinement_max_index,
+                default_characteristic_length,
+            )
 
         # Use the smallest element size overall
-        self.model.mesh.field.add("Min", refinement_index)
+        self.model.mesh.field.add("Min", refinement_max_index)
         self.model.mesh.field.setNumbers(
-            refinement_index, "FieldsList", refinement_fields
+            refinement_max_index, "FieldsList", refinement_field_indices
         )
-        self.model.mesh.field.setAsBackgroundMesh(refinement_index)
+        self.model.mesh.field.setAsBackgroundMesh(refinement_max_index)
 
         # Turn off default meshing options
         self.model.mesh.MeshSizeFromPoints = 0
