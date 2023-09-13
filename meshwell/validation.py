@@ -24,6 +24,15 @@ def sort_entities_by_mesh_order(entities):
     return sorted(entities, key=lambda entity: entity.mesh_order)
 
 
+def sort_entities_by_dimension(entities):
+    """Returns 4 lists of entities, sorted by dimension."""
+    entities_dim_3 = [entity for entity in entities if entity.dimension == 3]
+    entities_dim_2 = [entity for entity in entities if entity.dimension == 2]
+    entities_dim_1 = [entity for entity in entities if entity.dimension == 1]
+    entities_dim_0 = [entity for entity in entities if entity.dimension == 0]
+    return entities_dim_3, entities_dim_2, entities_dim_1, entities_dim_0
+
+
 def consolidate_entities_by_physical_name(entities):
     """Returns a new list of LabeledEntities, with a single entity per physical_name."""
     consolidated_entities = []

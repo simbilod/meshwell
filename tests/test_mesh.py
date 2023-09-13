@@ -37,13 +37,8 @@ def test_mesh_3D():
 
     entities_list = [poly3D, gmsh_entity]
 
-    resolutions = {
-        "first_entity": {"resolution": 0.3},
-    }
-
     model.mesh(
-        entities_list=entities_list,
-        resolutions=resolutions,
+        input_entities_list=entities_list,
         default_characteristic_length=0.5,
         verbosity=False,
         filename="mesh3D.msh",
@@ -76,13 +71,8 @@ def test_mesh_2D():
 
     entities_list = [poly2D, gmsh_entity]
 
-    resolutions = {
-        "first_entity": {"resolution": 0.3},
-    }
-
     model.mesh(
-        entities_list=entities_list,
-        resolutions=resolutions,
+        input_entities_list=entities_list,
         default_characteristic_length=0.5,
         verbosity=False,
         filename="mesh2D.msh",
@@ -91,6 +81,46 @@ def test_mesh_2D():
     pass
 
 
+def test_mesh_ND():
+    z = 1
+    polygon1 = shapely.Polygon(
+        [[0, 0, z], [2, 0, z], [2, 2, z], [0, 2, z], [0, 0, z]],
+        holes=(
+            [[0.5, 0.5, z], [1.5, 0.5, z], [1.5, 1.5, z], [0.5, 1.5, z], [0.5, 0.5, z]],
+        ),
+    )
+    polygon2 = shapely.Polygon(
+        [[-1, -1, z], [-2, -1, z], [-2, -2, z], [-1, -2, z], [-1, -1, z]]
+    )
+    polygon = shapely.MultiPolygon([polygon1, polygon2])
+
+    model = Model()
+    poly2D = PolySurface(
+        polygons=polygon, model=model, physical_name="polygon", mesh_order=1
+    )
+
+    box = GMSH_entity(
+        gmsh_function=model.occ.add_box,
+        gmsh_function_kwargs={"x": 0, "y": 0, "z": 0, "dx": 3, "dy": 3, "dz": 3},
+        dimension=3,
+        model=model,
+        physical_name="box",
+        mesh_order=2,
+    )
+
+    entities_list = [poly2D, box]
+
+    model.mesh(
+        input_entities_list=entities_list,
+        default_characteristic_length=0.5,
+        verbosity=False,
+        filename="meshND.msh",
+    )
+
+    pass
+
+
 if __name__ == "__main__":
     test_mesh_3D()
     test_mesh_2D()
+    test_mesh_ND()

@@ -6,10 +6,10 @@ import numpy as np
 
 import gmsh
 from meshwell.validation import (
-    validate_dimtags,
     unpack_dimtags,
     sort_entities_by_mesh_order,
     consolidate_entities_by_physical_name,
+    sort_entities_by_dimension,
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
@@ -141,7 +141,7 @@ class Model:
 
     def mesh(
         self,
-        entities_list: List,
+        input_entities_list: List,
         resolutions: Optional[Dict] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
@@ -192,8 +192,19 @@ class Model:
         # Initial synchronization
         self.occ.synchronize()
 
+        # Sort the entities by dimension
+        (
+            entities_dim_3,
+            entities_dim_2,
+            entities_dim_1,
+            entities_dim_0,
+        ) = sort_entities_by_dimension(input_entities_list)
+
         # Order the entities
-        entities_list = sort_entities_by_mesh_order(entities_list)
+        entities_dim_3 = sort_entities_by_mesh_order(entities_dim_3)
+        entities_dim_2 = sort_entities_by_mesh_order(entities_dim_2)
+        entities_dim_1 = sort_entities_by_mesh_order(entities_dim_1)
+        entities_dim_0 = sort_entities_by_mesh_order(entities_dim_0)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
@@ -201,61 +212,92 @@ class Model:
         # Main loop:
         # Iterate through OrderedDict of entities, generating and logging the volumes/surfaces in order
         # Manually remove intersections so that BooleanFragments from removeAllDuplicates does not reassign entity tags
+        # Start with highest dimension, adding its boundaries to the next lowest dimension entities
         final_entity_list = []
-        max_dim = 0
+        if entities_dim_3:
+            max_dim = 3
+        elif entities_dim_2:
+            max_dim = 2
+        elif entities_dim_1:
+            max_dim = 1
+        elif entities_dim_0:
+            max_dim = 0
 
-        enumerator = enumerate(entities_list)
-        if progress_bars:
-            from tqdm.auto import tqdm
+        final_entity_list_dim_3 = []
+        final_entity_list_dim_2 = []
+        final_entity_list_dim_1 = []
+        final_entity_list_dim_0 = []
+        for input_entities_list, final_entity_list in zip(
+            [
+                entities_dim_3,
+                entities_dim_2,
+                entities_dim_1,
+                entities_dim_0,
+            ],
+            [
+                final_entity_list_dim_3,
+                final_entity_list_dim_2,
+                final_entity_list_dim_1,
+                final_entity_list_dim_0,
+            ],
+        ):
+            if input_entities_list:
+                enumerator = enumerate(input_entities_list)
+                if progress_bars:
+                    from tqdm.auto import tqdm
 
-            enumerator = tqdm(list(enumerator))
+                    enumerator = tqdm(list(enumerator))
 
-        for index, entity_obj in enumerator:
-            physical_name = entity_obj.physical_name
-            keep = entity_obj.mesh_bool
-            resolution = entity_obj.resolution
-            if progress_bars:
-                if physical_name:
-                    enumerator.set_description(f"{physical_name:<30}")
-            # First create the shape
-            dimtags_out = entity_obj.instanciate()
+                for index, entity_obj in enumerator:
+                    physical_name = entity_obj.physical_name
+                    keep = entity_obj.mesh_bool
+                    resolution = entity_obj.resolution
+                    dimension = entity_obj.dimension
+                    if progress_bars:
+                        if physical_name:
+                            enumerator.set_description(f"{physical_name:<30}")
 
-            # Parse dimension
-            dim = validate_dimtags(dimtags_out)
-            max_dim = max(dim, max_dim)
-            dimtags = unpack_dimtags(dimtags_out)
+                    # First create the shape
+                    dimtags_out = entity_obj.instanciate()
+                    dimtags = unpack_dimtags(dimtags_out)
 
-            # Assemble with other shapes
-            current_entities = LabeledEntities(
-                index=index,
-                dimtags=dimtags,
-                physical_name=physical_name,
-                keep=keep,
-                model=self.model,
-                resolution=resolution,
-            )
-            if index != 0:
-                cut = self.occ.cut(
-                    current_entities.dimtags,
-                    [
-                        dimtag
-                        for previous_entities in final_entity_list
-                        for dimtag in previous_entities.dimtags
-                    ],
-                    removeObject=True,  # Only keep the difference
-                    removeTool=False,  # Tool (previous entities) should remain untouched
+                    # Assemble with other shapes
+                    current_entities = LabeledEntities(
+                        index=index,
+                        dimtags=dimtags,
+                        physical_name=physical_name,
+                        keep=keep,
+                        model=self.model,
+                        resolution=resolution,
+                        dimension=dimension,
+                    )
+                    if index != 0:
+                        cut = self.occ.cut(
+                            current_entities.dimtags,
+                            [
+                                dimtag
+                                for previous_entities in final_entity_list
+                                for dimtag in previous_entities.dimtags
+                            ],
+                            removeObject=True,  # Only keep the difference
+                            removeTool=False,  # Tool (previous entities) should remain untouched
+                        )
+                        # Heal interfaces now that there are no volume conflicts
+                        self.occ.removeAllDuplicates()
+                        self.sync_model()
+                        current_entities.dimtags = list(set(cut[0]))
+                    if current_entities.dimtags:
+                        final_entity_list.append(current_entities)
+
+                # Consolidate different entities with the same physical label
+                final_entity_list.extend(
+                    consolidate_entities_by_physical_name(final_entity_list)
                 )
-                # Heal interfaces now that there are no volume conflicts
-                self.occ.removeAllDuplicates()
-                self.sync_model()
-                current_entities.dimtags = list(set(cut[0]))
-            if current_entities.dimtags:
-                final_entity_list.append(current_entities)
+                for entity in final_entity_list:
+                    entity.update_boundaries()
 
-        # Make sure the most up-to-date surfaces are logged as boundaries
-        final_entity_list = consolidate_entities_by_physical_name(final_entity_list)
-        for entity in final_entity_list:
-            entity.update_boundaries()
+        print(final_entity_list_dim_3)
+        print(final_entity_list_dim_2)
 
         # Tag entities, interfaces, and boundaries
         tag_entities(final_entity_list)
@@ -347,7 +389,7 @@ class Model:
                     physicals = []
                     if len(physicalTags):
                         for p in physicalTags:
-                            physicals.append(gmsh.model.getPhysicalName(dim, p))
+                            physicals.append(gmsh.model.getPhysicalName(3, p))
                 if "ill-shaped tets are" in str(line):
                     print(",".join(physicals))
                     print(str(line))

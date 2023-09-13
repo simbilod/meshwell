@@ -32,11 +32,9 @@ def test_resolution():
             "resolution": 0.2,
         },
         {
-            "resolution": 0.2,
-            "DistMax": 1,
-            "DistMin": 0.5,
+            "resolution": 0.1,
+            "DistMax": 2,
             "SizeMax": 0.5,
-            "SizeMin": 0.05,
         },
     ]
 
@@ -72,7 +70,7 @@ def test_resolution():
         entities_list = [poly2D, gmsh_entity, background]
 
         mesh = model.mesh(
-            entities_list=entities_list,
+            input_entities_list=entities_list,
             default_characteristic_length=0.5,
             verbosity=0,
             filename=f"mesh_{i}.msh",
