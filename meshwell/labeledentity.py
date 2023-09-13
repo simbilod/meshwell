@@ -98,7 +98,7 @@ class LabeledEntities(BaseModel):
             self.model.mesh.field.setNumbers(n, boundary_str, self.boundaries)
             self.model.mesh.field.setNumber(n, "Sampling", 100)
             self.model.mesh.field.add("Threshold", n + 1)
-            self.model.mesh.field.setNumber(n + 1, "InField", n + 2)
+            self.model.mesh.field.setNumber(n + 1, "InField", n)
             self.model.mesh.field.setNumber(
                 n + 1,
                 "SizeMin",
