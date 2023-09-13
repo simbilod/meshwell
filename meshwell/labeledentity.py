@@ -4,13 +4,12 @@ from typing import List, Union, Any, Tuple
 
 
 class LabeledEntities(BaseModel):
-    """Class to track entities, boundaries, and physical labels during meshing."""
+    """General class to track the gmsh entities that result from the geometry definition."""
 
     index: int
     model: Any
     dimtags: List[Tuple[int, int]]
     physical_name: str
-    base_resolution: float
     resolution: Any
     keep: bool
     boundaries: List[int] = []
@@ -46,3 +45,75 @@ class LabeledEntities(BaseModel):
             for dim, tag in gmsh.model.getBoundary(self.dimtags, False, False, False)
         ]
         return self.boundaries
+
+    def add_refinement_fields_to_model(
+        self,
+        refinement_field_indices: List,
+        refinement_max_index: int,
+        default_resolution: float,
+    ):
+        """
+        Adds refinement fields to the model based on base_resolution and resolution info.
+        """
+        n = refinement_max_index
+        if self.resolution is not None:
+            base_resolution = self.resolution.get("resolution", default_resolution)
+
+        if self.get_dim() == 3:
+            entity_str = "RegionsList"
+            boundary_str = "SurfacesList"
+        elif self.get_dim() == 2:
+            entity_str = "SurfacesList"
+            boundary_str = "CurvesList"
+        elif self.get_dim() == 1:
+            entity_str = "CurvesList"
+            boundary_str = "PointList"
+        else:
+            entity_str = "PointList"
+            boundary_str = None
+
+        if self.resolution and self.resolution.keys() >= {"resolution"}:
+            self.model.mesh.field.add("MathEval", n)
+            self.model.mesh.field.setString(n, "F", f"{base_resolution}")
+            self.model.mesh.field.add("Restrict", n + 1)
+            self.model.mesh.field.setNumber(n + 1, "InField", n)
+            self.model.mesh.field.setNumbers(
+                n + 1,
+                entity_str,
+                self.get_tags(),
+            )
+            refinement_field_indices.extend((n + 1,))
+            n += 2
+
+        if (
+            self.resolution
+            and self.resolution.keys()
+            >= {
+                "DistMax",
+                "SizeMax",
+            }
+            and boundary_str
+        ):
+            self.model.mesh.field.add("Distance", n)
+            self.model.mesh.field.setNumbers(n, boundary_str, self.boundaries)
+            self.model.mesh.field.setNumber(n, "Sampling", 100)
+            self.model.mesh.field.add("Threshold", n + 1)
+            self.model.mesh.field.setNumber(n + 1, "InField", n)
+            self.model.mesh.field.setNumber(
+                n + 1,
+                "SizeMin",
+                self.resolution.get("SizeMin", base_resolution),
+            )
+            self.model.mesh.field.setNumber(
+                n + 1, "SizeMax", self.resolution["SizeMax"]
+            )
+            self.model.mesh.field.setNumber(
+                n + 1, "DistMin", self.resolution.get("DistMin", 0)
+            )
+            self.model.mesh.field.setNumber(
+                n + 1, "DistMax", self.resolution["DistMax"]
+            )
+            self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
+            refinement_field_indices.extend((n + 1,))
+            n += 2
+        return refinement_field_indices, n

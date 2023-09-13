@@ -25,6 +25,8 @@ class Prism(BaseModel):
     mesh_order: float = Field(np.inf)
     mesh_bool: bool = Field(True)
     buffered_polygons: List[Tuple[float, Polygon]] = []
+    dimension: int = Field(3)
+    resolution: Dict | None = Field(None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -36,6 +38,7 @@ class Prism(BaseModel):
         physical_name: Optional[str] = None,
         mesh_order: float = np.inf,
         mesh_bool: bool = True,
+        resolution: Dict | None = None,
     ):
         super().__init__(
             polygons=polygons,
@@ -44,6 +47,7 @@ class Prism(BaseModel):
             physical_name=physical_name,
             mesh_order=mesh_order,
             mesh_bool=mesh_bool,
+            resolution=resolution,
         )
 
         # Model
@@ -62,6 +66,8 @@ class Prism(BaseModel):
         self.mesh_order = mesh_order
         self.physical_name = physical_name
         self.mesh_bool = mesh_bool
+        self.dimension = 3
+        self.resolution = resolution
 
     def get_gmsh_volumes(self) -> List[int]:
         """Returns the fused GMSH volumes within model from the polygons and buffers."""
