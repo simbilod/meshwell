@@ -25,14 +25,15 @@ def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
             common_interfaces = list(
                 set(entity1.boundaries).intersection(entity2.boundaries)
             )
-            # Remember which boundaries were interfaces with another entity
-            entity1.interfaces.extend(common_interfaces)
-            entity2.interfaces.extend(common_interfaces)
-            gmsh.model.addPhysicalGroup(
-                max_dim - 1,
-                common_interfaces,
-                name=f"{entity1.physical_name}{boundary_delimiter}{entity2.physical_name}",
-            )
+            if common_interfaces:
+                # Remember which boundaries were interfaces with another entity
+                entity1.interfaces.extend(common_interfaces)
+                entity2.interfaces.extend(common_interfaces)
+                gmsh.model.addPhysicalGroup(
+                    max_dim - 1,
+                    common_interfaces,
+                    name=f"{entity1.physical_name}{boundary_delimiter}{entity2.physical_name}",
+                )
 
     return entity_list
 
