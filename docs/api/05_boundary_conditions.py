@@ -18,11 +18,10 @@
 #
 # This can be seamlessly used to define more complicated boundary conditions, instead of relying on the usual GMSH boundary recovery methods (entity extraction in bounding boxes, or direct dimtag manipulation).
 #
-# The way this is done is with boundary entities that are added to the CAD model, but not meshed. These are added just like a regular `entities_dict` entry, but under `boundary_dict`:
+# The way this is done is with boundary entities that are added to the CAD model, but not meshed. These are added just like a regular entites, but with a flag to disable meshing:
 
 # + tags=["hide-input"]
 from meshwell.model import Model
-from collections import OrderedDict
 from meshwell.polysurface import PolySurface
 from meshwell.gmsh_entity import GMSH_entity
 import shapely
@@ -39,27 +38,25 @@ rectangle_polygon = shapely.Polygon(
         (0, 0, 0),
     ]
 )
-rectangle = PolySurface(polygons=rectangle_polygon, model=model)
+rectangle = PolySurface(
+    polygons=rectangle_polygon, model=model, mesh_order=1, physical_name="rectangle"
+)
 
 # Create another rectangle for boundary definition
 top_line_rectangle = GMSH_entity(
     gmsh_function=model.occ.add_rectangle,
     gmsh_function_kwargs={"x": 0, "y": 2, "z": 0, "dx": 2, "dy": 1},
-    dim=2,
+    dimension=2,
     model=model,
+    mesh_order=0,
+    physical_name="top_line_rectangle",
+    mesh_bool=False,
 )
 
-entities = OrderedDict(
-    {
-        "rectangle": rectangle,
-    }
-)
-
-boundary_entities = {"top_line_rectangle": top_line_rectangle}
+entities = [rectangle, top_line_rectangle]
 
 mesh_out = model.mesh(
-    entities_dict=entities,
-    boundaries_dict=boundary_entities,
+    entities_list=entities,
     verbosity=False,
     filename="mesh.msh",
 )

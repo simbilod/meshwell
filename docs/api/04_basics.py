@@ -18,7 +18,6 @@
 
 # + tags=["hide-input"]
 from meshwell.model import Model
-from collections import OrderedDict
 from meshwell.gmsh_entity import GMSH_entity
 
 # +
@@ -38,25 +37,24 @@ model = Model()
 box1 = GMSH_entity(
     gmsh_function=model.occ.addBox,
     gmsh_function_kwargs={"x": 0, "y": 0, "z": 0, "dx": 2, "dy": 2, "dz": 2},
-    dim=3,
+    dimension=3,
     model=model,
+    physical_name="box1",
+    mesh_order=1,
 )
 
 box2 = GMSH_entity(
     gmsh_function=model.occ.addBox,
     gmsh_function_kwargs={"x": 1, "y": 1, "z": 1, "dx": 2, "dy": 2, "dz": 2},
-    dim=3,
+    dimension=3,
     model=model,
+    physical_name="box2",
+    mesh_order=2,
 )
 
-entities = OrderedDict(
-    {
-        "box1": box1,
-        "box2": box2,
-    }
-)
+entities = [box1, box2]
 
-mesh_out = model.mesh(entities_dict=entities, verbosity=True, filename="mesh.msh")
+mesh_out = model.mesh(entities_list=entities, verbosity=True, filename="mesh.msh")
 # -
 
 

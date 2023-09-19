@@ -57,10 +57,10 @@ buffers = {
 
 model = Model()
 
-poly3D = Prism(polygons=polygon, buffers=buffers, model=model)
+poly3D = Prism(polygons=polygon, buffers=buffers, model=model, physical_name="poly3D")
 poly3D.instanciate()
 
-model.mesh(entities_dict={"poly3D": poly3D}, filename="mesh3D.msh")
+model.mesh(entities_list=[poly3D], filename="mesh3D.msh")
 
 # Plotting courtesy of scikit-fem
 mesh = from_meshio(meshio.read("mesh3D.msh"))

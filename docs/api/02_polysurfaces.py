@@ -59,7 +59,9 @@ plt.show()
 # +
 model = Model()
 
-poly2D = PolySurface(polygons=polygon_with_holes_boolean, model=model)
+poly2D = PolySurface(
+    polygons=polygon_with_holes_boolean, model=model, physical_name="poly2D"
+)
 # -
 
 # PolySurfaces (as well as Prisms, and meshwell GMSH_entities) are not added to the CAD model upon definition, so they must be instanciated:
@@ -67,7 +69,7 @@ poly2D = PolySurface(polygons=polygon_with_holes_boolean, model=model)
 # +
 poly2D.instanciate()
 
-model.mesh(entities_dict={"polygon": poly2D}, filename="mesh2D.msh")
+model.mesh(entities_list=[poly2D], filename="mesh2D.msh")
 
 # Plotting courtesy of scikit-fem
 mesh = from_meshio(meshio.read("mesh2D.msh"))
