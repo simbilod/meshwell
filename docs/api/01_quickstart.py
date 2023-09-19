@@ -19,7 +19,6 @@ import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
-from collections import OrderedDict
 from skfem.visuals.matplotlib import draw_mesh3d
 from skfem.io.meshio import from_meshio
 import meshio
@@ -41,6 +40,9 @@ mysphere = GMSH_entity(
     gmsh_function_kwargs={"xc": 0, "yc": 0, "zc": 0, "radius": 1},
     dim=3,
     model=model,
+    mesh_order=2,
+    physical_name="sphere",
+    dimension=3,
 )
 
 # Meshwell also introduces new object classes (PolySurfaces and Prisms) that simplify definition of complex shapes:
@@ -61,7 +63,13 @@ buffers = {
     0.5: 0.0,
 }
 
-mywedge = Prism(polygons=mypolygon, buffers=buffers, model=model)
+mywedge = Prism(
+    polygons=mypolygon,
+    buffers=buffers,
+    model=model,
+    mesh_order=1,
+    physical_name="wedge",
+)
 # -
 
 # ## Step 2: define the mesh
@@ -69,15 +77,10 @@ mywedge = Prism(polygons=mypolygon, buffers=buffers, model=model)
 # Provide meshwell with an Ordered dictionary, with physical labels as keys and a list of meshwell entities as values. Entities higher in the dict take precedence.
 
 # +
-entities_dict = OrderedDict(
-    {
-        "wedge": mywedge,
-        "sphere": mysphere,
-    }
-)
+entities_list = [mywedge, mysphere]
 
 geometry = model.mesh(
-    entities_dict=entities_dict, verbosity=False, filename="quickmesh.msh"
+    entities_list=entities_list, verbosity=False, filename="quickmesh.msh"
 )
 # -
 
