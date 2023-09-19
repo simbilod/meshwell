@@ -272,6 +272,8 @@ class Model:
             mapping[self.model.getPhysicalName(dimtag[0], dimtag[1])] = dimtag
         if periodic_entities:
             for label1, label2 in periodic_entities:
+                if label1 not in mapping or label2 not in mapping:
+                    continue
                 tags1 = self.model.getEntitiesForPhysicalGroup(*mapping[label1])
                 tags2 = self.model.getEntitiesForPhysicalGroup(*mapping[label2])
 
