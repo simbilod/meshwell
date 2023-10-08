@@ -1,8 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## 1.0.1
+## 1.0.2
 
-Refactoring release, with more to come.
+- default mesh ordering [PR#42](https://github.com/simbilod/meshwell/pull/42)
+## 1.0.1
 
 - resolution dict --> resolution attributes [PR#38](https://github.com/simbilod/meshwell/pull/38)
 
