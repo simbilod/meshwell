@@ -1,4 +1,3 @@
-import numpy as np
 from typing import List, Dict, Optional, Tuple, Union, Any
 from pydantic import BaseModel, Field, ConfigDict
 from shapely.geometry import Polygon, MultiPolygon
@@ -22,7 +21,7 @@ class Prism(BaseModel):
     buffers: Dict[float, float] = Field(...)
     model: Any
     physical_name: Optional[str] = Field(None)
-    mesh_order: float = Field(np.inf)
+    mesh_order: float | None = None
     mesh_bool: bool = Field(True)
     buffered_polygons: List[Tuple[float, Polygon]] = []
     dimension: int = Field(3)
@@ -36,7 +35,7 @@ class Prism(BaseModel):
         buffers: Dict[float, float],
         model: Any,
         physical_name: Optional[str] = None,
-        mesh_order: float = np.inf,
+        mesh_order: float | None = None,
         mesh_bool: bool = True,
         resolution: Dict | None = None,
     ):
