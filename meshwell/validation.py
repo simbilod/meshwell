@@ -42,12 +42,13 @@ def order_entities(entities):
         entity for entity in entities if entity.mesh_order is None
     ]
     if ordered_defined_entities:
-        ordered_undefined_entities = assign_mesh_order_from_ordering(
-            undefined_order_entities,
-            start_index=math.ceil(ordered_defined_entities[-1].mesh_order) + 1,
-        )
+        start_index = math.ceil(ordered_defined_entities[-1].mesh_order) + 1
     else:
-        ordered_undefined_entities = []
+        start_index = 1
+    ordered_undefined_entities = assign_mesh_order_from_ordering(
+        undefined_order_entities,
+        start_index=start_index,
+    )
     return ordered_defined_entities + ordered_undefined_entities
 
 
