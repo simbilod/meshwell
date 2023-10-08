@@ -8,7 +8,7 @@ import gmsh
 from meshwell.validation import (
     validate_dimtags,
     unpack_dimtags,
-    sort_entities_by_mesh_order,
+    order_entities,
     consolidate_entities_by_physical_name,
 )
 from meshwell.labeledentity import LabeledEntities
@@ -193,7 +193,7 @@ class Model:
         self.occ.synchronize()
 
         # Order the entities
-        entities_list = sort_entities_by_mesh_order(entities_list)
+        entities_list = order_entities(entities_list)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
