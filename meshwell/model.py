@@ -235,6 +235,20 @@ class Model:
                 resolution=resolution,
             )
             if index != 0:
+                # To avoid perfectly overlapping entities, shrink the current shapes prior to boolean
+                x, y, z = 0, 0, 0
+                for dimtag in current_entities.dimtags:
+                    x0, y0, z0 = self.occ.getCenterOfMass(dimtag[0], dimtag[1])
+                    x += x0
+                    y += y0
+                    z += z0
+                x /= len(current_entities.dimtags)
+                y /= len(current_entities.dimtags)
+                z /= len(current_entities.dimtags)
+
+                self.occ.dilate(current_entities.dimtags, x, y, z, 1.0, 1.0, 1.0)
+                self.sync_model()
+
                 cut = self.occ.cut(
                     current_entities.dimtags,
                     [
@@ -250,6 +264,10 @@ class Model:
                 self.sync_model()
                 current_entities.dimtags = list(set(cut[0]))
             if current_entities.dimtags:
+                # Scale back if the cut did not completely remove the entities
+                if index != 0:
+                    self.occ.dilate(current_entities.dimtags, x, y, z, 1.0, 1.0, 1.0)
+                    self.sync_model()
                 final_entity_list.append(current_entities)
 
         # Make sure the most up-to-date surfaces are logged as boundaries
