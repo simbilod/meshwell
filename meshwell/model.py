@@ -339,7 +339,7 @@ class Model:
 
         self.occ.synchronize()
 
-        if not (filename.endswith(".step") or filename.endswith(".stp")):
+        if not filename.endswith((".step",".stp")):
             if global_3D_algorithm == 1 and verbosity:
                 gmsh.logger.start()
             self.model.mesh.generate(max_dim)
