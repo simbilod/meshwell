@@ -359,7 +359,7 @@ class Model:
         if filename:
             gmsh.write(f"{filename}")
 
-        if not (filename.endswith(".step") or filename.endswith(".stp")):
+        if not filename.endswith((".step",".stp")):
             with contextlib.redirect_stdout(None):
                 with tempfile.TemporaryDirectory() as tmpdirname:
                     gmsh.write(f"{tmpdirname}/mesh.msh")
