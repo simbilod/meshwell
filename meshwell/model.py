@@ -270,6 +270,8 @@ class Model:
                     )[0]
                     self.occ.synchronize()
                 final_entity_list.append(entities)
+        else:
+            final_entity_list = consolidated_entity_list
         for entity in final_entity_list:
             entity.update_boundaries()
 
