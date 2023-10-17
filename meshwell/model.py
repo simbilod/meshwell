@@ -339,7 +339,7 @@ class Model:
 
         self.occ.synchronize()
 
-        if not filename.endswith((".step",".stp")):
+        if not filename.endswith((".step", ".stp")):
             if global_3D_algorithm == 1 and verbosity:
                 gmsh.logger.start()
             self.model.mesh.generate(max_dim)
@@ -359,7 +359,7 @@ class Model:
         if filename:
             gmsh.write(f"{filename}")
 
-        if not filename.endswith((".step",".stp")):
+        if not filename.endswith((".step", ".stp")):
             with contextlib.redirect_stdout(None):
                 with tempfile.TemporaryDirectory() as tmpdirname:
                     gmsh.write(f"{tmpdirname}/mesh.msh")
