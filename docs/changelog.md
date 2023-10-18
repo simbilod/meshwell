@@ -1,8 +1,14 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.0.3
+
+- step output [PR#43](https://github.com/simbilod/meshwell/pull/43)
+- fuse entities by name [PR#44](https://github.com/simbilod/meshwell/pull/44)
+
 ## 1.0.2
 
 - default mesh ordering [PR#42](https://github.com/simbilod/meshwell/pull/42)
+
 ## 1.0.1
 
 - resolution dict --> resolution attributes [PR#38](https://github.com/simbilod/meshwell/pull/38)
