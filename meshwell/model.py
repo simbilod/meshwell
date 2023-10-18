@@ -156,6 +156,7 @@ class Model:
         finalize: bool = True,
         reinitialize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
+        fuse_entities_by_name: bool = False,
     ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
@@ -174,6 +175,7 @@ class Model:
                 see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
             finalize: if True (default), finalizes the GMSH model after execution
             periodic_entities: enforces mesh periodicity between the physical entities
+            fuse_entities_by_name: if True, fuses CAD entities sharing the same physical_name
 
         Returns:
             meshio object with mWesh information
@@ -253,7 +255,23 @@ class Model:
                 final_entity_list.append(current_entities)
 
         # Make sure the most up-to-date surfaces are logged as boundaries
-        final_entity_list = consolidate_entities_by_physical_name(final_entity_list)
+        consolidated_entity_list = consolidate_entities_by_physical_name(
+            final_entity_list
+        )
+        final_entity_list = []
+        if fuse_entities_by_name:
+            for entities in consolidated_entity_list:
+                if len(entities.dimtags) != 1:
+                    entities.dimtags = self.occ.fuse(
+                        [entities.dimtags[0]],
+                        entities.dimtags[1:],
+                        removeObject=True,
+                        removeTool=True,
+                    )[0]
+                    self.occ.synchronize()
+                final_entity_list.append(entities)
+        else:
+            final_entity_list = consolidated_entity_list
         for entity in final_entity_list:
             entity.update_boundaries()
 
