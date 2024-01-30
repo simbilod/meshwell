@@ -4,6 +4,8 @@ from os import cpu_count
 from typing import Dict, Optional, List, Tuple
 import numpy as np
 
+from pathlib import Path
+
 import gmsh
 from meshwell.validation import (
     validate_dimtags,
@@ -142,13 +144,13 @@ class Model:
     def mesh(
         self,
         entities_list: List,
-        resolutions: Optional[Dict] = None,
+        background_remeshing_file: Optional[Path] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
         filename: Optional[str] = None,
-        verbosity: Optional[int] = 0,
+        verbosity: Optional[int] = 5,
         progress_bars: bool = True,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
@@ -162,7 +164,7 @@ class Model:
 
         Args:
             entities_list: list of meshwell entities (GMSH_entity, Prism, or PolySurface)
-            resolutions (Dict): Pairs {"physical name": {"resolution": float, "distance": "float}}
+            background_remeshing (Path): path to a .pos file for background remeshing. If not None, is used instead of entity resolutions.
             default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
             global_scaling: factor to scale all mesh coordinates by (e.g. 1E-6 to go from um to m)
             global_2D_algorithm: gmsh surface default meshing algorithm, see https://gmsh.info/doc/texinfo/gmsh.html#Mesh-options
@@ -178,11 +180,16 @@ class Model:
             fuse_entities_by_name: if True, fuses CAD entities sharing the same physical_name
 
         Returns:
-            meshio object with mWesh information
+            meshio object with mesh information
         """
 
-        resolutions = resolutions if resolutions else {}
-        gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
+        # If background mesh, create separate model
+        if background_remeshing_file:
+            # path = os.path.dirname(os.path.abspath(__file__))
+            gmsh.merge(background_remeshing_file)
+            gmsh.model.add("temp")
+
+        gmsh.option.setNumber("General.Terminal", 10)  # 1 verbose, 0 otherwise
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
@@ -328,24 +335,30 @@ class Model:
                 self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Perform refinement
-        refinement_field_indices = []
-        refinement_max_index = 0
-        for entity in final_entity_list:
-            (
-                refinement_field_indices,
-                refinement_max_index,
-            ) = entity.add_refinement_fields_to_model(
-                refinement_field_indices,
-                refinement_max_index,
-                default_characteristic_length,
-            )
+        if background_remeshing_file is None:
+            # Use entity information
+            refinement_field_indices = []
+            refinement_max_index = 0
+            for entity in final_entity_list:
+                (
+                    refinement_field_indices,
+                    refinement_max_index,
+                ) = entity.add_refinement_fields_to_model(
+                    refinement_field_indices,
+                    refinement_max_index,
+                    default_characteristic_length,
+                )
 
-        # Use the smallest element size overall
-        self.model.mesh.field.add("Min", refinement_max_index)
-        self.model.mesh.field.setNumbers(
-            refinement_max_index, "FieldsList", refinement_field_indices
-        )
-        self.model.mesh.field.setAsBackgroundMesh(refinement_max_index)
+            # Use the smallest element size overall
+            self.model.mesh.field.add("Min", refinement_max_index)
+            self.model.mesh.field.setNumbers(
+                refinement_max_index, "FieldsList", refinement_field_indices
+            )
+            self.model.mesh.field.setAsBackgroundMesh(refinement_max_index)
+        else:
+            bg_field = self.model.mesh.field.add("PostView")
+            self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
+            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
 
         # Turn off default meshing options
         self.model.mesh.MeshSizeFromPoints = 0
