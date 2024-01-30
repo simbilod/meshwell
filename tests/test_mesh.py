@@ -24,6 +24,7 @@ def test_mesh_3D():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
+        resolution={"resolution": 0.5},
     )
 
     gmsh_entity = GMSH_entity(
@@ -37,13 +38,8 @@ def test_mesh_3D():
 
     entities_list = [poly3D, gmsh_entity]
 
-    resolutions = {
-        "first_entity": {"resolution": 0.3},
-    }
-
     model.mesh(
         entities_list=entities_list,
-        resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
         filename="mesh3D.msh",
@@ -62,7 +58,11 @@ def test_mesh_2D():
 
     model = Model()
     poly2D = PolySurface(
-        polygons=polygon, model=model, physical_name="first_entity", mesh_order=1
+        polygons=polygon,
+        model=model,
+        physical_name="first_entity",
+        mesh_order=1,
+        resolution={"resolution": 0.5},
     )
 
     gmsh_entity = GMSH_entity(
@@ -76,13 +76,8 @@ def test_mesh_2D():
 
     entities_list = [poly2D, gmsh_entity]
 
-    resolutions = {
-        "first_entity": {"resolution": 0.3},
-    }
-
     model.mesh(
         entities_list=entities_list,
-        resolutions=resolutions,
         default_characteristic_length=0.5,
         verbosity=False,
         filename="mesh2D.msh",
