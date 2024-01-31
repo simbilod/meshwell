@@ -4,7 +4,6 @@ from shapely import Polygon, box
 from shapely.geometry import Point, MultiPolygon
 
 from meshwell.model import Model
-from collections import OrderedDict
 
 if __name__ == "__main__":
     model = Model()
@@ -54,10 +53,13 @@ if __name__ == "__main__":
         0: 0.0,
         core_thickness: 0.0,
     }
-    core = Prism(
+    core_prism = Prism(
         polygons=core_polygon - holes_multipolygon,
         buffers=core_buffers,
         model=model,
+        physical_name="core",
+        mesh_order=1,
+        resolution={"resolution": 0.05, "DistMax": 1.0, "SizeMax": 1.0},
     )
 
     cladding_polygon = box(
@@ -74,15 +76,19 @@ if __name__ == "__main__":
             0: 0.0,
         },
         model=model,
+        physical_name="box",
+        mesh_order=3,
     )
 
-    cladding_prism = Prism(
+    clad_prism = Prism(
         polygons=cladding_polygon,
         buffers={
             0: 0.0,
             cladding_thickness: 0.0,
         },
         model=model,
+        physical_name="cladding",
+        mesh_order=2,
     )
 
     pml_polygon = box(
@@ -92,26 +98,24 @@ if __name__ == "__main__":
         ymax=simulation_width / 2 + pml_thickness,
     )
 
-    PML = Prism(
+    pml_prism = Prism(
         polygons=pml_polygon,
         buffers={
             -box_thickness - pml_thickness: 0.0,
             cladding_thickness + pml_thickness: 0.0,
         },
         model=model,
+        physical_name="PML",
+        mesh_order=4,
     )
 
     """
     ASSEMBLE AND NAME ENTITIES
     """
-    entities = OrderedDict()
-    entities["core"] = core
-    entities["cladding"] = cladding_prism
-    entities["box"] = box_prism
-    entities["PML"] = PML
 
     mesh = model.mesh(
-        entities_dict=entities,
+        entities_list=[core_prism, box_prism, clad_prism, pml_prism],
         verbosity=0,
         filename="mesh.msh",
+        default_characteristic_length=0.5,
     )
