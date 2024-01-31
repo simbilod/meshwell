@@ -159,6 +159,7 @@ class Model:
         reinitialize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
         fuse_entities_by_name: bool = False,
+        optimization_flags: tuple[tuple[str, int]] | None = None,
     ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
@@ -178,6 +179,7 @@ class Model:
             finalize: if True (default), finalizes the GMSH model after execution
             periodic_entities: enforces mesh periodicity between the physical entities
             fuse_entities_by_name: if True, fuses CAD entities sharing the same physical_name
+            optimization_flags: list of (method, niters) for smoothing. See https://gitlab.onelab.info/gmsh/gmsh/blob/gmsh_4_12_2/api/gmsh.py#L2087
 
         Returns:
             meshio object with mesh information
@@ -374,6 +376,12 @@ class Model:
             if global_3D_algorithm == 1 and verbosity:
                 gmsh.logger.start()
             self.model.mesh.generate(max_dim)
+
+            # Mesh smoothing
+            if optimization_flags is not None:
+                for optimization_flag, niter in optimization_flags:
+                    self.model.mesh.optimize(optimization_flag, niter=niter)
+
             if global_3D_algorithm == 1 and verbosity:
                 for line in gmsh.logger.get():
                     if "Optimizing volume " in str(line):
