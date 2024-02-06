@@ -199,7 +199,10 @@ class Prism(BaseModel):
         ]
         if interiors:
             exterior = self.model.occ.cut(
-                [(3, exterior)], [(3, interior) for interior in interiors], removeObject=True, removeTool=True
+                [(3, exterior)],
+                [(3, interior) for interior in interiors],
+                removeObject=True,
+                removeTool=True,
             )
             self.model.occ.synchronize()
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
