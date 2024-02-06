@@ -1,6 +1,4 @@
 import gmsh
-import numpy as np
-
 
 from typing import Any, Dict, Optional
 from pydantic import BaseModel
@@ -25,9 +23,9 @@ class GMSH_entity(BaseModel):
     dimension: int
     model: Any
     physical_name: Optional[str] = None
-    mesh_order: float = np.inf
+    mesh_order: float | None = None
     mesh_bool: bool = True
-    resolution: Dict | None = None
+    resolution: Dict[str, float] | None = None
 
     def instanciate(self):
         """Returns dim tag from entity."""

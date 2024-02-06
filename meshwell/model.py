@@ -4,11 +4,13 @@ from os import cpu_count
 from typing import Dict, Optional, List, Tuple
 import numpy as np
 
+from pathlib import Path
+
 import gmsh
 from meshwell.validation import (
     validate_dimtags,
     unpack_dimtags,
-    sort_entities_by_mesh_order,
+    order_entities,
     consolidate_entities_by_physical_name,
 )
 from meshwell.labeledentity import LabeledEntities
@@ -142,13 +144,13 @@ class Model:
     def mesh(
         self,
         entities_list: List,
-        resolutions: Optional[Dict] = None,
+        background_remeshing_file: Optional[Path] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
         filename: Optional[str] = None,
-        verbosity: Optional[int] = 0,
+        verbosity: Optional[int] = 5,
         progress_bars: bool = True,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
@@ -156,12 +158,14 @@ class Model:
         finalize: bool = True,
         reinitialize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
+        fuse_entities_by_name: bool = False,
+        optimization_flags: tuple[tuple[str, int]] | None = None,
     ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
 
         Args:
             entities_list: list of meshwell entities (GMSH_entity, Prism, or PolySurface)
-            resolutions (Dict): Pairs {"physical name": {"resolution": float, "distance": "float}}
+            background_remeshing (Path): path to a .pos file for background remeshing. If not None, is used instead of entity resolutions.
             default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
             global_scaling: factor to scale all mesh coordinates by (e.g. 1E-6 to go from um to m)
             global_2D_algorithm: gmsh surface default meshing algorithm, see https://gmsh.info/doc/texinfo/gmsh.html#Mesh-options
@@ -174,13 +178,20 @@ class Model:
                 see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
             finalize: if True (default), finalizes the GMSH model after execution
             periodic_entities: enforces mesh periodicity between the physical entities
+            fuse_entities_by_name: if True, fuses CAD entities sharing the same physical_name
+            optimization_flags: list of (method, niters) for smoothing. See https://gitlab.onelab.info/gmsh/gmsh/blob/gmsh_4_12_2/api/gmsh.py#L2087
 
         Returns:
-            meshio object with mWesh information
+            meshio object with mesh information
         """
 
-        resolutions = resolutions if resolutions else {}
-        gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
+        # If background mesh, create separate model
+        if background_remeshing_file:
+            # path = os.path.dirname(os.path.abspath(__file__))
+            gmsh.merge(background_remeshing_file)
+            gmsh.model.add("temp")
+
+        gmsh.option.setNumber("General.Terminal", 10)  # 1 verbose, 0 otherwise
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
@@ -193,7 +204,7 @@ class Model:
         self.occ.synchronize()
 
         # Order the entities
-        entities_list = sort_entities_by_mesh_order(entities_list)
+        entities_list = order_entities(entities_list)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
@@ -253,7 +264,23 @@ class Model:
                 final_entity_list.append(current_entities)
 
         # Make sure the most up-to-date surfaces are logged as boundaries
-        final_entity_list = consolidate_entities_by_physical_name(final_entity_list)
+        consolidated_entity_list = consolidate_entities_by_physical_name(
+            final_entity_list
+        )
+        final_entity_list = []
+        if fuse_entities_by_name:
+            for entities in consolidated_entity_list:
+                if len(entities.dimtags) != 1:
+                    entities.dimtags = self.occ.fuse(
+                        [entities.dimtags[0]],
+                        entities.dimtags[1:],
+                        removeObject=True,
+                        removeTool=True,
+                    )[0]
+                    self.occ.synchronize()
+                final_entity_list.append(entities)
+        else:
+            final_entity_list = consolidated_entity_list
         for entity in final_entity_list:
             entity.update_boundaries()
 
@@ -310,24 +337,30 @@ class Model:
                 self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Perform refinement
-        refinement_field_indices = []
-        refinement_max_index = 0
-        for entity in final_entity_list:
-            (
-                refinement_field_indices,
-                refinement_max_index,
-            ) = entity.add_refinement_fields_to_model(
-                refinement_field_indices,
-                refinement_max_index,
-                default_characteristic_length,
-            )
+        if background_remeshing_file is None:
+            # Use entity information
+            refinement_field_indices = []
+            refinement_max_index = 0
+            for entity in final_entity_list:
+                (
+                    refinement_field_indices,
+                    refinement_max_index,
+                ) = entity.add_refinement_fields_to_model(
+                    refinement_field_indices,
+                    refinement_max_index,
+                    default_characteristic_length,
+                )
 
-        # Use the smallest element size overall
-        self.model.mesh.field.add("Min", refinement_max_index)
-        self.model.mesh.field.setNumbers(
-            refinement_max_index, "FieldsList", refinement_field_indices
-        )
-        self.model.mesh.field.setAsBackgroundMesh(refinement_max_index)
+            # Use the smallest element size overall
+            self.model.mesh.field.add("Min", refinement_max_index)
+            self.model.mesh.field.setNumbers(
+                refinement_max_index, "FieldsList", refinement_field_indices
+            )
+            self.model.mesh.field.setAsBackgroundMesh(refinement_max_index)
+        else:
+            bg_field = self.model.mesh.field.add("PostView")
+            self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
+            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
 
         # Turn off default meshing options
         self.model.mesh.MeshSizeFromPoints = 0
@@ -338,28 +371,37 @@ class Model:
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
 
         self.occ.synchronize()
-        if global_3D_algorithm == 1 and verbosity:
-            gmsh.logger.start()
-        self.model.mesh.generate(max_dim)
-        if global_3D_algorithm == 1 and verbosity:
-            for line in gmsh.logger.get():
-                if "Optimizing volume " in str(line):
-                    number = int(str(line).split("Optimizing volume ")[1])
-                    physicalTags = gmsh.model.getPhysicalGroupsForEntity(3, number)
-                    physicals = []
-                    if len(physicalTags):
-                        for p in physicalTags:
-                            physicals.append(gmsh.model.getPhysicalName(dim, p))
-                if "ill-shaped tets are" in str(line):
-                    print(",".join(physicals))
-                    print(str(line))
+
+        if not filename.endswith((".step", ".stp")):
+            if global_3D_algorithm == 1 and verbosity:
+                gmsh.logger.start()
+            self.model.mesh.generate(max_dim)
+
+            # Mesh smoothing
+            if optimization_flags is not None:
+                for optimization_flag, niter in optimization_flags:
+                    self.model.mesh.optimize(optimization_flag, niter=niter)
+
+            if global_3D_algorithm == 1 and verbosity:
+                for line in gmsh.logger.get():
+                    if "Optimizing volume " in str(line):
+                        number = int(str(line).split("Optimizing volume ")[1])
+                        physicalTags = gmsh.model.getPhysicalGroupsForEntity(3, number)
+                        physicals = []
+                        if len(physicalTags):
+                            for p in physicalTags:
+                                physicals.append(gmsh.model.getPhysicalName(dim, p))
+                    if "ill-shaped tets are" in str(line):
+                        print(",".join(physicals))
+                        print(str(line))
 
         if filename:
             gmsh.write(f"{filename}")
 
-        with contextlib.redirect_stdout(None):
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                gmsh.write(f"{tmpdirname}/mesh.msh")
-                if finalize:
-                    gmsh.finalize()
-                return meshio.read(f"{tmpdirname}/mesh.msh")
+        if not filename.endswith((".step", ".stp")):
+            with contextlib.redirect_stdout(None):
+                with tempfile.TemporaryDirectory() as tmpdirname:
+                    gmsh.write(f"{tmpdirname}/mesh.msh")
+                    if finalize:
+                        gmsh.finalize()
+                    return meshio.read(f"{tmpdirname}/mesh.msh")

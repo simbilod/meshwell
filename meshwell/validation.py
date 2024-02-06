@@ -1,4 +1,5 @@
 from meshwell.labeledentity import LabeledEntities
+import math
 
 
 def validate_dimtags(dimtags):
@@ -19,9 +20,36 @@ def unpack_dimtags(dimtags):
     return [(dim, tag) for tag in tags]
 
 
+def assign_mesh_order_from_ordering(entities, start_index: int = 0):
+    """Assigns a mesh_order according to the ordering of entities in the list."""
+    for index, entity in enumerate(entities, start=start_index):
+        entity.mesh_order = index
+    return entities
+
+
 def sort_entities_by_mesh_order(entities):
     """Returns a list of entities, sorted by mesh_order."""
     return sorted(entities, key=lambda entity: entity.mesh_order)
+
+
+def order_entities(entities):
+    """Returns a list of entities, sorted by mesh_order, assigning a mesh order corresponding to the ordering if not defined."""
+    defined_order_entities = [
+        entity for entity in entities if entity.mesh_order is not None
+    ]
+    ordered_defined_entities = sort_entities_by_mesh_order(defined_order_entities)
+    undefined_order_entities = [
+        entity for entity in entities if entity.mesh_order is None
+    ]
+    if ordered_defined_entities:
+        start_index = math.ceil(ordered_defined_entities[-1].mesh_order) + 1
+    else:
+        start_index = 1
+    ordered_undefined_entities = assign_mesh_order_from_ordering(
+        undefined_order_entities,
+        start_index=start_index,
+    )
+    return ordered_defined_entities + ordered_undefined_entities
 
 
 def consolidate_entities_by_physical_name(entities):

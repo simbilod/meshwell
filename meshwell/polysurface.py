@@ -1,4 +1,3 @@
-import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
 from shapely.geometry import Polygon, MultiPolygon
 from typing import List, Optional, Union, Any, Tuple, Dict
@@ -20,7 +19,7 @@ class PolySurface(BaseModel):
     )
     model: Any
     physical_name: Optional[str] = Field(None)
-    mesh_order: float = Field(np.inf)
+    mesh_order: float | None = None
     mesh_bool: bool = Field(True)
     dimension: int = Field(2)
     resolution: Dict | None = Field(None)
@@ -32,7 +31,7 @@ class PolySurface(BaseModel):
         polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
         model: Any,
         physical_name: Optional[str] = None,
-        mesh_order: float = np.inf,
+        mesh_order: float | None = None,
         mesh_bool: bool = True,
         resolution: Dict | None = None,
     ):
