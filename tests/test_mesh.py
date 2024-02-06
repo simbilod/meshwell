@@ -24,6 +24,7 @@ def test_mesh_3D():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
+        color=(0, 255, 0),
     )
 
     gmsh_entity = GMSH_entity(
@@ -33,6 +34,7 @@ def test_mesh_3D():
         model=model,
         physical_name="second_entity",
         mesh_order=2,
+        color=(255, 0, 0),
     )
 
     entities_list = [poly3D, gmsh_entity]
@@ -93,4 +95,4 @@ def test_mesh_2D():
 
 if __name__ == "__main__":
     test_mesh_3D()
-    test_mesh_2D()
+    # test_mesh_2D()

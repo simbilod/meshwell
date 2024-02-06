@@ -12,7 +12,7 @@ from meshwell.validation import (
     consolidate_entities_by_physical_name,
 )
 from meshwell.labeledentity import LabeledEntities
-from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
+from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries, color_entities
 
 import contextlib
 import tempfile
@@ -216,6 +216,7 @@ class Model:
             physical_name = entity_obj.physical_name
             keep = entity_obj.mesh_bool
             resolution = entity_obj.resolution
+            color = entity_obj.color
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(f"{physical_name:<30}")
@@ -235,6 +236,7 @@ class Model:
                 keep=keep,
                 model=self.model,
                 resolution=resolution,
+                color=color,
             )
             if index != 0:
                 cut = self.occ.cut(
@@ -283,6 +285,9 @@ class Model:
         tag_boundaries(
             final_entity_list, max_dim, interface_delimiter, boundary_delimiter
         )
+
+        # Add colors
+        color_entities(final_entity_list)
 
         # Enforce periodic boundaries
         mapping = {}
@@ -356,6 +361,8 @@ class Model:
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
 
         self.occ.synchronize()
+
+        r, g, b, a = gmsh.option.getColor("Geometry.Volumes")
 
         if not filename.endswith((".step", ".stp")):
             if global_3D_algorithm == 1 and verbosity:
