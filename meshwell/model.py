@@ -149,7 +149,7 @@ class Model:
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
-        filename: Optional[str] = None,
+        filename: Optional[str | Path] = None,
         verbosity: Optional[int] = 5,
         progress_bars: bool = True,
         interface_delimiter: str = "___",
@@ -184,6 +184,8 @@ class Model:
         Returns:
             meshio object with mesh information
         """
+        # Parse filename
+        filename = str(filename)
 
         # If background mesh, create separate model
         if background_remeshing_file:
