@@ -119,6 +119,7 @@ class Prism(BaseModel):
         Returns:
             ID of the added volume
         """
+        # Draw bottom surface
         bottom_polygon = entry[0][1]
         bottom_z = entry[0][0]
         bottom_polygon_vertices = self.xy_surface_vertices(
@@ -129,6 +130,7 @@ class Prism(BaseModel):
         )
         gmsh_surfaces = [self.model.add_surface(bottom_polygon_vertices)]
 
+        # Draw top surface
         top_polygon = entry[-1][1]
         top_z = entry[-1][0]
         top_polygon_vertices = self.xy_surface_vertices(
@@ -247,6 +249,40 @@ class Prism(BaseModel):
                 if num_points_interior != reference_interior_vertices:
                     return False
         return True
+
+    """
+    Extrusion method
+    """
+
+    def _add_surface_with_holes(self, polygons, zmin) -> int:
+        """Returns surface, removing intersection with hole surfaces."""
+        for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
+            # Add outer surface(s)
+            exterior = self.model.add_surface(
+                self.xy_surface_vertices(polygon, polygon_z=zmin, exterior=True)
+            )
+            interiors = [
+                self.model.add_surface(
+                    self.xy_surface_vertices(
+                        polygon,
+                        polygon_z=zmin,
+                        exterior=False,
+                        interior_index=interior_index,
+                    )
+                )
+                for interior_index in range(len(polygon.interiors))
+            ]
+            if interiors:
+                for interior in interiors:
+                    exterior = self.model.occ.cut(
+                        [(2, exterior)],
+                        [(2, interior)],
+                        removeObject=True,
+                        removeTool=True,
+                    )
+                    self.model.occ.synchronize()
+                    exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            return exterior
 
 
 if __name__ == "__main__":
