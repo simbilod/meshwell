@@ -208,12 +208,14 @@ class Prism(BaseModel):
             for interior_index in range(len(entry[0][1].interiors))
         ]
         if interiors:
-            for interior in interiors:
-                exterior = self.model.occ.cut(
-                    [(3, exterior)], [(3, interior)], removeObject=True, removeTool=True
-                )
-                self.model.occ.synchronize()
-                exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            exterior = self.model.occ.cut(
+                [(3, exterior)],
+                [(3, interior) for interior in interiors],
+                removeObject=True,
+                removeTool=True,
+            )
+            self.model.occ.synchronize()
+            exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
     def instanciate(self) -> List[Tuple[int, int]]:
