@@ -1,5 +1,11 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.0.6
+
+Speed improvements:
+- surface extrusion for buffer-free prisms [PR#59](https://github.com/simbilod/meshwell/pull/59)
+- faster interior definition [PR#58](https://github.com/simbilod/meshwell/pull/58)
+
 ## 1.0.5
 
 - smoothing options [PR#51](https://github.com/simbilod/meshwell/pull/51)
