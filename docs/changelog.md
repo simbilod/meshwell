@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.0.7
+
+- filename can be pathlib.Path [commit a755de1](https://github.com/simbilod/meshwell/commit/a755de191140d267f4012ffd9f7b149762281091)
+
 ## 1.0.6
 
 Speed improvements:
