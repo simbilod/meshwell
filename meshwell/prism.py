@@ -119,13 +119,23 @@ class Prism(BaseModel):
         Returns:
             ID of the added volume
         """
+        bottom_polygon = entry[0][1]
+        bottom_z = entry[0][0]
         bottom_polygon_vertices = self.xy_surface_vertices(
-            entry, 0, exterior, interior_index
+            polygon=bottom_polygon,
+            polygon_z=bottom_z,
+            exterior=exterior,
+            interior_index=interior_index,
         )
         gmsh_surfaces = [self.model.add_surface(bottom_polygon_vertices)]
 
+        top_polygon = entry[-1][1]
+        top_z = entry[-1][0]
         top_polygon_vertices = self.xy_surface_vertices(
-            entry, -1, exterior, interior_index
+            polygon=top_polygon,
+            polygon_z=top_z,
+            exterior=exterior,
+            interior_index=interior_index,
         )
         gmsh_surfaces.append(self.model.add_surface(top_polygon_vertices))
 
@@ -169,15 +179,13 @@ class Prism(BaseModel):
 
     def xy_surface_vertices(
         self,
-        entry: List[Tuple[float, Polygon]],
-        arg1: int,
+        polygon: Polygon,
+        polygon_z: float,
         exterior: bool,
         interior_index: int,
     ) -> List[Tuple[float, float, float]]:
         """"""
         # Draw xy surface
-        polygon = entry[arg1][1]
-        polygon_z = entry[arg1][0]
         return (
             [(x, y, polygon_z) for x, y in polygon.exterior.coords]
             if exterior
