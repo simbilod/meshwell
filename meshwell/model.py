@@ -234,17 +234,25 @@ class Model:
             resolution = entity_obj.resolution
             if progress_bars:
                 if physical_name:
-                    enumerator.set_description(f"{physical_name:<30}")
+                    enumerator.set_description(
+                        f"{physical_name:<30} - {'instanciate':<10}"
+                    )
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
-            print("dimtags!")
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(f"{physical_name:<30} - {'dimtags':<10}")
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
             dimtags = unpack_dimtags(dimtags_out)
 
-            print("entities!")
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(
+                        f"{physical_name:<30} - {'entities':<10}"
+                    )
             # Assemble with other shapes
             current_entities = LabeledEntities(
                 index=index,
@@ -254,7 +262,9 @@ class Model:
                 model=self.model,
                 resolution=resolution,
             )
-            print("boolean!")
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(f"{physical_name:<30} - {'boolean':<10}")
             if index != 0:
                 cut = self.occ.cut(
                     current_entities.dimtags,
@@ -267,9 +277,17 @@ class Model:
                     removeTool=False,  # Tool (previous entities) should remain untouched
                 )
                 # Heal interfaces now that there are no volume conflicts
-                print("duplicates!")
+                if progress_bars:
+                    if physical_name:
+                        enumerator.set_description(
+                            f"{physical_name:<30} - {'duplicates':<10}"
+                        )
                 self.occ.removeAllDuplicates()
-                print("sync!")
+                if progress_bars:
+                    if physical_name:
+                        enumerator.set_description(
+                            f"{physical_name:<30} - {'sync':<10}"
+                        )
                 self.sync_model()
                 current_entities.dimtags = list(set(cut[0]))
             if current_entities.dimtags:
