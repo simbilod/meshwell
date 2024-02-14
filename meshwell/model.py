@@ -113,7 +113,12 @@ class Model:
             ID of the added surface
         """
         channel_loop = self._channel_loop_from_vertices(vertices)
-        return self.occ.add_plane_surface([channel_loop])
+        try:
+            return self.occ.add_plane_surface([channel_loop])
+        except Exception as e:
+            print("Failed vertices:")
+            print(vertices)
+            raise e
 
     def sync_model(self):
         """Synchronize the CAD model, and update points and lines vertex mapping."""
@@ -222,11 +227,13 @@ class Model:
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
+            print("dimtags!")
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
             dimtags = unpack_dimtags(dimtags_out)
 
+            print("entities!")
             # Assemble with other shapes
             current_entities = LabeledEntities(
                 index=index,
@@ -236,6 +243,7 @@ class Model:
                 model=self.model,
                 resolution=resolution,
             )
+            print("boolean!")
             if index != 0:
                 cut = self.occ.cut(
                     current_entities.dimtags,
@@ -248,7 +256,9 @@ class Model:
                     removeTool=False,  # Tool (previous entities) should remain untouched
                 )
                 # Heal interfaces now that there are no volume conflicts
+                print("duplicates!")
                 self.occ.removeAllDuplicates()
+                print("sync!")
                 self.sync_model()
                 current_entities.dimtags = list(set(cut[0]))
             if current_entities.dimtags:
