@@ -23,9 +23,12 @@ class Prism(BaseModel):
     physical_name: Optional[str] = Field(None)
     mesh_order: float | None = None
     mesh_bool: bool = Field(True)
-    buffered_polygons: List[Tuple[float, Polygon]] = []
+    buffered_polygons: Optional[List[Tuple[float, Polygon]]] = []
     dimension: int = Field(3)
     resolution: Dict | None = Field(None)
+    extrude: bool = False
+    zmin: Optional[float] = 0
+    zmax: Optional[float] = 0
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -52,16 +55,22 @@ class Prism(BaseModel):
         # Model
         self.model = model
 
-        # Parse buffers
-        self.buffered_polygons: List[
-            Tuple[float, Polygon]
-        ] = self._get_buffered_polygons(polygons, buffers)
+        # Parse buffers or prepare extrusion
+        if all(buffer == 0 for buffer in buffers.values()):
+            self.extrude = True
+            self.polygons = polygons
+            self.zmin, self.zmax = min(buffers.keys()), max(buffers.keys())
+        else:
+            self.extrude = False
+            self.buffered_polygons: List[
+                Tuple[float, Polygon]
+            ] = self._get_buffered_polygons(polygons, buffers)
 
-        # Validate the input
-        if not self._validate_polygon_buffers():
-            raise ValueError(
-                f"The buffer has modified the polygon vertices! Bad physical: {physical_name}"
-            )
+            # Validate the input
+            if not self._validate_polygon_buffers():
+                raise ValueError(
+                    f"The buffer has modified the polygon vertices! Bad physical: {physical_name}"
+                )
 
         # Mesh order and name
         self.mesh_order = mesh_order
@@ -72,9 +81,17 @@ class Prism(BaseModel):
 
     def get_gmsh_volumes(self) -> List[int]:
         """Returns the fused GMSH volumes within model from the polygons and buffers."""
-        volumes = [
-            self._add_volume_with_holes(entry) for entry in self.buffered_polygons
-        ]
+        if self.extrude:
+            surfaces = [
+                (2, surface)
+                for surface in self._add_surfaces_with_holes(self.polygons, self.zmin)
+            ]
+            entities = self.model.occ.extrude(surfaces, 0, 0, self.zmax - self.zmin)
+            volumes = [tag for dim, tag in entities if dim == 3]
+        else:
+            volumes = [
+                self._add_volume_with_holes(entry) for entry in self.buffered_polygons
+            ]
         if len(volumes) <= 1:
             self.model.occ.synchronize()
             return volumes
@@ -121,13 +138,25 @@ class Prism(BaseModel):
         Returns:
             ID of the added volume
         """
+        # Draw bottom surface
+        bottom_polygon = entry[0][1]
+        bottom_z = entry[0][0]
         bottom_polygon_vertices = self.xy_surface_vertices(
-            entry, 0, exterior, interior_index
+            polygon=bottom_polygon,
+            polygon_z=bottom_z,
+            exterior=exterior,
+            interior_index=interior_index,
         )
         gmsh_surfaces = [self.model.add_surface(bottom_polygon_vertices)]
 
+        # Draw top surface
+        top_polygon = entry[-1][1]
+        top_z = entry[-1][0]
         top_polygon_vertices = self.xy_surface_vertices(
-            entry, -1, exterior, interior_index
+            polygon=top_polygon,
+            polygon_z=top_z,
+            exterior=exterior,
+            interior_index=interior_index,
         )
         gmsh_surfaces.append(self.model.add_surface(top_polygon_vertices))
 
@@ -171,15 +200,13 @@ class Prism(BaseModel):
 
     def xy_surface_vertices(
         self,
-        entry: List[Tuple[float, Polygon]],
-        arg1: int,
+        polygon: Polygon,
+        polygon_z: float,
         exterior: bool,
         interior_index: int,
     ) -> List[Tuple[float, float, float]]:
         """"""
         # Draw xy surface
-        polygon = entry[arg1][1]
-        polygon_z = entry[arg1][0]
         return (
             [(x, y, polygon_z) for x, y in polygon.exterior.coords]
             if exterior
@@ -200,12 +227,14 @@ class Prism(BaseModel):
             for interior_index in range(len(entry[0][1].interiors))
         ]
         if interiors:
-            for interior in interiors:
-                exterior = self.model.occ.cut(
-                    [(3, exterior)], [(3, interior)], removeObject=True, removeTool=True
-                )
-                self.model.occ.synchronize()
-                exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            exterior = self.model.occ.cut(
+                [(3, exterior)],
+                [(3, interior) for interior in interiors],
+                removeObject=True,
+                removeTool=True,
+            )
+            self.model.occ.synchronize()
+            exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
     def instanciate(self) -> List[Tuple[int, int]]:
@@ -241,6 +270,43 @@ class Prism(BaseModel):
                 if num_points_interior != reference_interior_vertices:
                     return False
         return True
+
+    """
+    Extrusion method
+    """
+
+    def _add_surfaces_with_holes(self, polygons, z) -> List[int]:
+        """Returns surface, removing intersection with hole surfaces."""
+        surfaces = []
+        for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
+            # Add outer surface(s)
+            exterior = self.model.add_surface(
+                self.xy_surface_vertices(
+                    polygon, polygon_z=z, exterior=True, interior_index=0
+                )
+            )
+            interiors = [
+                self.model.add_surface(
+                    self.xy_surface_vertices(
+                        polygon,
+                        polygon_z=z,
+                        exterior=False,
+                        interior_index=interior_index,
+                    )
+                )
+                for interior_index in range(len(polygon.interiors))
+            ]
+            if interiors:
+                exterior = self.model.occ.cut(
+                    [(2, exterior)],
+                    [(2, interior) for interior in interiors],
+                    removeObject=True,
+                    removeTool=True,
+                )
+                self.model.occ.synchronize()
+                exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            surfaces.append(exterior)
+        return surfaces
 
 
 if __name__ == "__main__":

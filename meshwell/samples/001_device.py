@@ -3,7 +3,6 @@ from meshwell.prism import Prism
 from shapely import Polygon, box
 
 from meshwell.model import Model
-from collections import OrderedDict
 
 if __name__ == "__main__":
     model = Model()
@@ -35,6 +34,9 @@ if __name__ == "__main__":
             device_thickness: 0.0,
         },
         model=model,
+        physical_name="device",
+        mesh_order=1,
+        resolution={"resolution": 0.05, "SizeMax": 1.0, "DistMax": 1.0},
     )
 
     background_polygon = box(
@@ -48,6 +50,8 @@ if __name__ == "__main__":
             0: 0.0,
         },
         model=model,
+        physical_name="substrate",
+        mesh_order=2,
     )
 
     cladding = Prism(
@@ -57,6 +61,9 @@ if __name__ == "__main__":
             cladding_thickness: 0.0,
         },
         model=model,
+        physical_name="cladding",
+        mesh_order=3,
+        resolution={"resolution": 0.5, "SizeMax": 1.0, "DistMax": 1.0},
     )
 
     PML_cladding = Prism(
@@ -66,6 +73,8 @@ if __name__ == "__main__":
             cladding_thickness + pml_thickness: 0.0,
         },
         model=model,
+        physical_name="PML_cladding",
+        mesh_order=1,
     )
 
     PML_substrate = Prism(
@@ -75,6 +84,8 @@ if __name__ == "__main__":
             -substrate_thickness - pml_thickness: 0.0,
         },
         model=model,
+        physical_name="PML_substrate",
+        mesh_order=1,
     )
 
     """
@@ -94,6 +105,9 @@ if __name__ == "__main__":
             cladding_thickness + pml_thickness: 0.0,
         },
         model=model,
+        physical_name="right",
+        mesh_bool=False,
+        mesh_order=0,
     )
 
     left_polygon = box(xmin=-1, ymin=0, xmax=0, ymax=simulation_width)
@@ -104,6 +118,9 @@ if __name__ == "__main__":
             cladding_thickness + pml_thickness: 0.0,
         },
         model=model,
+        physical_name="left",
+        mesh_bool=False,
+        mesh_order=0,
     )
 
     up_polygon = box(
@@ -116,6 +133,9 @@ if __name__ == "__main__":
             cladding_thickness + pml_thickness: 0.0,
         },
         model=model,
+        physical_name="up",
+        mesh_bool=False,
+        mesh_order=0,
     )
 
     down_polygon = box(xmin=0, ymin=-1, xmax=simulation_length, ymax=0)
@@ -126,27 +146,28 @@ if __name__ == "__main__":
             cladding_thickness + pml_thickness: 0.0,
         },
         model=model,
+        physical_name="down",
+        mesh_bool=False,
+        mesh_order=0,
     )
 
     """
     ASSEMBLE AND NAME ENTITIES
     """
-    entities = OrderedDict()
-    entities["substrate"] = substrate
-    entities["device"] = device
-    entities["cladding"] = cladding
-    entities["PML_cladding"] = PML_cladding
-    entities["PML_substrate"] = PML_substrate
-
-    boundary_entities = {}
-    boundary_entities["right"] = right
-    boundary_entities["left"] = left
-    boundary_entities["up"] = up
-    boundary_entities["down"] = down
+    entities = [
+        substrate,
+        device,
+        cladding,
+        PML_cladding,
+        PML_substrate,
+        up,
+        down,
+        left,
+        right,
+    ]
 
     mesh = model.mesh(
-        entities_dict=entities,
-        boundaries_dict=boundary_entities,
+        entities_list=entities,
         verbosity=0,
         filename="mesh.msh",
         periodic_entities=[
