@@ -115,7 +115,12 @@ class Model:
             ID of the added surface
         """
         channel_loop = self._channel_loop_from_vertices(vertices)
-        return self.occ.add_plane_surface([channel_loop])
+        try:
+            return self.occ.add_plane_surface([channel_loop])
+        except Exception as e:
+            print("Failed vertices:")
+            print(vertices)
+            raise e
 
     def sync_model(self):
         """Synchronize the CAD model, and update points and lines vertex mapping."""
@@ -229,15 +234,25 @@ class Model:
             resolution = entity_obj.resolution
             if progress_bars:
                 if physical_name:
-                    enumerator.set_description(f"{physical_name:<30}")
+                    enumerator.set_description(
+                        f"{physical_name:<30} - {'instanciate':<15}"
+                    )
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(f"{physical_name:<30} - {'dimtags':<15}")
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
             dimtags = unpack_dimtags(dimtags_out)
 
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(
+                        f"{physical_name:<30} - {'entities':<15}"
+                    )
             # Assemble with other shapes
             current_entities = LabeledEntities(
                 index=index,
@@ -247,6 +262,9 @@ class Model:
                 model=self.model,
                 resolution=resolution,
             )
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(f"{physical_name:<30} - {'boolean':<15}")
             if index != 0:
                 cut = self.occ.cut(
                     current_entities.dimtags,
@@ -259,7 +277,17 @@ class Model:
                     removeTool=False,  # Tool (previous entities) should remain untouched
                 )
                 # Heal interfaces now that there are no volume conflicts
+                if progress_bars:
+                    if physical_name:
+                        enumerator.set_description(
+                            f"{physical_name:<30} - {'duplicates':<15}"
+                        )
                 self.occ.removeAllDuplicates()
+                if progress_bars:
+                    if physical_name:
+                        enumerator.set_description(
+                            f"{physical_name:<30} - {'sync':<15}"
+                        )
                 self.sync_model()
                 current_entities.dimtags = list(set(cut[0]))
             if current_entities.dimtags:

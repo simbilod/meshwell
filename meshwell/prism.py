@@ -68,7 +68,9 @@ class Prism(BaseModel):
 
             # Validate the input
             if not self._validate_polygon_buffers():
-                raise ValueError("The buffer has modified the polygon vertices!")
+                raise ValueError(
+                    f"The buffer has modified the polygon vertices! Bad physical: {physical_name}"
+                )
 
         # Mesh order and name
         self.mesh_order = mesh_order
