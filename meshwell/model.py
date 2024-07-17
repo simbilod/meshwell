@@ -149,7 +149,7 @@ class Model:
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
-        filename: Optional[str] = None,
+        filename: Optional[str | Path] = None,
         verbosity: Optional[int] = 5,
         progress_bars: bool = True,
         interface_delimiter: str = "___",
@@ -191,7 +191,10 @@ class Model:
             gmsh.merge(background_remeshing_file)
             gmsh.model.add("temp")
 
-        gmsh.option.setNumber("General.Terminal", 10)  # 1 verbose, 0 otherwise
+        # Logging
+        gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
+        gmsh.logger.start()
+
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
@@ -372,9 +375,7 @@ class Model:
 
         self.occ.synchronize()
 
-        if not filename.endswith((".step", ".stp")):
-            if global_3D_algorithm == 1 and verbosity:
-                gmsh.logger.start()
+        if not str(filename).endswith((".step", ".stp")):
             self.model.mesh.generate(max_dim)
 
             # Mesh smoothing
@@ -394,6 +395,11 @@ class Model:
                     if "ill-shaped tets are" in str(line):
                         print(",".join(physicals))
                         print(str(line))
+
+        # Print log to stdout
+        for line in gmsh.logger.get():
+            print(line)
+        gmsh.logger.stop()
 
         if filename:
             gmsh.write(f"{filename}")
