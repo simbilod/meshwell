@@ -14,7 +14,7 @@ classifiers = [
 	"Programming Language :: Python :: 3.11",
 	"Operating System :: OS Independent",
 ]
-version="1.0.5"
+version="1.0.7"
 authors = [
     {name = "Simon Bilodeau", email = "sb30@princeton.edu"},
 ]
@@ -46,7 +46,7 @@ docs = [
     "jupytext",
     "autodoc_pydantic",
     "jupytext",
-    "jupyter-book==0.15.1",
+    "jupyter-book==1.0.0",
     "sphinx-autodoc-typehints",
     "sphinx-click",
     "matplotlib",
