@@ -34,15 +34,6 @@ import meshio
 
 polygon_with_holes = shapely.Polygon(
     [[-2, -2], [3, -2], [3, 2], [-2, 2], [-2, -2]],
-    holes=(
-        [
-            [0.0, 0.0],
-            [1.0, 1.0],
-            [2.0, 0.0],
-            [1.0, -1.0],
-            [0.0, 0.0],
-        ],
-    ),
 )
 polygon_with_holes_boolean = shapely.union(
     polygon_with_holes - shapely.Point(-2, -2).buffer(2), shapely.Point(0, 2).buffer(1)
