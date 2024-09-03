@@ -42,8 +42,7 @@ class LabeledEntities(BaseModel):
 
     def update_boundaries(self) -> List[int]:
         self.boundaries = [
-            tag
-            for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
+            tag for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
         ]
         return self.boundaries
 
@@ -120,24 +119,27 @@ class LabeledEntities(BaseModel):
             refinement_field_indices.extend((n + 1,))
             n += 2
 
-        if (
-            self.resolution
-            and self.resolution.keys()
-            >= {
-                "Curves"
-            }
-            and curves_str
-        ):
+        if self.resolution and self.resolution.keys() >= {"Curves"} and curves_str:
             for curveconfig in self.resolution["Curves"]:
                 curve_resolution = curveconfig.get("CurveResolution")
 
                 print(self.physical_name)
                 self.model.mesh.field.add("Distance", n)
-                #print([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs])
+                # print([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs])
                 # print(self.model.occ.getNodes([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs][0]))
-                
-                
-                self.model.mesh.field.setNumbers(n, curves_str, [c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs if self.model.occ.getMass(1,c)<curveconfig.get("CurveLengthMax",math.inf)])
+
+                self.model.mesh.field.setNumbers(
+                    n,
+                    curves_str,
+                    [
+                        c
+                        for b in self.boundaries
+                        for cs in self.model.occ.getCurveLoops(b)[1]
+                        for c in cs
+                        if self.model.occ.getMass(1, c)
+                        < curveconfig.get("CurveLengthMax", math.inf)
+                    ],
+                )
                 self.model.mesh.field.setNumber(n, "Sampling", 100)
                 self.model.mesh.field.add("Threshold", n + 1)
                 self.model.mesh.field.setNumber(n + 1, "InField", n)
