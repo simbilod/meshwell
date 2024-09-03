@@ -361,7 +361,6 @@ class Model:
                     ],
                 )
 
-
         # Perform refinement
         if background_remeshing_file is None:
             # Use entity information
@@ -387,7 +386,7 @@ class Model:
             bg_field = self.model.mesh.field.add("PostView")
             self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
             gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
-            
+
         # Remove boundary entities
         for entity in final_entity_list:
             if not entity.keep:
