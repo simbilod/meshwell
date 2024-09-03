@@ -361,10 +361,6 @@ class Model:
                     ],
                 )
 
-        # Remove boundary entities
-        for entity in final_entity_list:
-            if not entity.keep:
-                self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Perform refinement
         if background_remeshing_file is None:
@@ -391,6 +387,11 @@ class Model:
             bg_field = self.model.mesh.field.add("PostView")
             self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
             gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
+            
+        # Remove boundary entities
+        for entity in final_entity_list:
+            if not entity.keep:
+                self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Turn off default meshing options
         self.model.mesh.MeshSizeFromPoints = 0
