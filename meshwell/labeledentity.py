@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 import gmsh
 from typing import List, Union, Any, Tuple
+import math
 
 
 class LabeledEntities(BaseModel):
@@ -41,8 +42,7 @@ class LabeledEntities(BaseModel):
 
     def update_boundaries(self) -> List[int]:
         self.boundaries = [
-            tag
-            for dim, tag in gmsh.model.getBoundary(self.dimtags, False, False, False)
+            tag for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
         ]
         return self.boundaries
 
@@ -62,9 +62,11 @@ class LabeledEntities(BaseModel):
         if self.get_dim() == 3:
             entity_str = "RegionsList"
             boundary_str = "SurfacesList"
+            curves_str = "CurvesList"
         elif self.get_dim() == 2:
             entity_str = "SurfacesList"
             boundary_str = "CurvesList"
+            curves_str = "PointList"
         elif self.get_dim() == 1:
             entity_str = "CurvesList"
             boundary_str = "PointList"
@@ -116,4 +118,46 @@ class LabeledEntities(BaseModel):
             self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
             refinement_field_indices.extend((n + 1,))
             n += 2
+
+        if self.resolution and self.resolution.keys() >= {"Curves"} and curves_str:
+            for curveconfig in self.resolution["Curves"]:
+                curve_resolution = curveconfig.get("CurveResolution")
+
+                self.model.mesh.field.add("Distance", n)
+                # print([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs])
+                # print(self.model.occ.getNodes([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs][0]))
+
+                self.model.mesh.field.setNumbers(
+                    n,
+                    curves_str,
+                    [
+                        c
+                        for b in self.boundaries
+                        for cs in self.model.occ.getCurveLoops(b)[1]
+                        for c in cs
+                        if self.model.occ.getMass(1, c)
+                        < curveconfig.get("CurveLengthMax", math.inf)
+                    ],
+                )
+                self.model.mesh.field.setNumber(n, "Sampling", 100)
+                self.model.mesh.field.add("Threshold", n + 1)
+                self.model.mesh.field.setNumber(n + 1, "InField", n)
+                self.model.mesh.field.setNumber(
+                    n + 1,
+                    "SizeMin",
+                    self.resolution.get("CurveSizeMin", curve_resolution),
+                )
+                self.model.mesh.field.setNumber(
+                    n + 1, "SizeMax", curveconfig["CurveSizeMax"]
+                )
+                self.model.mesh.field.setNumber(
+                    n + 1, "DistMin", curveconfig.get("CurveDistMin", 0)
+                )
+                self.model.mesh.field.setNumber(
+                    n + 1, "DistMax", curveconfig["CurveDistMax"]
+                )
+                self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
+                refinement_field_indices.extend((n + 1,))
+                n += 2
+
         return refinement_field_indices, n
