@@ -123,7 +123,6 @@ class LabeledEntities(BaseModel):
             for curveconfig in self.resolution["Curves"]:
                 curve_resolution = curveconfig.get("CurveResolution")
 
-                print(self.physical_name)
                 self.model.mesh.field.add("Distance", n)
                 # print([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs])
                 # print(self.model.occ.getNodes([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs][0]))
