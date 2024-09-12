@@ -139,3 +139,5 @@ repos:
     rev: "6a0ba1854991b693612486cc84a2254de82d071d"
     hooks:
       - id: ruff
+
+exclude: tests/generate_references.py

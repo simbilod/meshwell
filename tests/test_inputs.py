@@ -8,7 +8,6 @@ import pytest
 from meshwell.resolution import ResolutionSpec
 
 
-
 # fmt: off
 @pytest.mark.parametrize("config", ["mesh_msh.msh",
                                     "mesh_stp.stp",

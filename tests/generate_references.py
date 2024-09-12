@@ -1,12 +1,7 @@
-import gmsh
-from difflib import unified_diff
-from pathlib import Path
 import os
-import shutil
 import pytest
 
 if __name__ == "__main__":
-
     # Delete existing references
     exec_dir_name = "./"
     save_dir_name = "./references/"

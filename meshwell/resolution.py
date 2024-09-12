@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
-from typing import Dict
+
 
 @dataclass
 class ResolutionSpec:

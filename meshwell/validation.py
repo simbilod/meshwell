@@ -1,6 +1,7 @@
 from meshwell.labeledentity import LabeledEntities
 import math
 
+
 def validate_dimtags(dimtags):
     dims = [dim for dim, tag in dimtags]
     if len(set(dims)) != 1:

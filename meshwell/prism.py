@@ -4,7 +4,6 @@ from shapely.geometry import Polygon, MultiPolygon
 from meshwell.resolution import ResolutionSpec
 
 
-
 class Prism(BaseModel):
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.

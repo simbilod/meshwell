@@ -374,7 +374,7 @@ class Model:
                     refinement_field_indices,
                     refinement_max_index,
                     default_characteristic_length,
-                    final_entity_list
+                    final_entity_list,
                 )
 
             # Use the smallest element size overall
