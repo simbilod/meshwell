@@ -9,7 +9,7 @@ from meshwell.validation import order_entities
 def test_mesh_order():
     polygon = shapely.box(xmin=0, ymin=1, xmax=1, ymax=1)
 
-    model = Model()
+    model = Model(n_threads=1)
 
     entities = [
         PolySurface(polygons=polygon, model=model, physical_name="meshdefault1"),

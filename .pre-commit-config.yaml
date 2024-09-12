@@ -13,6 +13,7 @@ repos:
       - id: name-tests-test
         args: ["--pytest-test-first"]
       - id: trailing-whitespace
+        exclude: "tests/references/*"
 
   # - repo: https://github.com/hakancelik96/unimport
   #   rev: 0.14.1
@@ -139,3 +140,5 @@ repos:
     rev: "6a0ba1854991b693612486cc84a2254de82d071d"
     hooks:
       - id: ruff
+
+exclude: tests/generate_references.py

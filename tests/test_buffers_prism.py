@@ -17,7 +17,7 @@ def test_prism_value_error():
     # Buffers that will cause a change in the topology of the polygon
     buffers = {0: 0, -1: 0, -1.001: 10, -5: 0}
 
-    model = Model()
+    model = Model(n_threads=1)
 
     with pytest.raises(ValueError):
         Prism(polygons=polygons, buffers=buffers, model=model)

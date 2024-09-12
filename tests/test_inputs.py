@@ -5,6 +5,7 @@ from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from pathlib import Path
 import pytest
+from meshwell.resolution import ResolutionSpec
 
 
 # fmt: off
@@ -26,13 +27,13 @@ def test_msh(config):
     polygon2 = shapely.Polygon([[-1, -1], [-2, -1], [-2, -2], [-1, -2], [-1, -1]])
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
-    model = Model()
+    model = Model(n_threads=1)
     poly2D = PolySurface(
         polygons=polygon,
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolution={"resolution": 0.5},
+        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     entities_list = [poly2D]

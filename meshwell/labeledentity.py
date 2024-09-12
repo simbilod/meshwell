@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 import gmsh
 from typing import List, Union, Any, Tuple
-import math
+from meshwell.resolution import ResolutionSpec
 
 
 class LabeledEntities(BaseModel):
@@ -11,7 +11,7 @@ class LabeledEntities(BaseModel):
     model: Any
     dimtags: List[Tuple[int, int]]
     physical_name: str
-    resolution: Any
+    resolutions: List[ResolutionSpec] | None = None
     keep: bool
     boundaries: List[int] = []
     interfaces: List = []
@@ -51,113 +51,163 @@ class LabeledEntities(BaseModel):
         refinement_field_indices: List,
         refinement_max_index: int,
         default_resolution: float,
+        final_entity_list: List,
     ):
         """
         Adds refinement fields to the model based on base_resolution and resolution info.
         """
         n = refinement_max_index
-        if self.resolution is not None:
-            base_resolution = self.resolution.get("resolution", default_resolution)
 
-        if self.get_dim() == 3:
-            entity_str = "RegionsList"
-            boundary_str = "SurfacesList"
-            curves_str = "CurvesList"
-        elif self.get_dim() == 2:
-            entity_str = "SurfacesList"
-            boundary_str = "CurvesList"
-            curves_str = "PointList"
-        elif self.get_dim() == 1:
-            entity_str = "CurvesList"
-            boundary_str = "PointList"
-        else:
-            entity_str = "PointList"
-            boundary_str = None
+        if self.resolutions:
+            entities = []
+            boundaries = []
+            boundary_lines = []
 
-        if self.resolution and self.resolution.keys() >= {"resolution"}:
-            self.model.mesh.field.add("MathEval", n)
-            self.model.mesh.field.setString(n, "F", f"{base_resolution}")
-            self.model.mesh.field.add("Restrict", n + 1)
-            self.model.mesh.field.setNumber(n + 1, "InField", n)
-            self.model.mesh.field.setNumbers(
-                n + 1,
-                entity_str,
-                self.get_tags(),
-            )
-            refinement_field_indices.extend((n + 1,))
-            n += 2
+            for resolutionspec in self.resolutions:
+                # Parse by dimension
+                if self.get_dim() == 3:
+                    entity_str = "RegionsList"
+                    boundary_str = "SurfacesList"
+                    curves_str = "CurvesList"
 
-        if (
-            self.resolution
-            and self.resolution.keys()
-            >= {
-                "DistMax",
-                "SizeMax",
-            }
-            and boundary_str
-        ):
-            self.model.mesh.field.add("Distance", n)
-            self.model.mesh.field.setNumbers(n, boundary_str, self.boundaries)
-            self.model.mesh.field.setNumber(n, "Sampling", 100)
-            self.model.mesh.field.add("Threshold", n + 1)
-            self.model.mesh.field.setNumber(n + 1, "InField", n)
-            self.model.mesh.field.setNumber(
-                n + 1,
-                "SizeMin",
-                self.resolution.get("SizeMin", base_resolution),
-            )
-            self.model.mesh.field.setNumber(
-                n + 1, "SizeMax", self.resolution["SizeMax"]
-            )
-            self.model.mesh.field.setNumber(
-                n + 1, "DistMin", self.resolution.get("DistMin", 0)
-            )
-            self.model.mesh.field.setNumber(
-                n + 1, "DistMax", self.resolution["DistMax"]
-            )
-            self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
-            refinement_field_indices.extend((n + 1,))
-            n += 2
+                    entity_resolution = min(
+                        resolutionspec.resolution_volumes, default_resolution
+                    )
 
-        if self.resolution and self.resolution.keys() >= {"Curves"} and curves_str:
-            for curveconfig in self.resolution["Curves"]:
-                curve_resolution = curveconfig.get("CurveResolution")
+                    # Check condition on volumes
+                    entities = [
+                        volume_tag
+                        for volume_tag in self.get_tags()
+                        if resolutionspec.min_volumes
+                        < self.model.occ.getMass(3, volume_tag)
+                        < resolutionspec.max_volumes
+                    ]
 
-                self.model.mesh.field.add("Distance", n)
-                # print([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs])
-                # print(self.model.occ.getNodes([c for b in self.boundaries for cs in self.model.occ.getCurveLoops(b)[1] for c in cs][0]))
+                    # Check condition on surfaces
+                    boundaries = [
+                        surface_tag
+                        for surface_tag in self.boundaries
+                        if resolutionspec.min_area_surfaces
+                        < self.model.occ.getMass(2, surface_tag)
+                        < resolutionspec.max_area_surfaces
+                    ]
 
-                self.model.mesh.field.setNumbers(
-                    n,
-                    curves_str,
-                    [
+                    boundary_resolution = min(
+                        resolutionspec.resolution_surfaces, entity_resolution
+                    )
+                    boundary_sizemax = resolutionspec.sizemax_surfaces
+                    boundary_distmax = resolutionspec.distmax_surfaces
+
+                    # Check condition on surface curves
+                    boundary_lines = [
                         c
                         for b in self.boundaries
                         for cs in self.model.occ.getCurveLoops(b)[1]
                         for c in cs
-                        if self.model.occ.getMass(1, c)
-                        < curveconfig.get("CurveLengthMax", math.inf)
-                    ],
-                )
-                self.model.mesh.field.setNumber(n, "Sampling", 100)
-                self.model.mesh.field.add("Threshold", n + 1)
-                self.model.mesh.field.setNumber(n + 1, "InField", n)
-                self.model.mesh.field.setNumber(
-                    n + 1,
-                    "SizeMin",
-                    self.resolution.get("CurveSizeMin", curve_resolution),
-                )
-                self.model.mesh.field.setNumber(
-                    n + 1, "SizeMax", curveconfig["CurveSizeMax"]
-                )
-                self.model.mesh.field.setNumber(
-                    n + 1, "DistMin", curveconfig.get("CurveDistMin", 0)
-                )
-                self.model.mesh.field.setNumber(
-                    n + 1, "DistMax", curveconfig["CurveDistMax"]
-                )
-                self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
-                refinement_field_indices.extend((n + 1,))
-                n += 2
+                        if resolutionspec.min_length_curves
+                        < self.model.occ.getMass(1, c)
+                        < resolutionspec.max_length_curves
+                    ]
+
+                    boundary_lines_resolution = min(
+                        resolutionspec.resolution_curves, boundary_resolution
+                    )
+                    boundary_lines_sizemax = resolutionspec.sizemax_curves
+                    boundary_lines_distmax = resolutionspec.distmax_curves
+
+                elif self.get_dim() == 2:
+                    entity_str = "SurfacesList"
+                    boundary_str = "CurvesList"
+                    curves_str = "PointList"
+
+                    entity_resolution = min(
+                        resolutionspec.resolution_surfaces, default_resolution
+                    )
+
+                    # Check condition on surfaces
+                    entities = [
+                        surface_tag
+                        for surface_tag in self.get_tags()
+                        if resolutionspec.min_area_surfaces
+                        < self.model.occ.getMass(2, surface_tag)
+                        < resolutionspec.max_area_surfaces
+                    ]
+
+                    # Check condition on surfaces
+                    boundaries = [
+                        curve_tag
+                        for curve_tag in self.boundaries
+                        if resolutionspec.min_length_curves
+                        < self.model.occ.getMass(1, curve_tag)
+                        < resolutionspec.max_length_curves
+                    ]
+
+                    boundary_resolution = min(
+                        resolutionspec.resolution_curves, entity_resolution
+                    )
+                    boundary_sizemax = resolutionspec.sizemax_curves
+                    boundary_distmax = resolutionspec.distmax_curves
+
+                elif self.get_dim() == 1:
+                    entity_str = "CurvesList"
+                    boundary_str = "PointList"
+                else:
+                    entity_str = "PointList"
+                    boundary_str = None
+
+                if entities:
+                    self.model.mesh.field.add("MathEval", n)
+                    self.model.mesh.field.setString(n, "F", f"{entity_resolution}")
+                    self.model.mesh.field.add("Restrict", n + 1)
+                    self.model.mesh.field.setNumber(n + 1, "InField", n)
+                    self.model.mesh.field.setNumbers(
+                        n + 1,
+                        entity_str,
+                        entities,
+                    )
+                    refinement_field_indices.extend((n + 1,))
+                    n += 2
+
+                if boundaries:
+                    self.model.mesh.field.add("Distance", n)
+                    self.model.mesh.field.setNumbers(n, boundary_str, boundaries)
+                    self.model.mesh.field.setNumber(n, "Sampling", 100)
+                    self.model.mesh.field.add("Threshold", n + 1)
+                    self.model.mesh.field.setNumber(n + 1, "InField", n)
+                    self.model.mesh.field.setNumber(
+                        n + 1, "SizeMin", boundary_resolution
+                    )
+                    self.model.mesh.field.setNumber(n + 1, "DistMin", 0)
+                    if boundary_sizemax and boundary_distmax:
+                        self.model.mesh.field.setNumber(
+                            n + 1, "SizeMax", boundary_sizemax
+                        )
+                        self.model.mesh.field.setNumber(
+                            n + 1, "DistMax", boundary_distmax
+                        )
+                    self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
+                    refinement_field_indices.extend((n + 1,))
+                    n += 2
+
+                if boundary_lines:
+                    self.model.mesh.field.add("Distance", n)
+                    self.model.mesh.field.setNumbers(n, curves_str, boundary_lines)
+                    self.model.mesh.field.setNumber(n, "Sampling", 100)
+                    self.model.mesh.field.add("Threshold", n + 1)
+                    self.model.mesh.field.setNumber(n + 1, "InField", n)
+                    self.model.mesh.field.setNumber(
+                        n + 1, "SizeMin", boundary_lines_resolution
+                    )
+                    self.model.mesh.field.setNumber(n + 1, "DistMin", 0)
+                    if boundary_lines_sizemax and boundary_lines_distmax:
+                        self.model.mesh.field.setNumber(
+                            n + 1, "SizeMax", boundary_lines_sizemax
+                        )
+                        self.model.mesh.field.setNumber(
+                            n + 1, "DistMax", boundary_lines_distmax
+                        )
+                    self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
+                    refinement_field_indices.extend((n + 1,))
+                    n += 2
 
         return refinement_field_indices, n

@@ -18,6 +18,7 @@ repo_path = module_path.parent
 class Path:
     module = module_path
     repo = repo_path
+    references = repo_path / "tests" / "references"
 
 
 PATH = Path()

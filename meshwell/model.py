@@ -231,7 +231,7 @@ class Model:
         for index, entity_obj in enumerator:
             physical_name = entity_obj.physical_name
             keep = entity_obj.mesh_bool
-            resolution = entity_obj.resolution
+            resolutions = entity_obj.resolutions
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(
@@ -260,7 +260,7 @@ class Model:
                 physical_name=physical_name,
                 keep=keep,
                 model=self.model,
-                resolution=resolution,
+                resolutions=resolutions,
             )
             if progress_bars:
                 if physical_name:
@@ -374,6 +374,7 @@ class Model:
                     refinement_field_indices,
                     refinement_max_index,
                     default_characteristic_length,
+                    final_entity_list,
                 )
 
             # Use the smallest element size overall
@@ -393,9 +394,9 @@ class Model:
                 self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Turn off default meshing options
-        self.model.mesh.MeshSizeFromPoints = 0
-        self.model.mesh.MeshSizeFromCurvature = 0
-        self.model.mesh.MeshSizeExtendFromBoundary = 0
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
         # Global resizing
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)

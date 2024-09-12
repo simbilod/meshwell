@@ -17,7 +17,7 @@ def test_prism():
 
     buffers = {0.0: 0.0, 0.3: 0.1, 1.0: -0.2}
 
-    model = Model()
+    model = Model(n_threads=1)
 
     prism_obj = Prism(polygons=polygon, buffers=buffers, model=model)
     prism_obj.instanciate()
@@ -38,7 +38,7 @@ def test_prism_extruded():
 
     buffers = {-1.0: 0.0, 1.0: 0.0}
 
-    model = Model()
+    model = Model(n_threads=1)
 
     prism_obj = Prism(polygons=polygon, buffers=buffers, model=model)
     dim, tags = prism_obj.instanciate()[0]

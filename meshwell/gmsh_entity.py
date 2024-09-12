@@ -1,7 +1,8 @@
 import gmsh
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel
+from meshwell.resolution import ResolutionSpec
 
 
 class GMSH_entity(BaseModel):
@@ -25,7 +26,7 @@ class GMSH_entity(BaseModel):
     physical_name: Optional[str] = None
     mesh_order: float | None = None
     mesh_bool: bool = True
-    resolution: Dict[str, float] | None = None
+    resolutions: List[ResolutionSpec] | None = None
 
     def instanciate(self):
         """Returns dim tag from entity."""

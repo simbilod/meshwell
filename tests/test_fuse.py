@@ -5,6 +5,8 @@ from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 
 import numpy as np
+from meshwell.utils import compare_meshes
+from pathlib import Path
 
 
 def test_fuse():
@@ -12,7 +14,7 @@ def test_fuse():
     polygon2 = shapely.box(xmin=-1, ymin=-1, xmax=1, ymax=1)
     polygon3 = shapely.box(xmin=-3, ymin=-3, xmax=-2, ymax=-2)
 
-    model = Model()
+    model = Model(n_threads=1)
 
     entities = [
         PolySurface(polygons=polygon1, model=model, physical_name="cad1"),
@@ -27,7 +29,7 @@ def test_fuse():
         fuse_entities_by_name=True,
     )
 
-    model = Model()
+    model = Model(n_threads=1)
 
     entities = [
         PolySurface(polygons=polygon1, model=model, physical_name="cad1"),
@@ -55,6 +57,9 @@ def test_fuse():
     assert len(dimtags_fused_2D) == 2
     assert len(dimtags_unfused_2D) == 3
     assert len(dimtags_fused_1D) < len(dimtags_unfused_1D)  # less interfaces
+
+    compare_meshes(Path("mesh_fused.msh"))
+    compare_meshes(Path("mesh_unfused.msh"))
 
 
 if __name__ == "__main__":
