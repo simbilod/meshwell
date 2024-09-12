@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.1.0
+
+- ResolutionSpec instead of resolution dict [PR#69](https://github.com/simbilod/meshwell/pull/69)
+
 ## 1.0.9
 
 - curves resolution [PR#67](https://github.com/simbilod/meshwell/pull/67) [PR#68](https://github.com/simbilod/meshwell/pull/68)
