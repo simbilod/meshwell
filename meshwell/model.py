@@ -393,9 +393,9 @@ class Model:
                 self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Turn off default meshing options
-        self.model.mesh.MeshSizeFromPoints = 0
-        self.model.mesh.MeshSizeFromCurvature = 0
-        self.model.mesh.MeshSizeExtendFromBoundary = 0
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
         # Global resizing
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
