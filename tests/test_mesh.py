@@ -6,7 +6,8 @@ from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
 from meshwell.resolution import ResolutionSpec
-
+from meshwell.utils import compare_meshes
+from pathlib import Path
 
 
 def test_mesh_3D():
@@ -19,7 +20,7 @@ def test_mesh_3D():
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
-    model = Model()
+    model = Model(n_threads=1)
     poly3D = Prism(
         polygons=polygon,
         buffers=buffers,
@@ -47,7 +48,7 @@ def test_mesh_3D():
         filename="mesh3D.msh",
     )
 
-    pass
+    compare_meshes(Path("mesh3D.msh"))
 
 
 def test_mesh_2D():
@@ -58,7 +59,7 @@ def test_mesh_2D():
     polygon2 = shapely.Polygon([[-1, -1], [-2, -1], [-2, -2], [-1, -2], [-1, -1]])
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
-    model = Model()
+    model = Model(n_threads=1)
     poly2D = PolySurface(
         polygons=polygon,
         model=model,
@@ -85,7 +86,7 @@ def test_mesh_2D():
         filename="mesh2D.msh",
     )
 
-    pass
+    compare_meshes(Path("mesh2D.msh"))
 
 
 if __name__ == "__main__":
