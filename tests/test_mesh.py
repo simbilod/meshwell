@@ -5,6 +5,8 @@ from meshwell.prism import Prism
 from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
+from meshwell.resolution import ResolutionSpec
+
 
 
 def test_mesh_3D():
@@ -24,7 +26,7 @@ def test_mesh_3D():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolution={"resolution": 0.5},
+        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     gmsh_entity = GMSH_entity(
@@ -62,7 +64,7 @@ def test_mesh_2D():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolution={"resolution": 0.5},
+        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     gmsh_entity = GMSH_entity(

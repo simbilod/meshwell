@@ -4,7 +4,7 @@ import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
-
+from meshwell.resolution import ResolutionSpec
 
 def test_smoothing():
     polygon1 = shapely.Polygon(
@@ -23,7 +23,7 @@ def test_smoothing():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolution={"resolution": 0.5},
+        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     gmsh_entity = GMSH_entity(
