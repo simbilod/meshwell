@@ -14,7 +14,7 @@ if __name__ == "__main__":
 
     for item in test:
         if item.endswith(".msh"):
-            os.remove(os.path.join(dir_name, item))
+            os.remove(os.path.join(save_dir_name, item))
 
     # Run the tests to generate the files
     pytest.main()
