@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field, ConfigDict
 from shapely.geometry import Polygon, MultiPolygon
 from typing import List, Optional, Union, Any, Tuple, Dict
+from meshwell.resolution import ResolutionSpec
 
 
 class PolySurface(BaseModel):
@@ -22,7 +23,7 @@ class PolySurface(BaseModel):
     mesh_order: float | None = None
     mesh_bool: bool = Field(True)
     dimension: int = Field(2)
-    resolution: Dict | None = Field(None)
+    resolutions: List[ResolutionSpec] | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -33,7 +34,7 @@ class PolySurface(BaseModel):
         physical_name: Optional[str] = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
-        resolution: Dict | None = None,
+        resolutions: List[ResolutionSpec] | None = None,
     ):
         super().__init__(
             polygons=polygons,
@@ -41,7 +42,7 @@ class PolySurface(BaseModel):
             physical_name=physical_name,
             mesh_order=mesh_order,
             mesh_bool=mesh_bool,
-            resolution=resolution,
+            resolution=resolutions,
         )
 
         # Parse (multi)polygons
@@ -56,7 +57,7 @@ class PolySurface(BaseModel):
         self.physical_name = physical_name
         self.mesh_bool = mesh_bool
         self.dimension = 2
-        self.resolution = resolution
+        self.resolutions = resolutions
 
     def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
         """Chooses z=0 if the provided coordinates are 2D."""
