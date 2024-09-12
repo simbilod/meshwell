@@ -5,6 +5,8 @@ from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from pathlib import Path
 import pytest
+from meshwell.resolution import ResolutionSpec
+
 
 
 # fmt: off
@@ -32,7 +34,7 @@ def test_msh(config):
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolution={"resolution": 0.5},
+        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     entities_list = [poly2D]

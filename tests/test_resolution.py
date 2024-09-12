@@ -4,84 +4,94 @@ import shapely
 from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
+from meshwell.prism import Prism
+from meshwell.resolution import ResolutionSpec
+from meshwell.utils import compare_meshes
+from pathlib import Path
 
+def test_2D_resolution():
 
-def test_resolution():
+    large_rect = 20
+    small_rect = 5
+
     polygon1 = shapely.Polygon(
-        [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
-        holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
+        [[0, 0], [large_rect, 0], [large_rect, large_rect], [0, large_rect], [0, 0]],
     )
-    polygon2 = shapely.Polygon([[-2, -2], [-3, -2], [-3, -3], [-2, -3], [-2, -2]])
-    polygon = shapely.MultiPolygon([polygon1, polygon2])
+    polygon2 = shapely.Polygon(
+        [[small_rect, small_rect], [large_rect-small_rect, small_rect], [large_rect-small_rect, large_rect-small_rect], [small_rect, 6], [small_rect, small_rect]],
+    )
 
-    num_vertices = []
+    model = Model(n_threads=1) # 1 thread for deterministic mesh
+    poly_obj1 = PolySurface(polygons=polygon1, 
+                       model=model, 
+                       mesh_order=2, 
+                       physical_name="outer",
+                       resolutions=[ResolutionSpec(resolution_surfaces=0.5)],
+                       )
+    poly_obj2 = PolySurface(polygons=polygon2, 
+                       model=model, 
+                       mesh_order=1, 
+                       physical_name="inner",
+                       resolutions=[ResolutionSpec(resolution_surfaces=2,
+                                                    resolution_curves = 0.1,
+                                                    distmax_curves=2,
+                                                    sizemax_curves=1,
+                                                  )]
+                       )
 
-    resolution1 = [
-        None,
-        {
-            "resolution": 0.2,
-        },
-        {
-            "resolution": 0.2,
-        },
-    ]
+    entities_list = [poly_obj1, poly_obj2]
 
-    resolution2 = [
-        None,
-        {
-            "resolution": 0.2,
-        },
-        {
-            "resolution": 0.2,
-            "DistMax": 1,
-            "DistMin": 0.5,
-            "SizeMax": 0.5,
-            "SizeMin": 0.05,
-        },
-    ]
+    mesh = model.mesh(
+        entities_list=entities_list,
+        default_characteristic_length=1,
+        verbosity=0,
+        filename=f"mesh_test_2D_resolution.msh",
+    )
 
-    for i in range(len(resolution1)):
-        model = Model()
-        poly2D = PolySurface(
-            polygons=polygon,
-            model=model,
-            physical_name="first_entity",
-            mesh_order=1,
-            resolution=resolution1[i],
-        )
+    compare_meshes(Path("mesh_test_2D_resolution.msh"))
 
-        gmsh_entity = GMSH_entity(
-            gmsh_function=model.occ.add_rectangle,
-            gmsh_function_kwargs={"x": 3, "y": 3, "z": 0, "dx": 1, "dy": 1},
-            dimension=2,
-            model=model,
-            physical_name="second_entity",
-            mesh_order=2,
-            resolution=resolution2[i],
-        )
+def test_3D_resolution():
 
-        background = GMSH_entity(
-            gmsh_function=model.occ.add_rectangle,
-            gmsh_function_kwargs={"x": -5, "y": -5, "z": 0, "dx": 10, "dy": 10},
-            dimension=2,
-            model=model,
-            physical_name="background",
-            mesh_order=3,
-        )
+    polygon1 = shapely.Polygon(
+        [[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]],
+    )
+    polygon2 = shapely.Polygon(
+        [[3, 3], [6, 3], [6, 6], [3, 6], [3, 3]],
+    )
 
-        entities_list = [poly2D, gmsh_entity, background]
+    buffers = {0.0: 0.0, 3: 0.0}
 
-        mesh = model.mesh(
-            entities_list=entities_list,
-            default_characteristic_length=0.5,
-            verbosity=0,
-            filename=f"mesh_{i}.msh",
-        )
+    model = Model(n_threads=1)
+    prism_obj1 = Prism(polygons=polygon1, 
+                       buffers=buffers, 
+                       model=model, 
+                       mesh_order=2, 
+                       physical_name="outer",
+                       resolutions=[ResolutionSpec(resolution_volumes=1)],
+                       )
+    prism_obj2 = Prism(polygons=polygon2, 
+                       buffers=buffers, 
+                       model=model, 
+                       mesh_order=1, 
+                       physical_name="inner",
+                       resolutions=[ResolutionSpec(resolution_volumes=1,
+                                                  resolution_surfaces=0.2,
+                                                  distmax_surfaces=1,
+                                                  sizemax_surfaces=1,
+                                                  )]
+                       )
 
-        num_vertices.append(mesh.points.shape[0])
+    entities_list = [prism_obj1, prism_obj2]
 
-    assert num_vertices[0] < num_vertices[1] < num_vertices[2]
+    mesh = model.mesh(
+        entities_list=entities_list,
+        default_characteristic_length=1,
+        verbosity=0,
+        filename=f"mesh_test_3D_resolution.msh",
+    )
 
+    compare_meshes(Path("mesh_test_3D_resolution.msh"))
 
 if __name__ == "__main__":
-    test_resolution()
+    test_2D_resolution()
+    test_3D_resolution()

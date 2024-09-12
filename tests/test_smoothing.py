@@ -4,6 +4,9 @@ import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
+from meshwell.resolution import ResolutionSpec
+from meshwell.utils import compare_meshes
+from pathlib import Path
 
 
 def test_smoothing():
@@ -16,14 +19,14 @@ def test_smoothing():
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
-    model = Model()
+    model = Model(n_threads=1)
     poly3D = Prism(
         polygons=polygon,
         buffers=buffers,
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolution={"resolution": 0.5},
+        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     gmsh_entity = GMSH_entity(
@@ -41,11 +44,11 @@ def test_smoothing():
         entities_list=entities_list,
         default_characteristic_length=0.5,
         verbosity=10,
-        filename="mesh3D.msh",
+        filename="mesh3D_smoothing.msh",
         optimization_flags=(("HighOrderElastic", 5), ("HighOrderFastCurving", 5)),
     )
 
-    pass
+    compare_meshes(Path("mesh3D_smoothing.msh"))
 
 
 if __name__ == "__main__":
