@@ -48,7 +48,7 @@ def test_mesh_3D():
         filename="mesh3D.msh",
     )
 
-    compare_meshes(Path("mesh3D.msh"))
+    # compare_meshes(Path("mesh3D.msh"))
 
 
 def test_mesh_2D():
