@@ -1,8 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## 1.1.1
+## 1.1.2
 
 - ResolutionSpec instead of resolution dict [PR#69](https://github.com/simbilod/meshwell/pull/69)
+- Skipping version Git refactoring
 
 ## 1.0.9
 
