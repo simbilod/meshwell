@@ -1,8 +1,7 @@
-from dataclasses import dataclass
 import numpy as np
+import copy
 
 
-@dataclass
 class ResolutionSpec:
     """
     Object holding resolution information for an entity and its boundaries.
@@ -45,3 +44,17 @@ class ResolutionSpec:
     resolution_points: float = np.inf
     distmax_points: float | None = None
     sizemax_points: float | None = None
+
+    def refine(self, resolution_factor: float):
+        result = copy.copy(self)
+        result.resolution_volumes *= resolution_factor
+        result.resolution_surfaces *= resolution_factor
+        if result.sizemax_surfaces is not None:
+            result.sizemax_surfaces *= resolution_factor
+        result.resolution_curves *= resolution_factor
+        if result.sizemax_curves is not None:
+            result.sizemax_curves *= resolution_factor
+        result.resolution_points *= resolution_factor
+        if result.sizemax_points is not None:
+            result.sizemax_points *= resolution_factor
+        return result
