@@ -1,8 +1,9 @@
 import numpy as np
 import copy
+from pydantic import BaseModel
 
 
-class ResolutionSpec:
+class ResolutionSpec(BaseModel):
     """
     Object holding resolution information for an entity and its boundaries.
 
