@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.2.3
+
+- resolution_factor method in ResolutionSpec [PR#70](https://github.com/simbilod/meshwell/pull/70)
+
 ## 1.1.2
 
 - ResolutionSpec instead of resolution dict [PR#69](https://github.com/simbilod/meshwell/pull/69)
