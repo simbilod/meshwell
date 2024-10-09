@@ -22,6 +22,7 @@ class PolySurface(BaseModel):
     physical_name: Optional[str] = Field(None)
     mesh_order: float | None = None
     mesh_bool: bool = Field(True)
+    additive: bool = Field(False)
     dimension: int = Field(2)
     resolutions: List[ResolutionSpec] | None = None
 
@@ -34,6 +35,7 @@ class PolySurface(BaseModel):
         physical_name: Optional[str] = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
+        additive: bool = False,
         resolutions: List[ResolutionSpec] | None = None,
     ):
         super().__init__(
@@ -42,6 +44,7 @@ class PolySurface(BaseModel):
             physical_name=physical_name,
             mesh_order=mesh_order,
             mesh_bool=mesh_bool,
+            additive=additive,
             resolution=resolutions,
         )
 
@@ -58,6 +61,7 @@ class PolySurface(BaseModel):
         self.mesh_bool = mesh_bool
         self.dimension = 2
         self.resolutions = resolutions
+        self.additive = additive
 
     def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
         """Chooses z=0 if the provided coordinates are 2D."""

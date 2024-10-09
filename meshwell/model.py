@@ -10,7 +10,7 @@ import gmsh
 from meshwell.validation import (
     validate_dimtags,
     unpack_dimtags,
-    order_entities,
+    parse_entities,
     consolidate_entities_by_physical_name,
 )
 from meshwell.labeledentity import LabeledEntities
@@ -159,6 +159,7 @@ class Model:
         progress_bars: bool = True,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
+        addition_delimiter: str = "+",
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
         reinitialize: bool = True,
@@ -210,14 +211,14 @@ class Model:
         # Initial synchronization
         self.occ.synchronize()
 
-        # Order the entities
-        entities_list = order_entities(entities_list)
+        # Parse the entities
+        entities_list, additive_entities_list = parse_entities(entities_list)
 
         # Preserve ID numbering
         gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
 
         # Main loop:
-        # Iterate through OrderedDict of entities, generating and logging the volumes/surfaces in order
+        # Iterate through list of entities, generating and logging the volumes/surfaces in order
         # Manually remove intersections so that BooleanFragments from removeAllDuplicates does not reassign entity tags
         final_entity_list = []
         max_dim = 0
