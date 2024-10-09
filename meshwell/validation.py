@@ -32,21 +32,14 @@ def sort_entities_by_mesh_order(entities):
     return sorted(entities, key=lambda entity: entity.mesh_order)
 
 
-def parse_entities(entities):
-    """Parse the entities into two lists:
-    If non-additive (structural): sorted by mesh_order, assigning a mesh order corresponding to the ordering if not defined.
-    If additive: their own separate list
-    """
-    structural_entities = [entity for entity in entities if entity.additive is False]
-    additive_entities = [entity for entity in entities if entity.additive is True]
-
-    # Order the structural entities
+def order_entities(entities):
+    """Returns a list of entities, sorted by mesh_order, assigning a mesh order corresponding to the ordering if not defined."""
     defined_order_entities = [
-        entity for entity in structural_entities if entity.mesh_order is not None
+        entity for entity in entities if entity.mesh_order is not None
     ]
     ordered_defined_entities = sort_entities_by_mesh_order(defined_order_entities)
     undefined_order_entities = [
-        entity for entity in structural_entities if entity.mesh_order is None
+        entity for entity in entities if entity.mesh_order is None
     ]
     if ordered_defined_entities:
         start_index = math.ceil(ordered_defined_entities[-1].mesh_order) + 1
@@ -56,7 +49,7 @@ def parse_entities(entities):
         undefined_order_entities,
         start_index=start_index,
     )
-    return ordered_defined_entities + ordered_undefined_entities, additive_entities
+    return ordered_defined_entities + ordered_undefined_entities
 
 
 def consolidate_entities_by_physical_name(entities):
