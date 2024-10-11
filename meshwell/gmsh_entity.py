@@ -26,6 +26,7 @@ class GMSH_entity(BaseModel):
     physical_name: Optional[str] = None
     mesh_order: float | None = None
     mesh_bool: bool = True
+    additive: bool = False
     resolutions: List[ResolutionSpec] | None = None
 
     def instanciate(self):
