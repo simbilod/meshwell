@@ -78,7 +78,12 @@ class Prism(BaseModel):
 
         # Mesh order and name
         self.mesh_order = mesh_order
-        self.physical_name = physical_name
+
+        # Format physical name
+        if isinstance(physical_name, str):
+            self.physical_name = [physical_name]
+        else:
+            self.physical_name = physical_name
         self.mesh_bool = mesh_bool
         self.dimension = 3
         self.resolutions = resolutions

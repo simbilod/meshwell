@@ -7,11 +7,7 @@ def tag_entities(entity_list: List):
     """Adds physical labels to the entities in the model."""
     for entities in entity_list:
         if entities.physical_name:
-            if isinstance(entities.physical_name, str):
-                physical_names = [entities.physical_name]
-            else:
-                physical_names = entities.physical_name
-            for physical_name in physical_names:
+            for physical_name in entities.physical_name:
                 gmsh.model.addPhysicalGroup(
                     entities.get_dim(), entities.get_tags(), name=physical_name
                 )
@@ -34,16 +30,8 @@ def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
                 # Remember which boundaries were interfaces with another entity
                 entity1.interfaces.extend(common_interfaces)
                 entity2.interfaces.extend(common_interfaces)
-                if isinstance(entity1.physical_name, str):
-                    entity1_physical_names = [entity1.physical_name]
-                else:
-                    entity1_physical_names = entity1.physical_name
-                if isinstance(entity2.physical_name, str):
-                    entity2_physical_names = [entity2.physical_name]
-                else:
-                    entity2_physical_names = entity2.physical_name
                 for entity1_physical_name, entity2_physical_name in product(
-                    entity1_physical_names, entity2_physical_names
+                    entity1.physical_name, entity2.physical_name
                 ):
                     gmsh.model.addPhysicalGroup(
                         max_dim - 1,

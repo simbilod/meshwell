@@ -57,7 +57,10 @@ class PolySurface(BaseModel):
         self.model = model
 
         self.mesh_order = mesh_order
-        self.physical_name = physical_name
+        if isinstance(physical_name, str):
+            self.physical_name = [physical_name]
+        else:
+            self.physical_name = physical_name
         self.mesh_bool = mesh_bool
         self.dimension = 2
         self.resolutions = resolutions
