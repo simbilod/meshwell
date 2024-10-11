@@ -389,10 +389,12 @@ class Model:
                         )
                 # Use the updated entities in the next iteration
                 structural_entity_list = updated_entities
+                self.occ.removeAllDuplicates()
+                self.sync_model()
         final_entity_list = structural_entity_list
 
         # Since we only took intersection with non-overlapping structural entities and removed the tool, there is no further conflict / tag reassignment
-        self.occ.removeAllDuplicates()
+        # self.occ.removeAllDuplicates()
         for entity in final_entity_list:
             entity.update_boundaries()
 
