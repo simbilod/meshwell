@@ -347,7 +347,6 @@ class Model:
                     if intersection[0] is []:
                         self.occ.synchronize()
                         updated_entities.append(structural_entity)
-                    # Complete overlap case (no complement)
                     else:
                         remove_original = True
                         # Don't delete if there is no complement
