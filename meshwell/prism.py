@@ -21,7 +21,7 @@ class Prism(BaseModel):
     )
     buffers: Dict[float, float] = Field(...)
     model: Any
-    physical_name: Optional[str] = Field(None)
+    physical_name: Optional[str | tuple[str, ...]] = Field(None)
     mesh_order: float | None = None
     mesh_bool: bool = Field(True)
     additive: bool = Field(False)
@@ -39,7 +39,7 @@ class Prism(BaseModel):
         polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
         buffers: Dict[float, float],
         model: Any,
-        physical_name: Optional[str] = None,
+        physical_name: Optional[str | tuple[str, ...]] = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,

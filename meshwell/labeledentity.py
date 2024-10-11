@@ -10,7 +10,7 @@ class LabeledEntities(BaseModel):
     index: int
     model: Any
     dimtags: List[Tuple[int, int]]
-    physical_name: str
+    physical_name: str | tuple[str, ...]
     resolutions: List[ResolutionSpec] | None = None
     keep: bool
     boundaries: List[int] = []

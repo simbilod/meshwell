@@ -243,14 +243,16 @@ class Model:
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(
-                        f"{physical_name:<30} - {'instanciate':<15}"
+                        f"{str(physical_name):<30} - {'instanciate':<15}"
                     )
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
             if progress_bars:
                 if physical_name:
-                    enumerator.set_description(f"{physical_name:<30} - {'dimtags':<15}")
+                    enumerator.set_description(
+                        f"{str(physical_name):<30} - {'dimtags':<15}"
+                    )
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
@@ -259,7 +261,7 @@ class Model:
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(
-                        f"{physical_name:<30} - {'entities':<15}"
+                        f"{str(physical_name):<30} - {'entities':<15}"
                     )
             # Assemble with other shapes
             current_entities = LabeledEntities(
@@ -272,7 +274,9 @@ class Model:
             )
             if progress_bars:
                 if physical_name:
-                    enumerator.set_description(f"{physical_name:<30} - {'boolean':<15}")
+                    enumerator.set_description(
+                        f"{str(physical_name):<30} - {'boolean':<15}"
+                    )
             if index != 0:
                 cut = self.occ.cut(
                     current_entities.dimtags,
@@ -288,13 +292,13 @@ class Model:
                 if progress_bars:
                     if physical_name:
                         enumerator.set_description(
-                            f"{physical_name:<30} - {'duplicates':<15}"
+                            f"{str(physical_name):<30} - {'duplicates':<15}"
                         )
                 self.occ.removeAllDuplicates()
                 if progress_bars:
                     if physical_name:
                         enumerator.set_description(
-                            f"{physical_name:<30} - {'sync':<15}"
+                            f"{str(physical_name):<30} - {'sync':<15}"
                         )
                 self.sync_model()
                 current_entities.dimtags = list(set(cut[0]))

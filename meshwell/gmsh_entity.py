@@ -23,7 +23,7 @@ class GMSH_entity(BaseModel):
     gmsh_function_kwargs: Dict[str, Any]
     dimension: int
     model: Any
-    physical_name: Optional[str] = None
+    physical_name: Optional[str | tuple[str, ...]] = None
     mesh_order: float | None = None
     mesh_bool: bool = True
     additive: bool = False
