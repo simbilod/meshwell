@@ -5,12 +5,23 @@ from itertools import combinations, product
 
 def tag_entities(entity_list: List):
     """Adds physical labels to the entities in the model."""
+    # One pass to get the global name --> dimtags mapping
+    names_to_tags = {
+        0: {},
+        1: {},
+        2: {},
+        3: {},
+    }
     for entities in entity_list:
-        if entities.physical_name:
-            for physical_name in entities.physical_name:
-                gmsh.model.addPhysicalGroup(
-                    entities.get_dim(), entities.get_tags(), name=physical_name
-                )
+        dim = entities.get_dim()
+        for physical_name in entities.physical_name:
+            if physical_name not in names_to_tags[dim]:
+                names_to_tags[dim][physical_name] = []
+            names_to_tags[dim][physical_name].extend(entities.get_tags())
+
+    for dim in names_to_tags.keys():
+        for physical_name, tags in names_to_tags[dim].items():
+            gmsh.model.addPhysicalGroup(dim, tags, name=physical_name)
 
 
 def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
