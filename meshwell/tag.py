@@ -26,6 +26,11 @@ def tag_entities(entity_list: List):
 
 def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
     """Adds physical labels to the interfaces between entities in entity_list."""
+    names_to_tags = {
+        0: {},
+        1: {},
+        2: {},
+    }
     for entity1, entity2 in combinations(entity_list, 2):
         if entity1.physical_name == entity2.physical_name:
             continue
@@ -34,21 +39,26 @@ def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
         elif entity1.get_dim() != max_dim:
             continue
         else:
+            dim = entity1.get_dim() - 1
             common_interfaces = list(
                 set(entity1.boundaries).intersection(entity2.boundaries)
             )
             if common_interfaces:
-                # Remember which boundaries were interfaces with another entity
+                # Update entity interface logs
                 entity1.interfaces.extend(common_interfaces)
                 entity2.interfaces.extend(common_interfaces)
+                # Prepare physical tags
                 for entity1_physical_name, entity2_physical_name in product(
                     entity1.physical_name, entity2.physical_name
                 ):
-                    gmsh.model.addPhysicalGroup(
-                        max_dim - 1,
-                        common_interfaces,
-                        name=f"{entity1_physical_name}{boundary_delimiter}{entity2_physical_name}",
-                    )
+                    interface_name = f"{entity1_physical_name}{boundary_delimiter}{entity2_physical_name}"
+                    if interface_name not in names_to_tags[dim]:
+                        names_to_tags[dim][interface_name] = []
+                    names_to_tags[dim][interface_name].extend(common_interfaces)
+
+    for dim in names_to_tags.keys():
+        for physical_name, tags in names_to_tags[dim].items():
+            gmsh.model.addPhysicalGroup(dim, tags, name=physical_name)
 
     return entity_list
 
