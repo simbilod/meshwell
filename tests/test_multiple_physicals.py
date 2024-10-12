@@ -4,6 +4,8 @@ import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
 from meshwell.resolution import ResolutionSpec
+from shapely import clip_by_rect
+import pytest
 
 
 def test_multiple_physicals():
@@ -73,5 +75,74 @@ def test_multiple_physicals():
     )
 
 
+ref1_physical_present = ["big", "small"]
+ref1_physical_absent = ["medium", "small+medium", "big+medium"]
+ref2_physical_present = ["big", "small", "medium"]
+ref2_physical_absent = ["small+medium", "big+medium"]
+ref3_physical_present = ["big", "small", "small+medium", "big+medium"]
+ref3_physical_absent = ["medium"]
+
+
+@pytest.mark.parametrize(
+    "test_input,expected",
+    [
+        ((True, False, False), (ref1_physical_present, ref1_physical_absent)),
+        ((False, True, False), (ref2_physical_present, ref2_physical_absent)),
+        ((False, False, True), (ref3_physical_present, ref3_physical_absent)),
+    ],
+)
+def test_multiple_physicals_additive(test_input, expected):
+    polygon = shapely.Polygon(
+        [[-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5]],
+    )
+
+    buffers = {0.0: 0.0, 1.0: -0.1}
+
+    model = Model(n_threads=1)
+    big_prism = Prism(
+        polygons=polygon.buffer(10, join_style="mitre"),
+        buffers=buffers,
+        model=model,
+        physical_name=("big"),
+        mesh_order=3,
+        resolutions=[ResolutionSpec(resolution_volumes=10)],
+    )
+    medium_prism = Prism(
+        polygons=clip_by_rect(
+            polygon.buffer(5, join_style="mitre"), xmin=0, ymin=-100, ymax=100, xmax=100
+        ),
+        buffers=buffers,
+        model=model,
+        physical_name=("medium"),
+        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        mesh_order=2,
+        additive=True,
+    )
+    small_prism = Prism(
+        polygons=polygon,
+        buffers=buffers,
+        model=model,
+        physical_name="small",
+        mesh_order=1,
+        resolutions=[ResolutionSpec(resolution_volumes=10)],
+    )
+    entities_list = [big_prism, medium_prism, small_prism]
+
+    mesh = model.mesh(
+        entities_list=entities_list,
+        default_characteristic_length=10,
+        verbosity=False,
+        filename="mesh3D_multiplePhysicalsAdditive.msh",
+        addition_structural_physicals=test_input[0],
+        addition_addition_physicals=test_input[1],
+        addition_intersection_physicals=test_input[2],
+    )
+
+    for entry in expected[0]:
+        assert entry in mesh.cell_sets_dict
+    for entry in expected[1]:
+        assert entry not in mesh.cell_sets_dict
+
+
 if __name__ == "__main__":
-    test_multiple_physicals()
+    test_multiple_physicals_additive()
