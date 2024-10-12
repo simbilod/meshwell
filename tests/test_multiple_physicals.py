@@ -95,6 +95,7 @@ def test_multiple_physicals_additive(test_input, expected):
     polygon = shapely.Polygon(
         [[-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5]],
     )
+    """TODO: make the test actually compare the overlapping elements."""
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
