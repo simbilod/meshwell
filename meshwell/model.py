@@ -160,6 +160,9 @@ class Model:
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         addition_delimiter: str = "+",
+        addition_intersection_physicals: bool = True,
+        addition_addition_physicals: bool = True,
+        addition_structural_physicals: bool = True,
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
         reinitialize: bool = True,
@@ -180,6 +183,10 @@ class Model:
             verbosity: GMSH stdout while meshing (True or False)
             interface_delimiter: string characters to use when naming interfaces between entities
             boundary_delimiter: string characters to use when defining an interface between an entity and nothing (simulation boundary)
+            addition_delimiter: string characters to use with addition_intersection_physicals
+            addition_addition_physicals: if True, the intersecting additive entities also carry the additive physical name
+            addition_structural_physicals: if True, the intersecting additive entities also carry the underlying entity names
+            addition_intersection_physicals: if True, the intersecting additive entities also carry a unique {underlying}{addition_delimiter}{additive} name
             gmsh_version: Gmsh mesh format version. For example, Palace requires an older version of 2.2,
                 see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
             finalize: if True (default), finalizes the GMSH model after execution
@@ -243,14 +250,16 @@ class Model:
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(
-                        f"{physical_name:<30} - {'instanciate':<15}"
+                        f"{str(physical_name):<30} - {'instanciate':<15}"
                     )
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
             if progress_bars:
                 if physical_name:
-                    enumerator.set_description(f"{physical_name:<30} - {'dimtags':<15}")
+                    enumerator.set_description(
+                        f"{str(physical_name):<30} - {'dimtags':<15}"
+                    )
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
@@ -259,7 +268,7 @@ class Model:
             if progress_bars:
                 if physical_name:
                     enumerator.set_description(
-                        f"{physical_name:<30} - {'entities':<15}"
+                        f"{str(physical_name):<30} - {'entities':<15}"
                     )
             # Assemble with other shapes
             current_entities = LabeledEntities(
@@ -272,7 +281,9 @@ class Model:
             )
             if progress_bars:
                 if physical_name:
-                    enumerator.set_description(f"{physical_name:<30} - {'boolean':<15}")
+                    enumerator.set_description(
+                        f"{str(physical_name):<30} - {'boolean':<15}"
+                    )
             if index != 0:
                 cut = self.occ.cut(
                     current_entities.dimtags,
@@ -288,13 +299,13 @@ class Model:
                 if progress_bars:
                     if physical_name:
                         enumerator.set_description(
-                            f"{physical_name:<30} - {'duplicates':<15}"
+                            f"{str(physical_name):<30} - {'duplicates':<15}"
                         )
                 self.occ.removeAllDuplicates()
                 if progress_bars:
                     if physical_name:
                         enumerator.set_description(
-                            f"{physical_name:<30} - {'sync':<15}"
+                            f"{str(physical_name):<30} - {'sync':<15}"
                         )
                 self.sync_model()
                 current_entities.dimtags = list(set(cut[0]))
@@ -332,17 +343,33 @@ class Model:
                     else additive_entity.resolutions
                 )
                 updated_entities = []
+                # Parse additive physical names
                 for index, structural_entity in enumerate(structural_entity_list):
                     removeTool = False if index + 1 < len(structural_entities) else True
-                    # Create new composite physical_name
-                    additive_name = f"{structural_entity.physical_name}{addition_delimiter}{additive_entity.physical_name}"
+
+                    # Add all physical names
+                    additive_names = []
+                    if addition_addition_physicals:
+                        additive_names.extend(additive_entity.physical_name)
+                    if addition_structural_physicals:
+                        additive_names.extend(structural_entity.physical_name)
+                    if addition_intersection_physicals:
+                        additive_names.extend(
+                            [
+                                f"{x}{addition_delimiter}{y}"
+                                for x in structural_entity.physical_name
+                                for y in additive_entity.physical_name
+                            ]
+                        )
+                    additive_names = tuple(additive_names)
+
+                    # Add the intersection and complement as new LabeledEntities
                     intersection = self.occ.intersect(
                         structural_entity.dimtags,
                         additive_dimtags,
                         removeObject=False,  # Don't remove yet
                         removeTool=removeTool,  # Only remove at the end
                     )
-                    # Add the intersection and complement as new LabeledEntities
                     # No overlap case (no intersection)
                     if intersection[0] is []:
                         self.occ.synchronize()
@@ -380,7 +407,7 @@ class Model:
                             LabeledEntities(
                                 index=structural_entity.index,
                                 dimtags=intersection[0],
-                                physical_name=additive_name,
+                                physical_name=additive_names,
                                 keep=structural_entity.keep,
                                 model=self.model,
                                 resolutions=structural_entity_resolutions

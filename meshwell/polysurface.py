@@ -19,7 +19,7 @@ class PolySurface(BaseModel):
         ...
     )
     model: Any
-    physical_name: Optional[str] = Field(None)
+    physical_name: Optional[str | tuple[str, ...]] = Field(None)
     mesh_order: float | None = None
     mesh_bool: bool = Field(True)
     additive: bool = Field(False)
@@ -32,7 +32,7 @@ class PolySurface(BaseModel):
         self,
         polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
         model: Any,
-        physical_name: Optional[str] = None,
+        physical_name: Optional[str | tuple[str, ...]] = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
@@ -57,7 +57,10 @@ class PolySurface(BaseModel):
         self.model = model
 
         self.mesh_order = mesh_order
-        self.physical_name = physical_name
+        if isinstance(physical_name, str):
+            self.physical_name = [physical_name]
+        else:
+            self.physical_name = physical_name
         self.mesh_bool = mesh_bool
         self.dimension = 2
         self.resolutions = resolutions

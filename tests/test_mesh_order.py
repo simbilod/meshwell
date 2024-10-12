@@ -23,19 +23,19 @@ def test_mesh_order():
         ),
     ]
 
-    assert entities[0].physical_name == "meshdefault1"
-    assert entities[1].physical_name == "mesh10"
-    assert entities[2].physical_name == "mesh2"
-    assert entities[3].physical_name == "meshdefault2"
-    assert entities[4].physical_name == "mesh3p5"
+    assert entities[0].physical_name == ["meshdefault1"]
+    assert entities[1].physical_name == ["mesh10"]
+    assert entities[2].physical_name == ["mesh2"]
+    assert entities[3].physical_name == ["meshdefault2"]
+    assert entities[4].physical_name == ["mesh3p5"]
 
     ordered_entities = order_entities(entities)
 
-    assert ordered_entities[0].physical_name == "mesh2"
-    assert ordered_entities[1].physical_name == "mesh3p5"
-    assert ordered_entities[2].physical_name == "mesh10"
-    assert ordered_entities[3].physical_name == "meshdefault1"
-    assert ordered_entities[4].physical_name == "meshdefault2"
+    assert ordered_entities[0].physical_name == ["mesh2"]
+    assert ordered_entities[1].physical_name == ["mesh3p5"]
+    assert ordered_entities[2].physical_name == ["mesh10"]
+    assert ordered_entities[3].physical_name == ["meshdefault1"]
+    assert ordered_entities[4].physical_name == ["meshdefault2"]
 
     assert ordered_entities[3].mesh_order == 11
     assert ordered_entities[4].mesh_order == 12
