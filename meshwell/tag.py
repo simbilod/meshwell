@@ -67,17 +67,24 @@ def tag_boundaries(
     entity_list: List, max_dim: int, boundary_delimiter: str, mesh_edge_name: str
 ):
     """Adds physical labels to the boundaries of the entities in entity_list."""
+    names_to_tags = {
+        0: {},
+        1: {},
+        2: {},
+    }
     for entity in entity_list:
         if entity.get_dim() != max_dim:
             continue
+        dim = entity.get_dim() - 1
         boundaries = list(set(entity.boundaries) - set(entity.interfaces))
-        if isinstance(entity.physical_name, str):
-            entity_physical_names = [entity.physical_name]
-        else:
-            entity_physical_names = entity.physical_name
-        for entity_physical_name in entity_physical_names:
-            gmsh.model.addPhysicalGroup(
-                max_dim - 1,
-                boundaries,
-                name=f"{entity_physical_name}{boundary_delimiter}{mesh_edge_name}",
+        for entity_physical_name in entity.physical_name:
+            boundary_name = (
+                f"{entity_physical_name}{boundary_delimiter}{mesh_edge_name}"
             )
+            if boundary_name not in names_to_tags[dim]:
+                names_to_tags[dim][boundary_name] = []
+            names_to_tags[dim][boundary_name].extend(boundaries)
+
+    for dim in names_to_tags.keys():
+        for physical_name, tags in names_to_tags[dim].items():
+            gmsh.model.addPhysicalGroup(dim, tags, name=physical_name)
