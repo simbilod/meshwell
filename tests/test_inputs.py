@@ -43,5 +43,5 @@ def test_msh(config):
         default_characteristic_length=0.5,
         verbosity=False,
         filename=config),
-\
+
     pass
