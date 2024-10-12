@@ -1,6 +1,11 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## 1.2.3
+## 1.2.0
+
+- "additive" entities [PR#71](https://github.com/simbilod/meshwell/pull/71)
+- ability for entities to hold multiple physical_names [PR#72](https://github.com/simbilod/meshwell/pull/72)
+
+## 1.1.3
 
 - resolution_factor method in ResolutionSpec [PR#70](https://github.com/simbilod/meshwell/pull/70)
 
