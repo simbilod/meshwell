@@ -160,7 +160,9 @@ class Model:
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         addition_delimiter: str = "+",
-        addition_multiple_physicals: bool = True,
+        addition_intersection_physicals: bool = True,
+        addition_addition_physicals: bool = True,
+        addition_structural_physicals: bool = True,
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
         reinitialize: bool = True,
@@ -181,8 +183,10 @@ class Model:
             verbosity: GMSH stdout while meshing (True or False)
             interface_delimiter: string characters to use when naming interfaces between entities
             boundary_delimiter: string characters to use when defining an interface between an entity and nothing (simulation boundary)
-            addition_delimiter: string characters to use when naming the intersection of additive entities and regular entities
-            addition_multiple_physicals: if True, the intersected additive entities will also carry the original entity names
+            addition_delimiter: string characters to use with addition_intersection_physicals
+            addition_addition_physicals: if True, the intersecting additive entities also carry the additive physical name
+            addition_structural_physicals: if True, the intersecting additive entities also carry the underlying entity names
+            addition_intersection_physicals: if True, the intersecting additive entities also carry a unique {underlying}{addition_delimiter}{additive} name
             gmsh_version: Gmsh mesh format version. For example, Palace requires an older version of 2.2,
                 see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
             finalize: if True (default), finalizes the GMSH model after execution
@@ -330,8 +334,6 @@ class Model:
             entity.update_boundaries()
 
         # Now that the structure is defined, merge with additive entities
-
-        # First validate naming flag
         if additive_entities:
             for additive_entity in additive_entities:
                 additive_dimtags = unpack_dimtags(additive_entity.instanciate())
@@ -342,38 +344,23 @@ class Model:
                 )
                 updated_entities = []
                 # Parse additive physical names
-                if isinstance(additive_entity.physical_name, str):
-                    additive_entity_physical_names = [additive_entity.physical_name]
-                else:
-                    additive_entity_physical_names = additive_entity.physical_name
                 for index, structural_entity in enumerate(structural_entity_list):
                     removeTool = False if index + 1 < len(structural_entities) else True
+
                     # Add all physical names
-                    if isinstance(structural_entity.physical_name, str):
-                        structural_entity_physical_names = [
-                            structural_entity.physical_name
-                        ]
-                    else:
-                        structural_entity_physical_names = (
-                            structural_entity.physical_name
+                    additive_names = []
+                    if addition_addition_physicals:
+                        additive_names.extend(additive_entity.physical_name)
+                    if addition_structural_physicals:
+                        additive_names.extend(structural_entity.physical_name)
+                    if addition_intersection_physicals:
+                        additive_names.extend(
+                            [
+                                f"{x}{addition_delimiter}{y}"
+                                for x in structural_entity.physical_name
+                                for y in additive_entity.physical_name
+                            ]
                         )
-                    additive_names = list(additive_entity_physical_names)
-                    # Regular physicals:
-                    if addition_multiple_physicals:
-                        for (
-                            structural_entity_physical_name
-                        ) in structural_entity_physical_names:
-                            additive_names.append(structural_entity_physical_name)
-                    # Extra omposite name(s):
-                    for (
-                        structural_entity_physical_name
-                    ) in structural_entity_physical_names:
-                        for (
-                            additive_entity_physical_name
-                        ) in additive_entity_physical_names:
-                            additive_names.append(
-                                f"{structural_entity_physical_name}{addition_delimiter}{additive_entity_physical_name}"
-                            )
                     additive_names = tuple(additive_names)
 
                     # Add the intersection and complement as new LabeledEntities
