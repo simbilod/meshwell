@@ -371,18 +371,14 @@ class Model:
                         removeTool=removeTool,  # Only remove at the end
                     )
                     # No overlap case (no intersection)
-                    if intersection[0] is []:
+                    if not intersection[0]:
                         self.occ.synchronize()
                         updated_entities.append(structural_entity)
                     else:
-                        remove_original = True
-                        # Don't delete if there is no complement
-                        if intersection[0] == structural_entity.dimtags:
-                            remove_original = False
                         complement = self.occ.cut(
                             structural_entity.dimtags,
                             intersection[0],
-                            removeObject=remove_original,
+                            removeObject=False,
                             removeTool=False,
                         )
                         self.occ.synchronize()
