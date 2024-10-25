@@ -97,6 +97,7 @@ class LabeledEntities(BaseModel):
                     )
                     boundary_sizemax = resolutionspec.sizemax_surfaces
                     boundary_distmax = resolutionspec.distmax_surfaces
+                    boundary_sigmoid = resolutionspec.surface_sigmoid
 
                     # Check condition on surface curves
                     boundary_lines = [
@@ -114,6 +115,7 @@ class LabeledEntities(BaseModel):
                     )
                     boundary_lines_sizemax = resolutionspec.sizemax_curves
                     boundary_lines_distmax = resolutionspec.distmax_curves
+                    boundary_line_sigmoid = resolutionspec.curve_sigmoid
 
                 elif self.get_dim() == 2:
                     entity_str = "SurfacesList"
@@ -147,6 +149,7 @@ class LabeledEntities(BaseModel):
                     )
                     boundary_sizemax = resolutionspec.sizemax_curves
                     boundary_distmax = resolutionspec.distmax_curves
+                    boundary_sigmoid = resolutionspec.curve_sigmoid
 
                 elif self.get_dim() == 1:
                     entity_str = "CurvesList"
@@ -186,6 +189,9 @@ class LabeledEntities(BaseModel):
                             n + 1, "DistMax", boundary_distmax
                         )
                     self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
+                    self.model.mesh.field.setNumber(
+                        n + 1, "Sigmoid", int(boundary_sigmoid)
+                    )
                     refinement_field_indices.extend((n + 1,))
                     n += 2
 
@@ -207,6 +213,9 @@ class LabeledEntities(BaseModel):
                             n + 1, "DistMax", boundary_lines_distmax
                         )
                     self.model.mesh.field.setNumber(n + 1, "StopAtDistMax", 1)
+                    self.model.mesh.field.setNumber(
+                        n + 1, "Sigmoid", int(boundary_line_sigmoid)
+                    )
                     refinement_field_indices.extend((n + 1,))
                     n += 2
 
