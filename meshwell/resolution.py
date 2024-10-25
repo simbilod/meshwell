@@ -35,16 +35,19 @@ class ResolutionSpec(BaseModel):
     max_area_surfaces: float = np.inf
     distmax_surfaces: float | None = None
     sizemax_surfaces: float | None = None
+    surface_sigmoid: bool = False
     # Curve
     resolution_curves: float = np.inf
     min_length_curves: float = 0
     max_length_curves: float = np.inf
     distmax_curves: float | None = None
     sizemax_curves: float | None = None
+    curve_sigmoid: bool = False
     # Point
     resolution_points: float = np.inf
     distmax_points: float | None = None
     sizemax_points: float | None = None
+    point_sigmoid: bool = False
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
