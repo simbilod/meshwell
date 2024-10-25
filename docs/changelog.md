@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.2.2
+
+- sigmoid resolution tapering [PR#73](https://github.com/simbilod/meshwell/pull/73)
+
 ## 1.2.1
 
 - bug fixes
