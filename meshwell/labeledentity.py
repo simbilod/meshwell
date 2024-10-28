@@ -55,6 +55,8 @@ class LabeledEntities(BaseModel):
     ):
         """
         Adds refinement fields to the model based on base_resolution and resolution info.
+
+        # FIXME: make a better ResolutionSpec class that handles the entity/boundary distinction
         """
         n = refinement_max_index
 
@@ -98,6 +100,12 @@ class LabeledEntities(BaseModel):
                     boundary_sizemax = resolutionspec.sizemax_surfaces
                     boundary_distmax = resolutionspec.distmax_surfaces
                     boundary_sigmoid = resolutionspec.surface_sigmoid
+                    boundaries_samplings = {
+                        boundary: resolutionspec.calculate_sampling_surface(
+                            self.model.occ.getMass(2, boundary)
+                        )
+                        for boundary in boundaries
+                    }
 
                     # Check condition on surface curves
                     boundary_lines = [
@@ -116,6 +124,12 @@ class LabeledEntities(BaseModel):
                     boundary_lines_sizemax = resolutionspec.sizemax_curves
                     boundary_lines_distmax = resolutionspec.distmax_curves
                     boundary_line_sigmoid = resolutionspec.curve_sigmoid
+                    boundary_lines_samplings = {
+                        boundary_line: resolutionspec.calculate_sampling_curve(
+                            self.model.occ.getMass(1, boundary_line)
+                        )
+                        for boundary_line in boundary_lines
+                    }
 
                 elif self.get_dim() == 2:
                     entity_str = "SurfacesList"
@@ -150,6 +164,12 @@ class LabeledEntities(BaseModel):
                     boundary_sizemax = resolutionspec.sizemax_curves
                     boundary_distmax = resolutionspec.distmax_curves
                     boundary_sigmoid = resolutionspec.curve_sigmoid
+                    boundaries_samplings = {
+                        boundary: resolutionspec.calculate_sampling_curve(
+                            self.model.occ.getMass(1, boundary)
+                        )
+                        for boundary in boundaries
+                    }
 
                 elif self.get_dim() == 1:
                     entity_str = "CurvesList"
@@ -171,10 +191,12 @@ class LabeledEntities(BaseModel):
                     refinement_field_indices.extend((n + 1,))
                     n += 2
 
-                if boundaries:
+                for boundary in boundaries:
                     self.model.mesh.field.add("Distance", n)
-                    self.model.mesh.field.setNumbers(n, boundary_str, boundaries)
-                    self.model.mesh.field.setNumber(n, "Sampling", 100)
+                    self.model.mesh.field.setNumbers(n, boundary_str, [boundary])
+                    self.model.mesh.field.setNumber(
+                        n, "Sampling", boundaries_samplings[boundary]
+                    )
                     self.model.mesh.field.add("Threshold", n + 1)
                     self.model.mesh.field.setNumber(n + 1, "InField", n)
                     self.model.mesh.field.setNumber(
@@ -195,10 +217,12 @@ class LabeledEntities(BaseModel):
                     refinement_field_indices.extend((n + 1,))
                     n += 2
 
-                if boundary_lines:
+                for boundary_line in boundary_lines:
                     self.model.mesh.field.add("Distance", n)
-                    self.model.mesh.field.setNumbers(n, curves_str, boundary_lines)
-                    self.model.mesh.field.setNumber(n, "Sampling", 100)
+                    self.model.mesh.field.setNumbers(n, curves_str, [boundary_line])
+                    self.model.mesh.field.setNumber(
+                        n, "Sampling", boundary_lines_samplings[boundary_line]
+                    )
                     self.model.mesh.field.add("Threshold", n + 1)
                     self.model.mesh.field.setNumber(n + 1, "InField", n)
                     self.model.mesh.field.setNumber(
