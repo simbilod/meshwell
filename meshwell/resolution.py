@@ -7,6 +7,8 @@ class ResolutionSpec(BaseModel):
     """
     Object holding resolution information for an entity and its boundaries.
 
+    # FIXME: make a better ResolutionSpec class that handles the entity/boundary distinction
+
     Arguments:
         # Volume
         volume_resolution (float): resolution of the volume (3D). No effect if the entity is 2D.
@@ -36,6 +38,8 @@ class ResolutionSpec(BaseModel):
     distmax_surfaces: float | None = None
     sizemax_surfaces: float | None = None
     surface_sigmoid: bool = False
+    surface_per_sampling_surfaces: float | None = None
+    sampling_surface_max: int = 100
     # Curve
     resolution_curves: float = np.inf
     min_length_curves: float = 0
@@ -43,6 +47,8 @@ class ResolutionSpec(BaseModel):
     distmax_curves: float | None = None
     sizemax_curves: float | None = None
     curve_sigmoid: bool = False
+    length_per_sampling_curves: float | None = None
+    sampling_curve_max: int = 100
     # Point
     resolution_points: float = np.inf
     distmax_points: float | None = None
@@ -62,3 +68,29 @@ class ResolutionSpec(BaseModel):
         if result.sizemax_points is not None:
             result.sizemax_points *= resolution_factor
         return result
+
+    def calculate_sampling(self, mass_per_sampling, mass, max_sampling):
+        if mass_per_sampling == np.inf:
+            return 2  # avoid int(inf) error
+        else:
+            return min(max(2, int(mass / mass_per_sampling)), max_sampling)
+
+    def calculate_sampling_surface(self, area):
+        if self.surface_per_sampling_surfaces:
+            return self.calculate_sampling(
+                self.surface_per_sampling_surfaces, area, self.sampling_surface_max
+            )
+        else:
+            return self.calculate_sampling(
+                0.5 * self.resolution_surfaces, area, self.sampling_surface_max
+            )
+
+    def calculate_sampling_curve(self, length):
+        if self.length_per_sampling_curves:
+            return self.calculate_sampling(
+                self.length_per_sampling_curves, length, self.sampling_curve_max
+            )
+        else:
+            return self.calculate_sampling(
+                0.5 * self.resolution_curves, length, self.sampling_curve_max
+            )
