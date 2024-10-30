@@ -25,6 +25,7 @@ class ResolutionSpec(BaseModel):
         # Points
         point_resolution (float): resolution of points constituting the volumes' surfaces' curves (3D) or surfaces' curves (2D)
             defaults to inf --> curve_resolution, since the local resolution is always the minimum of all size fields
+            can be filtered by the length of the associated curves
     """
 
     # Volume
@@ -51,6 +52,8 @@ class ResolutionSpec(BaseModel):
     sampling_curve_max: int = 100
     # Point
     resolution_points: float | None = None
+    min_length_curves_for_points: float = 0
+    max_length_curves_for_points: float = np.inf
     distmax_points: float | None = None
     sizemax_points: float | None = None
     point_sigmoid: bool = False
@@ -74,7 +77,7 @@ class ResolutionSpec(BaseModel):
         return result
 
     def calculate_sampling(self, mass_per_sampling, mass, max_sampling):
-        if mass_per_sampling == np.inf:
+        if mass_per_sampling is None:
             return 2  # avoid int(inf) error
         else:
             return min(max(2, int(mass / mass_per_sampling)), max_sampling)
