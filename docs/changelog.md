@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.2.5
+
+- resolution on points based on curve length [PR#77](https://github.com/simbilod/meshwell/pull/77)
+
 ## 1.2.4
 
 - subdivide prisms [PR#76](https://github.com/simbilod/meshwell/pull/76)
