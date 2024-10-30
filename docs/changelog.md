@@ -1,5 +1,10 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.2.4
+
+- subdivide prisms [PR#76](https://github.com/simbilod/meshwell/pull/76)
+- don't define resolution fields by default [PR#75](https://github.com/simbilod/meshwell/pull/75)
+
 ## 1.2.3
 
 - expose Sampling parameter [PR#74](https://github.com/simbilod/meshwell/pull/74)
