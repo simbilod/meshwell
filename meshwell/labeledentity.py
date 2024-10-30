@@ -72,104 +72,119 @@ class LabeledEntities(BaseModel):
                     boundary_str = "SurfacesList"
                     curves_str = "CurvesList"
 
-                    entity_resolution = min(
-                        resolutionspec.resolution_volumes, default_resolution
-                    )
-
                     # Check condition on volumes
-                    entities = [
-                        volume_tag
-                        for volume_tag in self.get_tags()
-                        if resolutionspec.min_volumes
-                        < self.model.occ.getMass(3, volume_tag)
-                        < resolutionspec.max_volumes
-                    ]
+                    if resolutionspec.resolution_volumes is None:
+                        boundaries = []
+                        entity_resolution = default_resolution
+                    else:
+                        entity_resolution = min(
+                            resolutionspec.resolution_volumes, default_resolution
+                        )
+                        entities = [
+                            volume_tag
+                            for volume_tag in self.get_tags()
+                            if resolutionspec.min_volumes
+                            < self.model.occ.getMass(3, volume_tag)
+                            < resolutionspec.max_volumes
+                        ]
 
                     # Check condition on surfaces
-                    boundaries = [
-                        surface_tag
-                        for surface_tag in self.boundaries
-                        if resolutionspec.min_area_surfaces
-                        < self.model.occ.getMass(2, surface_tag)
-                        < resolutionspec.max_area_surfaces
-                    ]
-
-                    boundary_resolution = min(
-                        resolutionspec.resolution_surfaces, entity_resolution
-                    )
-                    boundary_sizemax = resolutionspec.sizemax_surfaces
-                    boundary_distmax = resolutionspec.distmax_surfaces
-                    boundary_sigmoid = resolutionspec.surface_sigmoid
-                    boundaries_samplings = {
-                        boundary: resolutionspec.calculate_sampling_surface(
-                            self.model.occ.getMass(2, boundary)
+                    if resolutionspec.resolution_surfaces is None:
+                        boundaries = []
+                    else:
+                        boundaries = [
+                            surface_tag
+                            for surface_tag in self.boundaries
+                            if resolutionspec.min_area_surfaces
+                            < self.model.occ.getMass(2, surface_tag)
+                            < resolutionspec.max_area_surfaces
+                        ]
+                        boundary_resolution = min(
+                            resolutionspec.resolution_surfaces, entity_resolution
                         )
-                        for boundary in boundaries
-                    }
+                        boundary_sizemax = resolutionspec.sizemax_surfaces
+                        boundary_distmax = resolutionspec.distmax_surfaces
+                        boundary_sigmoid = resolutionspec.surface_sigmoid
+                        boundaries_samplings = {
+                            boundary: resolutionspec.calculate_sampling_surface(
+                                self.model.occ.getMass(2, boundary)
+                            )
+                            for boundary in boundaries
+                        }
 
                     # Check condition on surface curves
-                    boundary_lines = [
-                        c
-                        for b in self.boundaries
-                        for cs in self.model.occ.getCurveLoops(b)[1]
-                        for c in cs
-                        if resolutionspec.min_length_curves
-                        < self.model.occ.getMass(1, c)
-                        < resolutionspec.max_length_curves
-                    ]
+                    if resolutionspec.resolution_curves is None:
+                        boundary_lines = []
+                        boundary_resolution = default_resolution
+                    else:
+                        boundary_lines = [
+                            c
+                            for b in self.boundaries
+                            for cs in self.model.occ.getCurveLoops(b)[1]
+                            for c in cs
+                            if resolutionspec.min_length_curves
+                            < self.model.occ.getMass(1, c)
+                            < resolutionspec.max_length_curves
+                        ]
 
-                    boundary_lines_resolution = min(
-                        resolutionspec.resolution_curves, boundary_resolution
-                    )
-                    boundary_lines_sizemax = resolutionspec.sizemax_curves
-                    boundary_lines_distmax = resolutionspec.distmax_curves
-                    boundary_line_sigmoid = resolutionspec.curve_sigmoid
-                    boundary_lines_samplings = {
-                        boundary_line: resolutionspec.calculate_sampling_curve(
-                            self.model.occ.getMass(1, boundary_line)
+                        boundary_lines_resolution = min(
+                            resolutionspec.resolution_curves, boundary_resolution
                         )
-                        for boundary_line in boundary_lines
-                    }
+                        boundary_lines_sizemax = resolutionspec.sizemax_curves
+                        boundary_lines_distmax = resolutionspec.distmax_curves
+                        boundary_line_sigmoid = resolutionspec.curve_sigmoid
+                        boundary_lines_samplings = {
+                            boundary_line: resolutionspec.calculate_sampling_curve(
+                                self.model.occ.getMass(1, boundary_line)
+                            )
+                            for boundary_line in boundary_lines
+                        }
 
                 elif self.get_dim() == 2:
                     entity_str = "SurfacesList"
                     boundary_str = "CurvesList"
                     curves_str = "PointList"
 
-                    entity_resolution = min(
-                        resolutionspec.resolution_surfaces, default_resolution
-                    )
-
                     # Check condition on surfaces
-                    entities = [
-                        surface_tag
-                        for surface_tag in self.get_tags()
-                        if resolutionspec.min_area_surfaces
-                        < self.model.occ.getMass(2, surface_tag)
-                        < resolutionspec.max_area_surfaces
-                    ]
-
-                    # Check condition on surfaces
-                    boundaries = [
-                        curve_tag
-                        for curve_tag in self.boundaries
-                        if resolutionspec.min_length_curves
-                        < self.model.occ.getMass(1, curve_tag)
-                        < resolutionspec.max_length_curves
-                    ]
-
-                    boundary_resolution = min(
-                        resolutionspec.resolution_curves, entity_resolution
-                    )
-                    boundary_sizemax = resolutionspec.sizemax_curves
-                    boundary_distmax = resolutionspec.distmax_curves
-                    boundary_sigmoid = resolutionspec.curve_sigmoid
-                    boundaries_samplings = {
-                        boundary: resolutionspec.calculate_sampling_curve(
-                            self.model.occ.getMass(1, boundary)
+                    if resolutionspec.resolution_surfaces is None:
+                        entities = []
+                        entity_resolution = default_resolution
+                    else:
+                        entity_resolution = min(
+                            resolutionspec.resolution_surfaces, default_resolution
                         )
-                        for boundary in boundaries
-                    }
+                        entities = [
+                            surface_tag
+                            for surface_tag in self.get_tags()
+                            if resolutionspec.min_area_surfaces
+                            < self.model.occ.getMass(2, surface_tag)
+                            < resolutionspec.max_area_surfaces
+                        ]
+
+                    # Check condition on curves
+                    if resolutionspec.resolution_curves is None:
+                        boundaries = []
+                    else:
+                        boundaries = [
+                            curve_tag
+                            for curve_tag in self.boundaries
+                            if resolutionspec.min_length_curves
+                            < self.model.occ.getMass(1, curve_tag)
+                            < resolutionspec.max_length_curves
+                        ]
+
+                        boundary_resolution = min(
+                            resolutionspec.resolution_curves, entity_resolution
+                        )
+                        boundary_sizemax = resolutionspec.sizemax_curves
+                        boundary_distmax = resolutionspec.distmax_curves
+                        boundary_sigmoid = resolutionspec.curve_sigmoid
+                        boundaries_samplings = {
+                            boundary: resolutionspec.calculate_sampling_curve(
+                                self.model.occ.getMass(1, boundary)
+                            )
+                            for boundary in boundaries
+                        }
 
                 elif self.get_dim() == 1:
                     entity_str = "CurvesList"
