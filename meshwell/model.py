@@ -39,7 +39,7 @@ class Model:
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", n_threads)
-        gmsh.option.setNumber("Geometry.OCCParallel", n_threads > 1)
+        gmsh.option.setNumber("Geometry.OCCParallel", 1)
 
         # Point snapping
         self.point_tolerance = point_tolerance
@@ -260,6 +260,7 @@ class Model:
                     enumerator.set_description(
                         f"{str(physical_name):<30} - {'dimtags':<15}"
                     )
+
             # Parse dimension
             dim = validate_dimtags(dimtags_out)
             max_dim = max(dim, max_dim)
