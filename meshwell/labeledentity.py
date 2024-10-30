@@ -64,6 +64,7 @@ class LabeledEntities(BaseModel):
             entities = []
             boundaries = []
             boundary_lines = []
+            boundary_lines_points = []
 
             for resolutionspec in self.resolutions:
                 # Parse by dimension
