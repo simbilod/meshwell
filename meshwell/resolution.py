@@ -28,11 +28,11 @@ class ResolutionSpec(BaseModel):
     """
 
     # Volume
-    resolution_volumes: float = np.inf
+    resolution_volumes: float | None = None
     min_volumes: float = 0
     max_volumes: float = np.inf
     # Surface
-    resolution_surfaces: float = np.inf
+    resolution_surfaces: float | None = None
     min_area_surfaces: float = 0
     max_area_surfaces: float = np.inf
     distmax_surfaces: float | None = None
@@ -41,7 +41,7 @@ class ResolutionSpec(BaseModel):
     surface_per_sampling_surfaces: float | None = None
     sampling_surface_max: int = 100
     # Curve
-    resolution_curves: float = np.inf
+    resolution_curves: float | None = None
     min_length_curves: float = 0
     max_length_curves: float = np.inf
     distmax_curves: float | None = None
@@ -50,21 +50,25 @@ class ResolutionSpec(BaseModel):
     length_per_sampling_curves: float | None = None
     sampling_curve_max: int = 100
     # Point
-    resolution_points: float = np.inf
+    resolution_points: float | None = None
     distmax_points: float | None = None
     sizemax_points: float | None = None
     point_sigmoid: bool = False
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
-        result.resolution_volumes *= resolution_factor
-        result.resolution_surfaces *= resolution_factor
+        if result.resolution_volumes is not None:
+            result.resolution_volumes *= resolution_factor
+        if result.resolution_surfaces is not None:
+            result.resolution_surfaces *= resolution_factor
         if result.sizemax_surfaces is not None:
             result.sizemax_surfaces *= resolution_factor
-        result.resolution_curves *= resolution_factor
+        if result.resolution_curves is not None:
+            result.resolution_curves *= resolution_factor
         if result.sizemax_curves is not None:
             result.sizemax_curves *= resolution_factor
-        result.resolution_points *= resolution_factor
+        if result.resolution_points is not None:
+            result.resolution_points *= resolution_factor
         if result.sizemax_points is not None:
             result.sizemax_points *= resolution_factor
         return result
