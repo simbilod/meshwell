@@ -31,6 +31,7 @@ class Prism(BaseModel):
     extrude: bool = False
     zmin: Optional[float] = 0
     zmax: Optional[float] = 0
+    subdivision: tuple[int, int, int] | None = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -44,6 +45,7 @@ class Prism(BaseModel):
         mesh_bool: bool = True,
         additive: bool = False,
         resolutions: List[ResolutionSpec] | None = None,
+        subdivision: tuple[int, int, int] | None = None,
     ):
         super().__init__(
             polygons=polygons,
@@ -54,6 +56,7 @@ class Prism(BaseModel):
             mesh_bool=mesh_bool,
             additive=additive,
             resolution=resolutions,
+            subdivision=subdivision,
         )
 
         # Model
@@ -247,11 +250,68 @@ class Prism(BaseModel):
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
+    def subdivide(self, prisms, subdivision):
+        """Split the prisms into subprisms according to subdivision."""
+        subdivided_prisms = []
+        import numpy as np
+
+        global_xmin = np.inf
+        global_ymin = np.inf
+        global_zmin = np.inf
+        global_xmax = -np.inf
+        global_ymax = -np.inf
+        global_zmax = -np.inf
+        for prism in prisms:
+            xmin, ymin, zmin, xmax, ymax, zmax = self.model.occ.getBoundingBox(3, prism)
+            if xmin < global_xmin:
+                global_xmin = xmin
+            if ymin < global_ymin:
+                global_ymin = ymin
+            if zmin < global_zmin:
+                global_zmin = zmin
+            if xmax > global_xmax:
+                global_xmax = xmax
+            if ymax > global_ymax:
+                global_ymax = ymax
+            if zmax > global_zmax:
+                global_zmax = zmax
+        dx = (global_xmax - global_xmin) / subdivision[0]
+        dy = (global_ymax - global_ymin) / subdivision[1]
+        dz = (global_zmax - global_zmin) / subdivision[2]
+        removeObject = False
+        for x_index in range(subdivision[0]):
+            for y_index in range(subdivision[1]):
+                for z_index in range(subdivision[2]):
+                    if (
+                        x_index == subdivision[0] - 1
+                        and y_index == subdivision[1] - 1
+                        and z_index == subdivision[2] - 1
+                    ):
+                        removeObject = True
+                    tool = self.model.occ.add_box(
+                        xmin + x_index * dx,
+                        ymin + y_index * dy,
+                        zmin + z_index * dz,
+                        dx,
+                        dy,
+                        dz,
+                    )
+                    intersection = self.model.occ.intersect(
+                        [(3, prism) for prism in prisms],
+                        [(3, tool)],
+                        removeObject=removeObject,
+                        removeTool=True,
+                    )[0]
+                    subdivided_prisms.extend(intersection)
+        return subdivided_prisms
+
     def instanciate(self) -> List[Tuple[int, int]]:
         """Returns dim tag from entity."""
-        prism = self.get_gmsh_volumes()
+        prisms = self.get_gmsh_volumes()
         self.model.occ.synchronize()
-        return [(3, prism)]
+        if self.subdivision is not None:
+            return self.subdivide(prisms, self.subdivision)
+        return [(3, prisms)]
 
     def _validate_polygon_buffers(self) -> bool:
         """Check if any buffering operation changes the topology of the polygon."""
