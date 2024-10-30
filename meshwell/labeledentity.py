@@ -74,7 +74,7 @@ class LabeledEntities(BaseModel):
 
                     # Check condition on volumes
                     if resolutionspec.resolution_volumes is None:
-                        boundaries = []
+                        entities = []
                         entity_resolution = default_resolution
                     else:
                         entity_resolution = min(
@@ -91,6 +91,7 @@ class LabeledEntities(BaseModel):
                     # Check condition on surfaces
                     if resolutionspec.resolution_surfaces is None:
                         boundaries = []
+                        boundary_resolution = default_resolution
                     else:
                         boundaries = [
                             surface_tag
@@ -115,7 +116,6 @@ class LabeledEntities(BaseModel):
                     # Check condition on surface curves
                     if resolutionspec.resolution_curves is None:
                         boundary_lines = []
-                        boundary_resolution = default_resolution
                     else:
                         boundary_lines = [
                             c
