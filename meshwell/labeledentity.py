@@ -108,12 +108,16 @@ class LabeledEntities(BaseModel):
                         boundary_sizemax = resolutionspec.sizemax_surfaces
                         boundary_distmax = resolutionspec.distmax_surfaces
                         boundary_sigmoid = resolutionspec.surface_sigmoid
-                        boundaries_samplings = {
-                            boundary: resolutionspec.calculate_sampling_surface(
+                        # NOTE: currently using for the number of sampling points the desired density and largest entity; resulting NSampling is then applied to all entities
+                        boundary_surface = max(
+                            [
                                 self.model.occ.getMass(2, boundary)
-                            )
-                            for boundary in boundaries
-                        }
+                                for boundary in boundaries
+                            ]
+                        )
+                        boundaries_samplings = (
+                            resolutionspec.calculate_sampling_surface(boundary_surface)
+                        )
 
                     # Check condition on surface curves
                     if resolutionspec.resolution_curves is None:
@@ -136,12 +140,18 @@ class LabeledEntities(BaseModel):
                         boundary_lines_sizemax = resolutionspec.sizemax_curves
                         boundary_lines_distmax = resolutionspec.distmax_curves
                         boundary_line_sigmoid = resolutionspec.curve_sigmoid
-                        boundary_lines_samplings = {
-                            boundary_line: resolutionspec.calculate_sampling_curve(
-                                self.model.occ.getMass(1, boundary_line)
+                        # NOTE: currently using for the number of sampling points the desired density and largest entity; resulting NSampling is then applied to all entities
+                        boundary_lines_length = max(
+                            [
+                                self.model.occ.getMass(1, boundary)
+                                for boundary in boundary_lines
+                            ]
+                        )
+                        boundary_lines_samplings = (
+                            resolutionspec.calculate_sampling_curve(
+                                boundary_lines_length
                             )
-                            for boundary_line in boundary_lines
-                        }
+                        )
 
                     # Check condition on surface curve points
                     if resolutionspec.resolution_points is None:
@@ -208,12 +218,16 @@ class LabeledEntities(BaseModel):
                         boundary_sizemax = resolutionspec.sizemax_curves
                         boundary_distmax = resolutionspec.distmax_curves
                         boundary_sigmoid = resolutionspec.curve_sigmoid
-                        boundaries_samplings = {
-                            boundary: resolutionspec.calculate_sampling_curve(
+                        # NOTE: currently using for the number of sampling points the desired density and largest entity; resulting NSampling is then applied to all entities
+                        boundary_surface = max(
+                            [
                                 self.model.occ.getMass(1, boundary)
-                            )
-                            for boundary in boundaries
-                        }
+                                for boundary in boundaries
+                            ]
+                        )
+                        boundaries_samplings = (
+                            resolutionspec.calculate_sampling_surface(boundary_surface)
+                        )
 
                     if resolutionspec.resolution_points is not None:
                         raise ValueError(
@@ -240,12 +254,10 @@ class LabeledEntities(BaseModel):
                     refinement_field_indices.extend((n + 1,))
                     n += 2
 
-                for boundary in boundaries:
+                if boundaries:
                     self.model.mesh.field.add("Distance", n)
-                    self.model.mesh.field.setNumbers(n, boundary_str, [boundary])
-                    self.model.mesh.field.setNumber(
-                        n, "Sampling", boundaries_samplings[boundary]
-                    )
+                    self.model.mesh.field.setNumbers(n, boundary_str, boundaries)
+                    self.model.mesh.field.setNumber(n, "Sampling", boundaries_samplings)
                     self.model.mesh.field.add("Threshold", n + 1)
                     self.model.mesh.field.setNumber(n + 1, "InField", n)
                     self.model.mesh.field.setNumber(
@@ -266,11 +278,11 @@ class LabeledEntities(BaseModel):
                     refinement_field_indices.extend((n + 1,))
                     n += 2
 
-                for boundary_line in boundary_lines:
+                if boundary_lines:
                     self.model.mesh.field.add("Distance", n)
-                    self.model.mesh.field.setNumbers(n, curves_str, [boundary_line])
+                    self.model.mesh.field.setNumbers(n, curves_str, boundary_lines)
                     self.model.mesh.field.setNumber(
-                        n, "Sampling", boundary_lines_samplings[boundary_line]
+                        n, "Sampling", boundary_lines_samplings
                     )
                     self.model.mesh.field.add("Threshold", n + 1)
                     self.model.mesh.field.setNumber(n + 1, "InField", n)
