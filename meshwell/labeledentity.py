@@ -61,14 +61,8 @@ class LabeledEntities(BaseModel):
                 tags = self.tags
             elif target_dimension == 2:
                 tags = self.boundaries
-            elif target_dimension == 1:
+            elif target_dimension == 1 or target_dimension == 0:
                 tags = [self.model.occ.getCurveLoops(b)[1] for b in self.boundaries]
-            elif target_dimension == 0:
-                line_tags = [
-                    self.model.occ.getCurveLoops(b)[1] for b in self.boundaries
-                ]
-                tags = self.model.getBoundary([(0, tag) for tag in line_tags])
-                target_dimension += 1
         elif self.dim == 2:
             if target_dimension == 3:
                 warnings.warn("Applying volume ResolutionSpec to surface, skipping")
@@ -81,7 +75,11 @@ class LabeledEntities(BaseModel):
                     "ResolutionSpec for points not implemented in 2D yet!"
                 )
 
-        return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
+        if target_dimension == 0:
+            filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
+            return self.model.getBoundary([(0, tag) for tag in filtered_tags])
+        else:
+            return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
 
     def add_refinement_fields_to_model(
         self,
