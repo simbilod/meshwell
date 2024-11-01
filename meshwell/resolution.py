@@ -100,11 +100,12 @@ class DistanceField(ResolutionSpec):
         if result.sizemin is not None:
             result.sizemin *= resolution_factor
 
+    # @property
+    # def calculate_samplings():
+
 
 class ThresholdField(DistanceField):
     """Linear or sigmoid growth of the resolution away from the entity"""
-
-    sigmoid: bool
 
     def apply(self, current_field_index: int, entities) -> int:
         new_field_indices = []
@@ -130,9 +131,6 @@ class ThresholdField(DistanceField):
                 current_field_index + 1, "DistMax", self.distmax
             )
         self.model.mesh.field.setNumber(current_field_index + 1, "StopAtDistMax", 1)
-        self.model.mesh.field.setNumber(
-            current_field_index + 1, "Sigmoid", int(self.sigmoid)
-        )
         new_field_indices = (current_field_index + 1,)
         current_field_index += 2
 
