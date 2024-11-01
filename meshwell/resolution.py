@@ -14,7 +14,6 @@ class ResolutionSpec(BaseModel):
 
     # Eventually we can add flags here to also consider proximity to other specific physicals (e.g. shared interfaces)
     apply_to: Literal["volumes", "surfaces", "curves", "points"]
-    resolution: float  # base resolution number used across all child classes; can be different than the overall model default resolution
     min_mass: float = 0
     max_mass: float = np.inf
 
@@ -46,8 +45,14 @@ class ResolutionSpec(BaseModel):
 class ConstantInField(ResolutionSpec):
     """Constant resolution within the entities."""
 
+    resolution: float
+
     def apply(
-        self, model: Any, current_field_index: int, entities, refinement_field_indices
+        self,
+        model: Any,
+        current_field_index: int,
+        entities_mass_dict,
+        refinement_field_indices,
     ) -> int:
         new_field_indices = []
 
@@ -60,7 +65,7 @@ class ConstantInField(ResolutionSpec):
         model.mesh.field.setNumbers(
             current_field_index + 1,
             self.entity_str,
-            entities,
+            list(entities_mass_dict.keys()),
         )
         new_field_indices = (current_field_index + 1,)
         current_field_index += 2
@@ -75,23 +80,24 @@ class ConstantInField(ResolutionSpec):
         return result
 
 
-class DistanceField(ResolutionSpec):
-    """Shared functionality for size fields that consider distance from the entities."""
+class SampledField(ResolutionSpec):
+    """Shared functionality for size fields that require sampling the entities at points."""
 
     mass_per_sampling: float | None = None
-    max_sampling: float
-    samplings: int
-    sizemax: float
-    distmax: float
+    max_sampling: int = 100
     sizemin: float | None = None
-    distmin: float = 0
 
-    def calculate_sampling(self, mass):
+    def calculate_samplings(self, entities_mass_dict):
+        """Calculates a more optimal sampling from the masses"""
+
         if self.mass_per_sampling is None:
-            return 2
-        else:
-            mass_per_sampling = self.mass_per_sampling or 0.5 * self.sizemin
-            return min(max(2, int(mass / mass_per_sampling)), self.max_sampling)
+            # Default sampling is half the minimum resolution
+            mass_per_sampling = 0.5 * self.sizemin
+
+        return {
+            tag: min(max(2, int(mass / mass_per_sampling)), self.max_sampling)
+            for tag, mass in entities_mass_dict.items()
+        }
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
@@ -100,45 +106,53 @@ class DistanceField(ResolutionSpec):
         if result.sizemin is not None:
             result.sizemin *= resolution_factor
 
-    # @property
-    # def calculate_samplings():
 
+class ThresholdField(SampledField):
+    """Linear growth of the resolution away from the entity"""
 
-class ThresholdField(DistanceField):
-    """Linear or sigmoid growth of the resolution away from the entity"""
+    sizemax: float
+    sizemin: float
+    distmin: float = 0
+    distmax: float
 
-    def apply(self, current_field_index: int, entities) -> int:
+    def apply(
+        self,
+        model: Any,
+        current_field_index: int,
+        entities_mass_dict,
+        refinement_field_indices,
+    ) -> int:
         new_field_indices = []
 
-        self.model.mesh.field.add("Distance", current_field_index)
-        self.model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-        self.model.mesh.field.setNumber(current_field_index, "Sampling", self.samplings)
-        self.model.mesh.field.add("Threshold", current_field_index + 1)
-        self.model.mesh.field.setNumber(
+        # Compute samplings
+        samplings_dict = self.calculate_samplings(entities_mass_dict)
+
+        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
+        # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
+        samplings = max(samplings_dict.values())
+        entities = list(entities_mass_dict.keys())
+
+        model.mesh.field.add("Distance", current_field_index)
+        model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
+        model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
+        model.mesh.field.add("Threshold", current_field_index + 1)
+        model.mesh.field.setNumber(
             current_field_index + 1, "InField", current_field_index
         )
-        self.model.mesh.field.setNumber(
-            current_field_index + 1, "SizeMin", self.sizemin
-        )
-        self.model.mesh.field.setNumber(
-            current_field_index + 1, "DistMin", self.distmin
-        )
+        model.mesh.field.setNumber(current_field_index + 1, "SizeMin", self.sizemin)
+        model.mesh.field.setNumber(current_field_index + 1, "DistMin", self.distmin)
         if self.sizemax and self.distmax:
-            self.model.mesh.field.setNumber(
-                current_field_index + 1, "SizeMax", self.sizemax
-            )
-            self.model.mesh.field.setNumber(
-                current_field_index + 1, "DistMax", self.distmax
-            )
-        self.model.mesh.field.setNumber(current_field_index + 1, "StopAtDistMax", 1)
+            model.mesh.field.setNumber(current_field_index + 1, "SizeMax", self.sizemax)
+            model.mesh.field.setNumber(current_field_index + 1, "DistMax", self.distmax)
+        model.mesh.field.setNumber(current_field_index + 1, "StopAtDistMax", 1)
         new_field_indices = (current_field_index + 1,)
         current_field_index += 2
 
         return new_field_indices, current_field_index
 
 
-class GrowthField(DistanceField):
-    """Exponential growth of the resolution away from the entity"""
+class ExponentialField(SampledField):
+    """Exponential growth of the characteristic length away from the entity"""
 
     growth_factor: float
 

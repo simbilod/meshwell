@@ -51,11 +51,13 @@ class LabeledEntities(BaseModel):
 
     def filter_by_mass(self, target_dimension: int, min_mass, max_mass):
         def filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass):
-            return [
+            # Returns tags and masses
+            tags = [
                 tag
                 for tag in tags
                 if min_mass < self.model.occ.getMass(target_dimension, tag) < max_mass
             ]
+            return {tag: self.model.occ.getMass(target_dimension, tag) for tag in tags}
 
         # Filter the tags based on current dimension and target
         match self.dim - target_dimension:
@@ -72,7 +74,10 @@ class LabeledEntities(BaseModel):
         # If targeting points, need post-filtering filtering
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
-            return self.model.getBoundary([(0, tag) for tag in filtered_tags])
+            return (
+                self.model.getBoundary([(0, tag) for tag in filtered_tags]),
+                None,
+            )  # no mass in 0D
         else:
             return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
 
@@ -89,10 +94,7 @@ class LabeledEntities(BaseModel):
 
         if self.resolutions:
             for resolutionspec in self.resolutions:
-                resolutionspec.resolution = min(
-                    default_resolution, resolutionspec.resolution
-                )
-                entities = self.filter_by_mass(
+                entities_mass_dict = self.filter_by_mass(
                     target_dimension=resolutionspec.target_dimension,
                     min_mass=resolutionspec.min_mass,
                     max_mass=resolutionspec.max_mass,
@@ -101,7 +103,7 @@ class LabeledEntities(BaseModel):
                     model=self.model,
                     current_field_index=n,
                     refinement_field_indices=refinement_field_indices,
-                    entities=entities,
+                    entities_mass_dict=entities_mass_dict,
                 )
                 refinement_field_indices.extend(new_field_indices)
 
