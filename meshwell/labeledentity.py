@@ -104,11 +104,12 @@ class LabeledEntities(BaseModel):
                     min_mass=resolutionspec.min_mass,
                     max_mass=resolutionspec.max_mass,
                 )
-                refinement_field_indices, n = resolutionspec.apply(
+                new_field_indices, n = resolutionspec.apply(
                     model=self.model,
                     current_field_index=n,
                     refinement_field_indices=refinement_field_indices,
                     entities=entities,
                 )
+                refinement_field_indices.extend(new_field_indices)
 
         return refinement_field_indices, n

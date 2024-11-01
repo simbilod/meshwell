@@ -49,6 +49,8 @@ class ConstantInField(ResolutionSpec):
     def apply(
         self, model: Any, current_field_index: int, entities, refinement_field_indices
     ) -> int:
+        new_field_indices = []
+
         model.mesh.field.add("MathEval", current_field_index)
         model.mesh.field.setString(current_field_index, "F", f"{self.resolution}")
         model.mesh.field.add("Restrict", current_field_index + 1)
@@ -60,10 +62,10 @@ class ConstantInField(ResolutionSpec):
             self.entity_str,
             entities,
         )
-        refinement_field_indices.extend((current_field_index + 1,))
+        new_field_indices = (current_field_index + 1,)
         current_field_index += 2
 
-        return refinement_field_indices, current_field_index
+        return new_field_indices, current_field_index
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
@@ -104,9 +106,9 @@ class ThresholdField(DistanceField):
 
     sigmoid: bool
 
-    def apply(
-        self, current_field_index: int, refinement_field_indices, entities
-    ) -> int:
+    def apply(self, current_field_index: int, entities) -> int:
+        new_field_indices = []
+
         self.model.mesh.field.add("Distance", current_field_index)
         self.model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
         self.model.mesh.field.setNumber(current_field_index, "Sampling", self.samplings)
@@ -131,10 +133,10 @@ class ThresholdField(DistanceField):
         self.model.mesh.field.setNumber(
             current_field_index + 1, "Sigmoid", int(self.sigmoid)
         )
-        refinement_field_indices.extend((current_field_index + 1,))
+        new_field_indices = (current_field_index + 1,)
         current_field_index += 2
 
-        return refinement_field_indices, current_field_index
+        return new_field_indices, current_field_index
 
 
 class GrowthField(DistanceField):
