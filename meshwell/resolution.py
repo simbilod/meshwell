@@ -1,9 +1,10 @@
 import numpy as np
 import copy
-from typing import Literal, List, Any
+from typing import Literal, Any
+from pydantic import BaseModel
 
 
-class ResolutionSpec:
+class ResolutionSpec(BaseModel):
     """A ResolutionSpec is attached to a pre-CAD entity.
 
     It sets a mesh size field (see child classes) to the resulting post-CAD volumes, surfaces, curves, or points.
@@ -12,7 +13,7 @@ class ResolutionSpec:
     """
 
     # Eventually we can add flags here to also consider proximity to other specific physicals (e.g. shared interfaces)
-    apply_to: List[Literal] = ["volumes", "surfaces", "curves", "points"]
+    apply_to: Literal["volumes", "surfaces", "curves", "points"]
     resolution: float  # base resolution number used across all child classes; can be different than the overall model default resolution
     min_mass: float = 0
     max_mass: float = np.inf
@@ -42,7 +43,7 @@ class ResolutionSpec:
             return 0
 
 
-class ConstantField(ResolutionSpec):
+class ConstantInField(ResolutionSpec):
     """Constant resolution within the entities."""
 
     def apply(
@@ -102,8 +103,6 @@ class ThresholdField(DistanceField):
     """Linear or sigmoid growth of the resolution away from the entity"""
 
     sigmoid: bool
-    sizemin: float
-    distmin: float = 0
 
     def apply(
         self, current_field_index: int, refinement_field_indices, entities
