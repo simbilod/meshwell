@@ -13,11 +13,11 @@ def tag_entities(entity_list: List):
         3: {},
     }
     for entities in entity_list:
-        dim = entities.get_dim()
+        dim = entities.dim
         for physical_name in entities.physical_name:
             if physical_name not in names_to_tags[dim]:
                 names_to_tags[dim][physical_name] = []
-            names_to_tags[dim][physical_name].extend(entities.get_tags())
+            names_to_tags[dim][physical_name].extend(entities.tags)
 
     for dim in names_to_tags.keys():
         for physical_name, tags in names_to_tags[dim].items():
@@ -34,12 +34,12 @@ def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
     for entity1, entity2 in combinations(entity_list, 2):
         if entity1.physical_name == entity2.physical_name:
             continue
-        elif entity1.get_dim() != entity2.get_dim():
+        elif entity1.dim != entity2.dim:
             continue
-        elif entity1.get_dim() != max_dim:
+        elif entity1.dim != max_dim:
             continue
         else:
-            dim = entity1.get_dim() - 1
+            dim = entity1.dim - 1
             common_interfaces = list(
                 set(entity1.boundaries).intersection(entity2.boundaries)
             )
@@ -73,9 +73,9 @@ def tag_boundaries(
         2: {},
     }
     for entity in entity_list:
-        if entity.get_dim() != max_dim:
+        if entity.dim != max_dim:
             continue
-        dim = entity.get_dim() - 1
+        dim = entity.dim - 1
         boundaries = list(set(entity.boundaries) - set(entity.interfaces))
         for entity_physical_name in entity.physical_name:
             boundary_name = (

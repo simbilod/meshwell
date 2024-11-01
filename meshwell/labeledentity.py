@@ -32,13 +32,15 @@ class LabeledEntities(BaseModel):
             self.model.occ.synchronize()
         return dimtags
 
-    def get_tags(self) -> List[int]:
+    @property
+    def tags(self) -> List[int]:
         tags = [tag for dim, tag in self.dimtags]
         if any(isinstance(el, list) for el in tags):
             tags = [item for sublist in tags for item in sublist]
         return tags
 
-    def get_dim(self) -> int:
+    @property
+    def dim(self) -> int:
         return [dim for dim, tag in self.dimtags][0]
 
     def update_boundaries(self) -> List[int]:
@@ -67,7 +69,7 @@ class LabeledEntities(BaseModel):
             if target_dimension == 3:
                 warnings.warn("Applying volume ResolutionSpec to surface, skipping")
             elif target_dimension == 2:
-                tags = self.get_tags()
+                tags = self.tags
             elif target_dimension == 1:
                 tags = self.boundaries
             elif target_dimension == 0:

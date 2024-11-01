@@ -31,7 +31,7 @@ class ResolutionSpec(BaseModel):
             return "PointsList"
 
     @property
-    def target_dimension(self, entity_dimension):
+    def target_dimension(self):
         """Convenience wrapper."""
         if self.apply_to == "volumes":
             return 3
