@@ -68,6 +68,7 @@ class LabeledEntities(BaseModel):
                     self.model.occ.getCurveLoops(b)[1] for b in self.boundaries
                 ]
                 tags = self.model.getBoundary([(0, tag) for tag in line_tags])
+                target_dimension += 1
         elif self.dim == 2:
             if target_dimension == 3:
                 warnings.warn("Applying volume ResolutionSpec to surface, skipping")
