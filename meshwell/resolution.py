@@ -85,7 +85,7 @@ class SampledField(ResolutionSpec):
 
     mass_per_sampling: float | None = None
     max_sampling: int = 100
-    sizemin: float | None = None
+    sizemin: float
 
     def calculate_samplings(self, entities_mass_dict):
         """Calculates a more optimal sampling from the masses"""
@@ -156,5 +156,37 @@ class ExponentialField(SampledField):
 
     growth_factor: float
 
-    def apply(self, current_field_index: int) -> int:
-        raise NotImplementedError()
+    def apply(
+        self,
+        model: Any,
+        current_field_index: int,
+        entities_mass_dict,
+        refinement_field_indices,
+    ) -> int:
+        new_field_indices = []
+
+        # Compute samplings
+        samplings_dict = self.calculate_samplings(entities_mass_dict)
+
+        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
+        # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
+        samplings = max(samplings_dict.values())
+        entities = list(entities_mass_dict.keys())
+
+        # Sampled distance field
+        model.mesh.field.add("Distance", current_field_index)
+        model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
+        model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
+
+        # Math field
+        model.mesh.field.add("MathEval", current_field_index + 1)
+        model.mesh.field.setString(
+            current_field_index + 1,
+            "F",
+            f"({self.growth_factor}^F{current_field_index} - 1) + {self.sizemin}",
+        )
+
+        new_field_indices = (current_field_index + 1,)
+        current_field_index += 2
+
+        return new_field_indices, current_field_index
