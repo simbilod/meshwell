@@ -4,7 +4,7 @@ import shapely
 from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from meshwell.prism import Prism
-from meshwell.resolution import ResolutionSpec
+from meshwell.resolution import ConstantInField, ThresholdField
 from meshwell.utils import compare_meshes
 from pathlib import Path
 
@@ -32,7 +32,7 @@ def test_2D_resolution():
         model=model,
         mesh_order=2,
         physical_name="outer",
-        resolutions=[ResolutionSpec(resolution_surfaces=0.5)],
+        resolutions=[ConstantInField(apply_to="surfaces", resolution=0.5)],
     )
     poly_obj2 = PolySurface(
         polygons=polygon2,
@@ -40,12 +40,7 @@ def test_2D_resolution():
         mesh_order=1,
         physical_name="inner",
         resolutions=[
-            ResolutionSpec(
-                resolution_surfaces=2,
-                resolution_curves=0.1,
-                distmax_curves=2,
-                sizemax_curves=1,
-            )
+            ThresholdField(sizemin=0.1, distmax=2, sizemax=1, apply_to="curves")
         ],
     )
 
@@ -78,7 +73,7 @@ def test_3D_resolution():
         model=model,
         mesh_order=2,
         physical_name="outer",
-        resolutions=[ResolutionSpec(resolution_volumes=1)],
+        resolutions=[ConstantInField(resolution=1, apply_to="volumes")],
     )
     prism_obj2 = Prism(
         polygons=polygon2,
@@ -87,12 +82,8 @@ def test_3D_resolution():
         mesh_order=1,
         physical_name="inner",
         resolutions=[
-            ResolutionSpec(
-                resolution_volumes=1,
-                resolution_surfaces=0.2,
-                distmax_surfaces=1,
-                sizemax_surfaces=1,
-            )
+            ConstantInField(resolution=1, apply_to="volumes"),
+            ThresholdField(sizemin=0.2, distmax=1, sizemax=1, apply_to="surfaces"),
         ],
     )
 
@@ -110,4 +101,4 @@ def test_3D_resolution():
 
 if __name__ == "__main__":
     test_2D_resolution()
-    test_3D_resolution()
+    # test_3D_resolution()

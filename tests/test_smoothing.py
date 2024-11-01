@@ -4,7 +4,7 @@ import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
-from meshwell.resolution import ResolutionSpec
+from meshwell.resolution import ConstantInField
 
 
 def test_smoothing():
@@ -24,7 +24,9 @@ def test_smoothing():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
+        resolutions=[
+            ConstantInField(resolution=0.5, apply_to="volumes"),
+        ],
     )
 
     gmsh_entity = GMSH_entity(
