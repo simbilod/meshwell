@@ -58,25 +58,18 @@ class LabeledEntities(BaseModel):
             ]
 
         # Filter the tags based on current dimension and target
-        if self.dim == 3:
-            if target_dimension == 3:
+        match self.dim - target_dimension:
+            case 0:
                 tags = self.tags
-            elif target_dimension == 2:
+            case 1:
                 tags = self.boundaries
-            elif target_dimension == 1 or target_dimension == 0:
+            case 2 | 3:
                 tags = [self.model.occ.getCurveLoops(b)[1] for b in self.boundaries]
-        elif self.dim == 2:
-            if target_dimension == 3:
+            case -1:
                 warnings.warn("Applying volume ResolutionSpec to surface, skipping")
-            elif target_dimension == 2:
-                tags = self.tags
-            elif target_dimension == 1:
-                tags = self.boundaries
-            elif target_dimension == 0:
-                raise NotImplementedError(
-                    "ResolutionSpec for points not implemented in 2D yet!"
-                )
+                return []
 
+        # If targeting points, need post-filtering filtering
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
             return self.model.getBoundary([(0, tag) for tag in filtered_tags])
