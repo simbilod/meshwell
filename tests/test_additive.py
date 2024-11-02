@@ -3,7 +3,7 @@ from __future__ import annotations
 import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
-from meshwell.resolution import ResolutionSpec
+from meshwell.resolution import ConstantInField
 from meshwell.utils import compare_meshes
 from pathlib import Path
 from shapely.ops import clip_by_rect
@@ -23,7 +23,9 @@ def test_mesh_additive_3D():
         model=model,
         physical_name="big_prism",
         mesh_order=3,
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
     medium_prism = Prism(
         polygons=clip_by_rect(
@@ -32,7 +34,9 @@ def test_mesh_additive_3D():
         buffers=buffers,
         model=model,
         physical_name="medium_prism",
-        resolutions=[ResolutionSpec(resolution_volumes=1)],
+        resolutions=[
+            ConstantInField(resolution=1, apply_to="volumes"),
+        ],
         additive=True,
         mesh_order=2,
     )
@@ -42,7 +46,9 @@ def test_mesh_additive_3D():
         model=model,
         physical_name="small_prism",
         mesh_order=1,
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
     entities_list = [big_prism, medium_prism, small_prism]
     # entities_list = [medium_prism]

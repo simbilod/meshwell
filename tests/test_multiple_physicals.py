@@ -3,7 +3,7 @@ from __future__ import annotations
 import shapely
 from meshwell.prism import Prism
 from meshwell.model import Model
-from meshwell.resolution import ResolutionSpec
+from meshwell.resolution import ConstantInField
 from shapely import clip_by_rect
 import pytest
 
@@ -22,14 +22,18 @@ def test_multiple_physicals():
         model=model,
         physical_name=("big_prism", "domain"),
         mesh_order=3,
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
     medium_prism = Prism(
         polygons=polygon.buffer(5, join_style="mitre"),
         buffers=buffers,
         model=model,
         physical_name=("medium_prism", "center"),
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
         mesh_order=2,
     )
     small_prism = Prism(
@@ -38,7 +42,9 @@ def test_multiple_physicals():
         model=model,
         physical_name="small_prism",
         mesh_order=1,
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
     entities_list = [big_prism, medium_prism, small_prism]
 
@@ -106,7 +112,9 @@ def test_multiple_physicals_additive(test_input, expected):
         model=model,
         physical_name=("big"),
         mesh_order=3,
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
     medium_prism = Prism(
         polygons=clip_by_rect(
@@ -115,7 +123,9 @@ def test_multiple_physicals_additive(test_input, expected):
         buffers=buffers,
         model=model,
         physical_name=("medium"),
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
         mesh_order=2,
         additive=True,
     )
@@ -125,7 +135,9 @@ def test_multiple_physicals_additive(test_input, expected):
         model=model,
         physical_name="small",
         mesh_order=1,
-        resolutions=[ResolutionSpec(resolution_volumes=10)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
     entities_list = [big_prism, medium_prism, small_prism]
 
