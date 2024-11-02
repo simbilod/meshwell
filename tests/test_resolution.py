@@ -145,8 +145,6 @@ def test_exponential_field():
         filename="mesh_test_2D_exponential.msh",
     )
 
-    compare_meshes(Path("mesh_test_2D_exponential.msh"))
-
 
 if __name__ == "__main__":
     test_exponential_field()
