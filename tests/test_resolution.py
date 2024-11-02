@@ -131,7 +131,7 @@ def test_exponential_field():
         physical_name="inner",
         resolutions=[
             ExponentialField(
-                growth_factor=1.1, sizemin=0.1, max_samplings=200, apply_to="curves"
+                growth_factor=1.05, sizemin=0.3, max_samplings=200, apply_to="curves"
             )
         ],
     )
