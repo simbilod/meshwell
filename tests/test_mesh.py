@@ -5,7 +5,7 @@ from meshwell.prism import Prism
 from meshwell.polysurface import PolySurface
 from meshwell.model import Model
 from meshwell.gmsh_entity import GMSH_entity
-from meshwell.resolution import ResolutionSpec
+from meshwell.resolution import ConstantInField
 from meshwell.utils import compare_meshes
 from pathlib import Path
 
@@ -27,7 +27,9 @@ def test_mesh_3D():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
+        resolutions=[
+            ConstantInField(resolution=10, apply_to="volumes"),
+        ],
     )
 
     gmsh_entity = GMSH_entity(
@@ -65,7 +67,7 @@ def test_mesh_2D():
         model=model,
         physical_name="first_entity",
         mesh_order=1,
-        resolutions=[ResolutionSpec(resolution_volumes=0.5)],
+        # resolutions=[ResolutionSpec(resolution_volumes=0.5)],
     )
 
     gmsh_entity = GMSH_entity(
