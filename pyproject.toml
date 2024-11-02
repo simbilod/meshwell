@@ -14,7 +14,7 @@ classifiers = [
 	"Programming Language :: Python :: 3.11",
 	"Operating System :: OS Independent",
 ]
-version="1.2.6"
+version="1.3.0"
 authors = [
     {name = "Simon Bilodeau", email = "sb30@princeton.edu"},
 ]
