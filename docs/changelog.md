@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.3.1
+
+- better exponential size field [PR#82](https://github.com/simbilod/meshwell/pull/82)
+
 ## 1.3.0
 
 - major refactoring or ResolutionSpec; split into ConstantInField, ThresholdField, and new ExponentialField [PR#80](https://github.com/simbilod/meshwell/pull/80)
