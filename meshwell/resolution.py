@@ -99,13 +99,6 @@ class SampledField(ResolutionSpec):
             for tag, mass in entities_mass_dict.items()
         }
 
-    def refine(self, resolution_factor: float):
-        result = copy.copy(self)
-        if result.sizemax is not None:
-            result.sizemax *= resolution_factor
-        if result.sizemin is not None:
-            result.sizemin *= resolution_factor
-
 
 class ThresholdField(SampledField):
     """Linear growth of the resolution away from the entity"""
@@ -150,11 +143,19 @@ class ThresholdField(SampledField):
 
         return new_field_indices, current_field_index
 
+    def refine(self, resolution_factor: float):
+        result = copy.copy(self)
+        if result.sizemax is not None:
+            result.sizemax *= resolution_factor
+        if result.sizemin is not None:
+            result.sizemin *= resolution_factor
+
 
 class ExponentialField(SampledField):
     """Exponential growth of the characteristic length away from the entity"""
 
     growth_factor: float
+    lengthscale: float
 
     def apply(
         self,
@@ -183,10 +184,15 @@ class ExponentialField(SampledField):
         model.mesh.field.setString(
             current_field_index + 1,
             "F",
-            f"({self.growth_factor}^F{current_field_index} - 1) + {self.sizemin}",
+            f"{self.sizemin} * {self.growth_factor}^(F{current_field_index} / {self.lengthscale})",
         )
 
         new_field_indices = (current_field_index + 1,)
         current_field_index += 2
 
         return new_field_indices, current_field_index
+
+    def refine(self, resolution_factor: float):
+        result = copy.copy(self)
+        if result.sizemin is not None:
+            result.sizemin *= resolution_factor
