@@ -15,6 +15,7 @@ def test_cad_load():
     entities_list = []
 
     for stagger in range(10):
+        stagger *= 5
         entities_list.append(
             Prism(
                 polygons=shapely.Polygon(
@@ -30,8 +31,9 @@ def test_cad_load():
                 model=model,
                 physical_name=f"prism_{stagger}",
                 mesh_order=stagger,
+                mesh_bool=stagger % 2,
                 resolutions=[
-                    ConstantInField(resolution=10, apply_to="volumes"),
+                    ConstantInField(resolution=20 / (stagger + 1), apply_to="volumes"),
                 ],
             )
         )
@@ -42,6 +44,7 @@ def test_cad_load():
         filename_cad="test_cad.xao",
         load_cad=False,
         filename="test_cad.msh",
+        default_characteristic_length=100,
     )
     end_time = time.time()
     init_time = end_time - start_time
@@ -53,6 +56,7 @@ def test_cad_load():
         filename_cad="test_cad.xao",
         load_cad=True,
         filename="test_load_cad.msh",
+        default_characteristic_length=100,
     )
     end_time = time.time()
     load_time = end_time - start_time
