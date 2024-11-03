@@ -7,7 +7,7 @@ from meshwell.resolution import ConstantInField
 import time
 
 
-def test_mesh_additive_3D():
+def test_cad_load():
     buffers = {0.0: 0.0, 1.0: -0.1}
 
     model = Model(n_threads=1)
@@ -61,4 +61,4 @@ def test_mesh_additive_3D():
 
 
 if __name__ == "__main__":
-    test_mesh_additive_3D()
+    test_cad_load()
