@@ -143,7 +143,7 @@ class Model:
         self.points = new_points
         self.segments = new_segments
 
-    def process_cuts(
+    def process_substractions(
         self, current_entities, structural_entity_list, index, progress_bars, enumerator
     ):
         physical_name = current_entities.physical_name
@@ -179,6 +179,96 @@ class Model:
             return list(set(cut[0]))
         else:
             return current_entities.dimtags
+
+    def process_additions(
+        self,
+        additive_entities,
+        structural_entity_list,
+        addition_addition_physicals,
+        addition_structural_physicals,
+        addition_intersection_physicals,
+        addition_delimiter,
+    ):
+        for additive_entity in additive_entities:
+            additive_dimtags = unpack_dimtags(additive_entity.instanciate())
+            additive_entity_resolutions = (
+                []
+                if additive_entity.resolutions is None
+                else additive_entity.resolutions
+            )
+            updated_entities = []
+            # Parse additive physical names
+            for index, structural_entity in enumerate(structural_entity_list):
+                removeTool = False if index + 1 < len(structural_entity_list) else True
+
+                # Add all physical names
+                additive_names = []
+                if addition_addition_physicals:
+                    additive_names.extend(additive_entity.physical_name)
+                if addition_structural_physicals:
+                    additive_names.extend(structural_entity.physical_name)
+                if addition_intersection_physicals:
+                    additive_names.extend(
+                        [
+                            f"{x}{addition_delimiter}{y}"
+                            for x in structural_entity.physical_name
+                            for y in additive_entity.physical_name
+                        ]
+                    )
+                additive_names = tuple(additive_names)
+
+                # Add the intersection and complement as new LabeledEntities
+                intersection = self.occ.intersect(
+                    structural_entity.dimtags,
+                    additive_dimtags,
+                    removeObject=False,  # Don't remove yet
+                    removeTool=removeTool,  # Only remove at the end
+                )
+                # No overlap case (no intersection)
+                if not intersection[0]:
+                    self.occ.synchronize()
+                    updated_entities.append(structural_entity)
+                else:
+                    complement = self.occ.cut(
+                        structural_entity.dimtags,
+                        intersection[0],
+                        removeObject=False,
+                        removeTool=False,
+                    )
+                    self.occ.synchronize()
+                    # Add the intersection and complement as new LabeledEntities
+                    structural_entity_resolutions = (
+                        []
+                        if structural_entity.resolutions is None
+                        else structural_entity.resolutions
+                    )
+                    if complement[0]:
+                        updated_entities.append(
+                            LabeledEntities(
+                                index=structural_entity.index,
+                                dimtags=complement[0],
+                                physical_name=structural_entity.physical_name,
+                                keep=structural_entity.keep,
+                                model=self.model,
+                                resolutions=structural_entity_resolutions,
+                            )
+                        )
+                    updated_entities.append(
+                        LabeledEntities(
+                            index=structural_entity.index,
+                            dimtags=intersection[0],
+                            physical_name=additive_names,
+                            keep=structural_entity.keep,
+                            model=self.model,
+                            resolutions=structural_entity_resolutions
+                            + additive_entity_resolutions,
+                        )
+                    )
+            # Use the updated entities in the next iteration
+            structural_entity_list = updated_entities
+            self.occ.removeAllDuplicates()
+            self.sync_model()
+        return structural_entity_list
 
     def mesh(
         self,
@@ -314,7 +404,7 @@ class Model:
                 resolutions=resolutions,
             )
 
-            current_entities.dimtags = self.process_cuts(
+            current_entities.dimtags = self.process_substractions(
                 current_entities,
                 structural_entity_list=structural_entity_list,
                 index=index,
@@ -347,89 +437,18 @@ class Model:
 
         # Now that the structure is defined, merge with additive entities
         if additive_entities:
-            for additive_entity in additive_entities:
-                additive_dimtags = unpack_dimtags(additive_entity.instanciate())
-                additive_entity_resolutions = (
-                    []
-                    if additive_entity.resolutions is None
-                    else additive_entity.resolutions
-                )
-                updated_entities = []
-                # Parse additive physical names
-                for index, structural_entity in enumerate(structural_entity_list):
-                    removeTool = False if index + 1 < len(structural_entities) else True
-
-                    # Add all physical names
-                    additive_names = []
-                    if addition_addition_physicals:
-                        additive_names.extend(additive_entity.physical_name)
-                    if addition_structural_physicals:
-                        additive_names.extend(structural_entity.physical_name)
-                    if addition_intersection_physicals:
-                        additive_names.extend(
-                            [
-                                f"{x}{addition_delimiter}{y}"
-                                for x in structural_entity.physical_name
-                                for y in additive_entity.physical_name
-                            ]
-                        )
-                    additive_names = tuple(additive_names)
-
-                    # Add the intersection and complement as new LabeledEntities
-                    intersection = self.occ.intersect(
-                        structural_entity.dimtags,
-                        additive_dimtags,
-                        removeObject=False,  # Don't remove yet
-                        removeTool=removeTool,  # Only remove at the end
-                    )
-                    # No overlap case (no intersection)
-                    if not intersection[0]:
-                        self.occ.synchronize()
-                        updated_entities.append(structural_entity)
-                    else:
-                        complement = self.occ.cut(
-                            structural_entity.dimtags,
-                            intersection[0],
-                            removeObject=False,
-                            removeTool=False,
-                        )
-                        self.occ.synchronize()
-                        # Add the intersection and complement as new LabeledEntities
-                        structural_entity_resolutions = (
-                            []
-                            if structural_entity.resolutions is None
-                            else structural_entity.resolutions
-                        )
-                        if complement[0]:
-                            updated_entities.append(
-                                LabeledEntities(
-                                    index=structural_entity.index,
-                                    dimtags=complement[0],
-                                    physical_name=structural_entity.physical_name,
-                                    keep=structural_entity.keep,
-                                    model=self.model,
-                                    resolutions=structural_entity_resolutions,
-                                )
-                            )
-                        updated_entities.append(
-                            LabeledEntities(
-                                index=structural_entity.index,
-                                dimtags=intersection[0],
-                                physical_name=additive_names,
-                                keep=structural_entity.keep,
-                                model=self.model,
-                                resolutions=structural_entity_resolutions
-                                + additive_entity_resolutions,
-                            )
-                        )
-                # Use the updated entities in the next iteration
-                structural_entity_list = updated_entities
-                self.occ.removeAllDuplicates()
-                self.sync_model()
-        final_entity_list = structural_entity_list
+            final_entity_list = self.process_additions(
+                additive_entities,
+                structural_entity_list,
+                addition_addition_physicals,
+                addition_structural_physicals,
+                addition_intersection_physicals,
+                addition_delimiter,
+            )
+        else:
+            final_entity_list = structural_entity_list
 
         # Since we only took intersection with non-overlapping structural entities and removed the tool, there is no further conflict / tag reassignment
-        # self.occ.removeAllDuplicates()
         for entity in final_entity_list:
             entity.update_boundaries()
 
