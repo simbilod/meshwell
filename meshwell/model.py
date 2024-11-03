@@ -41,9 +41,6 @@ class Model:
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", n_threads)
         gmsh.option.setNumber("Geometry.OCCParallel", 1)
 
-        # Point snapping
-        self.point_tolerance = point_tolerance
-
         # CAD engine
         self.model = gmsh.model
         self.occ = self.model.occ
