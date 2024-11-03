@@ -143,6 +143,43 @@ class Model:
         self.points = new_points
         self.segments = new_segments
 
+    def process_cuts(
+        self, current_entities, structural_entity_list, index, progress_bars, enumerator
+    ):
+        physical_name = current_entities.physical_name
+        if progress_bars:
+            if physical_name:
+                enumerator.set_description(
+                    f"{str(physical_name):<30} - {'boolean':<15}"
+                )
+        if index != 0:
+            cut = self.occ.cut(
+                current_entities.dimtags,
+                [
+                    dimtag
+                    for previous_entities in structural_entity_list
+                    for dimtag in previous_entities.dimtags
+                ],
+                removeObject=True,  # Only keep the difference
+                removeTool=False,  # Tool (previous entities) should remain untouched
+            )
+            # Deduplicate interfaces now that there are no volume conflicts
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(
+                        f"{str(physical_name):<30} - {'duplicates':<15}"
+                    )
+            self.occ.removeAllDuplicates()
+            if progress_bars:
+                if physical_name:
+                    enumerator.set_description(
+                        f"{str(physical_name):<30} - {'sync':<15}"
+                    )
+            self.sync_model()
+            return list(set(cut[0]))
+        else:
+            return current_entities.dimtags
+
     def mesh(
         self,
         entities_list: List,
@@ -241,21 +278,20 @@ class Model:
             enumerator = tqdm(list(enumerator))
 
         for index, entity_obj in enumerator:
-            physical_name = entity_obj.physical_name
             keep = entity_obj.mesh_bool
             resolutions = entity_obj.resolutions
             if progress_bars:
-                if physical_name:
+                if entity_obj.physical_name:
                     enumerator.set_description(
-                        f"{str(physical_name):<30} - {'instanciate':<15}"
+                        f"{str(entity_obj.physical_name):<30} - {'instanciate':<15}"
                     )
             # First create the shape
             dimtags_out = entity_obj.instanciate()
 
             if progress_bars:
-                if physical_name:
+                if entity_obj.physical_name:
                     enumerator.set_description(
-                        f"{str(physical_name):<30} - {'dimtags':<15}"
+                        f"{str(entity_obj.physical_name):<30} - {'dimtags':<15}"
                     )
 
             # Parse dimension
@@ -264,49 +300,27 @@ class Model:
             dimtags = unpack_dimtags(dimtags_out)
 
             if progress_bars:
-                if physical_name:
+                if entity_obj.physical_name:
                     enumerator.set_description(
-                        f"{str(physical_name):<30} - {'entities':<15}"
+                        f"{str(entity_obj.physical_name):<30} - {'entities':<15}"
                     )
             # Assemble with other shapes
             current_entities = LabeledEntities(
                 index=index,
                 dimtags=dimtags,
-                physical_name=physical_name,
+                physical_name=entity_obj.physical_name,
                 keep=keep,
                 model=self.model,
                 resolutions=resolutions,
             )
-            if progress_bars:
-                if physical_name:
-                    enumerator.set_description(
-                        f"{str(physical_name):<30} - {'boolean':<15}"
-                    )
-            if index != 0:
-                cut = self.occ.cut(
-                    current_entities.dimtags,
-                    [
-                        dimtag
-                        for previous_entities in structural_entity_list
-                        for dimtag in previous_entities.dimtags
-                    ],
-                    removeObject=True,  # Only keep the difference
-                    removeTool=False,  # Tool (previous entities) should remain untouched
-                )
-                # Heal interfaces now that there are no volume conflicts
-                if progress_bars:
-                    if physical_name:
-                        enumerator.set_description(
-                            f"{str(physical_name):<30} - {'duplicates':<15}"
-                        )
-                self.occ.removeAllDuplicates()
-                if progress_bars:
-                    if physical_name:
-                        enumerator.set_description(
-                            f"{str(physical_name):<30} - {'sync':<15}"
-                        )
-                self.sync_model()
-                current_entities.dimtags = list(set(cut[0]))
+
+            current_entities.dimtags = self.process_cuts(
+                current_entities,
+                structural_entity_list=structural_entity_list,
+                index=index,
+                progress_bars=progress_bars,
+                enumerator=enumerator,
+            )
             if current_entities.dimtags:
                 structural_entity_list.append(current_entities)
 
