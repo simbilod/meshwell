@@ -77,6 +77,7 @@ def tag_boundaries(
             continue
         dim = entity.dim - 1
         boundaries = list(set(entity.boundaries) - set(entity.interfaces))
+        entity.mesh_edge_name_interfaces.extend(boundaries)
         for entity_physical_name in entity.physical_name:
             boundary_name = (
                 f"{entity_physical_name}{boundary_delimiter}{mesh_edge_name}"
