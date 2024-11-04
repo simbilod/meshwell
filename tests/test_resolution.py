@@ -328,7 +328,7 @@ def test_filter_shared():
                 sizemin=0.1,
                 lengthscale=0.2,
                 growth_factor=2,
-                sharing=["outer"],  # FIX
+                sharing=["outer", "None"],
             )
         ],
     )
@@ -346,7 +346,77 @@ def test_filter_shared():
         entities_list=entities_list,
         default_characteristic_length=5,
         verbosity=0,
-        filename="mesh_filter.msh",
+        filename="mesh_filter_shared.msh",
+    )
+
+
+def test_filter_not_shared():
+    large_rect = 8
+    small_rect = 4
+
+    buffers1 = {0: 0, 8: 0}
+    buffers2 = {0: 0, 4: 0}
+    buffers3 = {0: 0, 8: 0}
+
+    polygon1 = shapely.Polygon(
+        [
+            [0, 0],
+            [large_rect, 0],
+            [large_rect, large_rect],
+            [0, large_rect],
+            [0, 0],
+        ],
+    )
+    polygon2 = shapely.Polygon(
+        [
+            [0, 0],
+            [small_rect, 0],
+            [small_rect, small_rect],
+            [0, small_rect],
+            [0, 0],
+        ],
+    )
+    polygon3 = shapely.affinity.translate(polygon2, xoff=small_rect, yoff=0.0, zoff=0.0)
+
+    model = Model(n_threads=1)  # 1 thread for deterministic mesh
+    prism1 = Prism(
+        polygons=polygon1,
+        buffers=buffers1,
+        model=model,
+        mesh_order=3,
+        physical_name="outer",
+    )
+    prism2 = Prism(
+        polygons=polygon2,
+        buffers=buffers2,
+        model=model,
+        mesh_order=1,
+        physical_name="bot",
+        resolutions=[
+            ExponentialField(
+                apply_to="surfaces",
+                sizemin=0.1,
+                lengthscale=0.2,
+                growth_factor=2,
+                not_sharing=["outer", "None"],
+            )
+        ],
+    )
+    prism3 = Prism(
+        polygons=polygon3,
+        buffers=buffers3,
+        model=model,
+        mesh_order=2,
+        physical_name="right",
+    )
+
+    entities_list = [prism1, prism2, prism3]
+
+    model.mesh(
+        entities_list=entities_list,
+        default_characteristic_length=5,
+        verbosity=0,
+        filename="mesh_filter_shared.msh",
     )
 
 

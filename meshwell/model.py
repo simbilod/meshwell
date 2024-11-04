@@ -491,6 +491,7 @@ class Model:
                     refinement_max_index,
                     default_characteristic_length,
                     final_entity_dict,
+                    boundary_delimiter,
                 )
 
             # Use the smallest element size overall

@@ -105,6 +105,7 @@ class LabeledEntities(BaseModel):
         refinement_max_index: int,
         default_resolution: float,
         all_entities_dict,
+        boundary_delimiter,
     ):
         """
         Adds refinement fields to the model based on base_resolution and resolution info.
@@ -119,13 +120,22 @@ class LabeledEntities(BaseModel):
                     max_mass=resolutionspec.max_mass,
                 )
 
-                # Filter by shared or not shared as well
+                # Filter by shared or not shared as well;include boundary
                 entities_mass_dict_sharing = {}
                 if resolutionspec.sharing is None:
-                    superset = set(all_entities_dict.keys())
+                    superset = {x for xs in all_entities_dict.keys() for x in xs}
+                    include_boundary = True
                 else:
+                    include_boundary = (
+                        True if boundary_delimiter in resolutionspec.sharing else False
+                    )
                     superset = set(resolutionspec.sharing)
                 if resolutionspec.not_sharing is not None:
+                    include_boundary = (
+                        False
+                        if boundary_delimiter in resolutionspec.not_sharing
+                        else True
+                    )
                     superset -= set(resolutionspec.not_sharing)
                 for other_name, other_entity in all_entities_dict.items():
                     if any(item in other_name for item in self.physical_name):
@@ -139,6 +149,11 @@ class LabeledEntities(BaseModel):
                                 entities_mass_dict_sharing[tag] = entities_mass_dict[
                                     tag
                                 ]
+
+                if include_boundary:
+                    for tag in self.boundaries:
+                        if tag in entities_mass_dict:
+                            entities_mass_dict_sharing[tag] = entities_mass_dict[tag]
 
                 if entities_mass_dict_sharing:
                     new_field_indices, n = resolutionspec.apply(
