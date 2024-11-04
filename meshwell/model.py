@@ -469,11 +469,19 @@ class Model:
                     ],
                 )
 
+        gmsh.write("cad.xao")
+
         # Perform refinement
         if background_remeshing_file is None:
             # Use entity information
             refinement_field_indices = []
             refinement_max_index = 0
+
+            # Hashable final_entity_list
+            final_entity_dict = {
+                entity.physical_name: entity for entity in final_entity_list
+            }
+
             for entity in final_entity_list:
                 (
                     refinement_field_indices,
@@ -482,6 +490,7 @@ class Model:
                     refinement_field_indices,
                     refinement_max_index,
                     default_characteristic_length,
+                    final_entity_dict,
                 )
 
             # Use the smallest element size overall

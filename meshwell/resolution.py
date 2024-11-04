@@ -1,6 +1,6 @@
 import numpy as np
 import copy
-from typing import Literal, Any
+from typing import Literal, Any, List
 from pydantic import BaseModel
 
 
@@ -12,10 +12,11 @@ class ResolutionSpec(BaseModel):
     The volumes, surfaces, curves can be filtered based on their mass (volume, area, length). Points can be filtered based on the length of the curve they belong to.
     """
 
-    # Eventually we can add flags here to also consider proximity to other specific physicals (e.g. shared interfaces)
     apply_to: Literal["volumes", "surfaces", "curves", "points"]
     min_mass: float = 0
     max_mass: float = np.inf
+    sharing: List[str] | None = None
+    not_sharing: List[str] | None = None
 
     @property
     def entity_str(self):
