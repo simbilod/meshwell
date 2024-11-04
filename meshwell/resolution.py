@@ -150,6 +150,8 @@ class ThresholdField(SampledField):
         if result.sizemin is not None:
             result.sizemin *= resolution_factor
 
+        return result
+
 
 class ExponentialField(SampledField):
     """Exponential growth of the characteristic length away from the entity"""
@@ -196,3 +198,5 @@ class ExponentialField(SampledField):
         result = copy.copy(self)
         if result.sizemin is not None:
             result.sizemin *= resolution_factor
+
+        return result
