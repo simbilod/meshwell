@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.3.5
+
+- handle boundary in shared/not shared [PR#86]https://github.com/simbilod/meshwell/pull/86)
+
 ## 1.3.4
 
 - filter resolutionspec by shared/not shared [PR#85](https://github.com/simbilod/meshwell/pull/85)
