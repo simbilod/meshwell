@@ -57,7 +57,11 @@ class LabeledEntities(BaseModel):
                 for tag in tags
                 if min_mass < self.model.occ.getMass(target_dimension, tag) < max_mass
             ]
-            return {tag: self.model.occ.getMass(target_dimension, tag) for tag in tags}
+            return (
+                {tag: self.model.occ.getMass(target_dimension, tag) for tag in tags}
+                if tags is not []
+                else {}
+            )
 
         # Filter the tags based on current dimension and target
         match self.dim - target_dimension:
@@ -74,15 +78,17 @@ class LabeledEntities(BaseModel):
                 ]
             case -1:
                 warnings.warn("Applying volume ResolutionSpec to surface, skipping")
-                return []
+                return {}
 
         # If targeting points, need post-filtering filtering
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
-            return (
-                self.model.getBoundary([(0, tag) for tag in filtered_tags]),
-                None,
-            )  # no mass in 0D
+            return {
+                p: None
+                for p in self.model.getBoundary(
+                    [(1, tag) for tag in filtered_tags.keys()]
+                )
+            }  # no mass in 0D
         else:
             return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
 
