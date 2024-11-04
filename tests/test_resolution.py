@@ -7,6 +7,7 @@ from meshwell.prism import Prism
 from meshwell.resolution import ConstantInField, ThresholdField, ExponentialField
 from meshwell.utils import compare_meshes
 from pathlib import Path
+import pytest
 
 
 def test_2D_resolution():
@@ -150,6 +151,58 @@ def test_exponential_field():
     )
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        ConstantInField(apply_to="surfaces", resolution=1),
+        ExponentialField(
+            growth_factor=2,
+            sizemin=0.3,
+            max_samplings=200,
+            apply_to="curves",
+            lengthscale=2,
+        ),
+        ThresholdField(
+            sizemin=1,
+            sizemax=5,
+            distmin=0,
+            distmax=5,
+            apply_to="curves",
+        ),
+    ],
+)
+def test_refine(field):
+    large_rect = 10
+
+    polygon1 = shapely.Polygon(
+        [[0, 0], [large_rect, 0], [large_rect, large_rect], [0, large_rect], [0, 0]],
+    )
+
+    points = []
+    for factor in [0.5, 1, 2]:
+        model = Model(n_threads=1)  # 1 thread for deterministic mesh
+        poly_obj2 = PolySurface(
+            polygons=polygon1,
+            model=model,
+            mesh_order=1,
+            physical_name="inner",
+            resolutions=[field.refine(factor)],
+        )
+
+        entities_list = [poly_obj2]
+
+        output = model.mesh(
+            entities_list=entities_list,
+            default_characteristic_length=5,
+            verbosity=0,
+            filename="mesh_test_2D_exponential.msh",
+        )
+
+        points.append(len(output.points))
+
+    assert points[0] > points[1] > points[2]
+
+
 if __name__ == "__main__":
-    test_exponential_field()
+    test_refine(ConstantInField(apply_to="surfaces", resolution=1))
     # test_3D_resolution()
