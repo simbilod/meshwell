@@ -84,7 +84,7 @@ class LabeledEntities(BaseModel):
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
             return {
-                p: None
+                p[1]: None
                 for p in self.model.getBoundary(
                     [(1, tag) for tag in filtered_tags.keys()]
                 )
