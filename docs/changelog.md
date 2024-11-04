@@ -1,6 +1,6 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## 1.3.3
+## 1.3.4
 
 - filter resolutionspec by shared/not shared [PR#85](https://github.com/simbilod/meshwell/pull/85)
 
