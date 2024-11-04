@@ -138,8 +138,13 @@ class LabeledEntities(BaseModel):
                     )
                     superset -= set(resolutionspec.not_sharing)
                 for other_name, other_entity in all_entities_dict.items():
-                    if any(item in other_name for item in self.physical_name):
-                        continue
+                    # If itself
+                    if all(item in other_name for item in self.physical_name):
+                        for tag in self.tags:
+                            if tag in entities_mass_dict:
+                                entities_mass_dict_sharing[tag] = entities_mass_dict[
+                                    tag
+                                ]
                     if any(item in other_name for item in superset):
                         other_tags = other_entity.filter_tags_by_target_dimension(
                             resolutionspec.target_dimension
