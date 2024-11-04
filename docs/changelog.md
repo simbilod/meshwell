@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.3.2
+
+- fixes to last updates [PR#84](https://github.com/simbilod/meshwell/pull/84)
+
 ## 1.3.1
 
 - better exponential size field [PR#82](https://github.com/simbilod/meshwell/pull/82)
