@@ -66,7 +66,12 @@ class LabeledEntities(BaseModel):
             case 1:
                 tags = self.boundaries
             case 2 | 3:
-                tags = [self.model.occ.getCurveLoops(b)[1] for b in self.boundaries]
+                tags = [
+                    c
+                    for b in self.boundaries
+                    for cs in self.model.occ.getCurveLoops(b)[1]
+                    for c in cs
+                ]
             case -1:
                 warnings.warn("Applying volume ResolutionSpec to surface, skipping")
                 return []
