@@ -16,6 +16,7 @@ class LabeledEntities(BaseModel):
     keep: bool
     boundaries: List[int] = []
     interfaces: List = []
+    mesh_edge_name_interfaces: List = []
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -67,6 +68,24 @@ class LabeledEntities(BaseModel):
                     "Target dimension requested is 3, but entity is 2D; skipping resolution assignment."
                 )
                 return []
+
+        return tags
+
+    def filter_mesh_boundary_tags_by_target_dimension(self, target_dimension):
+        match self.dim - target_dimension:
+            case 0:
+                raise ValueError("Not a boundary!")
+            case 1:
+                tags = self.mesh_edge_name_interfaces
+            case 2 | 3:
+                tags = [
+                    c
+                    for b in self.mesh_edge_name_interfaces
+                    for cs in self.model.occ.getCurveLoops(b)[1]
+                    for c in cs
+                ]
+            case -1:
+                raise ValueError("Not a boundary!")
 
         return tags
 
@@ -140,6 +159,15 @@ class LabeledEntities(BaseModel):
                 for other_name, other_entity in all_entities_dict.items():
                     # If itself
                     if all(item in other_name for item in self.physical_name):
+                        tags = self.filter_tags_by_target_dimension(
+                            resolutionspec.target_dimension
+                        )
+                        if not include_boundary:
+                            tags = set(tags) - set(
+                                self.filter_mesh_boundary_tags_by_target_dimension(
+                                    resolutionspec.target_dimension
+                                )
+                            )
                         for tag in self.tags:
                             if tag in entities_mass_dict:
                                 entities_mass_dict_sharing[tag] = entities_mass_dict[
@@ -150,16 +178,28 @@ class LabeledEntities(BaseModel):
                         other_tags = other_entity.filter_tags_by_target_dimension(
                             resolutionspec.target_dimension
                         )
+                        # Special case if other tag contains a boundary line also shared with self
+                        if (
+                            not include_boundary
+                            and resolutionspec.target_dimension == 1
+                        ):
+                            other_tags = set(other_tags) - (
+                                set(
+                                    other_entity.filter_mesh_boundary_tags_by_target_dimension(
+                                        resolutionspec.target_dimension
+                                    )
+                                )
+                                & set(
+                                    self.filter_mesh_boundary_tags_by_target_dimension(
+                                        resolutionspec.target_dimension
+                                    )
+                                )
+                            )
                         for tag in other_tags:
                             if tag in entities_mass_dict:
                                 entities_mass_dict_sharing[tag] = entities_mass_dict[
                                     tag
                                 ]
-
-                if include_boundary:
-                    for tag in self.boundaries:
-                        if tag in entities_mass_dict:
-                            entities_mass_dict_sharing[tag] = entities_mass_dict[tag]
 
                 if entities_mass_dict_sharing:
                     new_field_indices, n = resolutionspec.apply(
