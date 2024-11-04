@@ -8,6 +8,7 @@ from meshwell.resolution import ConstantInField, ThresholdField, ExponentialFiel
 from meshwell.utils import compare_meshes
 from pathlib import Path
 import pytest
+import numpy as np
 
 
 def test_2D_resolution():
@@ -203,6 +204,82 @@ def test_refine(field):
     assert points[0] > points[1] > points[2]
 
 
+# FIXME: add regression
+@pytest.mark.parametrize(
+    ("apply_to", "min_mass", "max_mass"),
+    [
+        ("volumes", 5**3, np.inf),
+        ("volumes", 0, 5**3),
+        ("surfaces", 5**2, np.inf),
+        ("surfaces", 0, 5**2),
+        ("curves", 5, np.inf),
+        ("curves", 0, 5),
+        ("points", 5, np.inf),
+        ("points", 0, 5),
+    ],
+)
+def test_filter(apply_to, min_mass, max_mass):
+    large_rect = 6
+    small_rect = 4
+
+    buffers1 = {-6: 0, 6: 0}
+    buffers2 = {-4: 0, 4: 0}
+
+    polygon1 = shapely.Polygon(
+        [
+            [-large_rect / 2, -large_rect / 2],
+            [large_rect / 2, -large_rect / 2],
+            [large_rect / 2, large_rect / 2],
+            [-large_rect / 2, large_rect / 2],
+            [-large_rect / 2, -large_rect / 2],
+        ],
+    )
+    polygon2 = shapely.Polygon(
+        [
+            [-small_rect / 2, -small_rect / 2],
+            [small_rect / 2, -small_rect / 2],
+            [small_rect / 2, small_rect / 2],
+            [-small_rect / 2, small_rect / 2],
+            [-small_rect / 2, -small_rect / 2],
+        ],
+    )
+
+    model = Model(n_threads=1)  # 1 thread for deterministic mesh
+    prism1 = Prism(
+        polygons=polygon1,
+        buffers=buffers1,
+        model=model,
+        mesh_order=2,
+        physical_name="outer",
+        resolutions=[
+            ConstantInField(
+                apply_to=apply_to, resolution=0.5, min_mass=min_mass, max_mass=max_mass
+            )
+        ],
+    )
+    prism2 = Prism(
+        polygons=polygon2,
+        buffers=buffers2,
+        model=model,
+        mesh_order=1,
+        physical_name="inner",
+        resolutions=[
+            ConstantInField(
+                apply_to=apply_to, resolution=0.5, min_mass=min_mass, max_mass=max_mass
+            )
+        ],
+    )
+
+    entities_list = [prism1, prism2]
+
+    model.mesh(
+        entities_list=entities_list,
+        default_characteristic_length=5,
+        verbosity=0,
+        filename="mesh_filter.msh",
+    )
+
+
 if __name__ == "__main__":
-    test_refine(ConstantInField(apply_to="surfaces", resolution=1))
+    test_filter("points", 5, np.inf)
     # test_3D_resolution()
