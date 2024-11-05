@@ -2,6 +2,7 @@ import numpy as np
 import copy
 from typing import Literal, Any, List
 from pydantic import BaseModel
+import warnings
 
 
 class ResolutionSpec(BaseModel):
@@ -97,6 +98,8 @@ class SampledField(ResolutionSpec):
 
         return {
             tag: min(max(2, int(mass / mass_per_sampling)), self.max_sampling)
+            if mass is not None
+            else 1
             for tag, mass in entities_mass_dict.items()
         }
 
@@ -126,20 +129,27 @@ class ThresholdField(SampledField):
         samplings = max(samplings_dict.values())
         entities = list(entities_mass_dict.keys())
 
-        model.mesh.field.add("Distance", current_field_index)
-        model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-        model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
-        model.mesh.field.add("Threshold", current_field_index + 1)
-        model.mesh.field.setNumber(
-            current_field_index + 1, "InField", current_field_index
-        )
-        model.mesh.field.setNumber(current_field_index + 1, "SizeMin", self.sizemin)
-        model.mesh.field.setNumber(current_field_index + 1, "DistMin", self.distmin)
-        if self.sizemax and self.distmax:
-            model.mesh.field.setNumber(current_field_index + 1, "SizeMax", self.sizemax)
-            model.mesh.field.setNumber(current_field_index + 1, "DistMax", self.distmax)
-        model.mesh.field.setNumber(current_field_index + 1, "StopAtDistMax", 1)
-        new_field_indices = (current_field_index + 1,)
+        if self.entity_str == "RegionsList":
+            warnings.warn("Cannot set a distance field on a Volume! Skipping")
+        else:
+            model.mesh.field.add("Distance", current_field_index)
+            model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
+            model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
+            model.mesh.field.add("Threshold", current_field_index + 1)
+            model.mesh.field.setNumber(
+                current_field_index + 1, "InField", current_field_index
+            )
+            model.mesh.field.setNumber(current_field_index + 1, "SizeMin", self.sizemin)
+            model.mesh.field.setNumber(current_field_index + 1, "DistMin", self.distmin)
+            if self.sizemax and self.distmax:
+                model.mesh.field.setNumber(
+                    current_field_index + 1, "SizeMax", self.sizemax
+                )
+                model.mesh.field.setNumber(
+                    current_field_index + 1, "DistMax", self.distmax
+                )
+            model.mesh.field.setNumber(current_field_index + 1, "StopAtDistMax", 1)
+            new_field_indices = (current_field_index + 1,)
         current_field_index += 2
 
         return new_field_indices, current_field_index
@@ -169,29 +179,32 @@ class ExponentialField(SampledField):
     ) -> int:
         new_field_indices = []
 
-        # Compute samplings
-        samplings_dict = self.calculate_samplings(entities_mass_dict)
+        if self.entity_str == "RegionsList":
+            warnings.warn("Cannot set a distance field on a Volume! Skipping")
+        else:
+            # Compute samplings
+            samplings_dict = self.calculate_samplings(entities_mass_dict)
 
-        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
-        # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
-        samplings = max(samplings_dict.values())
-        entities = list(entities_mass_dict.keys())
+            # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
+            # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
+            samplings = max(samplings_dict.values())
+            entities = list(entities_mass_dict.keys())
 
-        # Sampled distance field
-        model.mesh.field.add("Distance", current_field_index)
-        model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-        model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
+            # Sampled distance field
+            model.mesh.field.add("Distance", current_field_index)
+            model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
+            model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
 
-        # Math field
-        model.mesh.field.add("MathEval", current_field_index + 1)
-        model.mesh.field.setString(
-            current_field_index + 1,
-            "F",
-            f"{self.sizemin} * {self.growth_factor}^(F{current_field_index} / {self.lengthscale})",
-        )
+            # Math field
+            model.mesh.field.add("MathEval", current_field_index + 1)
+            model.mesh.field.setString(
+                current_field_index + 1,
+                "F",
+                f"{self.sizemin} * {self.growth_factor}^(F{current_field_index} / {self.lengthscale})",
+            )
 
-        new_field_indices = (current_field_index + 1,)
-        current_field_index += 2
+            new_field_indices = (current_field_index + 1,)
+            current_field_index += 2
 
         return new_field_indices, current_field_index
 

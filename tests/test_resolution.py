@@ -264,8 +264,14 @@ def test_filter(apply_to, min_mass, max_mass):
         mesh_order=1,
         physical_name="inner",
         resolutions=[
-            ConstantInField(
-                apply_to=apply_to, resolution=0.5, min_mass=min_mass, max_mass=max_mass
+            ThresholdField(
+                apply_to=apply_to,
+                sizemin=0.5,
+                min_mass=min_mass,
+                max_mass=max_mass,
+                sizemax=10,
+                distmin=0,
+                distmax=10,
             )
         ],
     )
@@ -421,5 +427,5 @@ def test_filter_not_shared():
 
 
 if __name__ == "__main__":
-    test_filter_shared()
+    test_3D_resolution()
     # test_3D_resolution()
