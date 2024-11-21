@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 1.3.7
+
+- fixed intersection not returning common elements in subdivide [PR#88](https://github.com/simbilod/meshwell/pull/88)
+
 ## 1.3.6
 
 - minor fixes
