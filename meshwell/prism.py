@@ -278,31 +278,27 @@ class Prism(BaseModel):
         dx = (global_xmax - global_xmin) / subdivision[0]
         dy = (global_ymax - global_ymin) / subdivision[1]
         dz = (global_zmax - global_zmin) / subdivision[2]
-        removeObject = False
+        prisms_dimtags = {(3, prism) for prism in prisms}
         for x_index in range(subdivision[0]):
             for y_index in range(subdivision[1]):
                 for z_index in range(subdivision[2]):
-                    if (
-                        x_index == subdivision[0] - 1
-                        and y_index == subdivision[1] - 1
-                        and z_index == subdivision[2] - 1
-                    ):
-                        removeObject = True
                     tool = self.model.occ.add_box(
-                        xmin + x_index * dx,
-                        ymin + y_index * dy,
-                        zmin + z_index * dz,
+                        global_xmin + x_index * dx,
+                        global_ymin + y_index * dy,
+                        global_zmin + z_index * dz,
                         dx,
                         dy,
                         dz,
                     )
-                    intersection = self.model.occ.intersect(
-                        [(3, prism) for prism in prisms],
+                    intersection, intersection_map = self.model.occ.intersect(
+                        list(prisms_dimtags),
                         [(3, tool)],
-                        removeObject=removeObject,
+                        removeObject=False,
                         removeTool=True,
-                    )[0]
-                    subdivided_prisms.extend(intersection)
+                    )
+                    prisms_dimtags -= set(intersection_map[0])
+                    subdivided_prisms.extend(intersection_map[0] + intersection)
+        self.model.occ.remove(list(prisms_dimtags))
         return subdivided_prisms
 
     def instanciate(self) -> List[Tuple[int, int]]:
