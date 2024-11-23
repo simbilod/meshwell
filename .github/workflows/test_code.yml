@@ -1,13 +1,41 @@
 name: Tests
 
 on:
-  workflow_run:
-    workflows: ["Pre-commit"]
-    types:
-      - completed
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
 
 jobs:
-  build:
+
+  pre-commit:
+    name: Pre-commit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+      - uses: pre-commit/action@v3.0.1
+
+  generate_refs:
+    name: Generate test-references
+    needs: pre-commit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+    - name: Generate references from pypi version
+      run: bash generate_references.sh
+      working-directory: ./tests
+
+  run_regressions:
+    name: Test code
+    needs: generate_refs
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -19,9 +47,6 @@ jobs:
       uses: astral-sh/setup-uv@v4
     - name: Set up Python ${{ matrix.python-version }}
       run: uv python install ${{ matrix.python-version }}
-    - name: Generate references from pypi version
-      run: bash generate_references.sh
-      working-directory: ./tests
     - name: Install venv
       run: uv venv
     - name: Install Dependencies
@@ -30,7 +55,6 @@ jobs:
         uv pip install -e ".[dev]"
     - name: Test
       run: uv run pytest
-
 
 
 # name: Test pre-commit, code and docs
