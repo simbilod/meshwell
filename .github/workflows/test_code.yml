@@ -10,6 +10,7 @@ on:
 
 jobs:
   build:
+    needs: [pre-commit]
     runs-on: ubuntu-latest
     strategy:
       matrix:
