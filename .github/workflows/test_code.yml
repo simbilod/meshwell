@@ -23,7 +23,7 @@ jobs:
 
   run_regressions:
     name: Test code
-    needs: generate_refs
+    needs: pre-commit
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
