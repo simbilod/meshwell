@@ -27,7 +27,9 @@ jobs:
     - name: Install venv
       run: uv venv
     - name: Install Dependencies
-      run: uv pip install -e ".[dev]"
+      run: |
+        sudo apt-get install libglu1-mesa
+        uv pip install -e ".[dev]"
     - name: Test
       run: uv run pytest
 
