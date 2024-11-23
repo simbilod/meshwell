@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: 3.12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,7 +31,7 @@ jobs:
     steps:
     - name: Generate references from pypi version
       run: bash generate_references.sh
-      working-directory: ./tests
+      working-directory: tests
 
   run_regressions:
     name: Test code
