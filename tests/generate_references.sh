@@ -8,4 +8,4 @@ source .venv/bin/activate
 uv pip install meshwell[dev]
 
 # Execute all Python files in the current directory
-python generate_references.py
+python generate_references.py --references-path ./references/
