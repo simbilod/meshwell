@@ -1,16 +1,13 @@
 name: Tests
 
 on:
-  push:
-    branches:
-    - main
-  pull_request:
-    branches:
-    - main
+  workflow_run:
+    workflows: ["Pre-commit"]
+    types:
+      - completed
 
 jobs:
   build:
-    needs: [pre-commit]
     runs-on: ubuntu-latest
     strategy:
       matrix:
