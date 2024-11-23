@@ -1,4 +1,4 @@
-name: Code Checks
+name: Tests
 
 on:
   push:
@@ -22,7 +22,8 @@ jobs:
     - name: Set up Python ${{ matrix.python-version }}
       run: uv python install ${{ matrix.python-version }}
     - name: Generate references from pypi version
-      run: cd /tests/ && bash generate_references.sh
+      run: bash generate_references.sh
+      working-directory: ./tests
     - name: Install venv
       run: uv venv
     - name: Install Dependencies
