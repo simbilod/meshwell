@@ -418,7 +418,6 @@ class Model:
         final_entity_list = structural_entity_list
 
         # Since we only took intersection with non-overlapping structural entities and removed the tool, there is no further conflict / tag reassignment
-        # self.occ.removeAllDuplicates()
         for entity in final_entity_list:
             entity.update_boundaries()
 
@@ -468,8 +467,6 @@ class Model:
                         1,
                     ],
                 )
-
-        gmsh.write("cad.xao")
 
         # Perform refinement
         if background_remeshing_file is None:
