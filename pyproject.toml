@@ -40,7 +40,8 @@ dev = [
     "sphinx-autodoc-typehints",
     "sphinx-click",
     "myst-parser",
-    "plotly"
+    "plotly",
+    "matplotlib"
     ]
 
 [tool.setuptools.packages]
