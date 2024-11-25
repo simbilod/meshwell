@@ -2,20 +2,11 @@
 # Learn more at https://jupyterbook.org/customize/toc.html
 
 format: jb-book
-root: index
-parts:
-  - caption: Quickstart
-    chapters:
-      - file: api/00_installation
-      - file: api/01_quickstart
-  - caption: Objects
-    chapters:
-      - file: api/02_polysurfaces
-      - file: api/03_prisms
-  - caption: Meshing
-    chapters:
-      - file: api/04_basics
-      - file: api/05_boundary_conditions
-  - caption: Reference
-    chapters:
-      - file: changelog
+root: intro
+chapters:
+- file: intro_gmsh
+- file: polysurfaces
+- file: prisms
+- file: models
+- file: resolution
+- file: gdsfactory_interface

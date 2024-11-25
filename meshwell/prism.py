@@ -311,30 +311,50 @@ class Prism(BaseModel):
 
     def _validate_polygon_buffers(self) -> bool:
         """Check if any buffering operation changes the topology of the polygon."""
-        reference_exterior_vertices = len(
-            self.buffered_polygons[0][0][1].exterior.coords
+        # Get first polygon or multipolygon
+        first_geom = self.buffered_polygons[0][0][1]
+
+        # Handle both single polygons and multipolygons
+        first_polygons = (
+            first_geom.geoms if hasattr(first_geom, "geoms") else [first_geom]
         )
-        reference_interiors_vertices = [
-            len(interior.coords)
-            for interior in self.buffered_polygons[0][0][1].interiors
-        ]
+
+        # Get reference counts from first polygon(s)
+        reference_counts = []
+        for polygon in first_polygons:
+            # Store exterior vertex count and interior vertex counts for this polygon
+            polygon_counts = {
+                "exterior": len(polygon.exterior.coords),
+                "interiors": [len(interior.coords) for interior in polygon.interiors],
+            }
+            reference_counts.append(polygon_counts)
+
+        # Check each buffered polygon matches reference counts
         for buffered_polygon in self.buffered_polygons[0][1:]:
-            num_points_exterior = len(buffered_polygon[1].exterior.coords)
-            num_points_interiors = (
-                [
-                    len(interior.coords) if interior else 0
-                    for interior in buffered_polygon[1].interiors
-                ]
-                if buffered_polygon[1].interiors
-                else [0]
-            )
-            if num_points_exterior != reference_exterior_vertices:
+            geom = buffered_polygon[1]
+            polygons = geom.geoms if hasattr(geom, "geoms") else [geom]
+
+            if len(polygons) != len(reference_counts):
                 return False
-            for num_points_interior, reference_interior_vertices in zip(
-                num_points_interiors, reference_interiors_vertices
-            ):
-                if num_points_interior != reference_interior_vertices:
+
+            for polygon, ref_counts in zip(polygons, reference_counts):
+                # Check exterior vertices match
+                if len(polygon.exterior.coords) != ref_counts["exterior"]:
                     return False
+
+                # Check interior vertices match
+                polygon_interior_counts = [
+                    len(interior.coords) for interior in polygon.interiors
+                ]
+                if len(polygon_interior_counts) != len(ref_counts["interiors"]):
+                    return False
+
+                for count, ref_count in zip(
+                    polygon_interior_counts, ref_counts["interiors"]
+                ):
+                    if count != ref_count:
+                        return False
+
         return True
 
     """
