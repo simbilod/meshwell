@@ -39,3 +39,10 @@ sphinx:
     - https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js
     mime_types:
       application/vnd.plotly.v1+json: plotly
+    nb_custom_formats:
+        .Rmd:
+            - jupytext.reads
+            - fmt: Rmd
+        .py:  # Add this line to include Python files
+            - jupytext.reads
+            - fmt: py
