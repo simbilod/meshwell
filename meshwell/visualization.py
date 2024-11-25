@@ -121,7 +121,7 @@ def plot2D(
             i += j
             # Skip if physicals specified and this group not in them
             if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
-                if id_to_name[group] not in physicals:
+                if not any(name in physicals for name in id_to_name[group]):
                     continue
             # Get cells for this physical group
             if (
@@ -135,7 +135,7 @@ def plot2D(
                 group_cells = mesh.cells_dict["line"]
 
             # Get color for this group (cycle through colors if more groups than colors)
-            color = colors[i % len(colors)]
+            color = colors[i + 1 % len(colors)]
 
             # Get group name for legend
             group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
