@@ -40,12 +40,8 @@ dev = [
     "sphinx-autodoc-typehints",
     "sphinx-click",
     "myst-parser"
+    "plotly"
     ]
-full = [
-    "matplotlib",
-    "scikit-fem",
-]
-
 
 [tool.setuptools.packages]
 find = {}
