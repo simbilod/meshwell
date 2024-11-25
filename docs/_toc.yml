@@ -1,0 +1,12 @@
+# Table of contents
+# Learn more at https://jupyterbook.org/customize/toc.html
+
+format: jb-book
+root: intro
+chapters:
+- file: intro_gmsh
+- file: polysurfaces
+- file: prisms
+- file: models
+- file: resolution
+- file: gdsfactory_interface
