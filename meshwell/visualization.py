@@ -30,7 +30,13 @@ colors = [
 ]
 
 
-def plot2D(mesh, physicals=None, wireframe: bool = False, title: str | None = None):
+def plot2D(
+    mesh,
+    physicals=None,
+    wireframe: bool = False,
+    title: str | None = None,
+    ignore_lines: bool = False,
+):
     # Create a plotly figure
     fig = go.Figure()
 
@@ -82,6 +88,10 @@ def plot2D(mesh, physicals=None, wireframe: bool = False, title: str | None = No
         # Get color for this group (cycle through colors if more groups than colors)
         color = colors[i % len(colors)]
 
+        # Get group name for legend
+        group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
+        first_triangle = True
+
         # Plot each triangle in the group with larger points
         for triangle in group_cells:
             x = mesh.points[triangle, 0]
@@ -98,52 +108,55 @@ def plot2D(mesh, physicals=None, wireframe: bool = False, title: str | None = No
                     marker=dict(size=5) if wireframe else None,
                     fill="toself" if not wireframe else None,
                     fillcolor=color if not wireframe else None,
-                    showlegend=False,
-                    name=", ".join(id_to_name[group])
-                    if "gmsh:physical" in mesh.cell_data_dict
-                    else "mesh",
+                    showlegend=first_triangle,  # Only show legend for first triangle of group
+                    name=group_name,
                 )
             )
+            first_triangle = False
 
     j = i
     # Plot lines for each 1D physical group
-    for i, group in enumerate(physical_groups_1D):
-        i += j
-        # Skip if physicals specified and this group not in them
-        if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
-            if id_to_name[group] not in physicals:
-                continue
-        # Get cells for this physical group
-        if (
-            "gmsh:physical" in mesh.cell_data_dict
-            and "line" in mesh.cell_data_dict["gmsh:physical"]
-        ):
-            group_cells = mesh.cells_dict["line"][
-                mesh.cell_data_dict["gmsh:physical"]["line"] == group
-            ]
-        else:
-            group_cells = mesh.cells_dict["line"]
+    if not ignore_lines:
+        for i, group in enumerate(physical_groups_1D):
+            i += j
+            # Skip if physicals specified and this group not in them
+            if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
+                if id_to_name[group] not in physicals:
+                    continue
+            # Get cells for this physical group
+            if (
+                "gmsh:physical" in mesh.cell_data_dict
+                and "line" in mesh.cell_data_dict["gmsh:physical"]
+            ):
+                group_cells = mesh.cells_dict["line"][
+                    mesh.cell_data_dict["gmsh:physical"]["line"] == group
+                ]
+            else:
+                group_cells = mesh.cells_dict["line"]
 
-        # Get color for this group (cycle through colors if more groups than colors)
-        color = colors[i % len(colors)]
+            # Get color for this group (cycle through colors if more groups than colors)
+            color = colors[i % len(colors)]
 
-        # Plot each line in the group
-        for line in group_cells:
-            x = mesh.points[line, 0]
-            y = mesh.points[line, 1]
-            fig.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=y,
-                    mode="lines+markers" if wireframe else "lines",
-                    line=dict(color=color),
-                    marker=dict(size=5) if wireframe else None,
-                    showlegend=False,
-                    name=", ".join(id_to_name[group])
-                    if "gmsh:physical" in mesh.cell_data_dict
-                    else "mesh",
+            # Get group name for legend
+            group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
+            first_line = True
+
+            # Plot each line in the group
+            for line in group_cells:
+                x = mesh.points[line, 0]
+                y = mesh.points[line, 1]
+                fig.add_trace(
+                    go.Scatter(
+                        x=x,
+                        y=y,
+                        mode="lines+markers" if wireframe else "lines",
+                        line=dict(color=color),
+                        marker=dict(size=5) if wireframe else None,
+                        showlegend=first_line,  # Only show legend for first line of group
+                        name=group_name,
+                    )
                 )
-            )
+                first_line = False
 
     # Update layout with interactive features
     fig.update_layout(

@@ -154,7 +154,7 @@ gmsh.finalize()
 
 # %%
 mesh = meshio.read("physicals.msh")
-plot2D(mesh)
+plot2D(mesh, ignore_lines=True)
 
 # %% [markdown]
 # ## The sharp bits
@@ -167,3 +167,5 @@ plot2D(mesh)
 # %% [markdown]
 # ### Keeping track of integers
 # Whenever entities are created / transformed (e.g. when healing interfaces), there can be reassignment of the integer tags used to label them. In the official tutorials, entity tags are re-identified based on some characteristic like bounding extent to later assign to physical groups.
+
+# %%
