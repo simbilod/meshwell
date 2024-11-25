@@ -39,6 +39,7 @@ dev = [
     "jupyter-book==1.0.0",
     "sphinx-autodoc-typehints",
     "sphinx-click",
+    "myst-parser"
     ]
 full = [
     "matplotlib",
