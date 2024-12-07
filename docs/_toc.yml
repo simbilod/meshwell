@@ -4,6 +4,7 @@
 format: jb-book
 root: intro
 chapters:
+- file: changelog
 - file: intro_gmsh
 - file: polysurfaces
 - file: prisms
