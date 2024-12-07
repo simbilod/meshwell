@@ -167,7 +167,7 @@ class LabeledEntities(BaseModel):
                                     resolutionspec.target_dimension
                                 )
                             )
-                        for tag in self.tags:
+                        for tag in tags:
                             if tag in entities_mass_dict:
                                 entities_mass_dict_sharing[tag] = entities_mass_dict[
                                     tag
