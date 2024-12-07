@@ -122,7 +122,6 @@ class LabeledEntities(BaseModel):
         self,
         refinement_field_indices: List,
         refinement_max_index: int,
-        default_resolution: float,
         all_entities_dict,
         boundary_delimiter,
     ):

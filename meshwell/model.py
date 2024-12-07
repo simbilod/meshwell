@@ -486,7 +486,6 @@ class Model:
                 ) = entity.add_refinement_fields_to_model(
                     refinement_field_indices,
                     refinement_max_index,
-                    default_characteristic_length,
                     final_entity_dict,
                     boundary_delimiter,
                 )
