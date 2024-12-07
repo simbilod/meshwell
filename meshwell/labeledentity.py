@@ -122,7 +122,6 @@ class LabeledEntities(BaseModel):
         self,
         refinement_field_indices: List,
         refinement_max_index: int,
-        default_resolution: float,
         all_entities_dict,
         boundary_delimiter,
     ):
@@ -168,7 +167,7 @@ class LabeledEntities(BaseModel):
                                     resolutionspec.target_dimension
                                 )
                             )
-                        for tag in self.tags:
+                        for tag in tags:
                             if tag in entities_mass_dict:
                                 entities_mass_dict_sharing[tag] = entities_mass_dict[
                                     tag
@@ -205,7 +204,6 @@ class LabeledEntities(BaseModel):
                     new_field_indices, n = resolutionspec.apply(
                         model=self.model,
                         current_field_index=n,
-                        refinement_field_indices=refinement_field_indices,
                         entities_mass_dict=entities_mass_dict_sharing,
                     )
                     refinement_field_indices.extend(new_field_indices)
