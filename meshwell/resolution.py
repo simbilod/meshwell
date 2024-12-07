@@ -54,7 +54,6 @@ class ConstantInField(ResolutionSpec):
         model: Any,
         current_field_index: int,
         entities_mass_dict,
-        refinement_field_indices,
     ) -> int:
         new_field_indices = []
 
@@ -117,7 +116,6 @@ class ThresholdField(SampledField):
         model: Any,
         current_field_index: int,
         entities_mass_dict,
-        refinement_field_indices,
     ) -> int:
         new_field_indices = []
 
@@ -175,7 +173,6 @@ class ExponentialField(SampledField):
         model: Any,
         current_field_index: int,
         entities_mass_dict,
-        refinement_field_indices,
     ) -> int:
         new_field_indices = []
 

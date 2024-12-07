@@ -205,7 +205,6 @@ class LabeledEntities(BaseModel):
                     new_field_indices, n = resolutionspec.apply(
                         model=self.model,
                         current_field_index=n,
-                        refinement_field_indices=refinement_field_indices,
                         entities_mass_dict=entities_mass_dict_sharing,
                     )
                     refinement_field_indices.extend(new_field_indices)
