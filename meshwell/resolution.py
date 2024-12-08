@@ -102,6 +102,21 @@ class SampledField(ResolutionSpec):
             for tag, mass in entities_mass_dict.items()
         }
 
+    def apply_distance(self, model: Any, current_field_index: int, entities_mass_dict):
+        """Common application"""
+
+        # Compute samplings
+        samplings_dict = self.calculate_samplings(entities_mass_dict)
+
+        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
+        # For instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
+        samplings = max(samplings_dict.values())
+        entities = list(entities_mass_dict.keys())
+
+        model.mesh.field.add("Distance", current_field_index)
+        model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
+        model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
+
 
 class ThresholdField(SampledField):
     """Linear growth of the resolution away from the entity"""
@@ -119,20 +134,14 @@ class ThresholdField(SampledField):
     ) -> int:
         new_field_indices = []
 
-        # Compute samplings
-        samplings_dict = self.calculate_samplings(entities_mass_dict)
-
-        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
-        # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
-        samplings = max(samplings_dict.values())
-        entities = list(entities_mass_dict.keys())
-
         if self.entity_str == "RegionsList":
             warnings.warn("Cannot set a distance field on a Volume! Skipping")
         else:
-            model.mesh.field.add("Distance", current_field_index)
-            model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-            model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
+            self.apply_distance(
+                model=model,
+                current_field_index=current_field_index,
+                entities_mass_dict=entities_mass_dict,
+            )
             model.mesh.field.add("Threshold", current_field_index + 1)
             model.mesh.field.setNumber(
                 current_field_index + 1, "InField", current_field_index
@@ -179,19 +188,11 @@ class ExponentialField(SampledField):
         if self.entity_str == "RegionsList":
             warnings.warn("Cannot set a distance field on a Volume! Skipping")
         else:
-            # Compute samplings
-            samplings_dict = self.calculate_samplings(entities_mass_dict)
-
-            # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
-            # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
-            samplings = max(samplings_dict.values())
-            entities = list(entities_mass_dict.keys())
-
-            # Sampled distance field
-            model.mesh.field.add("Distance", current_field_index)
-            model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-            model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
-
+            self.apply_distance(
+                model=model,
+                current_field_index=current_field_index,
+                entities_mass_dict=entities_mass_dict,
+            )
             # Math field
             model.mesh.field.add("MathEval", current_field_index + 1)
             model.mesh.field.setString(
