@@ -472,30 +472,27 @@ class Model:
         if background_remeshing_file is None:
             # Use entity information
             refinement_field_indices = []
-            refinement_max_index = 0
 
             # Hashable final_entity_list
             final_entity_dict = {
                 entity.physical_name: entity for entity in final_entity_list
             }
 
+            refinement_field_indices = []
             for entity in final_entity_list:
-                (
-                    refinement_field_indices,
-                    refinement_max_index,
-                ) = entity.add_refinement_fields_to_model(
-                    refinement_field_indices,
-                    refinement_max_index,
-                    final_entity_dict,
-                    boundary_delimiter,
+                refinement_field_indices.extend(
+                    entity.add_refinement_fields_to_model(
+                        final_entity_dict,
+                        boundary_delimiter,
+                    )
                 )
 
             # Use the smallest element size overall
-            self.model.mesh.field.add("Min", refinement_max_index)
+            min_field_index = self.model.mesh.field.add("Min")
             self.model.mesh.field.setNumbers(
-                refinement_max_index, "FieldsList", refinement_field_indices
+                min_field_index, "FieldsList", refinement_field_indices
             )
-            self.model.mesh.field.setAsBackgroundMesh(refinement_max_index)
+            self.model.mesh.field.setAsBackgroundMesh(min_field_index)
         else:
             bg_field = self.model.mesh.field.add("PostView")
             self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
