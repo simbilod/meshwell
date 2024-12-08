@@ -28,7 +28,7 @@ boxes["box1"] = box1
 
 # %%
 
-for default_characteristic_length in [10, 1, 0.3]:
+for default_characteristic_length in [10, 1, 0.5]:
     model = Model(n_threads=1)
 
     polysurfaces = []
@@ -170,7 +170,7 @@ polysurface3 = PolySurface(
     mesh_order=1,
     resolutions=[
         ExponentialField(
-            sizemin=0.1, lengthscale=2, growth_factor=2.0, apply_to="curves"
+            sizemin=0.2, lengthscale=2, growth_factor=2.0, apply_to="curves"
         ),
     ],
 )
@@ -182,68 +182,6 @@ mesh = model.mesh(
 )
 
 plot2D(mesh, wireframe=True)
-
-# %% [markdown]
-# ## Filtering
-# ResolutionSpecs can be selectively applied given the "mass" of the entity (total lengths of curves, total area of surfaces, total volumes of volumes) or by which other physical they touch/don't touch.
-
-# %%
-
-# Create two boxes of different sizes
-small_box = shapely.box(0, 0, 1, 1)
-large_box = shapely.box(3, 0, 5, 2)
-
-# Combine into multipolygon
-multi = shapely.MultiPolygon([small_box, large_box])
-
-model = Model()
-
-# Create polysurface with filtered resolution specs
-polysurface = PolySurface(
-    polygons=multi,
-    model=model,
-    physical_name="filtered_boxes",
-    resolutions=[
-        # Fine resolution for small curves
-        ConstantInField(
-            resolution=0.1,
-            apply_to="surfaces",
-        ),
-    ],
-)
-
-mesh = model.mesh(
-    entities_list=[polysurface],
-    filename="unfiltered_resolution.msh",
-    default_characteristic_length=0.5,
-)
-
-plot2D(mesh, wireframe=True, title="Reference Resolution Example")
-
-model = Model()
-
-# Create polysurface with filtered resolution specs
-polysurface = PolySurface(
-    polygons=multi,
-    model=model,
-    physical_name="filtered_boxes",
-    resolutions=[
-        # Fine resolution for small curves
-        ConstantInField(
-            resolution=0.1,
-            apply_to="surfaces",
-            max_mass=4,  # Only applies to curves with perimeter < 4
-        ),
-    ],
-)
-
-mesh = model.mesh(
-    entities_list=[polysurface],
-    filename="filtered_resolution.msh",
-    default_characteristic_length=0.5,
-)
-
-plot2D(mesh, wireframe=True, title="Mass-filtered Resolution Example")
 
 
 # ## Background mesh
