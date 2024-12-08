@@ -31,6 +31,7 @@ requires-python = ">=3.11"
 dev = [
     "pre-commit",
     "pytest",
+    "pytest-xdist",
     "pytest-cov",
     "pytest_regressions",
     "jupytext",
