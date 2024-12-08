@@ -147,3 +147,7 @@ cython_debug/
 # GMSH
 *.msh
 *.xao
+*.msh2
+*.step
+*.step
+*.stl
