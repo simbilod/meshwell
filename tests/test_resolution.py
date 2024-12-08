@@ -426,6 +426,74 @@ def test_filter_not_shared():
     )
 
 
+@pytest.mark.parametrize(
+    ("restrict_to",),
+    [
+        (None,),
+        (["inner_left"],),
+        (["inner_right"],),
+        (["outer", "inner_right"],),
+    ],
+)
+def test_restrict(restrict_to):
+    large_rect = 20
+    small_rect = 5
+
+    polygon1 = shapely.Polygon(
+        [[0, 0], [large_rect, 0], [large_rect, large_rect], [0, large_rect], [0, 0]],
+    )
+    polygon2 = shapely.Polygon(
+        [
+            [large_rect / 2 - small_rect / 2, large_rect / 2 - small_rect / 2],
+            [large_rect / 2 + small_rect / 2, large_rect / 2 - small_rect / 2],
+            [large_rect / 2 + small_rect / 2, large_rect / 2 + small_rect / 2],
+            [large_rect / 2 - small_rect / 2, large_rect / 2 + small_rect / 2],
+            [large_rect / 2 - small_rect / 2, large_rect / 2 - small_rect / 2],
+        ],
+    )
+
+    model = Model(n_threads=1)
+    poly_outer = PolySurface(
+        polygons=polygon1,
+        model=model,
+        mesh_order=2,
+        physical_name="outer",
+    )
+
+    if restrict_to is None:
+        restrict_to = None
+    else:
+        restrict_to = restrict_to
+    poly_left = PolySurface(
+        polygons=shapely.affinity.translate(polygon2, xoff=-3.1),
+        model=model,
+        mesh_order=1,
+        physical_name="inner_left",
+        resolutions=[
+            ThresholdField(
+                sizemin=0.05,
+                distmax=10,
+                sizemax=1,
+                apply_to="curves",
+                restrict_to=restrict_to,
+            )
+        ],
+    )
+    poly_right = PolySurface(
+        polygons=shapely.affinity.translate(polygon2, xoff=3.1),
+        model=model,
+        mesh_order=1,
+        physical_name="inner_right",
+    )
+    entities_list = [poly_outer, poly_left, poly_right]
+    model.mesh(
+        entities_list=entities_list,
+        default_characteristic_length=1,
+        verbosity=0,
+        filename=f"mesh_restrict_{restrict_to}.msh",
+    )
+    compare_meshes(Path(f"mesh_restrict_{restrict_to}.msh"))
+
+
 if __name__ == "__main__":
-    test_3D_resolution()
-    # test_3D_resolution()
+    test_restrict(restrict_to=["outer"])
