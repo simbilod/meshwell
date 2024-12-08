@@ -1,5 +1,10 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Unreleased
+
+- fixed issue with application of resolutionspecs [PR#92](https://github.com/simbilod/meshwell/pull/98)
+- allow regressions to target specific commit [PR#99](https://github.com/simbilod/meshwell/pull/99)
+
 ## 1.3.7
 
 - minor fixes
