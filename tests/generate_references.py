@@ -28,7 +28,7 @@ if __name__ == "__main__":
             os.remove(os.path.join(PATH.references, item))
 
     # Run the tests to generate the files (tests will fail)
-    pytest.main()
+    pytest.main(["-n", "auto"])
 
     # Rename the references
     test = os.listdir(exec_dir_name)

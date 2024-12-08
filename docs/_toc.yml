@@ -9,5 +9,6 @@ chapters:
 - file: polysurfaces
 - file: prisms
 - file: models
-- file: resolution
+- file: resolution_basic
+- file: resolution_advanced
 - file: gdsfactory_interface

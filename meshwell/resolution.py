@@ -18,6 +18,7 @@ class ResolutionSpec(BaseModel):
     max_mass: float = np.inf
     sharing: List[str] | None = None
     not_sharing: List[str] | None = None
+    restrict_to: List[str] | None = None
 
     @property
     def entity_str(self):
@@ -49,29 +50,19 @@ class ConstantInField(ResolutionSpec):
 
     resolution: float
 
-    def apply(
-        self,
-        model: Any,
-        current_field_index: int,
-        entities_mass_dict,
-    ) -> int:
-        new_field_indices = []
-
-        model.mesh.field.add("MathEval", current_field_index)
-        model.mesh.field.setString(current_field_index, "F", f"{self.resolution}")
-        model.mesh.field.add("Restrict", current_field_index + 1)
+    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int:
+        matheval_field_index = model.mesh.field.add("MathEval")
+        model.mesh.field.setString(matheval_field_index, "F", f"{self.resolution}")
+        restrict_field_index = model.mesh.field.add("Restrict")
         model.mesh.field.setNumber(
-            current_field_index + 1, "InField", current_field_index
+            restrict_field_index, "InField", matheval_field_index
         )
         model.mesh.field.setNumbers(
-            current_field_index + 1,
+            restrict_field_index,
             self.entity_str,
             list(entities_mass_dict.keys()),
         )
-        new_field_indices = (current_field_index + 1,)
-        current_field_index += 2
-
-        return new_field_indices, current_field_index
+        return restrict_field_index
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
@@ -102,6 +93,37 @@ class SampledField(ResolutionSpec):
             for tag, mass in entities_mass_dict.items()
         }
 
+    def apply_distance(self, model: Any, entities_mass_dict):
+        # Compute samplings
+        samplings_dict = self.calculate_samplings(entities_mass_dict)
+
+        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
+        # For instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
+        samplings = max(samplings_dict.values())
+        entities = list(entities_mass_dict.keys())
+
+        distance_field_index = model.mesh.field.add("Distance")
+        model.mesh.field.setNumbers(distance_field_index, self.entity_str, entities)
+        model.mesh.field.setNumber(distance_field_index, "Sampling", samplings)
+        return distance_field_index
+
+    def apply_restrict(
+        self,
+        model: Any,
+        target_field_index: int,
+        restrict_to_str: str,
+        restrict_to_tags=None,
+    ):
+        """Common application"""
+        restrict_field_index = model.mesh.field.add("Restrict")
+        model.mesh.field.setNumber(restrict_field_index, "InField", target_field_index)
+        model.mesh.field.setNumbers(
+            restrict_field_index,
+            restrict_to_str,
+            restrict_to_tags,
+        )
+        return restrict_field_index
+
 
 class ThresholdField(SampledField):
     """Linear growth of the resolution away from the entity"""
@@ -114,43 +136,40 @@ class ThresholdField(SampledField):
     def apply(
         self,
         model: Any,
-        current_field_index: int,
         entities_mass_dict,
+        restrict_to_str,
+        restrict_to_tags=None,
     ) -> int:
-        new_field_indices = []
-
-        # Compute samplings
-        samplings_dict = self.calculate_samplings(entities_mass_dict)
-
-        # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
-        # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
-        samplings = max(samplings_dict.values())
-        entities = list(entities_mass_dict.keys())
-
         if self.entity_str == "RegionsList":
             warnings.warn("Cannot set a distance field on a Volume! Skipping")
         else:
-            model.mesh.field.add("Distance", current_field_index)
-            model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-            model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
-            model.mesh.field.add("Threshold", current_field_index + 1)
-            model.mesh.field.setNumber(
-                current_field_index + 1, "InField", current_field_index
+            distance_field_index = self.apply_distance(
+                model=model,
+                entities_mass_dict=entities_mass_dict,
             )
-            model.mesh.field.setNumber(current_field_index + 1, "SizeMin", self.sizemin)
-            model.mesh.field.setNumber(current_field_index + 1, "DistMin", self.distmin)
+            threshold_field_index = model.mesh.field.add("Threshold")
+            model.mesh.field.setNumber(
+                threshold_field_index, "InField", distance_field_index
+            )
+            model.mesh.field.setNumber(threshold_field_index, "SizeMin", self.sizemin)
+            model.mesh.field.setNumber(threshold_field_index, "DistMin", self.distmin)
             if self.sizemax and self.distmax:
                 model.mesh.field.setNumber(
-                    current_field_index + 1, "SizeMax", self.sizemax
+                    threshold_field_index, "SizeMax", self.sizemax
                 )
                 model.mesh.field.setNumber(
-                    current_field_index + 1, "DistMax", self.distmax
+                    threshold_field_index, "DistMax", self.distmax
                 )
-            model.mesh.field.setNumber(current_field_index + 1, "StopAtDistMax", 1)
-            new_field_indices = (current_field_index + 1,)
-        current_field_index += 2
+            model.mesh.field.setNumber(threshold_field_index, "StopAtDistMax", 1)
 
-        return new_field_indices, current_field_index
+            # Restriction field
+            if restrict_to_tags:
+                restrict_field_index = self.apply_restrict(
+                    model, threshold_field_index, restrict_to_str, restrict_to_tags
+                )
+                return restrict_field_index
+            else:
+                return threshold_field_index
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
@@ -171,39 +190,34 @@ class ExponentialField(SampledField):
     def apply(
         self,
         model: Any,
-        current_field_index: int,
         entities_mass_dict,
+        restrict_to_str,
+        restrict_to_tags=None,
     ) -> int:
-        new_field_indices = []
-
         if self.entity_str == "RegionsList":
             warnings.warn("Cannot set a distance field on a Volume! Skipping")
         else:
-            # Compute samplings
-            samplings_dict = self.calculate_samplings(entities_mass_dict)
-
-            # FIXME: It is computationally cheaper to have a large sampling on all the curves rather than one field per curve; but there is probably an optimum somewhere.
-            # FOr instance, the distribution should be very skewed (tiny vertical curves, tiny curves in bends, vs long horizontal ones), so there may be benefits for a small number of optimized fields.
-            samplings = max(samplings_dict.values())
-            entities = list(entities_mass_dict.keys())
-
-            # Sampled distance field
-            model.mesh.field.add("Distance", current_field_index)
-            model.mesh.field.setNumbers(current_field_index, self.entity_str, entities)
-            model.mesh.field.setNumber(current_field_index, "Sampling", samplings)
-
-            # Math field
-            model.mesh.field.add("MathEval", current_field_index + 1)
-            model.mesh.field.setString(
-                current_field_index + 1,
-                "F",
-                f"{self.sizemin} * {self.growth_factor}^(F{current_field_index} / {self.lengthscale})",
+            distance_field_index = self.apply_distance(
+                model=model,
+                entities_mass_dict=entities_mass_dict,
             )
 
-            new_field_indices = (current_field_index + 1,)
-            current_field_index += 2
+            # Math field
+            matheval_field_index = model.mesh.field.add("MathEval")
+            model.mesh.field.setString(
+                matheval_field_index,
+                "F",
+                f"{self.sizemin} * {self.growth_factor}^(F{distance_field_index} / {self.lengthscale})",
+            )
 
-        return new_field_indices, current_field_index
+            # Restriction field
+            if restrict_to_tags:
+                restrict_field_index = self.apply_restrict(
+                    model, matheval_field_index, restrict_to_str, restrict_to_tags
+                )
+                return restrict_field_index
+            else:
+                return matheval_field_index
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)

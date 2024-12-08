@@ -120,15 +120,13 @@ class LabeledEntities(BaseModel):
 
     def add_refinement_fields_to_model(
         self,
-        refinement_field_indices: List,
-        refinement_max_index: int,
         all_entities_dict,
         boundary_delimiter,
     ):
         """
         Adds refinement fields to the model based on base_resolution and resolution info.
         """
-        n = refinement_max_index
+        refinement_field_indices = []
 
         if self.resolutions:
             for resolutionspec in self.resolutions:
@@ -138,7 +136,7 @@ class LabeledEntities(BaseModel):
                     max_mass=resolutionspec.max_mass,
                 )
 
-                # Filter by shared or not shared as well;include boundary
+                # Filter by shared or not shared as well; include boundary
                 entities_mass_dict_sharing = {}
                 if resolutionspec.sharing is None:
                     superset = {x for xs in all_entities_dict.keys() for x in xs}
@@ -200,12 +198,30 @@ class LabeledEntities(BaseModel):
                                     tag
                                 ]
 
-                if entities_mass_dict_sharing:
-                    new_field_indices, n = resolutionspec.apply(
-                        model=self.model,
-                        current_field_index=n,
-                        entities_mass_dict=entities_mass_dict_sharing,
-                    )
-                    refinement_field_indices.extend(new_field_indices)
+                # Also retrieve tags of entities restricted_to
+                restrict_to_tags = []
+                if resolutionspec.restrict_to is not None:
+                    for other_name, other_entity in all_entities_dict.items():
+                        if any(
+                            item in other_name for item in resolutionspec.restrict_to
+                        ):
+                            restrict_to_tags.extend(other_entity.tags)
+                else:
+                    restrict_to_tags = None
 
-        return refinement_field_indices, n
+                if self.dim == 3:
+                    restrict_to_str = "VolumesList"
+                elif self.dim == 2:
+                    restrict_to_str = "SurfacesList"
+
+                if entities_mass_dict_sharing:
+                    refinement_field_indices.append(
+                        resolutionspec.apply(
+                            model=self.model,
+                            entities_mass_dict=entities_mass_dict_sharing,
+                            restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
+                            restrict_to_tags=restrict_to_tags,
+                        )
+                    )
+
+        return refinement_field_indices
