@@ -4,6 +4,8 @@
 
 - fixed issue with application of resolutionspecs [PR#92](https://github.com/simbilod/meshwell/pull/98)
 - allow regressions to target specific commit [PR#99](https://github.com/simbilod/meshwell/pull/99)
+- parallel pytest
+- restrict field [PR#100](https://github.com/simbilod/meshwell/pull/100)
 
 ## 1.3.7
 
