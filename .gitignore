@@ -151,3 +151,8 @@ cython_debug/
 *.step
 *.step
 *.stl
+
+# Other
+*.gds
+*.oas
+*.dxf
