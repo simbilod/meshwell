@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Unreleased
+
+- importing gds function and example [PR#102](https://github.com/simbilod/meshwell/pull/102)
+
 ## 1.3.8
 
 - fixed issue with application of resolutionspecs [PR#92](https://github.com/simbilod/meshwell/pull/98)
