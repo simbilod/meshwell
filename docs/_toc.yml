@@ -11,4 +11,5 @@ chapters:
 - file: models
 - file: resolution_basic
 - file: resolution_advanced
+- file: importing_gds
 - file: gdsfactory_interface
