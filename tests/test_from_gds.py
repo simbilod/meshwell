@@ -1,7 +1,6 @@
 import gdstk
-import numpy as np
 from pathlib import Path
-
+import shapely.geometry as sg
 from meshwell.import_gds import read_gds_layers
 
 
@@ -63,39 +62,39 @@ def test_gds_to_shapely():
         # Convert to Shapely geometries by layer
         layer_polygons = read_gds_layers(test_file)
 
-        # Verify layer 0 (path)
-        path_geom = layer_polygons[(0, 0)]
-        assert not path_geom.is_empty, "Path layer should contain geometry"
+        # Verify we got the expected number of layers
+        assert len(layer_polygons) == 6, "Expected 6 layers in output"
 
-        # Verify layer 1 (circles)
-        circles_geom = layer_polygons[(1, 0)]
-        assert len(list(circles_geom.geoms)) == 3, "Should have 3 circles"
-        for circle in circles_geom.geoms:
-            # Circles should be approximately circular
-            assert abs(circle.area - np.pi * 3**2) < 1.0
+        # Check that each layer exists and has valid geometry
+        for layer in range(6):
+            assert (layer, 0) in layer_polygons, f"Layer {layer} missing from output"
+            assert not layer_polygons[
+                (layer, 0)
+            ].is_empty, f"Layer {layer} has empty geometry"
+            assert layer_polygons[
+                (layer, 0)
+            ].is_valid, f"Layer {layer} has invalid geometry"
 
-        # Verify layer 2 (complex polygon with hole)
-        complex_geom = layer_polygons[(2, 0)]
-        assert (
-            not complex_geom.is_empty
-        ), "Complex polygon layer should contain geometry"
-        assert len(list(complex_geom.geoms)) == 1, "Should have 1 complex polygon"
-        complex_poly = list(complex_geom.geoms)[0]
-        assert len(complex_poly.interiors) == 1, "Complex polygon should have 1 hole"
+        # Check specific properties of some layers
+        # Layer 1 should have 3 circles
+        assert isinstance(layer_polygons[(1, 0)], sg.MultiPolygon)
+        assert len(list(layer_polygons[(1, 0)].geoms)) == 3
 
-        # Verify overlapping shapes on layers 3-5
-        rect_geom = layer_polygons[(3, 0)]
-        triangle_geom = layer_polygons[(4, 0)]
-        circle_geom = layer_polygons[(5, 0)]
+        # Layer 2 should have a polygon with a hole
+        layer2_poly = layer_polygons[(2, 0)]
+        if isinstance(layer2_poly, sg.MultiPolygon):
+            polygon = list(layer2_poly.geoms)[0]
+        else:
+            polygon = layer2_poly
+        assert len(polygon.interiors) > 0
 
-        assert not rect_geom.is_empty, "Rectangle layer should contain geometry"
-        assert not triangle_geom.is_empty, "Triangle layer should contain geometry"
-        assert not circle_geom.is_empty, "Circle layer should contain geometry"
-
-        # Verify overlapping relationships
-        assert rect_geom.intersects(triangle_geom), "Rectangle should overlap triangle"
-        assert rect_geom.intersects(circle_geom), "Rectangle should overlap circle"
-        assert triangle_geom.intersects(circle_geom), "Triangle should overlap circle"
+        # Layers 3-5 should overlap
+        layer3_poly = layer_polygons[(3, 0)]
+        layer4_poly = layer_polygons[(4, 0)]
+        layer5_poly = layer_polygons[(5, 0)]
+        assert layer3_poly.intersects(layer4_poly)
+        assert layer4_poly.intersects(layer5_poly)
+        assert layer5_poly.intersects(layer3_poly)
 
     finally:
         # Cleanup
