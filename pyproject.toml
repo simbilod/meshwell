@@ -22,7 +22,8 @@ dependencies = [
     "gmsh",
     "meshio",
     "tqdm",
-    "pydantic"
+    "pydantic",
+    "gdstk"
 ]
 readme = "README.md"
 requires-python = ">=3.11"
