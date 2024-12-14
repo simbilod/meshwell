@@ -1,9 +1,8 @@
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 import numpy as np
 
 """From https://en.wikipedia.org/wiki/Help:Distinguishable_colors"""
 colors = [
-    # "#000000",
     "#1CE6FF",
     "#FF34FF",
     "#FF4A46",
@@ -37,8 +36,8 @@ def plot2D(
     title: str | None = None,
     ignore_lines: bool = False,
 ):
-    # Create a plotly figure
-    fig = go.Figure()
+    # Create matplotlib figure
+    fig, ax = plt.subplots(figsize=(10, 10))
 
     # Create mapping dicts from integer IDs to group names
     id_to_name = {}
@@ -57,20 +56,19 @@ def plot2D(
                 mesh.cell_data_dict["gmsh:physical"]["triangle"]
             )
         else:
-            physical_groups_2D = [1]  # Use dummy group ID if no triangle physicals
+            physical_groups_2D = [1]
         if "line" in mesh.cell_data_dict["gmsh:physical"]:
             physical_groups_1D = np.unique(mesh.cell_data_dict["gmsh:physical"]["line"])
         else:
-            physical_groups_1D = [1]  # Use dummy group ID if no line physicals
+            physical_groups_1D = [1]
     else:
-        physical_groups_2D = [1]  # Use dummy group ID
+        physical_groups_2D = [1]
         physical_groups_1D = [1]
 
     # Plot triangles for each 2D physical group
     for i, group in enumerate(physical_groups_2D):
         # Skip if physicals specified and this group not in them
         if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
-            # Check if any of the names for this group ID match the requested physicals
             if not any(name in physicals for name in id_to_name[group]):
                 continue
 
@@ -85,44 +83,44 @@ def plot2D(
         else:
             group_cells = mesh.cells_dict["triangle"]
 
-        # Get color for this group (cycle through colors if more groups than colors)
+        # Get color for this group
         color = colors[i % len(colors)]
 
         # Get group name for legend
         group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
-        first_triangle = True
 
-        # Plot each triangle in the group with larger points
+        # Plot triangles
         for triangle in group_cells:
             x = mesh.points[triangle, 0]
             y = mesh.points[triangle, 1]
-            # Close the triangle by repeating first point
+            # Close the triangle
             x = np.append(x, x[0])
             y = np.append(y, y[0])
-            fig.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=y,
-                    mode="lines+markers" if wireframe else "lines",
-                    line=dict(color=color),
-                    marker=dict(size=5) if wireframe else None,
-                    fill="toself" if not wireframe else None,
-                    fillcolor=color if not wireframe else None,
-                    showlegend=first_triangle,  # Only show legend for first triangle of group
-                    name=group_name,
-                )
-            )
-            first_triangle = False
 
-    j = i
+            if wireframe:
+                ax.plot(
+                    x,
+                    y,
+                    color=color,
+                    marker="o" if wireframe else None,
+                    markersize=3 if wireframe else None,
+                    label=group_name,
+                )
+            else:
+                ax.fill(x, y, color=color, alpha=0.5, label=group_name)
+                ax.plot(x, y, color=color, linewidth=0.5)
+
+            # Only include label once in legend
+            group_name = "_nolegend_"
+
     # Plot lines for each 1D physical group
     if not ignore_lines:
         for i, group in enumerate(physical_groups_1D):
-            i += j
             # Skip if physicals specified and this group not in them
             if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
                 if not any(name in physicals for name in id_to_name[group]):
                     continue
+
             # Get cells for this physical group
             if (
                 "gmsh:physical" in mesh.cell_data_dict
@@ -134,64 +132,40 @@ def plot2D(
             else:
                 group_cells = mesh.cells_dict["line"]
 
-            # Get color for this group (cycle through colors if more groups than colors)
-            color = colors[i + 1 % len(colors)]
-
-            # Get group name for legend
+            # Get color and group name
+            color = colors[(i + len(physical_groups_2D)) % len(colors)]
             group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
-            first_line = True
 
-            # Plot each line in the group
+            # Plot lines
             for line in group_cells:
                 x = mesh.points[line, 0]
                 y = mesh.points[line, 1]
-                fig.add_trace(
-                    go.Scatter(
-                        x=x,
-                        y=y,
-                        mode="lines+markers" if wireframe else "lines",
-                        line=dict(color=color),
-                        marker=dict(size=5) if wireframe else None,
-                        showlegend=first_line,  # Only show legend for first line of group
-                        name=group_name,
-                    )
+                ax.plot(
+                    x,
+                    y,
+                    color=color,
+                    marker="o" if wireframe else None,
+                    markersize=3 if wireframe else None,
+                    label=group_name,
                 )
-                first_line = False
+                group_name = "_nolegend_"
 
-    # Update layout with interactive features
-    fig.update_layout(
-        xaxis_title="x",
-        yaxis_title="y",
-        showlegend=True,
-        width=800,
-        height=800,
-        dragmode="zoom",  # Enable zoom by dragging
-        hovermode="closest",
-        modebar=dict(
-            add=[
-                "zoom",
-                "pan",
-                "select",
-                "lasso2d",
-                "zoomIn2d",
-                "zoomOut2d",
-                "autoScale2d",
-                "resetScale2d",
-            ]
-        ),
-    )
-
-    # Make the plot aspect ratio equal
-    fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    # Set equal aspect ratio
+    ax.set_aspect("equal")
 
     # Add title if provided
     if title is not None:
-        fig.update_layout(title=title)
+        ax.set_title(title)
 
-    # Add hover text
-    for trace in fig.data:
-        if trace.x is not None and trace.x[0] is not None:  # Skip legend-only traces
-            trace.update(hoverinfo="x+y", hoverlabel=dict(bgcolor="white"))
+    # Add labels
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
 
-    # Show the plot
-    fig.show(config={"scrollZoom": True})  # Enable scroll to zoom
+    # Add legend
+    ax.legend()
+
+    # Enable grid
+    ax.grid(True, linestyle="--", alpha=0.3)
+
+    # Show plot
+    plt.show()
