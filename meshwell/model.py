@@ -155,8 +155,8 @@ class Model:
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
         filename: Optional[str | Path] = None,
-        verbosity: Optional[int] = 5,
-        progress_bars: bool = True,
+        verbosity: Optional[int] = 0,
+        progress_bars: bool = False,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         addition_delimiter: str = "+",
@@ -206,7 +206,7 @@ class Model:
             gmsh.merge(background_remeshing_file)
             gmsh.model.add("temp")
 
-        gmsh.option.setNumber("General.Terminal", 10)  # 1 verbose, 0 otherwise
+        gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
