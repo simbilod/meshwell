@@ -137,7 +137,7 @@ poly_left = PolySurface(
     resolutions=[
         ThresholdField(
             sizemin=0.3,
-            distmax=3,
+            distmax=10,
             sizemax=1.5,
             apply_to="curves",
             restrict_to=["inner_left"],  # Field only affects inner_left
@@ -177,7 +177,7 @@ poly_left = PolySurface(
     resolutions=[
         ThresholdField(
             sizemin=0.3,
-            distmax=3,
+            distmax=10,
             sizemax=1.5,
             apply_to="curves",
             restrict_to=[
@@ -207,3 +207,5 @@ plot2D(mesh2, wireframe=True, title="Field Restricted to Inner Left and Outer")
 # In the first example, the threshold field only affects the inner_left square, resulting in refined mesh elements only around that entity.
 # In the second example, the field affects both the inner_left square and the outer square, causing mesh refinement to propagate through
 # the outer square as well. The inner_right square maintains the default mesh size in both cases since it's not included in the restrict_to list.
+
+# %%
