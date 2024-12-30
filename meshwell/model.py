@@ -165,48 +165,75 @@ class Model:
         addition_structural_physicals: bool = True,
         gmsh_version: Optional[float] = None,
         finalize: bool = True,
-        reinitialize: bool = True,
         periodic_entities: List[Tuple[str, str]] = None,
         fuse_entities_by_name: bool = False,
         optimization_flags: tuple[tuple[str, int]] | None = None,
     ) -> meshio.Mesh:
-        """Creates a GMSH mesh with proper physical tagging from a dict of {labels: list( (GMSH entity dimension, GMSH entity tag) )}.
+        """Creates a GMSH mesh with proper physical tagging."""
+        # Initialize mesh settings
+        self._initialize_mesh_settings(
+            verbosity,
+            default_characteristic_length,
+            global_2D_algorithm,
+            global_3D_algorithm,
+            gmsh_version,
+        )
 
-        Args:
-            entities_list: list of meshwell entities (GMSH_entity, Prism, or PolySurface)
-            background_remeshing (Path): path to a .pos file for background remeshing. If not None, is used instead of entity resolutions.
-            default_characteristic_length (float): if resolutions is not specified for this physical, will use this value instead
-            global_scaling: factor to scale all mesh coordinates by (e.g. 1E-6 to go from um to m)
-            global_2D_algorithm: gmsh surface default meshing algorithm, see https://gmsh.info/doc/texinfo/gmsh.html#Mesh-options
-            global_3D_algorithm: gmsh volume default meshing algorithm, see https://gmsh.info/doc/texinfo/gmsh.html#Mesh-options
-            filename (str, path): if True, filepath where to save the mesh
-            verbosity: GMSH stdout while meshing (True or False)
-            interface_delimiter: string characters to use when naming interfaces between entities
-            boundary_delimiter: string characters to use when defining an interface between an entity and nothing (simulation boundary)
-            addition_delimiter: string characters to use with addition_intersection_physicals
-            addition_addition_physicals: if True, the intersecting additive entities also carry the additive physical name
-            addition_structural_physicals: if True, the intersecting additive entities also carry the underlying entity names
-            addition_intersection_physicals: if True, the intersecting additive entities also carry a unique {underlying}{addition_delimiter}{additive} name
-            gmsh_version: Gmsh mesh format version. For example, Palace requires an older version of 2.2,
-                see https://mfem.org/mesh-formats/#gmsh-mesh-formats.
-            finalize: if True (default), finalizes the GMSH model after execution
-            periodic_entities: enforces mesh periodicity between the physical entities
-            fuse_entities_by_name: if True, fuses CAD entities sharing the same physical_name
-            optimization_flags: list of (method, niters) for smoothing. See https://gitlab.onelab.info/gmsh/gmsh/blob/gmsh_4_12_2/api/gmsh.py#L2087
-
-        Returns:
-            meshio object with mesh information
-        """
-        # Parse filename
-        filename = str(filename)
-
-        # If background mesh, create separate model
+        # Process background mesh if provided
         if background_remeshing_file:
-            # path = os.path.dirname(os.path.abspath(__file__))
-            gmsh.merge(background_remeshing_file)
-            gmsh.model.add("temp")
+            self._handle_background_mesh(background_remeshing_file)
 
-        gmsh.option.setNumber("General.Terminal", verbosity)  # 1 verbose, 0 otherwise
+        # Process entities and get max dimension
+        final_entity_list, max_dim = self._process_entities(
+            entities_list,
+            progress_bars,
+            fuse_entities_by_name,
+            addition_delimiter,
+            addition_intersection_physicals,
+            addition_addition_physicals,
+            addition_structural_physicals,
+        )
+
+        # Tag entities and boundaries
+        self._tag_mesh_components(
+            final_entity_list,
+            max_dim,
+            interface_delimiter,
+            boundary_delimiter,
+        )
+
+        # Handle periodic boundaries if specified
+        if periodic_entities:
+            self._apply_periodic_boundaries(final_entity_list, periodic_entities)
+
+        # Apply mesh refinement
+        self._apply_mesh_refinement(
+            background_remeshing_file,
+            final_entity_list,
+            boundary_delimiter,
+        )
+
+        # Generate and return mesh
+        return self._generate_final_mesh(
+            filename,
+            max_dim,
+            global_3D_algorithm,
+            global_scaling,
+            verbosity,
+            optimization_flags,
+            finalize,
+        )
+
+    def _initialize_mesh_settings(
+        self,
+        verbosity: int,
+        default_characteristic_length: float,
+        global_2D_algorithm: int,
+        global_3D_algorithm: int,
+        gmsh_version: Optional[float],
+    ) -> None:
+        """Initialize basic mesh settings."""
+        gmsh.option.setNumber("General.Terminal", verbosity)
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
@@ -214,26 +241,56 @@ class Model:
         gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
         if gmsh_version is not None:
             gmsh.option.setNumber("Mesh.MshFileVersion", gmsh_version)
-
-        # Initial synchronization
         self.occ.synchronize()
 
-        # Parse and order the entities
-        structural_entities = [
-            entity for entity in entities_list if entity.additive is False
-        ]
-        additive_entities = [
-            entity for entity in entities_list if entity.additive is True
-        ]
+    def _handle_background_mesh(self, background_remeshing_file: Path) -> None:
+        """Handle background mesh file if provided."""
+        gmsh.merge(str(background_remeshing_file))
+        gmsh.model.add("temp")
+
+    def _process_entities(
+        self,
+        entities_list: List,
+        progress_bars: bool,
+        fuse_entities_by_name: bool,
+        addition_delimiter: str,
+        addition_intersection_physicals: bool,
+        addition_addition_physicals: bool,
+        addition_structural_physicals: bool,
+    ) -> Tuple[List, int]:
+        """Process structural and additive entities."""
+        # Separate and order entities
+        structural_entities = [e for e in entities_list if not e.additive]
+        additive_entities = [e for e in entities_list if e.additive]
         structural_entities = order_entities(structural_entities)
         additive_entities = order_entities(additive_entities)
 
-        # Preserve ID numbering
-        gmsh.option.setNumber("Geometry.OCCBooleanPreserveNumbering", 1)
+        # Process structural entities
+        structural_entity_list, max_dim = self._process_structural_entities(
+            structural_entities, progress_bars
+        )
 
-        # Main loop:
-        # Iterate through list of entities, generating and logging the volumes/surfaces in order
-        # Manually remove intersections so that BooleanFragments from removeAllDuplicates does not reassign entity tags
+        # Process additive entities if present
+        if additive_entities:
+            structural_entity_list = self._process_additive_entities(
+                structural_entity_list,
+                additive_entities,
+                addition_delimiter,
+                addition_intersection_physicals,
+                addition_addition_physicals,
+                addition_structural_physicals,
+            )
+
+        # Handle entity fusion if requested
+        if fuse_entities_by_name:
+            structural_entity_list = self._fuse_entities(structural_entity_list)
+
+        return structural_entity_list, max_dim
+
+    def _process_structural_entities(
+        self, structural_entities: List, progress_bars: bool
+    ) -> Tuple[List, int]:
+        """Process structural entities and return entity list and max dimension."""
         structural_entity_list = []
         max_dim = 0
 
@@ -271,6 +328,7 @@ class Model:
                     enumerator.set_description(
                         f"{str(physical_name):<30} - {'entities':<15}"
                     )
+
             # Assemble with other shapes
             current_entities = LabeledEntities(
                 index=index,
@@ -313,115 +371,163 @@ class Model:
             if current_entities.dimtags:
                 structural_entity_list.append(current_entities)
 
-        # Make sure the most up-to-date surfaces are logged as boundaries
-        consolidated_entity_list = consolidate_entities_by_physical_name(
-            structural_entity_list
-        )
-        structural_entity_list = []
-        if fuse_entities_by_name:
-            for entities in consolidated_entity_list:
-                if len(entities.dimtags) != 1:
-                    entities.dimtags = self.occ.fuse(
-                        [entities.dimtags[0]],
-                        entities.dimtags[1:],
-                        removeObject=True,
-                        removeTool=True,
-                    )[0]
-                    self.occ.synchronize()
-                structural_entity_list.append(entities)
-        else:
-            structural_entity_list = consolidated_entity_list
+        # Update boundaries for all entities after substractions
         for entity in structural_entity_list:
             entity.update_boundaries()
 
-        # Now that the structure is defined, merge with additive entities
-        if additive_entities:
-            for additive_entity in additive_entities:
-                additive_dimtags = unpack_dimtags(additive_entity.instanciate())
-                additive_entity_resolutions = (
-                    []
-                    if additive_entity.resolutions is None
-                    else additive_entity.resolutions
-                )
-                updated_entities = []
-                # Parse additive physical names
-                for index, structural_entity in enumerate(structural_entity_list):
-                    removeTool = False if index + 1 < len(structural_entities) else True
+        return structural_entity_list, max_dim
 
-                    # Add all physical names
-                    additive_names = []
-                    if addition_addition_physicals:
-                        additive_names.extend(additive_entity.physical_name)
-                    if addition_structural_physicals:
-                        additive_names.extend(structural_entity.physical_name)
-                    if addition_intersection_physicals:
-                        additive_names.extend(
-                            [
-                                f"{x}{addition_delimiter}{y}"
-                                for x in structural_entity.physical_name
-                                for y in additive_entity.physical_name
-                            ]
-                        )
-                    additive_names = tuple(additive_names)
+    def _process_additive_entities(
+        self,
+        structural_entity_list: List,
+        additive_entities: List,
+        addition_delimiter: str,
+        addition_intersection_physicals: bool,
+        addition_addition_physicals: bool,
+        addition_structural_physicals: bool,
+    ) -> List:
+        """Process additive entities and return updated entity list."""
+        structural_entities_length = len(structural_entity_list)
+        for additive_entity in additive_entities:
+            # Create additive entity geometry
+            additive_dimtags = unpack_dimtags(additive_entity.instanciate())
+            additive_entity_resolutions = (
+                []
+                if additive_entity.resolutions is None
+                else additive_entity.resolutions
+            )
 
-                    # Add the intersection and complement as new LabeledEntities
-                    intersection = self.occ.intersect(
-                        structural_entity.dimtags,
-                        additive_dimtags,
-                        removeObject=False,  # Don't remove yet
-                        removeTool=removeTool,  # Only remove at the end
+            updated_entities = []
+            # Process each structural entity
+            for index, structural_entity in enumerate(structural_entity_list):
+                # Only remove tool on last iteration
+                removeTool = index + 1 >= structural_entities_length
+
+                # Build list of physical names for intersection
+                additive_names = []
+                if addition_addition_physicals:
+                    additive_names.extend(additive_entity.physical_name)
+                if addition_structural_physicals:
+                    additive_names.extend(structural_entity.physical_name)
+                if addition_intersection_physicals:
+                    additive_names.extend(
+                        [
+                            f"{x}{addition_delimiter}{y}"
+                            for x in structural_entity.physical_name
+                            for y in additive_entity.physical_name
+                        ]
                     )
-                    # No overlap case (no intersection)
-                    if not intersection[0]:
-                        self.occ.synchronize()
-                        updated_entities.append(structural_entity)
-                    else:
-                        complement = self.occ.cut(
-                            structural_entity.dimtags,
-                            intersection[0],
-                            removeObject=False,
-                            removeTool=False,
-                        )
-                        self.occ.synchronize()
-                        # Add the intersection and complement as new LabeledEntities
-                        structural_entity_resolutions = (
-                            []
-                            if structural_entity.resolutions is None
-                            else structural_entity.resolutions
-                        )
-                        if complement[0]:
-                            updated_entities.append(
-                                LabeledEntities(
-                                    index=structural_entity.index,
-                                    dimtags=complement[0],
-                                    physical_name=structural_entity.physical_name,
-                                    keep=structural_entity.keep,
-                                    model=self.model,
-                                    resolutions=structural_entity_resolutions,
-                                )
-                            )
+                additive_names = tuple(additive_names)
+
+                # Find intersection between structural and additive entities
+                intersection = self.occ.intersect(
+                    structural_entity.dimtags,
+                    additive_dimtags,
+                    removeObject=False,
+                    removeTool=removeTool,
+                )
+
+                if not intersection[0]:
+                    # No overlap case - keep original structural entity
+                    self.occ.synchronize()
+                    updated_entities.append(structural_entity)
+                else:
+                    # Cut out intersection from structural entity
+                    complement = self.occ.cut(
+                        structural_entity.dimtags,
+                        intersection[0],
+                        removeObject=False,
+                        removeTool=False,
+                    )
+                    self.occ.synchronize()
+
+                    # Add complement if it exists
+                    if complement[0]:
                         updated_entities.append(
                             LabeledEntities(
                                 index=structural_entity.index,
-                                dimtags=intersection[0],
-                                physical_name=additive_names,
+                                dimtags=complement[0],
+                                physical_name=structural_entity.physical_name,
                                 keep=structural_entity.keep,
                                 model=self.model,
-                                resolutions=structural_entity_resolutions
-                                + additive_entity_resolutions,
+                                resolutions=structural_entity.resolutions,
                             )
                         )
-                # Use the updated entities in the next iteration
-                structural_entity_list = updated_entities
-                self.occ.removeAllDuplicates()
-                self.sync_model()
-        final_entity_list = structural_entity_list
 
-        # Since we only took intersection with non-overlapping structural entities and removed the tool, there is no further conflict / tag reassignment
-        for entity in final_entity_list:
+                    # Add intersection with combined physical names
+                    updated_entities.append(
+                        LabeledEntities(
+                            index=structural_entity.index,
+                            dimtags=intersection[0],
+                            physical_name=additive_names,
+                            keep=structural_entity.keep,
+                            model=self.model,
+                            resolutions=(
+                                structural_entity.resolutions
+                                + additive_entity_resolutions
+                            ),
+                        )
+                    )
+
+            # Update entity list for next iteration
+            structural_entity_list = updated_entities
+            self.occ.removeAllDuplicates()
+            self.sync_model()
+
+        # Update boundaries for all entities after addition
+        for entity in structural_entity_list:
             entity.update_boundaries()
 
-        # Tag entities, interfaces, and boundaries
+        return structural_entity_list
+
+    def _fuse_entities(
+        self, entity_list: List[LabeledEntities]
+    ) -> List[LabeledEntities]:
+        """Fuse entities that share the same physical name.
+
+        This method:
+        1. Consolidates entities by their physical names
+        2. For each group of entities with the same name:
+        - If there's more than one entity, fuses them together
+        - Maintains the first entity's properties (index, keep status, etc.)
+        3. Updates boundaries for all entities after fusion
+
+        Args:
+            entity_list: List of LabeledEntities to potentially fuse
+
+        Returns:
+            List of LabeledEntities where entities with the same physical name have been fused
+        """
+        # First consolidate entities by their physical names
+        consolidated_entities = consolidate_entities_by_physical_name(entity_list)
+
+        fused_entities = []
+        for entities in consolidated_entities:
+            if len(entities.dimtags) > 1:
+                # If we have multiple entities with the same name, fuse them
+                entities.dimtags = self.occ.fuse(
+                    [entities.dimtags[0]],  # First entity is the target
+                    entities.dimtags[1:],  # Rest are tools to fuse into target
+                    removeObject=True,  # Remove the target after fusion
+                    removeTool=True,  # Remove the tools after fusion
+                )[0]
+                self.occ.synchronize()
+            fused_entities.append(entities)
+
+        # Update boundaries for all entities after fusion
+        for entity in fused_entities:
+            entity.update_boundaries()
+
+        return fused_entities
+
+    def _tag_mesh_components(
+        self,
+        final_entity_list: List,
+        max_dim: int,
+        interface_delimiter: str,
+        boundary_delimiter: str,
+    ) -> None:
+        """Tag entities, interfaces, and boundaries."""
         tag_entities(final_entity_list)
         final_entity_list = tag_interfaces(
             final_entity_list, max_dim, interface_delimiter
@@ -430,119 +536,131 @@ class Model:
             final_entity_list, max_dim, interface_delimiter, boundary_delimiter
         )
 
-        # Enforce periodic boundaries
-        mapping = {}
-        for dimtag in self.model.getPhysicalGroups():
-            mapping[self.model.getPhysicalName(dimtag[0], dimtag[1])] = dimtag
-        if periodic_entities:
-            for label1, label2 in periodic_entities:
-                if label1 not in mapping or label2 not in mapping:
-                    continue
-                tags1 = self.model.getEntitiesForPhysicalGroup(*mapping[label1])
-                tags2 = self.model.getEntitiesForPhysicalGroup(*mapping[label2])
+    def _apply_periodic_boundaries(
+        self, final_entity_list: List, periodic_entities: List[Tuple[str, str]]
+    ) -> None:
+        """Apply periodic boundary conditions."""
+        mapping = {
+            self.model.getPhysicalName(dimtag[0], dimtag[1]): dimtag
+            for dimtag in self.model.getPhysicalGroups()
+        }
 
-                vector1 = self.occ.getCenterOfMass(mapping[label1][0], tags1[0])
-                vector2 = self.occ.getCenterOfMass(mapping[label1][0], tags2[0])
-                vector = np.subtract(vector1, vector2)
-                self.model.mesh.setPeriodic(
-                    mapping[label1][0],
-                    tags1,
-                    tags2,
-                    [
-                        1,
-                        0,
-                        0,
-                        vector[0],
-                        0,
-                        1,
-                        0,
-                        vector[1],
-                        0,
-                        0,
-                        1,
-                        vector[2],
-                        0,
-                        0,
-                        0,
-                        1,
-                    ],
-                )
+        for label1, label2 in periodic_entities:
+            if label1 not in mapping or label2 not in mapping:
+                continue
 
-        # Perform refinement
+            self._set_periodic_pair(mapping, label1, label2)
+
+    def _set_periodic_pair(self, mapping: Dict, label1: str, label2: str) -> None:
+        """Set up periodic boundary pair."""
+        tags1 = self.model.getEntitiesForPhysicalGroup(*mapping[label1])
+        tags2 = self.model.getEntitiesForPhysicalGroup(*mapping[label2])
+
+        vector1 = self.occ.getCenterOfMass(mapping[label1][0], tags1[0])
+        vector2 = self.occ.getCenterOfMass(mapping[label1][0], tags2[0])
+        vector = np.subtract(vector1, vector2)
+
+        self.model.mesh.setPeriodic(
+            mapping[label1][0],
+            tags1,
+            tags2,
+            [1, 0, 0, vector[0], 0, 1, 0, vector[1], 0, 0, 1, vector[2], 0, 0, 0, 1],
+        )
+
+    def _apply_mesh_refinement(
+        self,
+        background_remeshing_file: Optional[Path] | None,
+        final_entity_list: List,
+        boundary_delimiter: str,
+    ) -> None:
+        """Apply mesh refinement settings."""
         if background_remeshing_file is None:
-            # Use entity information
-            refinement_field_indices = []
+            self._apply_entity_refinement(final_entity_list, boundary_delimiter)
+        else:
+            self._apply_background_refinement()
 
-            # Hashable final_entity_list
-            final_entity_dict = {
-                entity.physical_name: entity for entity in final_entity_list
-            }
+    def _apply_entity_refinement(
+        self,
+        final_entity_list: List[LabeledEntities],
+        boundary_delimiter: str,
+    ) -> None:
+        """Apply mesh refinement based on entity information.
 
-            refinement_field_indices = []
-            for entity in final_entity_list:
-                refinement_field_indices.extend(
-                    entity.add_refinement_fields_to_model(
-                        final_entity_dict,
-                        boundary_delimiter,
-                    )
+        Args:
+            final_entity_list: List of LabeledEntities to process
+            boundary_delimiter: String used to identify boundary entities
+        """
+        # Create dictionary for easier entity lookup
+        final_entity_dict = {
+            entity.physical_name: entity for entity in final_entity_list
+        }
+
+        # Collect all refinement fields
+        refinement_field_indices = []
+        for entity in final_entity_list:
+            refinement_field_indices.extend(
+                entity.add_refinement_fields_to_model(
+                    final_entity_dict,
+                    boundary_delimiter,
                 )
+            )
 
+        # If we have refinement fields, create a minimum field
+        if refinement_field_indices:
             # Use the smallest element size overall
             min_field_index = self.model.mesh.field.add("Min")
             self.model.mesh.field.setNumbers(
                 min_field_index, "FieldsList", refinement_field_indices
             )
             self.model.mesh.field.setAsBackgroundMesh(min_field_index)
-        else:
-            bg_field = self.model.mesh.field.add("PostView")
-            self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
-            gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
-
-        # Remove boundary entities
-        for entity in final_entity_list:
-            if not entity.keep:
-                self.model.occ.remove(entity.dimtags, recursive=True)
 
         # Turn off default meshing options
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
-        # Global resizing
+    def _apply_background_refinement(self) -> None:
+        """Apply mesh refinement based on background mesh."""
+        # Create background field from post-processing view
+        bg_field = self.model.mesh.field.add("PostView")
+        self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
+        gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
+
+        # Turn off default meshing options
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+
+    def _generate_final_mesh(
+        self,
+        filename: str | Path,
+        max_dim: int,
+        global_3D_algorithm: int,
+        global_scaling: float,
+        verbosity: int,
+        optimization_flags: tuple[tuple[str, int]] | None,
+        finalize: bool,
+    ) -> meshio.Mesh:
+        """Generate the final mesh and return meshio object."""
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
 
-        self.occ.synchronize()
-
-        if not filename.endswith((".step", ".stp")):
+        if not str(filename).endswith((".step", ".stp")):
             if global_3D_algorithm == 1 and verbosity:
                 gmsh.logger.start()
+
             self.model.mesh.generate(max_dim)
 
-            # Mesh smoothing
-            if optimization_flags is not None:
+            if optimization_flags:
                 for optimization_flag, niter in optimization_flags:
                     self.model.mesh.optimize(optimization_flag, niter=niter)
 
-            if global_3D_algorithm == 1 and verbosity:
-                for line in gmsh.logger.get():
-                    if "Optimizing volume " in str(line):
-                        number = int(str(line).split("Optimizing volume ")[1])
-                        physicalTags = gmsh.model.getPhysicalGroupsForEntity(3, number)
-                        physicals = []
-                        if len(physicalTags):
-                            for p in physicalTags:
-                                physicals.append(gmsh.model.getPhysicalName(dim, p))
-                    if "ill-shaped tets are" in str(line):
-                        print(",".join(physicals))
-                        print(str(line))
-
         if filename:
-            gmsh.write(f"{filename}")
+            gmsh.write(str(filename))
 
-        if not filename.endswith((".step", ".stp")):
-            with contextlib.redirect_stdout(None):
-                with tempfile.TemporaryDirectory() as tmpdirname:
-                    gmsh.write(f"{tmpdirname}/mesh.msh")
-                    if finalize:
-                        gmsh.finalize()
-                    return meshio.read(f"{tmpdirname}/mesh.msh")
+        with contextlib.redirect_stdout(None):
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                temp_mesh_path = f"{tmpdirname}/mesh.msh"
+                gmsh.write(temp_mesh_path)
+                if finalize:
+                    gmsh.finalize()
+                return meshio.read(temp_mesh_path)
