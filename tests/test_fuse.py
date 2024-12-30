@@ -64,7 +64,7 @@ def test_fuse():
 
 
 def test_different_resolutions_same_physical():
-    model = Model()
+    model = Model(n_threads=1)
 
     # Create two different boxes
     box1 = box(0, 0, 1, 1)
@@ -72,11 +72,11 @@ def test_different_resolutions_same_physical():
 
     # Create resolution specifications
     resolution1 = ThresholdField(
-        apply_to="surfaces", sizemin=0.1, sizemax=0.5, distmax=0.2
+        apply_to="curves", sizemin=0.01, sizemax=0.05, distmax=0.2
     )
 
     resolution2 = ThresholdField(
-        apply_to="surfaces", sizemin=0.2, sizemax=1.0, distmax=0.4
+        apply_to="curves", sizemin=0.1, sizemax=0.2, distmax=0.2
     )
 
     # Create two polysurfaces with same physical name but different resolutions
@@ -97,7 +97,7 @@ def test_different_resolutions_same_physical():
     # Mesh the model
     model.mesh(
         entities_list=[surface1, surface2],
-        default_characteristic_length=0.5,
+        default_characteristic_length=10,
         filename="test_different_resolutions_same_physical.msh",
     )
 
