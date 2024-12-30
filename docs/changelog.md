@@ -3,6 +3,7 @@
 ## Unreleased
 
 - importing gds function and example [PR#102](https://github.com/simbilod/meshwell/pull/102)
+- refactor meshing into more manageable chunks, fixing [issue#87](https://github.com/simbilod/meshwell/issues/87) [PR#105](https://github.com/simbilod/meshwell/pull/105) [PR#106](https://github.com/simbilod/meshwell/pull/106)
 
 ## 1.3.8
 
