@@ -4,8 +4,8 @@ from meshwell.config import PATH
 
 
 def compare_meshes(meshfile: Path):
-    meshfile1 = meshfile
-    meshfile2 = PATH.references / (str(meshfile.with_suffix("")) + ".reference.msh")
+    meshfile2 = meshfile
+    meshfile1 = PATH.references / (str(meshfile.with_suffix("")) + ".reference.msh")
 
     with open(str(meshfile1)) as f:
         expected_lines = f.readlines()
