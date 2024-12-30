@@ -42,7 +42,6 @@ def test_fuse():
         verbosity=False,
         filename="mesh_fused.msh",
         fuse_entities_by_name=True,
-        reinitialize=True,
     )
 
     dimtags_fused = np.unique(mesh_fused.point_data["gmsh:dim_tags"], axis=0)
