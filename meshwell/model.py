@@ -26,15 +26,21 @@ class Model:
 
     def __init__(
         self,
+        name: str = "temp",
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
     ):
         # Initialize model
-        if gmsh.is_initialized():
-            gmsh.clear()
-        gmsh.initialize()
+        if not gmsh.is_initialized():
+            gmsh.initialize()
 
-        # Set paralllel processing
+        # Model naming
+        self.model = gmsh.model
+        self.name = name
+        self.model.add(name)
+        self.model.setFileName(name)
+
+        # Set parallel processing
         gmsh.option.setNumber("General.NumThreads", n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", n_threads)
@@ -45,7 +51,6 @@ class Model:
         self.point_tolerance = point_tolerance
 
         # CAD engine
-        self.model = gmsh.model
         self.occ = self.model.occ
 
         # Track some gmsh entities for bottom-up volume definition
@@ -170,6 +175,9 @@ class Model:
         optimization_flags: tuple[tuple[str, int]] | None = None,
     ) -> meshio.Mesh:
         """Creates a GMSH mesh with proper physical tagging."""
+        # Select this model
+        self.model.setCurrent(self.name)
+
         # Initialize mesh settings
         self._initialize_mesh_settings(
             verbosity,
