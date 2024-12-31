@@ -151,85 +151,155 @@ class Model:
         self.points = new_points
         self.segments = new_segments
 
-    def mesh(
+    def cad(
         self,
         entities_list: List,
+        fuse_entities_by_name: bool = False,
+        addition_delimiter: str = "+",
+        addition_intersection_physicals: bool = True,
+        addition_addition_physicals: bool = True,
+        addition_structural_physicals: bool = True,
+        interface_delimiter: str = "___",
+        boundary_delimiter: str = "None",
+        progress_bars: bool = False,
+        filename: Optional[str | Path] = None,
+    ) -> Tuple[List, int]:
+        """Process CAD operations and save to .xao format.
+
+        Args:
+            entities_list: List of entities to process
+            fuse_entities_by_name: Whether to fuse entities with same name
+            addition_delimiter: Delimiter for additive entities
+            addition_*_physicals: Flags for handling additive entity names
+            interface_delimiter: Delimiter for interface names
+            boundary_delimiter: Delimiter for boundary names
+            progress_bars: Show progress bars during processing
+            filename: Output .xao file path
+
+        Returns:
+            Tuple of (processed entity list, maximum dimension)
+        """
+        # Process entities and get max dimension
+        final_entity_list, max_dim = self._process_entities(
+            entities_list=entities_list,
+            progress_bars=progress_bars,
+            fuse_entities_by_name=fuse_entities_by_name,
+            addition_delimiter=addition_delimiter,
+            addition_intersection_physicals=addition_intersection_physicals,
+            addition_addition_physicals=addition_addition_physicals,
+            addition_structural_physicals=addition_structural_physicals,
+        )
+
+        # Tag entities and boundaries
+        self._tag_mesh_components(
+            final_entity_list=final_entity_list,
+            max_dim=max_dim,
+            interface_delimiter=interface_delimiter,
+            boundary_delimiter=boundary_delimiter,
+        )
+
+        # Save CAD to .xao format if filename provided
+        if filename:
+            cad_xao_file = str(filename)
+            if not cad_xao_file.endswith(".xao"):
+                cad_xao_file = cad_xao_file.replace(".msh", ".xao")
+            gmsh.write(cad_xao_file)
+
+        return final_entity_list, max_dim
+
+    def mesh(
+        self,
+        cad_xao_file: str | Path | None = None,
+        entities_list: Optional[List] = None,
         background_remeshing_file: Optional[Path] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
-        filename: Optional[str | Path] = None,
         verbosity: Optional[int] = 0,
-        progress_bars: bool = False,
-        interface_delimiter: str = "___",
+        periodic_entities: Optional[List[Tuple[str, str]]] = None,
+        optimization_flags: Optional[tuple[tuple[str, int]]] = None,
+        filename: Optional[str | Path] = None,
+        finalize: bool = True,
         boundary_delimiter: str = "None",
+        # CAD arguments (not usef if cad_xao_file provided)
+        fuse_entities_by_name: bool = False,
         addition_delimiter: str = "+",
         addition_intersection_physicals: bool = True,
         addition_addition_physicals: bool = True,
         addition_structural_physicals: bool = True,
-        gmsh_version: Optional[float] = None,
-        finalize: bool = True,
-        periodic_entities: List[Tuple[str, str]] = None,
-        fuse_entities_by_name: bool = False,
-        optimization_flags: tuple[tuple[str, int]] | None = None,
-    ) -> meshio.Mesh:
-        """Creates a GMSH mesh with proper physical tagging."""
-        # Select this model
-        self.model.setCurrent(self.name)
+        interface_delimiter: str = "___",
+        progress_bars: bool = False,
+    ) -> Optional[meshio.Mesh]:
+        """Generate mesh from .xao file.
+
+        Args:
+            cad_xao_file: Input .xao file path
+            entities_list: Optional list of entities for refinement
+            background_remeshing_file: Optional background mesh file
+            default_characteristic_length: Default mesh size
+            global_scaling: Global mesh scaling factor
+            global_2D/3D_algorithm: Meshing algorithm selection
+            verbosity: GMSH verbosity level
+            periodic_entities: List of periodic entity pairs
+            optimization_flags: Mesh optimization parameters
+            filename: Output .msh file path
+            finalize: Whether to finalize GMSH
+            boundary_delimiter: Delimiter for boundary names
+
+        Returns:
+            meshio.Mesh object if successful
+        """
+        if cad_xao_file:
+            # Load CAD from .xao
+            gmsh.merge(str(cad_xao_file))
+            max_dim = 0
+            for dim in range(4):
+                if gmsh.model.getEntities(dim):
+                    max_dim = dim
+        else:
+            entities_list, max_dim = self.cad(
+                entities_list=entities_list,
+                fuse_entities_by_name=fuse_entities_by_name,
+                addition_delimiter=addition_delimiter,
+                addition_intersection_physicals=addition_intersection_physicals,
+                addition_addition_physicals=addition_addition_physicals,
+                addition_structural_physicals=addition_structural_physicals,
+                interface_delimiter=interface_delimiter,
+                boundary_delimiter=boundary_delimiter,
+                progress_bars=progress_bars,
+                filename=filename,
+            )
 
         # Initialize mesh settings
         self._initialize_mesh_settings(
-            verbosity,
-            default_characteristic_length,
-            global_2D_algorithm,
-            global_3D_algorithm,
-            gmsh_version,
-        )
-
-        # Process background mesh if provided
-        if background_remeshing_file:
-            self._handle_background_mesh(background_remeshing_file)
-
-        # Process entities and get max dimension
-        final_entity_list, max_dim = self._process_entities(
-            entities_list,
-            progress_bars,
-            fuse_entities_by_name,
-            addition_delimiter,
-            addition_intersection_physicals,
-            addition_addition_physicals,
-            addition_structural_physicals,
-        )
-
-        # Tag entities and boundaries
-        self._tag_mesh_components(
-            final_entity_list,
-            max_dim,
-            interface_delimiter,
-            boundary_delimiter,
+            verbosity=verbosity,
+            default_characteristic_length=default_characteristic_length,
+            global_2D_algorithm=global_2D_algorithm,
+            global_3D_algorithm=global_3D_algorithm,
+            gmsh_version=None,
         )
 
         # Handle periodic boundaries if specified
-        if periodic_entities:
-            self._apply_periodic_boundaries(final_entity_list, periodic_entities)
+        if periodic_entities and entities_list:
+            self._apply_periodic_boundaries(entities_list, periodic_entities)
 
         # Apply mesh refinement
         self._apply_mesh_refinement(
-            background_remeshing_file,
-            final_entity_list,
-            boundary_delimiter,
+            background_remeshing_file=background_remeshing_file,
+            final_entity_list=entities_list,
+            boundary_delimiter=boundary_delimiter,
         )
 
         # Generate and return mesh
         return self._generate_final_mesh(
-            filename,
-            max_dim,
-            global_3D_algorithm,
-            global_scaling,
-            verbosity,
-            optimization_flags,
-            finalize,
+            filename=filename,
+            max_dim=max_dim,
+            global_3D_algorithm=global_3D_algorithm,
+            global_scaling=global_scaling,
+            verbosity=verbosity,
+            optimization_flags=optimization_flags,
+            finalize=finalize,
         )
 
     def _initialize_mesh_settings(
