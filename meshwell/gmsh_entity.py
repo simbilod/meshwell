@@ -32,7 +32,7 @@ class GMSH_entity(BaseModel):
     @validator("physical_name", pre=True, always=True)
     def _set_physical_name(cls, physical_name: Optional[str | tuple[str]]):
         if isinstance(physical_name, str):
-            return [physical_name]
+            return (physical_name,)
         else:
             return physical_name
 
