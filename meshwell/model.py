@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from os import cpu_count
 from typing import Dict, Optional, List, Tuple
 import numpy as np
@@ -26,26 +27,16 @@ class Model:
 
     def __init__(
         self,
-        name: str = "temp",
+        filename: str = "temp",
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
     ):
-        # Initialize model
-        if not gmsh.is_initialized():
-            gmsh.initialize()
+        """TODO: rethink how we deal with GMSH Model here."""
 
         # Model naming
         self.model = gmsh.model
-        self.name = name
-        self.model.add(name)
-        self.model.setFileName(name)
-
-        # Set parallel processing
-        gmsh.option.setNumber("General.NumThreads", n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads1D", n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads2D", n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads3D", n_threads)
-        gmsh.option.setNumber("Geometry.OCCParallel", 1)
+        self.filename = filename
+        self.n_threads = n_threads
 
         # Point snapping
         self.point_tolerance = point_tolerance
@@ -151,9 +142,31 @@ class Model:
         self.points = new_points
         self.segments = new_segments
 
+    def _initialize_model(self):
+        """Ensure GMSH is initialized before operations."""
+        if gmsh.is_initialized():
+            gmsh.finalize()
+            gmsh.initialize()
+        else:
+            gmsh.initialize()
+
+        # Clear model and points
+        gmsh.clear()
+        self.points = {}
+        self.segments = {}
+
+        self.model.add(self.filename)
+        self.model.setFileName(self.filename)
+        gmsh.option.setNumber("General.NumThreads", self.n_threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
+        gmsh.option.setNumber("Mesh.MaxNumThreads3D", self.n_threads)
+        gmsh.option.setNumber("Geometry.OCCParallel", 1)
+
     def cad(
         self,
         entities_list: List,
+        filename: Optional[str | Path] = None,
         fuse_entities_by_name: bool = False,
         addition_delimiter: str = "+",
         addition_intersection_physicals: bool = True,
@@ -162,23 +175,24 @@ class Model:
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         progress_bars: bool = False,
-        filename: Optional[str | Path] = None,
     ) -> Tuple[List, int]:
         """Process CAD operations and save to .xao format.
 
         Args:
             entities_list: List of entities to process
+            filename: Optional output file path (overrides self.filename)
             fuse_entities_by_name: Whether to fuse entities with same name
             addition_delimiter: Delimiter for additive entities
             addition_*_physicals: Flags for handling additive entity names
             interface_delimiter: Delimiter for interface names
             boundary_delimiter: Delimiter for boundary names
             progress_bars: Show progress bars during processing
-            filename: Output .xao file path
 
         Returns:
             Tuple of (processed entity list, maximum dimension)
         """
+        self._initialize_model()
+
         # Process entities and get max dimension
         final_entity_list, max_dim = self._process_entities(
             entities_list=entities_list,
@@ -198,19 +212,98 @@ class Model:
             boundary_delimiter=boundary_delimiter,
         )
 
-        # Save CAD to .xao format if filename provided
-        if filename:
-            cad_xao_file = str(filename)
-            if not cad_xao_file.endswith(".xao"):
-                cad_xao_file = cad_xao_file.replace(".msh", ".xao")
-            gmsh.write(cad_xao_file)
+        # Use provided filename or default to self.filename
+        output_file = Path(filename if filename is not None else self.filename)
+
+        # Save CAD to .xao format
+        gmsh.write(str(output_file.with_suffix(".xao")))
+
+        # Save entity list to JSON to preserve dimtag <--> physical name mapping
+        entities_json = str(output_file.with_suffix(".json"))
+        with open(entities_json, "w") as f:
+            json.dump([e.to_dict() for e in final_entity_list], f)
 
         return final_entity_list, max_dim
 
+    def _load_cad_model(
+        self,
+        entities_list: List,
+        filename: Optional[str | Path] = None,
+    ) -> Tuple[List, int]:
+        """Load CAD model from .xao file and validate entities.
+
+        Args:
+            entities_list: Optional list of entities for refinement
+            filename: Optional file path (overrides self.filename)
+
+        Returns:
+            Tuple of (modified entity list, maximum dimension)
+        """
+        self._initialize_model()
+
+        # Check for additive entities
+        if entities_list:
+            additive_entities = [e for e in entities_list if e.additive is True]
+            if additive_entities:
+                raise ValueError(
+                    "Meshing from a loaded CAD file currently does not support additive entities. "
+                    f"Found {len(additive_entities)} additive entities: "
+                    f"{[e.physical_name for e in additive_entities]}"
+                )
+
+        # Load and validate entities
+        modified_entities = entities_list
+
+        # Use provided filename or default to self.filename
+        input_file = Path(filename if filename is not None else self.filename)
+
+        # Load saved entities from JSON
+        json_file = str(input_file.with_suffix(".json"))
+        with open(json_file) as f:
+            loaded_entities = json.load(f)
+
+        # Get mappings for validation
+        input_mapping = self._calculate_input_entity_indices(entities_list)
+        loaded_mapping = self._get_labeled_entity_indices(loaded_entities)
+
+        if set(input_mapping.keys()) != set(loaded_mapping.keys()):
+            raise RuntimeError(
+                "entities_list not compatible with provided cad_xao_file!"
+            )
+
+        # Create modified entities list combining CAD geometry with input parameters
+        modified_entities = [
+            LabeledEntities(
+                index=loaded_mapping[key]["index"],  # from CAD
+                dimtags=loaded_mapping[key]["dimtags"],  # from CAD
+                physical_name=loaded_mapping[key]["physical_name"],  # from either
+                keep=input_mapping[key].mesh_bool,  # from input
+                model=self.model,
+                resolutions=input_mapping[key].resolutions,  # from input
+                boundaries=loaded_mapping[key]["boundaries"],  # from CAD
+                interfaces=loaded_mapping[key]["interfaces"],  # from CAD
+                mesh_edge_name_interfaces=loaded_mapping[key][
+                    "mesh_edge_name_interfaces"
+                ],  # from CAD
+            )
+            for key in input_mapping.keys()
+        ]
+
+        # Load model and calculate dimension
+        gmsh.merge(str(input_file.with_suffix(".xao")))
+        max_dim = 0
+        for dim in range(4):
+            if self.model.getEntities(dim):
+                max_dim = dim
+
+        return modified_entities, max_dim
+
     def mesh(
         self,
-        cad_xao_file: str | Path | None = None,
-        entities_list: Optional[List] = None,
+        entities_list: List,
+        filename: Optional[str | Path] = None,
+        from_cad: bool = False,
+        cad_filename: Optional[str | Path] = None,
         background_remeshing_file: Optional[Path] = None,
         default_characteristic_length: float = 0.5,
         global_scaling: float = 1.0,
@@ -219,7 +312,6 @@ class Model:
         verbosity: Optional[int] = 0,
         periodic_entities: Optional[List[Tuple[str, str]]] = None,
         optimization_flags: Optional[tuple[tuple[str, int]]] = None,
-        filename: Optional[str | Path] = None,
         finalize: bool = True,
         boundary_delimiter: str = "None",
         # CAD arguments (not usef if cad_xao_file provided)
@@ -234,8 +326,9 @@ class Model:
         """Generate mesh from .xao file.
 
         Args:
-            cad_xao_file: Input .xao file path
             entities_list: Optional list of entities for refinement
+            filename: Optional output file path (overrides self.filename)
+            from_cad: Whether to load from existing CAD file
             background_remeshing_file: Optional background mesh file
             default_characteristic_length: Default mesh size
             global_scaling: Global mesh scaling factor
@@ -243,23 +336,25 @@ class Model:
             verbosity: GMSH verbosity level
             periodic_entities: List of periodic entity pairs
             optimization_flags: Mesh optimization parameters
-            filename: Output .msh file path
             finalize: Whether to finalize GMSH
             boundary_delimiter: Delimiter for boundary names
 
         Returns:
             meshio.Mesh object if successful
         """
-        if cad_xao_file:
-            # Load CAD from .xao
-            gmsh.merge(str(cad_xao_file))
-            max_dim = 0
-            for dim in range(4):
-                if gmsh.model.getEntities(dim):
-                    max_dim = dim
+        self._initialize_model()
+
+        # Use provided filename or default to self.filename
+        output_file = Path(filename if filename is not None else self.filename)
+
+        # Load CAD model or evaluate it
+        if from_cad:
+            entities_list, max_dim = self._load_cad_model(entities_list, cad_filename)
+
         else:
             entities_list, max_dim = self.cad(
                 entities_list=entities_list,
+                filename=output_file,
                 fuse_entities_by_name=fuse_entities_by_name,
                 addition_delimiter=addition_delimiter,
                 addition_intersection_physicals=addition_intersection_physicals,
@@ -268,7 +363,6 @@ class Model:
                 interface_delimiter=interface_delimiter,
                 boundary_delimiter=boundary_delimiter,
                 progress_bars=progress_bars,
-                filename=filename,
             )
 
         # Initialize mesh settings
@@ -293,7 +387,7 @@ class Model:
 
         # Generate and return mesh
         return self._generate_final_mesh(
-            filename=filename,
+            filename=output_file,
             max_dim=max_dim,
             global_3D_algorithm=global_3D_algorithm,
             global_scaling=global_scaling,
@@ -364,6 +458,43 @@ class Model:
             structural_entity_list = self._fuse_entities(structural_entity_list)
 
         return structural_entity_list, max_dim
+
+    def _calculate_input_entity_indices(
+        self, entity_list: List
+    ) -> set[tuple[int, str | tuple[str, ...]]]:
+        """Get set of unique (index, physical_name) pairs from list of entities.
+
+        Args:
+            entity_list: List of entity objects to process
+
+        Returns:
+            Set of tuples containing unique (index, physical_name) pairs
+        """
+        # Filter and order entities
+        structural_entities = [e for e in entity_list if not e.additive]
+        structural_entities = order_entities(structural_entities)
+
+        # Create set of unique (index, physical_name) pairs
+        return {
+            (index, entity.physical_name): entity
+            for index, entity in enumerate(structural_entities)
+        }
+
+    def _get_labeled_entity_indices(
+        self, labeled_entities: List[LabeledEntities]
+    ) -> set[tuple[int, str | tuple[str, ...]]]:
+        """Get set of unique (index, physical_name) pairs from list of LabeledEntities.
+
+        Args:
+            entities: List of LabeledEntities objects
+
+        Returns:
+            Set of tuples containing unique (index, physical_name) pairs
+        """
+        return {
+            (entity["index"], tuple(entity["physical_name"])): entity
+            for entity in labeled_entities
+        }
 
     def _process_structural_entities(
         self, structural_entities: List, progress_bars: bool
