@@ -554,7 +554,7 @@ class Model:
                         f"{str(physical_name):<30} - {'boolean':<15}"
                     )
             if index != 0:
-                cut = self.occ.cut(
+                cut = self.occ.fragment(
                     current_entities.dimtags,
                     [
                         dimtag
@@ -577,7 +577,21 @@ class Model:
                             f"{str(physical_name):<30} - {'sync':<15}"
                         )
                 self.sync_model()
-                current_entities.dimtags = list(set(cut[0]))
+                # Newly appeared dimtags can be assigned to new entity
+                current_entities.dimtags = list(
+                    set(cut[0])
+                    - {
+                        dimtag
+                        for entity in structural_entity_list
+                        for dimtag in entity.dimtags
+                    }
+                )
+                # Filter out dimtags that don't match the entity dimension
+                current_entities.dimtags = [
+                    dimtag
+                    for dimtag in current_entities.dimtags
+                    if dimtag[0] == current_entities.dim
+                ]
             if current_entities.dimtags:
                 structural_entity_list.append(current_entities)
 
