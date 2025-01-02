@@ -61,7 +61,7 @@ class LabeledEntities(BaseModel):
 
     @property
     def dim(self) -> int:
-        return [dim for dim, tag in self.dimtags][0]
+        return max([dim for dim, tag in self.dimtags])
 
     def update_boundaries(self) -> List[int]:
         self.boundaries = [
