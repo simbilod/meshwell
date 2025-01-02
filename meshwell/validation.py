@@ -33,23 +33,43 @@ def sort_entities_by_mesh_order(entities):
 
 
 def order_entities(entities):
-    """Returns a list of entities, sorted by mesh_order, assigning a mesh order corresponding to the ordering if not defined."""
-    defined_order_entities = [
-        entity for entity in entities if entity.mesh_order is not None
-    ]
-    ordered_defined_entities = sort_entities_by_mesh_order(defined_order_entities)
-    undefined_order_entities = [
-        entity for entity in entities if entity.mesh_order is None
-    ]
-    if ordered_defined_entities:
-        start_index = math.ceil(ordered_defined_entities[-1].mesh_order) + 1
-    else:
-        start_index = 1
-    ordered_undefined_entities = assign_mesh_order_from_ordering(
-        undefined_order_entities,
-        start_index=start_index,
-    )
-    return ordered_defined_entities + ordered_undefined_entities
+    """Returns a list of entities, sorted first by dimension (higher dimensions first) and then by mesh_order,
+    assigning a mesh order corresponding to the ordering if not defined."""
+    # Group entities by dimension
+    entities_by_dim = {}
+    for entity in entities:
+        dim = entity.dimension
+        if dim not in entities_by_dim:
+            entities_by_dim[dim] = []
+        entities_by_dim[dim].append(entity)
+
+    ordered_entities = []
+    # Process dimensions in descending order
+    for dim in sorted(entities_by_dim.keys(), reverse=True):
+        dim_entities = entities_by_dim[dim]
+
+        # Split into defined and undefined mesh_order entities
+        defined_order = [e for e in dim_entities if e.mesh_order is not None]
+        undefined_order = [e for e in dim_entities if e.mesh_order is None]
+
+        # Sort defined order entities
+        ordered_defined = sort_entities_by_mesh_order(defined_order)
+
+        # Calculate start index for undefined entities
+        if ordered_defined:
+            start_index = math.ceil(ordered_defined[-1].mesh_order) + 1
+        else:
+            start_index = 1
+
+        # Assign mesh_order to undefined entities
+        ordered_undefined = assign_mesh_order_from_ordering(
+            undefined_order,
+            start_index=start_index,
+        )
+
+        ordered_entities.extend(ordered_defined + ordered_undefined)
+
+    return ordered_entities
 
 
 def consolidate_entities_by_physical_name(entities):
