@@ -563,7 +563,7 @@ class Model:
                     elif previous_entity.dim > current_entities.dim:
                         higher_dim_entities.append(previous_entity)
 
-                # If there are previous entities of same dimension, first cut them out
+                # If there are previous entities of same dimension, first cut this entity
                 if same_dim_entities:
                     cut = self.occ.cut(
                         current_entities.dimtags,
@@ -575,6 +575,7 @@ class Model:
                         removeObject=True,  # Only keep the difference
                         removeTool=False,  # Tool (previous entities) should remain untouched
                     )
+                    self.sync_model()
                     current_entities.dimtags = list(cut[0])
 
                 # If there are higher dimensional entities, fragment into them
@@ -586,24 +587,30 @@ class Model:
                             for entity in higher_dim_entities
                             for dimtag in entity.dimtags
                         ],
-                        removeObject=True,  # Only keep the difference
-                        removeTool=True,  # Tool (previous entities) should remain untouched
+                        removeObject=True,  # Will reappear in output
+                        removeTool=True,  # Will reappear in output
                     )
                     self.sync_model()
 
-                    # Update boundaries of higher dimensional entities
+                    # Boundaries of higher dimensional entities
+                    existing_entities = []
                     for entity in higher_dim_entities:
-                        entity.update_boundaries()
+                        existing_entities.extend(
+                            gmsh.model.getBoundary(
+                                entity.dimtags, oriented=False, recursive=False
+                            )
+                        )
 
-                    # Newly appeared dimtags of the lower dimension that are not boundaries of higher order correspond to this entity
+                    # Previous entities of identical dimension
+                    for entity in same_dim_entities:
+                        existing_entities.extend(entity.dimtags)
+
+                    # Newly appeared dimtags of the lower dimension that are not boundaries of higher order or previous of same dimension correspond to this entity
                     current_entities.dimtags = [
                         dimtag
                         for dimtag in output[0]
                         if dimtag[0] == current_entities.dim
-                        and not any(
-                            dimtag[1] in entity.boundaries
-                            for entity in higher_dim_entities
-                        )
+                        and dimtag not in existing_entities
                     ]
 
                 # Heal interfaces now that there are no volume conflicts
@@ -623,9 +630,9 @@ class Model:
             if current_entities.dimtags:
                 structural_entity_list.append(current_entities)
 
-        # Update boundaries for all entities after substractions
-        for entity in structural_entity_list:
-            entity.update_boundaries()
+            # Update boundaries for all entities after each operation
+            for entity in structural_entity_list:
+                entity.update_boundaries()
 
         return structural_entity_list, max_dim
 

@@ -23,7 +23,25 @@ def test_multi_dimension_entities():
         mesh_order=1,
     )
 
-    model.mesh(entities_list=[box, plane])
+    box2 = GMSH_entity(
+        gmsh_function=model.occ.addBox,
+        gmsh_function_kwargs={"x": 1, "y": 0, "z": 0, "dx": 1, "dy": 1, "dz": 1},
+        dimension=3,
+        model=model,
+        physical_name="box3D_2",
+        mesh_order=3,
+    )
+
+    plane2 = GMSH_entity(
+        gmsh_function=model.occ.addRectangle,
+        gmsh_function_kwargs={"x": 0.5, "y": 0.5, "z": 0.75, "dx": 1, "dy": 0.5},
+        dimension=2,
+        model=model,
+        physical_name="rect2D_2",
+        mesh_order=2,
+    )
+
+    model.mesh(entities_list=[box, plane, box2, plane2])
 
 
 if __name__ == "__main__":
