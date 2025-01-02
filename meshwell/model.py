@@ -35,7 +35,7 @@ class Model:
 
         # Model naming
         self.model = gmsh.model
-        self.filename = filename
+        self.filename = Path(filename)
         self.n_threads = n_threads
 
         # Point snapping
@@ -155,8 +155,8 @@ class Model:
         self.points = {}
         self.segments = {}
 
-        self.model.add(self.filename)
-        self.model.setFileName(self.filename)
+        self.model.add(str(self.filename))
+        self.model.setFileName(str(self.filename))
         gmsh.option.setNumber("General.NumThreads", self.n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
@@ -346,7 +346,7 @@ class Model:
 
         # Use provided filename or default to self.filename
         output_file = Path(
-            filename if filename is not None else str(self.filename).with_suffix(".msh")
+            filename if filename is not None else self.filename.with_suffix(".msh")
         )
 
         # Load CAD model or evaluate it
