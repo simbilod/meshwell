@@ -345,7 +345,9 @@ class Model:
         self._initialize_model()
 
         # Use provided filename or default to self.filename
-        output_file = Path(filename if filename is not None else self.filename)
+        output_file = Path(
+            filename if filename is not None else str(self.filename).with_suffix(".msh")
+        )
 
         # Load CAD model or evaluate it
         if from_cad:
@@ -354,7 +356,6 @@ class Model:
         else:
             entities_list, max_dim = self.cad(
                 entities_list=entities_list,
-                filename=output_file,
                 fuse_entities_by_name=fuse_entities_by_name,
                 addition_delimiter=addition_delimiter,
                 addition_intersection_physicals=addition_intersection_physicals,
