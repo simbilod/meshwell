@@ -20,6 +20,25 @@ class LabeledEntities(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    def to_dict(self) -> dict:
+        """Convert entity to dictionary representation.
+
+        Returns:
+            Dictionary containing serializable entity data
+        """
+        return {
+            "index": self.index,
+            "dimtags": self.dimtags,
+            "physical_name": self.physical_name,
+            "resolutions": [r.model_dump() for r in self.resolutions]
+            if self.resolutions
+            else None,
+            "keep": self.keep,
+            "boundaries": self.boundaries,
+            "interfaces": self.interfaces,
+            "mesh_edge_name_interfaces": self.mesh_edge_name_interfaces,
+        }
+
     def _fuse_self(self, dimtags: List[Union[int, str]]) -> List[Union[int, str]]:
         if len(dimtags) == 0:
             return []
