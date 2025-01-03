@@ -21,6 +21,8 @@ import contextlib
 import tempfile
 import meshio
 
+from meshwell.process import ProcessStep
+
 
 class Model:
     """Model class."""
@@ -874,3 +876,38 @@ class Model:
                 if finalize:
                     gmsh.finalize()
                 return meshio.read(temp_mesh_path)
+
+    def process_3D(
+        self,
+        process_steps: tuple[ProcessStep],
+        domain: tuple[float, float, float],
+        substrate_thickness: float = 10,
+    ):
+        """CAD emulating process fabrication."""
+        self._initialize_model()
+
+        # Create substrate
+        substrate = self.occ.add_box(
+            x=-domain[0] / 2,
+            y=-domain[1] / 2,
+            z=0,
+            dx=domain[0] / 2,
+            dy=domain[1] / 2,
+            dz=-substrate_thickness,
+        )
+        self.occ.synchronize()
+
+        # Apply process steps sequentially
+        hull = self.occ.copy([(3, substrate)])
+        for process_step in process_steps:
+            growth = process_step.apply(hull, self.model)
+            if growth is not None:
+                hull = self.occ.fuse(
+                    hull, growth, removeObject=False, removeTool=False
+                )[0]
+                self.occ.synchronize()
+
+        # Trim outside of domain
+        # TODO
+
+        gmsh.write("test_process.xao")
