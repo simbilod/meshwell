@@ -895,19 +895,47 @@ class Model:
             dy=domain[1] / 2,
             dz=-substrate_thickness,
         )
+        entities = [
+            LabeledEntities(
+                index=0,
+                dimtags=[(3, substrate)],
+                physical_name="substrate",
+                model=self.model,
+            )
+        ]
         self.occ.synchronize()
 
         # Apply process steps sequentially
         hull = self.occ.copy([(3, substrate)])
-        for process_step in process_steps:
+        for index, process_step in enumerate(process_steps):
             growth = process_step.apply(hull, self.model)
+            entities.append(
+                LabeledEntities(
+                    index=index + 1,
+                    dimtags=growth,
+                    physical_name=process_step.name,
+                    model=self.model,
+                )
+            )
             if growth is not None:
                 hull = self.occ.fuse(
                     hull, growth, removeObject=False, removeTool=False
                 )[0]
                 self.occ.synchronize()
 
+        # Delete hull tool
+        self.occ.remove(hull, recursive=True)
+        self.occ.synchronize()
+
+        self.occ.removeAllDuplicates()
+        self.occ.synchronize()
+
         # Trim outside of domain
         # TODO
 
-        gmsh.write("test_process.xao")
+        gmsh.write(str(self.filename.with_suffix(".xao")))
+
+        # Save entity list to JSON to preserve dimtag <--> physical name mapping
+        entities_json = str(self.filename.with_suffix(".json"))
+        with open(entities_json, "w") as f:
+            json.dump([e.to_dict() for e in entities], f)

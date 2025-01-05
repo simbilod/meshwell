@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from shapely import Polygon, MultiPolygon
+from typing import List, Tuple, Any, Optional
+from meshwell.labeledentity import LabeledEntities
 
 
 @dataclass
@@ -18,6 +20,7 @@ class Grow(ProcessStep):
     mask: Polygon | MultiPolygon | None = None
     isotropic: bool = True
     fillet_fraction: float = 1.0
+    last_dimtags: List[Tuple[int, int]] = None  # Store the dimtags from last operation
 
     @property
     def a(self):
@@ -100,8 +103,82 @@ class Grow(ProcessStep):
         )
 
         model.occ.synchronize()
+        self.last_dimtags = growth[0]  # Store the result
+
         return growth[0]
 
 
 class Etch(Grow):
     """Etch operation."""
+
+
+@dataclass
+class ProcessedEntity:
+    """Entity representing the result of a process step."""
+
+    physical_name: str
+    dimtags: List[Tuple[int, int]]
+    mesh_order: Optional[float] = None
+    model: Any = None
+    additive: bool = False
+
+    def __post_init__(self):
+        if not self.dimtags:
+            raise ValueError(f"ProcessedEntity {self.physical_name} has no dimtags")
+        # Ensure all dimtags have same dimension
+        dims = {d for d, _ in self.dimtags}
+        if len(dims) != 1:
+            raise ValueError(
+                f"ProcessedEntity {self.physical_name} has mixed dimensions: {dims}"
+            )
+        self.dim = dims.pop()
+
+    @property
+    def tags(self) -> List[int]:
+        """Get list of tags for this entity."""
+        return [tag for _, tag in self.dimtags]
+
+    @property
+    def first_dimtag(self) -> Tuple[int, int]:
+        """Get the first dimtag."""
+        return self.dimtags[0]
+
+
+def process_steps_to_entities(
+    process_steps: List[ProcessStep], model: Any
+) -> List[LabeledEntities]:
+    """Convert a list of process steps into a list of LabeledEntities for meshing.
+
+    Args:
+        process_steps: List of ProcessStep objects that were used in process_3D
+        model: The meshwell Model instance
+
+    Returns:
+        List of LabeledEntities suitable for model.mesh()
+    """
+    entities = []
+
+    # Add substrate entity (always index -1)
+    substrate_entity = ProcessedEntity(
+        mesh_order=0,
+        dimtags=[(3, 1)],  # First volume is always substrate
+        physical_name="substrate",
+        model=model,
+    )
+    entities.append(substrate_entity)
+
+    # Process each step
+    for index, step in enumerate(process_steps):
+        # Skip steps that didn't produce geometry
+        if not hasattr(step, "last_dimtags") or not step.last_dimtags:
+            continue
+
+        entity = ProcessedEntity(
+            mesh_order=index + 1,
+            dimtags=step.last_dimtags,
+            physical_name=step.name,
+            model=model,
+        )
+        entities.append(entity)
+
+    return entities
