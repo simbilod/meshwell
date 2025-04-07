@@ -554,16 +554,65 @@ class Model:
                         f"{str(physical_name):<30} - {'boolean':<15}"
                     )
             if index != 0:
-                cut = self.occ.cut(
-                    current_entities.dimtags,
-                    [
+                # Get all previous entities of same or higher dimension
+                same_dim_entities = []
+                higher_dim_entities = []
+                for previous_entity in structural_entity_list:
+                    if previous_entity.dim == current_entities.dim:
+                        same_dim_entities.append(previous_entity)
+                    elif previous_entity.dim > current_entities.dim:
+                        higher_dim_entities.append(previous_entity)
+
+                # If there are previous entities of same dimension, first cut this entity
+                if same_dim_entities:
+                    cut = self.occ.cut(
+                        current_entities.dimtags,
+                        [
+                            dimtag
+                            for entity in same_dim_entities
+                            for dimtag in entity.dimtags
+                        ],
+                        removeObject=True,  # Only keep the difference
+                        removeTool=False,  # Tool (previous entities) should remain untouched
+                    )
+                    self.sync_model()
+                    current_entities.dimtags = list(cut[0])
+
+                # If there are higher dimensional entities, fragment into them
+                if higher_dim_entities:
+                    output = self.occ.fragment(
+                        current_entities.dimtags if not same_dim_entities else cut[0],
+                        [
+                            dimtag
+                            for entity in higher_dim_entities
+                            for dimtag in entity.dimtags
+                        ],
+                        removeObject=True,  # Will reappear in output
+                        removeTool=True,  # Will reappear in output
+                    )
+                    self.sync_model()
+
+                    # Boundaries of higher dimensional entities
+                    existing_entities = []
+                    for entity in higher_dim_entities:
+                        existing_entities.extend(
+                            gmsh.model.getBoundary(
+                                entity.dimtags, oriented=False, recursive=False
+                            )
+                        )
+
+                    # Previous entities of identical dimension
+                    for entity in same_dim_entities:
+                        existing_entities.extend(entity.dimtags)
+
+                    # Newly appeared dimtags of the lower dimension that are not boundaries of higher order or previous of same dimension correspond to this entity
+                    current_entities.dimtags = [
                         dimtag
-                        for previous_entities in structural_entity_list
-                        for dimtag in previous_entities.dimtags
-                    ],
-                    removeObject=True,  # Only keep the difference
-                    removeTool=False,  # Tool (previous entities) should remain untouched
-                )
+                        for dimtag in output[0]
+                        if dimtag[0] == current_entities.dim
+                        and dimtag not in existing_entities
+                    ]
+
                 # Heal interfaces now that there are no volume conflicts
                 if progress_bars:
                     if physical_name:
@@ -577,13 +626,13 @@ class Model:
                             f"{str(physical_name):<30} - {'sync':<15}"
                         )
                 self.sync_model()
-                current_entities.dimtags = list(set(cut[0]))
+
             if current_entities.dimtags:
                 structural_entity_list.append(current_entities)
 
-        # Update boundaries for all entities after substractions
-        for entity in structural_entity_list:
-            entity.update_boundaries()
+            # Update boundaries for all entities after each operation
+            for entity in structural_entity_list:
+                entity.update_boundaries()
 
         return structural_entity_list, max_dim
 
