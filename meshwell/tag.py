@@ -1,9 +1,8 @@
 from typing import List
-import gmsh
 from itertools import combinations, product
 
 
-def tag_entities(entity_list: List):
+def tag_entities(entity_list: List, model):
     """Adds physical labels to the entities in the model."""
     # One pass to get the global name --> dimtags mapping
     names_to_tags = {
@@ -21,10 +20,10 @@ def tag_entities(entity_list: List):
 
     for dim in names_to_tags.keys():
         for physical_name, tags in names_to_tags[dim].items():
-            gmsh.model.addPhysicalGroup(dim, tags, name=physical_name)
+            model.addPhysicalGroup(dim, tags, name=physical_name)
 
 
-def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
+def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str, model):
     """Adds physical labels to the interfaces between entities in entity_list."""
     names_to_tags = {
         0: {},
@@ -58,13 +57,13 @@ def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str):
 
     for dim in names_to_tags.keys():
         for physical_name, tags in names_to_tags[dim].items():
-            gmsh.model.addPhysicalGroup(dim, tags, name=physical_name)
+            model.addPhysicalGroup(dim, tags, name=physical_name)
 
     return entity_list
 
 
 def tag_boundaries(
-    entity_list: List, max_dim: int, boundary_delimiter: str, mesh_edge_name: str
+    entity_list: List, max_dim: int, boundary_delimiter: str, mesh_edge_name: str, model
 ):
     """Adds physical labels to the boundaries of the entities in entity_list."""
     names_to_tags = {
@@ -88,4 +87,4 @@ def tag_boundaries(
 
     for dim in names_to_tags.keys():
         for physical_name, tags in names_to_tags[dim].items():
-            gmsh.model.addPhysicalGroup(dim, tags, name=physical_name)
+            model.addPhysicalGroup(dim, tags, name=physical_name)

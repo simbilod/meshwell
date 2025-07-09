@@ -3,10 +3,10 @@ from pathlib import Path
 from meshwell.config import PATH
 
 
-def compare_meshes(meshfile: Path, other_meshfile: Path | None = None):
+def compare_gmsh_files(meshfile: Path, other_meshfile: Path | None = None):
     meshfile2 = meshfile
     if other_meshfile is None:
-        meshfile1 = PATH.references / (str(meshfile.with_suffix("")) + ".reference.msh")
+        meshfile1 = PATH.references / str(meshfile)
     else:
         meshfile1 = other_meshfile
 

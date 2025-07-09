@@ -3,7 +3,7 @@ from __future__ import annotations
 import gmsh
 import shapely
 from meshwell.prism import Prism
-from meshwell.model import Model
+from meshwell.cad import cad, CAD
 import numpy as np
 
 
@@ -17,16 +17,9 @@ def test_prism():
 
     buffers = {0.0: 0.0, 0.3: 0.1, 1.0: -0.2}
 
-    model = Model(n_threads=1)
-    model._initialize_model()
-
-    prism_obj = Prism(polygons=polygon, buffers=buffers, model=model)
-    prism_obj.instanciate()
+    prism_obj = Prism(polygons=polygon, buffers=buffers, physical_name="prism")
     assert prism_obj.extrude is False
-
-    gmsh.model.occ.synchronize()
-    gmsh.model.mesh.generate(3)
-    gmsh.write("mesh_prism.msh")
+    cad(entities_list=[prism_obj], output_file="test_prism")
 
 
 def test_prism_extruded():
@@ -39,22 +32,18 @@ def test_prism_extruded():
 
     buffers = {-1.0: 0.0, 1.0: 0.0}
 
-    model = Model(n_threads=1)
-    model._initialize_model()
+    prism_obj = Prism(polygons=polygon, buffers=buffers)
 
-    prism_obj = Prism(polygons=polygon, buffers=buffers, model=model)
-    dim, tags = prism_obj.instanciate()[0]
+    cad_processor = CAD()
+    cad_processor._initialize_model()
+    entity_dimtags = prism_obj.instanciate(cad_processor)
     assert prism_obj.extrude is True
-
-    xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(dim, tags[0])
+    dim = entity_dimtags[0][0]
+    tag = entity_dimtags[0][1]
+    _, _, zmin, _, _, zmax = gmsh.model.getBoundingBox(dim, tag[0])
     assert np.isclose(zmin, min(buffers.keys()))
     assert np.isclose(zmax, max(buffers.keys()))
 
-    gmsh.model.occ.synchronize()
-    gmsh.model.mesh.generate(3)
-    gmsh.write("mesh_extruded.msh")
-
 
 if __name__ == "__main__":
-    test_prism_extruded()
-    # test_prism()
+    test_prism()

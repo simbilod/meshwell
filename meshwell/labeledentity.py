@@ -1,24 +1,33 @@
-from pydantic import BaseModel, ConfigDict
 import gmsh
 from typing import List, Union, Any, Tuple
 from meshwell.resolution import ResolutionSpec
 import warnings
 
 
-class LabeledEntities(BaseModel):
+class LabeledEntities:
     """General class to track the gmsh entities that result from the geometry definition."""
 
-    index: int
-    model: Any
-    dimtags: List[Tuple[int, int]]
-    physical_name: str | tuple[str, ...]
-    resolutions: List[ResolutionSpec] | None = None
-    keep: bool
-    boundaries: List[int] = []
-    interfaces: List = []
-    mesh_edge_name_interfaces: List = []
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    def __init__(
+        self,
+        index: int,
+        model: Any,
+        dimtags: List[Tuple[int, int]],
+        physical_name: Union[str, tuple[str, ...]],
+        resolutions: List[ResolutionSpec] | None = None,
+        keep: bool = True,
+        boundaries: List[int] = None,
+        interfaces: List = None,
+        mesh_edge_name_interfaces: List = None,
+    ):
+        self.index = index
+        self.model = model
+        self.dimtags = dimtags
+        self.physical_name = physical_name
+        self.resolutions = resolutions
+        self.keep = keep
+        self.boundaries = boundaries or []
+        self.interfaces = interfaces or []
+        self.mesh_edge_name_interfaces = mesh_edge_name_interfaces or []
 
     def to_dict(self) -> dict:
         """Convert entity to dictionary representation.
@@ -30,7 +39,7 @@ class LabeledEntities(BaseModel):
             "index": self.index,
             "dimtags": self.dimtags,
             "physical_name": self.physical_name,
-            "resolutions": [r.model_dump() for r in self.resolutions]
+            "resolutions": [r.__dict__ for r in self.resolutions]
             if self.resolutions
             else None,
             "keep": self.keep,
@@ -38,6 +47,12 @@ class LabeledEntities(BaseModel):
             "interfaces": self.interfaces,
             "mesh_edge_name_interfaces": self.mesh_edge_name_interfaces,
         }
+
+    def update_boundaries(self) -> List[int]:
+        self.boundaries = [
+            tag for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
+        ]
+        return self.boundaries
 
     def _fuse_self(self, dimtags: List[Union[int, str]]) -> List[Union[int, str]]:
         if len(dimtags) == 0:
@@ -63,7 +78,7 @@ class LabeledEntities(BaseModel):
     def dim(self) -> int:
         return [dim for dim, tag in self.dimtags][0]
 
-    def update_boundaries(self) -> List[int]:
+    def boundaries(self) -> List[int]:
         self.boundaries = [
             tag for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
         ]

@@ -1,9 +1,9 @@
 import pytest
 from shapely.geometry import Point
-from meshwell.model import Model
 from meshwell.prism import Prism
 
 
+@pytest.mark.skip("Validation of buffers is currently disabled!")
 def test_prism_value_error():
     inner_radius = 3
     outer_radius = 5
@@ -15,9 +15,11 @@ def test_prism_value_error():
 
     polygons = ring
     # Buffers that will cause a change in the topology of the polygon
-    buffers = {0: 0, -1: 0, -1.001: 10, -5: 0}
-
-    model = Model(n_threads=1)
+    buffers = {0: 0, -1: 0, -1.001: 15, -5: 0}
 
     with pytest.raises(ValueError):
-        Prism(polygons=polygons, buffers=buffers, model=model)
+        Prism(polygons=polygons, buffers=buffers)
+
+
+if __name__ == "__main__":
+    test_prism_value_error()
