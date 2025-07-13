@@ -86,7 +86,7 @@ plot2D(output_mesh, title="ConstantInField", wireframe=True)
 
 output_mesh = mesh(
     dim=2,
-    input_file="default_resolution.xao",
+    input_file="model.xao",
     output_file="threshold_resolution.msh",
     n_threads=1,
     default_characteristic_length=2,
@@ -115,7 +115,7 @@ plot2D(output_mesh, title="ThresholdField", wireframe=True)
 
 output_mesh = mesh(
     dim=2,
-    input_file="default_resolution.xao",
+    input_file="model.xao",
     output_file="exponential_resolution.msh",
     n_threads=1,
     default_characteristic_length=2,
