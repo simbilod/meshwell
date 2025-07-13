@@ -119,7 +119,7 @@ class Prism:
             exterior=exterior,
             interior_index=interior_index,
         )
-        gmsh_surfaces = [model.add_surface(bottom_polygon_vertices)]
+        gmsh_surfaces = [model.add_surface_from_vertices(bottom_polygon_vertices)]
 
         # Draw top surface
         top_polygon = entry[-1][1]
@@ -130,7 +130,7 @@ class Prism:
             exterior=exterior,
             interior_index=interior_index,
         )
-        gmsh_surfaces.append(model.add_surface(top_polygon_vertices))
+        gmsh_surfaces.append(model.add_surface_from_vertices(top_polygon_vertices))
 
         # Draw vertical surfaces
         for pair_index in range(len(entry) - 1):
@@ -164,7 +164,7 @@ class Prism:
                     top_z,
                 )
                 facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(model.add_surface(facet_vertices))
+                gmsh_surfaces.append(model.add_surface_from_vertices(facet_vertices))
 
         # Return volume from closed shell
         surface_loop = model.occ.add_surface_loop(gmsh_surfaces)
@@ -326,13 +326,13 @@ class Prism:
         surfaces = []
         for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
             # Add outer surface(s)
-            exterior = model.add_surface(
+            exterior = model.add_surface_from_vertices(
                 self.xy_surface_vertices(
                     polygon, polygon_z=z, exterior=True, interior_index=0
                 )
             )
             interiors = [
-                model.add_surface(
+                model.add_surface_from_vertices(
                     self.xy_surface_vertices(
                         polygon,
                         polygon_z=z,

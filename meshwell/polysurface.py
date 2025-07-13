@@ -57,11 +57,11 @@ class PolySurface:
 
     def add_surface_with_holes(self, polygon: Polygon, model) -> int:
         """Returns surface, removing intersection with hole surfaces."""
-        exterior = model.add_surface(
+        exterior = model.add_surface_from_vertices(
             [self._parse_coords(coords) for coords in polygon.exterior.coords]
         )
         interior_tags = [
-            model.add_surface(
+            model.add_surface_from_vertices(
                 [self._parse_coords(coords) for coords in interior.coords],
             )
             for interior in polygon.interiors

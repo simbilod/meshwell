@@ -52,7 +52,7 @@ class CAD:
             self.points[(x, y, z)] = self.occ.add_point(x, y, z)
         return self.points[(x, y, z)]
 
-    def add_get_segment(
+    def add_get_segment_from_vertices(
         self, xyz1: Tuple[float, float, float], xyz2: Tuple[float, float, float]
     ) -> int:
         """Add a segment (2-point line) to the gmsh model, or retrieve a previously-defined segment.
@@ -87,11 +87,13 @@ class CAD:
         for vertex1, vertex2 in [
             (vertices[i], vertices[i + 1]) for i in range(len(vertices) - 1)
         ]:
-            gmsh_line = self.add_get_segment(vertex1, vertex2)
+            gmsh_line = self.add_get_segment_from_vertices(vertex1, vertex2)
             edges.append(gmsh_line)
         return self.occ.add_curve_loop(edges)
 
-    def add_surface(self, vertices: List[Tuple[float, float, float]]) -> int:
+    def add_surface_from_vertices(
+        self, vertices: List[Tuple[float, float, float]]
+    ) -> int:
         """Add a surface composed of the segments formed by vertices.
 
         Args:
