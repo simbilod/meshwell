@@ -12,6 +12,14 @@ def validate_dimtags(dimtags):
         return dims[0]
 
 
+def format_physical_name(physical_name: str):
+    # Format physical name
+    if isinstance(physical_name, str):
+        return (physical_name,)
+    else:
+        return physical_name
+
+
 def unpack_dimtags(dimtags):
     dim = [dim for dim, tag in dimtags][0]
     tags = [tag for dim, tag in dimtags]

@@ -5,6 +5,7 @@
 - importing gds function and example [PR#102](https://github.com/simbilod/meshwell/pull/102)
 - refactor meshing into more manageable chunks, fixing [issue#87](https://github.com/simbilod/meshwell/issues/87) [PR#105](https://github.com/simbilod/meshwell/pull/105) [PR#106](https://github.com/simbilod/meshwell/pull/106)
 - refactor meshing into CAD + meshing to checkpoint [PR#107](https://github.com/simbilod/meshwell/pull/107)
+- major refactor of the API to better implement CAD + meshing separation without intermediate JSON, fixing tests [PR#115](https://github.com/simbilod/meshwell/pull/115)
 
 ## 1.3.8
 

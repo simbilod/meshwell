@@ -4,10 +4,11 @@
 
 # %%
 import shapely
-
-from meshwell.model import Model
+import matplotlib.pyplot as plt
 from meshwell.prism import Prism
 import plotly.graph_objects as go
+from meshwell.cad import cad
+from meshwell.mesh import mesh
 
 # %%
 # We use shapely as an API to enter polygons
@@ -16,23 +17,21 @@ import plotly.graph_objects as go
 polygon_hull = shapely.Polygon(
     [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
 )
-line1 = shapely.LineString([[0.5, 0.5], [1.5, 1.5]])
-polygon_hole1 = shapely.buffer(line1, 0.2)
-line2 = shapely.LineString([[1.5, 0.5], [0.5, 1.5]])
-polygon_hole2 = shapely.buffer(line2, 0.2)
-polygon = polygon_hull - polygon_hole1 - polygon_hole2
+polygon_hole1 = polygon_hull.buffer(-0.5, join_style="mitre")
+polygon = polygon_hull - polygon_hole1
 
 # %% [markdown]
 # View the polygons:
-#
+
+# %%
 # Plot the shapely polygons
-# plt.figure(figsize=(8, 8))
-# plt.plot(*polygon.exterior.xy, 'b-', label='Polygon 1 exterior')
-# plt.plot(*polygon.interiors[0].xy, 'b--', label='Polygon 1 hole')
-# plt.axis('equal')
-# plt.title('Shapely Polygons')
-# plt.legend()
-# plt.show()
+plt.figure(figsize=(8, 8))
+plt.plot(*polygon.exterior.xy, "b-", label="Polygon 1 exterior")
+plt.plot(*polygon.interiors[0].xy, "b--", label="Polygon 1 hole")
+plt.axis("equal")
+plt.title("Shapely Polygons")
+plt.legend()
+plt.show()
 
 # %% [markdown]
 # Mesh a prism by combining with buffers
@@ -40,19 +39,24 @@ polygon = polygon_hull - polygon_hole1 - polygon_hole2
 
 buffers = {0.0: 0.05, 1.0: -0.05}
 
-model = Model(n_threads=1)
 poly3D = Prism(
     polygons=polygon,
     buffers=buffers,
-    model=model,
     physical_name="my_prism1",
 )
 
 entities_list = [poly3D]
 
-mesh = model.mesh(
+cad(
     entities_list=entities_list,
-    filename="prism.msh",
+    output_file="prism.xao",
+)
+
+output_mesh = mesh(
+    dim=3,
+    input_file="prism.xao",
+    output_file="prism.msh",
+    default_characteristic_length=100,
 )
 
 
@@ -69,8 +73,8 @@ edge_y = []
 edge_z = []
 
 # Plot each tetrahedron
-for tet in mesh.cells_dict["tetra"]:
-    vertices = mesh.points[tet]
+for tet in output_mesh.cells_dict["tetra"]:
+    vertices = output_mesh.points[tet]
 
     # Add vertices
     vertices_x.extend(vertices[:, 0])

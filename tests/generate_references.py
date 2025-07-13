@@ -30,8 +30,10 @@ if __name__ == "__main__":
     # Run the tests to generate the files (tests will fail)
     pytest.main(["-n", "auto"])
 
-    # Rename the references
+    # Place the references
     test = os.listdir(exec_dir_name)
     for item in test:
         if item.endswith(".msh"):
-            os.rename(item, PATH.references / f"{item[:-4]}.reference.msh")
+            os.rename(item, PATH.references / f"{item[:-4]}.msh")
+        if item.endswith(".xao"):
+            os.rename(item, PATH.references / f"{item[:-4]}.xao")
