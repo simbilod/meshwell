@@ -6,7 +6,7 @@ source .venv/bin/activate
 
 # Install reference version of the package in editable mode
 sudo apt-get install libglu1-mesa
-uv pip install git+https://github.com/simbilod/meshwell.git@a4148e55b727b15f6d2e31c8ab5d87cbf3921107[dev]
+uv pip install git+https://github.com/simbilod/meshwell.git@1f6880659710b4e1f057673f3ce9ad68a6e6b7ac[dev]
 
 # Execute all Python files in the current directory
 python generate_references.py --references-path ./references/
