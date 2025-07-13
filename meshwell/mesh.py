@@ -46,27 +46,6 @@ class Mesh:
         # Load CAD model
         gmsh.merge(str(input_file.with_suffix(".xao")))
 
-    def _load_cad_model(
-        self,
-        filename: Optional[str | Path] = None,
-    ) -> Tuple[List, int]:
-        """Load CAD model from .xao file and validate entities.
-
-        Args:
-            entities_list: Optional list of entities for refinement
-            filename: Optional file path (overrides self.filename)
-
-        Returns:
-            Tuple of (modified entity list, maximum dimension)
-        """
-        self._initialize_model()
-
-        # Use provided filename or default to self.filename
-        input_file = Path(filename if filename is not None else self.filename)
-
-        # Load model
-        gmsh.merge(str(input_file.with_suffix(".xao")))
-
     def _initialize_mesh_settings(
         self,
         verbosity: int,
