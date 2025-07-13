@@ -74,6 +74,7 @@ class Mesh:
         global_2D_algorithm: int,
         global_3D_algorithm: int,
         gmsh_version: Optional[float],
+        mesh_element_order: int = 1,
     ) -> None:
         """Initialize basic mesh settings."""
         gmsh.option.setNumber("General.Terminal", verbosity)
@@ -82,6 +83,7 @@ class Mesh:
         )
         gmsh.option.setNumber("Mesh.Algorithm", global_2D_algorithm)
         gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
+        gmsh.option.setNumber("Mesh.ElementOrder", mesh_element_order)
         if gmsh_version is not None:
             gmsh.option.setNumber("Mesh.MshFileVersion", gmsh_version)
         self.occ.synchronize()
@@ -132,6 +134,28 @@ class Mesh:
         else:
             self._apply_background_refinement()
 
+    def get_top_physical_names(self) -> list[str]:
+        """Get all physical names of dimension dim from the GMSH model.
+
+        Returns:
+            List of physical names as strings
+        """
+        # Get all physical groups
+        physical_groups = self.model.getPhysicalGroups()
+
+        # Get top dimension in physical groups dimtags
+        max_dim = max(dim for dim, _ in physical_groups)
+
+        # Filter physical groups by dimension
+        physical_groups = [(dim, tag) for dim, tag in physical_groups if dim == max_dim]
+
+        # Extract names from physical groups
+        physical_names = [
+            self.model.getPhysicalName(dim, tag) for dim, tag in physical_groups
+        ]
+
+        return physical_names
+
     def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
         """Get the dimtags associated with a physical group name.
 
@@ -168,15 +192,20 @@ class Mesh:
             final_entity_list: List of LabeledEntities to process
             boundary_delimiter: String used to identify boundary entities
         """
-        # Create LabeledEntities for applying resolutions
+        # Recreate LabeledEntities for applying resolutions
         final_entity_list = []
         final_entity_dict = {}
-        for index, (physical_name, resolutions) in enumerate(resolution_specs.items()):
+        # We address entities by top dimensional physicals:
+        for index, physical_name in enumerate(self.get_top_physical_names()):
+            if physical_name in resolution_specs:
+                resolutions = resolution_specs[physical_name]
+            else:
+                resolutions = []
             entities = LabeledEntities(
                 index=index,
                 physical_name=physical_name,
                 model=self.model,
-                dimtags=self.get_physical_dimtags(physical_name=physical_name[0]),
+                dimtags=self.get_physical_dimtags(physical_name=physical_name),
                 resolutions=resolutions,
             )
             entities.update_boundaries()
@@ -263,6 +292,7 @@ class Mesh:
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
+        mesh_element_order: int = 1,
         verbosity: Optional[int] = 0,
         periodic_entities: Optional[List[Tuple[str, str]]] = None,
         optimization_flags: Optional[tuple[tuple[str, int]]] = None,
@@ -289,6 +319,7 @@ class Mesh:
             global_2D_algorithm=global_2D_algorithm,
             global_3D_algorithm=global_3D_algorithm,
             gmsh_version=None,
+            mesh_element_order=mesh_element_order,
         )
 
         # # Handle periodic boundaries if specified
@@ -297,11 +328,11 @@ class Mesh:
 
         # Apply mesh refinement
         # Parse resolution_specs dict
-        keys = list(resolution_specs.keys())
-        for key in keys:
-            if not isinstance(key, tuple):
-                resolution_specs[(key,)] = resolution_specs[key]
-                del resolution_specs[key]
+        # keys = list(resolution_specs.keys())
+        # for key in keys:
+        #     if not isinstance(key, tuple):
+        #         resolution_specs[(key,)] = resolution_specs[key]
+        #         del resolution_specs[key]
         self._apply_mesh_refinement(
             background_remeshing_file=background_remeshing_file,
             boundary_delimiter=boundary_delimiter,
@@ -330,6 +361,7 @@ def mesh(
     global_scaling: float = 1.0,
     global_2D_algorithm: int = 6,
     global_3D_algorithm: int = 1,
+    mesh_element_order: int = 1,
     verbosity: Optional[int] = 0,
     periodic_entities: Optional[List[Tuple[str, str]]] = None,
     optimization_flags: Optional[tuple[tuple[str, int]]] = None,
@@ -376,6 +408,7 @@ def mesh(
         global_scaling=global_scaling,
         global_2D_algorithm=global_2D_algorithm,
         global_3D_algorithm=global_3D_algorithm,
+        mesh_element_order=mesh_element_order,
         verbosity=verbosity,
         periodic_entities=periodic_entities,
         optimization_flags=optimization_flags,

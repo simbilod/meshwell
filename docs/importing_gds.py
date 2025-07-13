@@ -8,18 +8,16 @@
 
 # %%
 from typing import List
-import gmsh
 import gdstk
 from meshwell.import_gds import read_gds_layers
 import shapely
 import shapely.geometry as sg
 from meshwell.visualization import colors
-from meshwell.model import Model
-from meshwell.prism import Prism
 from meshwell.polysurface import PolySurface
 import matplotlib.pyplot as plt
 from meshwell.visualization import plot2D
-
+from meshwell.cad import cad
+from meshwell.mesh import mesh
 
 lib = gdstk.Library()
 cell = lib.new_cell("TOP")
@@ -374,13 +372,10 @@ plot_geometry(rounded, "Coordinates rounded to 1 decimal place")
 # The resulting MultiPolygons can of course be directly used in Prisms and PolySurfaces for meshing:
 
 # %%
-# Create a new model
-model = Model()
 
 # Create PolySurface for Layer 1
 layer1_surface = PolySurface(
     polygons=gds_as_shapely_dict[(1, 0)],
-    model=model,
     physical_name="layer4-layer1",
     mesh_order=1,
 )
@@ -388,7 +383,6 @@ layer1_surface = PolySurface(
 # Create PolySurface for Layer 2
 layer2_surface = PolySurface(
     polygons=gds_as_shapely_dict[(2, 0)],
-    model=model,
     physical_name="layer2",
     mesh_order=2,
 )
@@ -396,65 +390,22 @@ layer2_surface = PolySurface(
 # Create PolySurface for Layer 4
 layer3_surface = PolySurface(
     polygons=gds_as_shapely_dict[(4, 0)],
-    model=model,
     physical_name="layer4",
     mesh_order=3,
 )
 
-# Generate the mesh
-mesh = model.mesh(
+cad(
     entities_list=[layer1_surface, layer2_surface, layer3_surface],
-    verbosity=0,
-    filename="2d_mesh.msh",
+    output_file="2d_mesh.xao",
+)
+
+output_mesh = mesh(
+    dim=2,
+    input_file="2d_mesh.xao",
+    output_file="2d_mesh.msh",
     default_characteristic_length=0.5,
 )
 
+
 # Visualize the mesh
-plot2D(mesh, wireframe=True, title="2D Mesh of Layers 1 and 2")
-
-# %%
-# Create a new model
-model = Model()
-
-# Create Prism for Layer 1
-layer1_prism = Prism(
-    polygons=gds_as_shapely_dict[(1, 0)],
-    buffers={3: -0.1, 6: 0.1},
-    model=model,
-    physical_name="layer1",
-    mesh_order=1,
-)
-
-# Create Prism for Layer 2
-layer2_prism = Prism(
-    polygons=gds_as_shapely_dict[(2, 0)],
-    buffers={6: 0.0, 9: 0.0},
-    model=model,
-    physical_name="layer2",
-    mesh_order=2,
-)
-
-# Create Prism for Layer 4
-layer3_prism = Prism(
-    polygons=gds_as_shapely_dict[(4, 0)],
-    buffers={0: 0.0, 12: 0.0},
-    model=model,
-    physical_name="layer4",
-    mesh_order=3,
-)
-
-# Generate the mesh
-mesh = model.mesh(
-    entities_list=[layer1_prism, layer2_prism, layer3_prism],
-    verbosity=0,
-    filename="3d_mesh.msh",
-    default_characteristic_length=1,
-)
-
-# %%
-try:
-    gmsh.initialize()
-    gmsh.open("3d_mesh.msh")
-    gmsh.fltk.run()
-except:  # noqa: E722
-    print("Skipping mesh GUI visualization - only available when running locally")
+plot2D(output_mesh, wireframe=True, title="2D Mesh of Layers 1 and 2")

@@ -6,8 +6,9 @@
 import matplotlib.pyplot as plt
 import shapely
 
-from meshwell.model import Model
 from meshwell.polysurface import PolySurface
+from meshwell.cad import cad
+from meshwell.mesh import mesh
 from meshwell.visualization import plot2D
 
 # %%
@@ -35,26 +36,42 @@ plt.legend()
 plt.show()
 
 # %% [markdown]
-# Mesh the polygons using meshwell:
+# Input the polygons into meshwell objects:
 # %%
-model = Model(n_threads=1)
 poly2D = PolySurface(
     polygons=polygon,
-    model=model,
     physical_name="my_polysurface1",
 )
 
 entities_list = [poly2D]
 
-mesh = model.mesh(
+# %% [markdown]
+# First, generate a CAD representation:
+
+# %%
+
+cad(
     entities_list=entities_list,
-    filename="polysurface.msh",
+    output_file="polysurface.xao",
 )
+
+# %% [markdown]
+# Then generate a mesh from the CAD:
+
+# %%
+
+output_mesh = mesh(
+    dim=2,
+    input_file="polysurface.xao",
+    output_file="polysurface.msh",
+    default_characteristic_length=100,
+)
+
 
 # %%
 # View the mesh:
 
-plot2D(mesh, wireframe=False)
+plot2D(output_mesh, wireframe=False)
 
 # %% [markdown]
 # Shapely is a convenient interface to draw complicated polygons:
@@ -79,19 +96,26 @@ plt.legend()
 plt.show()
 
 # %%
-model = Model(n_threads=1)
 poly2D = PolySurface(
     polygons=polygon,
-    model=model,
     physical_name="complicated",
 )
 
 entities_list = [poly2D]
 
-mesh = model.mesh(
+cad(
     entities_list=entities_list,
-    filename="complicated.msh",
+    output_file="complicated.xao",
 )
+
+output_mesh = mesh(
+    dim=2,
+    input_file="complicated.xao",
+    output_file="complicated.msh",
+    n_threads=1,
+    default_characteristic_length=100,
+)
+
 # %%
-plot2D(mesh, wireframe=False)
+plot2D(output_mesh, wireframe=False)
 # %%
