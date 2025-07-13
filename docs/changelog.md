@@ -1,11 +1,13 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## Unreleased
+## 2.0.0
+
+This is a major breaking release which separates the CAD and meshing operations. See the new syntax in the updates documentation.
 
 - importing gds function and example [PR#102](https://github.com/simbilod/meshwell/pull/102)
 - refactor meshing into more manageable chunks, fixing [issue#87](https://github.com/simbilod/meshwell/issues/87) [PR#105](https://github.com/simbilod/meshwell/pull/105) [PR#106](https://github.com/simbilod/meshwell/pull/106)
 - refactor meshing into CAD + meshing to checkpoint [PR#107](https://github.com/simbilod/meshwell/pull/107)
-- major refactor of the API to better implement CAD + meshing separation without intermediate JSON, fixing tests [PR#115](https://github.com/simbilod/meshwell/pull/115)
+- major refactor of the API to better implement CAD + meshing separation without intermediate JSON, fixing tests, fixing docs [PR#115](https://github.com/simbilod/meshwell/pull/115)
 
 ## 1.3.8
 
