@@ -19,7 +19,7 @@ def test_prism():
 
     prism_obj = Prism(polygons=polygon, buffers=buffers, physical_name="prism")
     assert prism_obj.extrude is False
-    cad(entities_list=[prism_obj], output_file="test_prism")
+    cad(entities_list=[prism_obj], output_file="test_prism.xao")
 
 
 def test_prism_extruded():

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import tempfile
 from os import cpu_count
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
@@ -10,41 +8,50 @@ import meshio
 import numpy as np
 
 from meshwell.labeledentity import LabeledEntities
+from meshwell.gmsh_model import GmshModel
 
 
-class Mesh:
+class Mesh(GmshModel):
     """Mesh class for generating meshes from .xao files."""
 
     def __init__(
         self,
-        n_threads: int = cpu_count(),
-        filename: str = "temp",
+        input_cad_file: Path | str | None = None,
+        output_mesh_file: Path | str | None = None,
+        *args,
+        **kwargs,
     ):
         """Initialize mesh generator."""
-        self.n_threads = n_threads
-        self.filename = Path(filename)
+        super().__init__(*args, **kwargs)
 
-    def _initialize_model(self, input_file: Path) -> None:
-        """Initialize GMSH model and load .xao file."""
-        input_file = Path(input_file)
+        if input_cad_file is None:
+            self.input_cad_file = self.default_xao
+        elif isinstance(input_cad_file, str):  # Ensure filename is a Path object
+            self.input_cad_file = Path(input_cad_file)
+        else:
+            self.input_cad_file = input_cad_file
 
-        # Create model object
-        self.model = gmsh.model
-        self.occ = self.model.occ
+        # Validate if custom
+        assert self.input_cad_file.suffix == ".xao", (
+            "Input file must have .xao extension, got: " f"{self.input_cad_file.suffix}"
+        )
 
-        if gmsh.is_initialized():
-            gmsh.finalize()
-        gmsh.initialize()
-        gmsh.clear()
+        if output_mesh_file is None:
+            self.output_mesh_file = self.default_msh
+        elif isinstance(output_mesh_file, str):  # Ensure filename is a Path object
+            self.output_mesh_file = Path(output_mesh_file)
+        else:
+            self.output_mesh_file = output_mesh_file
 
-        self.model.add("temp")
-        gmsh.option.setNumber("General.NumThreads", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads3D", self.n_threads)
+        # Validate if custom
+        assert self.output_mesh_file.suffix == ".msh", (
+            "Input file must have .msh extension, got: "
+            f"{self.output_mesh_file.suffix}"
+        )
 
+    def _initialize_cad(self) -> None:
         # Load CAD model
-        gmsh.merge(str(input_file.with_suffix(".xao")))
+        gmsh.merge(str(self.input_cad_file.with_suffix(".xao")))
 
     def _initialize_mesh_settings(
         self,
@@ -229,7 +236,6 @@ class Mesh:
 
     def _generate_final_mesh(
         self,
-        filename: str | Path,
         dim: int,
         global_3D_algorithm: int,
         global_scaling: float,
@@ -240,32 +246,23 @@ class Mesh:
         """Generate the final mesh and return meshio object."""
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
 
-        if not str(filename).endswith((".step", ".stp")):
-            if global_3D_algorithm == 1 and verbosity:
-                gmsh.logger.start()
+        if global_3D_algorithm == 1 and verbosity:
+            gmsh.logger.start()
 
-            self.model.mesh.generate(dim)
+        self.model.mesh.generate(dim)
 
-            if optimization_flags:
-                for optimization_flag, niter in optimization_flags:
-                    self.model.mesh.optimize(optimization_flag, niter=niter)
+        if optimization_flags:
+            for optimization_flag, niter in optimization_flags:
+                self.model.mesh.optimize(optimization_flag, niter=niter)
 
-        if filename:
-            gmsh.write(str(filename))
-
-        with contextlib.redirect_stdout(None):
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                temp_mesh_path = f"{tmpdirname}/mesh.msh"
-                gmsh.write(temp_mesh_path)
-                if finalize:
-                    gmsh.finalize()
-                return meshio.read(temp_mesh_path)
+        gmsh.write(str(self.output_mesh_file))
+        if finalize:
+            gmsh.finalize()
+        return meshio.read(str(self.output_mesh_file))
 
     def generate(
         self,
         dim: int,
-        input_file: Path,
-        output_file: Path,
         default_characteristic_length: float,
         background_remeshing_file: Optional[Path] = None,
         global_scaling: float = 1.0,
@@ -289,7 +286,8 @@ class Mesh:
         Returns:
             Optional[meshio.Mesh]: Generated mesh object
         """
-        self._initialize_model(input_file)
+        self._initialize_model()
+        self._initialize_cad()
 
         # Initialize mesh settings
         self._initialize_mesh_settings(
@@ -306,12 +304,6 @@ class Mesh:
         #     self._apply_periodic_boundaries(entities_list, periodic_entities)
 
         # Apply mesh refinement
-        # Parse resolution_specs dict
-        # keys = list(resolution_specs.keys())
-        # for key in keys:
-        #     if not isinstance(key, tuple):
-        #         resolution_specs[(key,)] = resolution_specs[key]
-        #         del resolution_specs[key]
         self._apply_mesh_refinement(
             background_remeshing_file=background_remeshing_file,
             boundary_delimiter=boundary_delimiter,
@@ -320,7 +312,6 @@ class Mesh:
 
         # Generate and return mesh
         return self._generate_final_mesh(
-            filename=output_file,
             dim=dim,
             global_3D_algorithm=global_3D_algorithm,
             global_scaling=global_scaling,
@@ -332,8 +323,8 @@ class Mesh:
 
 def mesh(
     dim: int,
-    input_file: Path,
-    output_file: Path,
+    input_cad_file: Path,
+    output_mesh_file: Path,
     default_characteristic_length: float,
     resolution_specs: Dict | None = None,
     background_remeshing_file: Optional[Path] = None,
@@ -346,13 +337,12 @@ def mesh(
     optimization_flags: Optional[tuple[tuple[str, int]]] = None,
     boundary_delimiter: str = "None",
     n_threads: int = cpu_count(),
-    filename: str = "temp",
 ) -> Optional[meshio.Mesh]:
     """Utility function that wraps the Mesh class for easier usage.
 
     Args:
-        input_file: Path to input .xao file
-        output_file: Path for output mesh file
+        input_cad_file: Path to input .xao file
+        output_mesh_file: Path for output mesh file
         entities_list: Optional list of entities with mesh parameters
         background_remeshing_file: Optional background mesh file for refinement
         default_characteristic_length: Default mesh size
@@ -371,8 +361,9 @@ def mesh(
         Optional[meshio.Mesh]: Generated mesh object
     """
     mesh_generator = Mesh(
+        input_cad_file=input_cad_file,
+        output_mesh_file=output_mesh_file,
         n_threads=n_threads,
-        filename=filename,
     )
 
     if resolution_specs is None:
@@ -380,8 +371,6 @@ def mesh(
 
     return mesh_generator.generate(
         dim=dim,
-        input_file=input_file,
-        output_file=output_file,
         background_remeshing_file=background_remeshing_file,
         default_characteristic_length=default_characteristic_length,
         global_scaling=global_scaling,

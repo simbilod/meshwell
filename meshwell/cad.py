@@ -12,22 +12,36 @@ from meshwell.validation import (
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
+from meshwell.gmsh_model import GmshModel
 
 
-class CAD:
+class CAD(GmshModel):
     """CAD class for generating geometry and saving to .xao format."""
 
     def __init__(
         self,
+        output_file: Path | str | None = None,
         point_tolerance: float = 1e-3,
-        n_threads: int = cpu_count(),
-        filename: str = "temp",
+        *args,
+        **kwargs,
     ):
         """Initialize CAD processor."""
+        super().__init__(*args, **kwargs)
+
+        if output_file is None:
+            self.output_file = self.default_xao
+        elif isinstance(output_file, str):  # Ensure filename is a Path object
+            self.output_file = Path(output_file)
+        else:
+            self.output_file = output_file
+
+        # Validate if custom
+        assert self.output_file.suffix == ".xao", (
+            "Output file must have .xao extension, got: " f"{self.output_file.suffix}"
+        )
+
         # Model initialization
-        self.n_threads = n_threads
         self.point_tolerance = point_tolerance
-        self.filename = Path(filename)
 
         # Track gmsh entities for bottom-up volume definition
         self.points: Dict[Tuple[float, float, float], int] = {}
@@ -130,32 +144,6 @@ class CAD:
                 continue
         self.points = new_points
         self.segments = new_segments
-
-    def _initialize_model(self):
-        """Ensure GMSH is initialized before operations."""
-
-        # Create model object
-        self.model = gmsh.model
-        self.occ = self.model.occ
-
-        if gmsh.is_initialized():
-            gmsh.finalize()
-            gmsh.initialize()
-        else:
-            gmsh.initialize()
-
-        # Clear model and points
-        gmsh.clear()
-        self.points = {}
-        self.segments = {}
-
-        self.model.add(str(self.filename))
-        self.model.setFileName(str(self.filename))
-        gmsh.option.setNumber("General.NumThreads", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads3D", self.n_threads)
-        gmsh.option.setNumber("Geometry.OCCParallel", 1)
 
     def _process_entities(
         self,
@@ -395,7 +383,6 @@ class CAD:
     def generate(
         self,
         entities_list: List,
-        output_file: Path,
         addition_delimiter: str = "+",
         addition_intersection_physicals: bool = True,
         addition_addition_physicals: bool = True,
@@ -408,11 +395,9 @@ class CAD:
 
         Args:
             entities_list: List of entities to process
-            output_file: Output file path
             ... [other args from original cad() method]
         """
         self._initialize_model()
-        output_file = Path(output_file)
 
         # Process entities and get max dimension
         final_entity_list, max_dim = self._process_entities(
@@ -433,16 +418,15 @@ class CAD:
         )
 
         # Save CAD to .xao format
-        gmsh.write(str(output_file.with_suffix(".xao")))
+        gmsh.write(str(self.output_file))
         gmsh.finalize()
 
 
 def cad(
     entities_list: List,
-    output_file: Path,
+    output_file: Path | str | None = None,
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
-    filename: str = "temp",
     addition_delimiter: str = "+",
     addition_intersection_physicals: bool = True,
     addition_addition_physicals: bool = True,
@@ -455,7 +439,7 @@ def cad(
 
     Args:
         entities_list: List of entities to process
-        output_file: Output file path
+        output_file: Output file path (optional, temporary created and returned if not specified)
         point_tolerance: Tolerance for point merging
         n_threads: Number of threads to use for processing
         filename: Temporary filename for GMSH model
@@ -468,14 +452,13 @@ def cad(
         progress_bars: Show progress bars during processing
     """
     cad_processor = CAD(
+        output_file=output_file,
         point_tolerance=point_tolerance,
         n_threads=n_threads,
-        filename=filename,
     )
 
     cad_processor.generate(
         entities_list=entities_list,
-        output_file=output_file,
         addition_delimiter=addition_delimiter,
         addition_intersection_physicals=addition_intersection_physicals,
         addition_addition_physicals=addition_addition_physicals,

@@ -14,4 +14,4 @@ def test_gmsh_entity():
         mesh_order=1,
     )
 
-    cad(entities_list=[gmsh_obj], output_file="test_gmsh_entity")
+    cad(entities_list=[gmsh_obj], output_file="test_gmsh_entity.xao")

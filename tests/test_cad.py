@@ -61,7 +61,6 @@ def test_composite_cad_3D():
     entities = [prism_obj, sphere_obj, box_obj, separate_box]
     cad(
         entities_list=entities,
-        output_file="test_composite_3D",
         addition_delimiter="*",  # Custom delimiter for testing
         progress_bars=True,
     )
@@ -98,7 +97,7 @@ def test_composite_cad_mixed():
     entities = [prism_obj, plane_obj]
     cad(
         entities_list=entities,
-        output_file="test_composite_mixed",
+        output_file="test_composite_mixed.xao",
         addition_delimiter="*",  # Custom delimiter for testing
         progress_bars=True,
     )

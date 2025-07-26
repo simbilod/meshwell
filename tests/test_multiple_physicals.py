@@ -40,8 +40,8 @@ def test_multiple_physicals():
 
     mesh_obj = mesh(
         dim=3,
-        input_file="test_multiple_physicals.xao",
-        output_file="test_multiple_physicals.msh",
+        input_cad_file="test_multiple_physicals.xao",
+        output_mesh_file="test_multiple_physicals.msh",
         n_threads=1,
         default_characteristic_length=100,
     )

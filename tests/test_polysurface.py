@@ -15,10 +15,10 @@ def test_polysurface():
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
     polysurface_obj = PolySurface(polygons=polygon, physical_name="polysurface")
-    cad(entities_list=[polysurface_obj], output_file="test_polysurface")
+    cad(entities_list=[polysurface_obj], output_file="test_polysurface.xao")
     mesh(
-        input_file="test_polysurface.xao",
-        output_file="test_polysurface.msh",
+        input_cad_file="test_polysurface.xao",
+        output_mesh_file="test_polysurface.msh",
         dim=2,
         default_characteristic_length=0.5,
     )

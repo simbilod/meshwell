@@ -43,13 +43,13 @@ def test_smoothing():
     # Split into CAD and mesh operations
     cad(
         entities_list=entities_list,
-        output_file="mesh3D_smoothing",
+        output_file="mesh3D_smoothing.xao",
     )
 
     mesh(
         dim=3,
-        input_file="mesh3D_smoothing.xao",
-        output_file="mesh3D_smoothing.msh",
+        input_cad_file="mesh3D_smoothing.xao",
+        output_mesh_file="mesh3D_smoothing.msh",
         resolution_specs={
             "first_entity": [ConstantInField(resolution=0.5, apply_to="volumes")],
             "second_entity": [],  # No specific resolution for sphere

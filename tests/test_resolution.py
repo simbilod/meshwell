@@ -44,13 +44,13 @@ def test_2D_resolution():
 
     cad(
         entities_list=entities_list,
-        output_file="test_2D_resolution",
+        output_file="test_2D_resolution.xao",
     )
 
     mesh(
         dim=2,
-        input_file="test_2D_resolution.xao",
-        output_file="test_2D_resolution.msh",
+        input_cad_file="test_2D_resolution.xao",
+        output_mesh_file="test_2D_resolution.msh",
         resolution_specs={
             "inner": [
                 ThresholdField(sizemin=0.1, distmax=2, sizemax=1, apply_to="curves")
@@ -96,8 +96,8 @@ def test_3D_resolution():
 
     mesh(
         dim=3,
-        input_file="test_3D_resolution.xao",
-        output_file="test_3D_resolution.msh",
+        input_cad_file="test_3D_resolution.xao",
+        output_mesh_file="test_3D_resolution.msh",
         resolution_specs={
             "inner": [
                 ConstantInField(resolution=1, apply_to="volumes"),
@@ -149,8 +149,8 @@ def test_exponential_field():
 
     mesh(
         dim=3,
-        input_file="test_exponential_field.xao",
-        output_file="test_exponential_field.msh",
+        input_cad_file="test_exponential_field.xao",
+        output_mesh_file="test_exponential_field.msh",
         resolution_specs={
             "inner": [
                 ExponentialField(
@@ -224,8 +224,8 @@ def test_refine(field, label):
         )
         output = mesh(
             dim=3,
-            input_file=f"test_refine_{label}.xao",
-            output_file=f"test_refine_{label}.msh",
+            input_cad_file=f"test_refine_{label}.xao",
+            output_mesh_file=f"test_refine_{label}.msh",
             resolution_specs={
                 "inner": [field.refine(factor)],
             },
@@ -304,8 +304,8 @@ def test_filter(apply_to, min_mass, max_mass):
 
     mesh(
         dim=3,
-        input_file=f"test_filter_{label}.xao",
-        output_file=f"test_filter_{label}.msh",
+        input_cad_file=f"test_filter_{label}.xao",
+        output_mesh_file=f"test_filter_{label}.msh",
         resolution_specs={
             "inner": [
                 ThresholdField(
@@ -389,8 +389,8 @@ def test_restrict(restrict_to):
 
     mesh(
         dim=3,
-        input_file=f"test_restrict_{restrict_to}.xao",
-        output_file=f"test_restrict_{restrict_to}.msh",
+        input_cad_file=f"test_restrict_{restrict_to}.xao",
+        output_mesh_file=f"test_restrict_{restrict_to}.msh",
         resolution_specs={
             "inner_left": [
                 ThresholdField(
@@ -440,8 +440,8 @@ def test_interface_thresholds():
 
     mesh(
         dim=3,
-        input_file="test_interface_thresholds.xao",
-        output_file="test_interface_thresholds.msh",
+        input_cad_file="test_interface_thresholds.xao",
+        output_mesh_file="test_interface_thresholds.msh",
         resolution_specs={
             "inner": [
                 ExponentialField(
