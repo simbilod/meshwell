@@ -107,7 +107,6 @@ class Mesh(GmshModel):
 
     def _apply_mesh_refinement(
         self,
-        background_remeshing_file: Optional[Path] | None,
         boundary_delimiter: str,
         resolution_specs: Dict,
     ) -> None:
@@ -115,10 +114,7 @@ class Mesh(GmshModel):
 
         TODO: enable simultaneous background mesh and entity-based refinement
         """
-        if background_remeshing_file is None:
-            self._apply_entity_refinement(boundary_delimiter, resolution_specs)
-        else:
-            self._apply_background_refinement()
+        self._apply_entity_refinement(boundary_delimiter, resolution_specs)
 
     def get_top_physical_names(self) -> list[str]:
         """Get all physical names of dimension dim from the GMSH model.
@@ -222,18 +218,6 @@ class Mesh(GmshModel):
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
-    def _apply_background_refinement(self) -> None:
-        """Apply mesh refinement based on background mesh."""
-        # Create background field from post-processing view
-        bg_field = self.model.mesh.field.add("PostView")
-        self.model.mesh.field.setNumber(bg_field, "ViewIndex", 0)
-        gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
-
-        # Turn off default meshing options
-        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-
     def _generate_final_mesh(
         self,
         dim: int,
@@ -264,7 +248,6 @@ class Mesh(GmshModel):
         self,
         dim: int,
         default_characteristic_length: float,
-        background_remeshing_file: Optional[Path] = None,
         global_scaling: float = 1.0,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
@@ -305,7 +288,6 @@ class Mesh(GmshModel):
 
         # Apply mesh refinement
         self._apply_mesh_refinement(
-            background_remeshing_file=background_remeshing_file,
             boundary_delimiter=boundary_delimiter,
             resolution_specs=resolution_specs,
         )
@@ -327,7 +309,6 @@ def mesh(
     output_mesh_file: Path,
     default_characteristic_length: float,
     resolution_specs: Dict | None = None,
-    background_remeshing_file: Optional[Path] = None,
     global_scaling: float = 1.0,
     global_2D_algorithm: int = 6,
     global_3D_algorithm: int = 1,
@@ -344,7 +325,6 @@ def mesh(
         input_cad_file: Path to input .xao file
         output_mesh_file: Path for output mesh file
         entities_list: Optional list of entities with mesh parameters
-        background_remeshing_file: Optional background mesh file for refinement
         default_characteristic_length: Default mesh size
         global_scaling: Global scaling factor
         global_2D_algorithm: GMSH 2D meshing algorithm
@@ -371,7 +351,6 @@ def mesh(
 
     return mesh_generator.generate(
         dim=dim,
-        background_remeshing_file=background_remeshing_file,
         default_characteristic_length=default_characteristic_length,
         global_scaling=global_scaling,
         global_2D_algorithm=global_2D_algorithm,
