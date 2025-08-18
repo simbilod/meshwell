@@ -84,6 +84,7 @@ class GMSH_entity:
         self.mesh_order = mesh_order
         self.mesh_bool = mesh_bool
         self.additive = additive
+        self.dimension = GMSH_ENTITY_DIMENSIONS.get(gmsh_partial_function.func, -1)
 
     def instanciate(self, cad_model):
         """Returns dim tag from entity."""
@@ -93,8 +94,7 @@ class GMSH_entity:
         entity_output = model_func(
             *self.gmsh_partial_function.args, **self.gmsh_partial_function.keywords
         )
-        dim = GMSH_ENTITY_DIMENSIONS[self.gmsh_partial_function.func]
         if isinstance(entity_output, int):
-            entity_output = [(dim, entity_output)]
+            entity_output = [(self.dimension, entity_output)]
         cad_model.model.occ.synchronize()
         return entity_output

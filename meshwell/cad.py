@@ -6,7 +6,6 @@ from pathlib import Path
 import gmsh
 
 from meshwell.validation import (
-    validate_dimtags,
     unpack_dimtags,
     order_entities,
 )
@@ -131,6 +130,26 @@ class CAD:
         self.points = new_points
         self.segments = new_segments
 
+    def _instantiate_entity(
+        self, index: int, entity_obj, progress_bars: bool
+    ) -> LabeledEntities:
+        """Common logic for instantiating entities."""
+        physical_name = entity_obj.physical_name
+        if progress_bars and physical_name:
+            print(f"Processing {physical_name} - instantiation")
+
+        # Instantiate entity
+        dimtags_out = entity_obj.instanciate(self)
+        dimtags = unpack_dimtags(dimtags_out)
+
+        return LabeledEntities(
+            index=index,
+            dimtags=dimtags,
+            physical_name=physical_name,
+            keep=entity_obj.mesh_bool,
+            model=self.model,
+        )
+
     def _initialize_model(self):
         """Ensure GMSH is initialized before operations."""
 
@@ -174,7 +193,7 @@ class CAD:
         additive_entities = order_entities(additive_entities)
 
         # Process structural entities
-        structural_entity_list, max_dim = self._process_structural_entities(
+        structural_entity_list, max_dim = self._process_multidimensional_entities(
             structural_entities, progress_bars
         )
 
@@ -191,91 +210,153 @@ class CAD:
 
         return structural_entity_list, max_dim
 
-    def _process_structural_entities(
+    def _process_multidimensional_entities(
         self, structural_entities: List, progress_bars: bool
     ) -> Tuple[List, int]:
-        """Process structural entities and return entity list and max dimension."""
-        structural_entity_list = []
+        """Process entities with mixed dimensions using hierarchical approach."""
+
+        entity_dimensions = []
         max_dim = 0
-
-        enumerator = enumerate(structural_entities)
-        if progress_bars:
-            from tqdm.auto import tqdm
-
-            enumerator = tqdm(list(enumerator))
-
-        for index, entity_obj in enumerator:
-            physical_name = entity_obj.physical_name
-            keep = entity_obj.mesh_bool
-            if progress_bars:
-                if physical_name:
-                    enumerator.set_description(
-                        f"{str(physical_name):<30} - {'instanciate':<15}"
-                    )
-            # First create the shape
-            dimtags_out = entity_obj.instanciate(self)
-
-            if progress_bars:
-                if physical_name:
-                    enumerator.set_description(
-                        f"{str(physical_name):<30} - {'dimtags':<15}"
-                    )
-
-            # Parse dimension
-            dim = validate_dimtags(dimtags_out)
+        for index, entity_obj in enumerate(structural_entities):
+            dim = entity_obj.dimension
             max_dim = max(dim, max_dim)
-            dimtags = unpack_dimtags(dimtags_out)
+            entity_dimensions.append((dim, index, entity_obj))
 
-            if progress_bars:
-                if physical_name:
-                    enumerator.set_description(
-                        f"{str(physical_name):<30} - {'entities':<15}"
-                    )
+        # Group entities by dimension
+        dimension_groups = {0: [], 1: [], 2: [], 3: []}
+        for dim, index, entity_obj in entity_dimensions:
+            dimension_groups[dim].append((index, entity_obj))
 
-            # Assemble with other shapes
-            current_entities = LabeledEntities(
-                index=index,
-                dimtags=dimtags,
-                physical_name=physical_name,
-                keep=keep,
-                model=self.model,
-            )
-            if progress_bars:
-                if physical_name:
-                    enumerator.set_description(
-                        f"{str(physical_name):<30} - {'boolean':<15}"
-                    )
-            if index == 0:
-                structural_entity_list.append(current_entities)
-            if index != 0:
-                cut = self.occ.cut(
-                    current_entities.dimtags,
-                    [
-                        dimtag
-                        for previous_entities in structural_entity_list
-                        for dimtag in previous_entities.dimtags
-                    ],
-                    removeObject=True,  # Only keep the difference
-                    removeTool=False,  # Tool (previous entities) should remain untouched
+        # Process entities by dimension (highest first)
+        all_processed_entities = []
+        dim = max_dim
+
+        while dim >= 0:
+            if dimension_groups[dim]:
+                # First pass: Process entities of same dimension with cuts
+                current_dimension_entities = self._process_dimension_group_cuts(
+                    dimension_groups[dim], progress_bars
                 )
-                # Heal interfaces now that there are no volume conflicts
-                if progress_bars:
-                    if physical_name:
-                        enumerator.set_description(
-                            f"{str(physical_name):<30} - {'duplicates':<15}"
-                        )
-                self.occ.removeAllDuplicates()
-                if progress_bars:
-                    if physical_name:
-                        enumerator.set_description(
-                            f"{str(physical_name):<30} - {'sync':<15}"
-                        )
-                self.sync_model()
-                current_entities.dimtags = list(set(cut[0]))
-            if current_entities.dimtags:
-                structural_entity_list.append(current_entities)
 
-        return structural_entity_list, max_dim
+                # Second pass: Fragment against higher dimensional entities
+                if all_processed_entities:
+                    current_dimension_entities = (
+                        self._process_dimension_group_fragments(
+                            current_dimension_entities,
+                            progress_bars,
+                            all_processed_entities,
+                        )
+                    )
+
+                all_processed_entities.extend(current_dimension_entities)
+            dim -= 1
+
+        return all_processed_entities, max_dim
+
+    def _process_dimension_group_fragments(
+        self,
+        entity_group: List[LabeledEntities],
+        progress_bars: bool,
+        higher_dim_entities: List[LabeledEntities],
+    ) -> List[LabeledEntities]:
+        """Fragment processing for entities against higher dimensional entities."""
+        processed_entities = []
+
+        for current_entity in entity_group:
+            if progress_bars and current_entity.physical_name:
+                print(
+                    f"Processing {current_entity.physical_name} - fragment integration"
+                )
+
+            # Fragment against higher-dimensional entities if they exist
+            if higher_dim_entities and current_entity.dimtags:
+                for higher_dim_entity in higher_dim_entities:
+                    if not higher_dim_entity.dimtags or not current_entity.dimtags:
+                        continue
+
+                    fragment_result = self.occ.fragment(
+                        current_entity.dimtags,
+                        higher_dim_entity.dimtags,
+                        removeObject=True,
+                        removeTool=True,
+                    )
+                    self.occ.synchronize()
+
+                    # Update current_entity dimtags based on fragment result
+                    if (
+                        fragment_result
+                        and len(fragment_result) > 1
+                        and fragment_result[1]
+                    ):
+                        num_object_dimtags = len(current_entity.dimtags)
+                        new_object_dimtags = []
+
+                        for idx in range(num_object_dimtags):
+                            if idx < len(fragment_result[1]):
+                                mapping = fragment_result[1][idx]
+                                if mapping:
+                                    if isinstance(mapping, list):
+                                        new_object_dimtags.extend(mapping)
+                                    else:
+                                        new_object_dimtags.append(mapping)
+
+                        current_entity.dimtags = new_object_dimtags
+
+            if current_entity.dimtags:
+                processed_entities.append(current_entity)
+
+        return processed_entities
+
+    def _process_dimension_group_cuts(
+        self, entity_group: List, progress_bars: bool
+    ) -> List[LabeledEntities]:
+        """Process entities of same dimension using cuts."""
+        processed_entities = []
+
+        for i, (index, entity_obj) in enumerate(entity_group):
+            # Instantiate entity using helper method
+            current_entity = self._instantiate_entity(index, entity_obj, progress_bars)
+
+            if i == 0:
+                processed_entities.append(current_entity)
+            else:
+                # Cut against previously processed entities
+                tool_dimtags = [
+                    dimtag
+                    for prev_entity in processed_entities
+                    for dimtag in prev_entity.dimtags
+                    if dimtag
+                ]
+
+                if tool_dimtags and current_entity.dimtags:
+                    try:
+                        cut = self.occ.cut(
+                            current_entity.dimtags,
+                            tool_dimtags,
+                            removeObject=True,
+                            removeTool=False,
+                        )
+                        if cut and cut[0]:
+                            current_entity.dimtags = list(set(cut[0]))
+                    except Exception as e:
+                        if progress_bars:
+                            print(
+                                f"Cut operation failed for {current_entity.physical_name}: {e}"
+                            )
+
+                if current_entity.dimtags:
+                    processed_entities.append(current_entity)
+
+                try:
+                    self.occ.removeAllDuplicates()
+                    self.sync_model()
+                except Exception as e:
+                    if progress_bars:
+                        print(
+                            f"Warning: cleanup failed after {current_entity.physical_name}: {e}"
+                        )
+
+        return processed_entities
 
     def _process_additive_entities(
         self,
@@ -377,20 +458,27 @@ class CAD:
         # Update entity boundaries
         for entity in final_entity_list:
             entity.update_boundaries()
+
+        # Filter out entities that became invalid after boundary update
+        valid_final_entities = [
+            entity for entity in final_entity_list if entity.dimtags and entity.dim >= 0
+        ]
+
         # Tag entities
-        tag_entities(final_entity_list, self.model)
-        # Tag model interfaces, logging model boundaries
-        final_entity_list = tag_interfaces(
-            final_entity_list, max_dim, interface_delimiter, self.model
-        )
-        # Tag model boundaries
-        tag_boundaries(
-            final_entity_list,
-            max_dim,
-            interface_delimiter,
-            boundary_delimiter,
-            self.model,
-        )
+        if valid_final_entities:
+            tag_entities(valid_final_entities, self.model)
+            # Tag highest-dimension model interfaces, model boundaries
+            valid_final_entities = tag_interfaces(
+                valid_final_entities, max_dim, interface_delimiter, self.model
+            )
+            # Tag model boundaries
+            tag_boundaries(
+                valid_final_entities,
+                max_dim,
+                interface_delimiter,
+                boundary_delimiter,
+                self.model,
+            )
 
     def generate(
         self,
@@ -424,7 +512,7 @@ class CAD:
             addition_structural_physicals=addition_structural_physicals,
         )
 
-        # Tag entities and boundaries
+        # Tag entities and boundaries (filtering happens inside _tag_mesh_components)
         self._tag_mesh_components(
             final_entity_list=final_entity_list,
             max_dim=max_dim,

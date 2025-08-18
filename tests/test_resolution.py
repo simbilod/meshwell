@@ -471,4 +471,5 @@ def test_interface_thresholds():
 
 
 if __name__ == "__main__":
-    test_refine(ConstantInField(apply_to="surfaces", resolution=1))
+    test_2D_resolution()
+    # test_refine(ConstantInField(apply_to="surfaces", resolution=1))

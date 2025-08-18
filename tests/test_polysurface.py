@@ -21,4 +21,5 @@ def test_polysurface():
         output_file="test_polysurface.msh",
         dim=2,
         default_characteristic_length=0.5,
+        n_threads=1,
     )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 import gmsh
 import shapely
 from meshwell.prism import Prism
@@ -67,10 +66,8 @@ def test_composite_cad_3D():
     )
 
 
-@pytest.mark.skip(
-    "Skipping -- cannot handle different dimensions seamlessly currently!"
-)
 def test_composite_cad_mixed():
+    """Test mixed-dimensional CAD processing with multi-dimensional capability."""
     # Create a prism
     polygon = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]])
     buffers = {0.0: 0.0, 1.0: 0.0}  # Extrude from z=0 to z=1
@@ -94,7 +91,6 @@ def test_composite_cad_mixed():
         additive=False,
     )
 
-    # Process all entities
     entities = [prism_obj, plane_obj]
     cad(
         entities_list=entities,
