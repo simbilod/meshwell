@@ -5,6 +5,8 @@ from meshwell.polyline import PolyLine
 from meshwell.polysurface import PolySurface
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.utils import compare_gmsh_files
+from pathlib import Path
 
 
 def test_polyline_basic():
@@ -37,6 +39,8 @@ def test_polyline_basic():
         default_characteristic_length=0.1,
         n_threads=1,
     )
+    compare_gmsh_files(Path("test_polyline_single.msh"))
+    compare_gmsh_files(Path("test_polyline_multi.msh"))
 
 
 def test_polyline_embedded_in_polysurface():
@@ -61,6 +65,7 @@ def test_polyline_embedded_in_polysurface():
         default_characteristic_length=0.2,
         n_threads=1,
     )
+    compare_gmsh_files(Path("test_polyline_embedded.msh"))
 
 
 def test_polyline_intersecting():
@@ -81,6 +86,7 @@ def test_polyline_intersecting():
         default_characteristic_length=0.1,
         n_threads=1,
     )
+    compare_gmsh_files(Path("test_polyline_intersecting.msh"))
 
 
 def test_polyline_mixed_dimensional():
@@ -113,6 +119,8 @@ def test_polyline_mixed_dimensional():
         default_characteristic_length=0.2,
         n_threads=1,
     )
+    compare_gmsh_files(Path("test_surface_only.msh"))
+    compare_gmsh_files(Path("test_line_only.msh"))
 
 
 def test_polyline_multilinestring():
@@ -132,6 +140,7 @@ def test_polyline_multilinestring():
         default_characteristic_length=0.1,
         n_threads=1,
     )
+    compare_gmsh_files(Path("test_polyline_multilinestring.msh"))
 
 
 if __name__ == "__main__":
