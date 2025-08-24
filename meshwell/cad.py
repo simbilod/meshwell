@@ -73,14 +73,12 @@ class CAD:
             )
             return self.segments[(xyz1, xyz2)]
 
-    def _channel_loop_from_vertices(
-        self, vertices: List[Tuple[float, float, float]]
-    ) -> int:
-        """Add a curve loop from the list of vertices.
+    def wire_from_vertices(self, vertices: List[Tuple[float, float, float]]) -> int:
+        """Add a wire from the list of vertices.
         Args:
             vertices: list of [x,y,z] coordinates
         Returns:
-            ID of the added curve loop
+            ID of the added wire
         """
         edges = []
         for vertex1, vertex2 in [
@@ -88,7 +86,7 @@ class CAD:
         ]:
             gmsh_line = self.add_get_segment(vertex1, vertex2)
             edges.append(gmsh_line)
-        return self.occ.add_curve_loop(edges)
+        return self.occ.add_wire(edges)
 
     def add_surface(self, vertices: List[Tuple[float, float, float]]) -> int:
         """Add a surface composed of the segments formed by vertices.
@@ -98,7 +96,7 @@ class CAD:
         Returns:
             ID of the added surface
         """
-        channel_loop = self._channel_loop_from_vertices(vertices)
+        channel_loop = self.wire_from_vertices(vertices)
         try:
             return self.occ.add_plane_surface([channel_loop])
         except Exception as e:
