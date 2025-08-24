@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## Unreleased
+
+- support lower-dimensional objects being passed, will be fragmented with higher-dimensional objects [PR#117](https://github.com/simbilod/meshwell/pull/117)
+
 ## 2.0.0
 
 This is a major breaking release which separates the CAD and meshing operations. See the new syntax in the updates documentation.
