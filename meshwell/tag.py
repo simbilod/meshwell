@@ -35,7 +35,7 @@ def tag_interfaces(entity_list: List, max_dim: int, boundary_delimiter: str, mod
             continue
         elif entity1.dim != entity2.dim:
             continue
-        elif entity1.dim != max_dim:
+        elif entity1.dim != max_dim:  # ignore lower-dimensional entities
             continue
         else:
             dim = entity1.dim - 1
@@ -72,7 +72,7 @@ def tag_boundaries(
         2: {},
     }
     for entity in entity_list:
-        if entity.dim != max_dim:
+        if entity.dim != max_dim:  # ignore lower-dimensional entities
             continue
         dim = entity.dim - 1
         boundaries = list(set(entity.boundaries) - set(entity.interfaces))

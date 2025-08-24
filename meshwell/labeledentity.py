@@ -49,9 +49,37 @@ class LabeledEntities:
         }
 
     def update_boundaries(self) -> List[int]:
-        self.boundaries = [
-            tag for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
-        ]
+        # Filter out non-existent entities before getting boundaries
+        valid_dimtags = []
+        all_entities = {}
+
+        # Get all existing entities by dimension
+        for dim in range(4):
+            try:
+                entities = gmsh.model.getEntities(dim)
+                all_entities[dim] = {tag for _, tag in entities}
+            except:  # noqa: E722
+                all_entities[dim] = set()
+
+        # Filter dimtags to only include existing entities
+        for dim, tag in self.dimtags:
+            if tag in all_entities.get(dim, set()):
+                valid_dimtags.append((dim, tag))
+
+        # Update dimtags to only valid ones
+        self.dimtags = valid_dimtags
+
+        # Get boundaries only for valid entities
+        if valid_dimtags:
+            self.boundaries = [
+                tag
+                for dim, tag in gmsh.model.getBoundary(
+                    valid_dimtags, True, False, False
+                )
+            ]
+        else:
+            self.boundaries = []
+
         return self.boundaries
 
     def _fuse_self(self, dimtags: List[Union[int, str]]) -> List[Union[int, str]]:
@@ -76,13 +104,13 @@ class LabeledEntities:
 
     @property
     def dim(self) -> int:
+        if not self.dimtags:
+            return -1  # Invalid dimension for empty entities
         return [dim for dim, tag in self.dimtags][0]
 
     def boundaries(self) -> List[int]:
-        self.boundaries = [
-            tag for dim, tag in gmsh.model.getBoundary(self.dimtags, True, False, False)
-        ]
-        return self.boundaries
+        # Use the same safe logic as update_boundaries
+        return self.update_boundaries()
 
     def filter_tags_by_target_dimension(self, target_dimension):
         match self.dim - target_dimension:

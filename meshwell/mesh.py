@@ -135,6 +135,22 @@ class Mesh:
 
         return physical_names
 
+    def get_all_physical_names(self) -> list[str]:
+        """Get all physical names of dimension dim from the GMSH model.
+
+        Returns:
+            List of physical names as strings
+        """
+        # Get all physical groups
+        physical_groups = self.model.getPhysicalGroups()
+
+        # Extract names from physical groups
+        physical_names = [
+            self.model.getPhysicalName(dim, tag) for dim, tag in physical_groups
+        ]
+
+        return physical_names
+
     def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
         """Get the dimtags associated with a physical group name.
 
@@ -174,12 +190,16 @@ class Mesh:
         # Recreate LabeledEntities for applying resolutions
         final_entity_list = []
         final_entity_dict = {}
-        # We address entities by top dimensional physicals:
-        for index, physical_name in enumerate(self.get_top_physical_names()):
+        # We address entities by "named" physicals (not default):
+        top_physical_names = self.get_top_physical_names()
+        all_physical_names = self.get_all_physical_names()
+        for index, physical_name in enumerate(all_physical_names):
             if physical_name in resolution_specs:
                 resolutions = resolution_specs[physical_name]
             else:
                 resolutions = []
+            if not resolutions and physical_name not in top_physical_names:
+                continue
             entities = LabeledEntities(
                 index=index,
                 physical_name=physical_name,
