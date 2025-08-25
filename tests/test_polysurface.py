@@ -4,6 +4,8 @@ import shapely
 from meshwell.polysurface import PolySurface
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.utils import compare_gmsh_files
+from pathlib import Path
 
 
 def test_polysurface():
@@ -23,3 +25,4 @@ def test_polysurface():
         default_characteristic_length=0.5,
         n_threads=1,
     )
+    compare_gmsh_files(Path("test_polysurface.msh"))

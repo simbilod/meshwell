@@ -76,11 +76,11 @@ class CAD:
     def _channel_loop_from_vertices(
         self, vertices: List[Tuple[float, float, float]]
     ) -> int:
-        """Add a curve loop from the list of vertices.
+        """Add a wire from the list of vertices.
         Args:
             vertices: list of [x,y,z] coordinates
         Returns:
-            ID of the added curve loop
+            ID of the added wire
         """
         edges = []
         for vertex1, vertex2 in [
@@ -88,7 +88,32 @@ class CAD:
         ]:
             gmsh_line = self.add_get_segment(vertex1, vertex2)
             edges.append(gmsh_line)
-        return self.occ.add_curve_loop(edges)
+        return self.occ.add_wire(edges, checkClosed=True)
+
+    def wire_from_vertices(
+        self, vertices: List[Tuple[float, float, float]], checkClosed=False
+    ) -> int:
+        """Add a wire from the list of vertices.
+        Args:
+            vertices: list of [x,y,z] coordinates
+        Returns:
+            ID of the added wire
+        """
+        edges = []
+        for vertex1, vertex2 in [
+            (vertices[i], vertices[i + 1]) for i in range(len(vertices) - 1)
+        ]:
+            gmsh_line = self.add_get_segment(vertex1, vertex2)
+            edges.append(gmsh_line)
+        if checkClosed:
+            return self.occ.add_wire(edges, checkClosed=checkClosed)
+        else:
+            return edges
+
+    def _channel_loop_from_vertices(
+        self, vertices: List[Tuple[float, float, float]]
+    ) -> int:
+        return self.wire_from_vertices(vertices, checkClosed=True)
 
     def add_surface(self, vertices: List[Tuple[float, float, float]]) -> int:
         """Add a surface composed of the segments formed by vertices.
@@ -99,12 +124,7 @@ class CAD:
             ID of the added surface
         """
         channel_loop = self._channel_loop_from_vertices(vertices)
-        try:
-            return self.occ.add_plane_surface([channel_loop])
-        except Exception as e:
-            print("Failed vertices:")
-            print(vertices)
-            raise e
+        return self.occ.add_plane_surface([channel_loop])
 
     def sync_model(self):
         """Synchronize the CAD model, and update points and lines vertex mapping."""
@@ -120,13 +140,10 @@ class CAD:
             Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
         ] = {}
         for _, cad_line in cad_lines:
-            try:
-                key = list(self.segments.keys())[
-                    list(self.segments.values()).index(cad_line)
-                ]
-                cad_lines[key] = cad_line
-            except Exception:
-                continue
+            key = list(self.segments.keys())[
+                list(self.segments.values()).index(cad_line)
+            ]
+            cad_lines[key] = cad_line
         self.points = new_points
         self.segments = new_segments
 
