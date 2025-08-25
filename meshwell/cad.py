@@ -7,7 +7,6 @@ import gmsh
 
 from meshwell.validation import (
     unpack_dimtags,
-    order_entities,
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
@@ -72,23 +71,6 @@ class CAD:
                 self.add_get_point(xyz2[0], xyz2[1], xyz2[2]),
             )
             return self.segments[(xyz1, xyz2)]
-
-    def _channel_loop_from_vertices(
-        self, vertices: List[Tuple[float, float, float]]
-    ) -> int:
-        """Add a wire from the list of vertices.
-        Args:
-            vertices: list of [x,y,z] coordinates
-        Returns:
-            ID of the added wire
-        """
-        edges = []
-        for vertex1, vertex2 in [
-            (vertices[i], vertices[i + 1]) for i in range(len(vertices) - 1)
-        ]:
-            gmsh_line = self.add_get_segment(vertex1, vertex2)
-            edges.append(gmsh_line)
-        return self.occ.add_wire(edges, checkClosed=True)
 
     def wire_from_vertices(
         self, vertices: List[Tuple[float, float, float]], checkClosed=False
@@ -206,8 +188,6 @@ class CAD:
         # Separate and order entities
         structural_entities = [e for e in entities_list if not e.additive]
         additive_entities = [e for e in entities_list if e.additive]
-        structural_entities = order_entities(structural_entities)
-        additive_entities = order_entities(additive_entities)
 
         # Process structural entities
         structural_entity_list, max_dim = self._process_multidimensional_entities(
@@ -239,10 +219,18 @@ class CAD:
             max_dim = max(dim, max_dim)
             entity_dimensions.append((dim, index, entity_obj))
 
-        # Group entities by dimension
+        # Group entities by dimension and sort by mesh_order within each dimension
         dimension_groups = {0: [], 1: [], 2: [], 3: []}
         for dim, index, entity_obj in entity_dimensions:
             dimension_groups[dim].append((index, entity_obj))
+
+        # Sort each dimension group by mesh_order
+        for dim in dimension_groups:
+            dimension_groups[dim].sort(
+                key=lambda x: x[1].mesh_order
+                if x[1].mesh_order is not None
+                else float("inf")
+            )
 
         # Process entities by dimension (highest first)
         all_processed_entities = []
@@ -250,7 +238,7 @@ class CAD:
 
         while dim >= 0:
             if dimension_groups[dim]:
-                # First pass: Process entities of same dimension with cuts
+                # Process entities of same dimension in mesh_order sequence
                 current_dimension_entities = self._process_dimension_group_cuts(
                     dimension_groups[dim], progress_bars
                 )
