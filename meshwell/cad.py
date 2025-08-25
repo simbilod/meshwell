@@ -109,25 +109,12 @@ class CAD:
         return self.occ.add_plane_surface([channel_loop])
 
     def sync_model(self):
-        """Synchronize the CAD model, and update points and lines vertex mapping."""
+        """Synchronize the CAD model, and clear points/segments cache to avoid conflicts."""
         self.occ.synchronize()
-        cad_points = self.model.getEntities(dim=0)
-        new_points: Dict[Tuple[float, float, float], int] = {}
-        for _, cad_point in cad_points:
-            # OCC kernel can do whatever, so just read point coordinates
-            vertices = tuple(self.model.getValue(0, cad_point, []))
-            new_points[vertices] = cad_point
-        cad_lines = self.model.getEntities(dim=1)
-        new_segments: Dict[
-            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
-        ] = {}
-        for _, cad_line in cad_lines:
-            key = list(self.segments.keys())[
-                list(self.segments.values()).index(cad_line)
-            ]
-            cad_lines[key] = cad_line
-        self.points = new_points
-        self.segments = new_segments
+        # After boolean operations, clear the cache to avoid ID conflicts
+        # This prevents reuse of points/segments that may have been modified/deleted
+        self.points = {}
+        self.segments = {}
 
     def _instantiate_entity(
         self, index: int, entity_obj, progress_bars: bool
