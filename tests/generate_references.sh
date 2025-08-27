@@ -4,9 +4,9 @@
 uv venv --python=3.11
 source .venv/bin/activate
 
-# Install reference version of the package in editable mode
+# Install reference version of the package
 sudo apt-get install libglu1-mesa
-uv pip install git+https://github.com/simbilod/meshwell.git@2e72f3bc5a3061c4326d4094c30f2fe47bd15432[dev]
+uv pip install git+https://github.com/simbilod/meshwell.git@d887f3acdd6749c5c7780f47888b748d98559756[dev]
 
 # Execute all Python files in the current directory
 python generate_references.py --references-path ./references/
