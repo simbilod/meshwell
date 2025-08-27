@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.1.0
+
 - support lower-dimensional objects being passed, will be fragmented with higher-dimensional objects [PR#117](https://github.com/simbilod/meshwell/pull/117)
 - polyline [PR#119](https://github.com/simbilod/meshwell/pull/119)
 
