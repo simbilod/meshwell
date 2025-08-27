@@ -7,7 +7,6 @@ import gmsh
 
 from meshwell.validation import (
     unpack_dimtags,
-    order_entities,
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
@@ -73,23 +72,6 @@ class CAD:
             )
             return self.segments[(xyz1, xyz2)]
 
-    def _channel_loop_from_vertices(
-        self, vertices: List[Tuple[float, float, float]]
-    ) -> int:
-        """Add a wire from the list of vertices.
-        Args:
-            vertices: list of [x,y,z] coordinates
-        Returns:
-            ID of the added wire
-        """
-        edges = []
-        for vertex1, vertex2 in [
-            (vertices[i], vertices[i + 1]) for i in range(len(vertices) - 1)
-        ]:
-            gmsh_line = self.add_get_segment(vertex1, vertex2)
-            edges.append(gmsh_line)
-        return self.occ.add_wire(edges, checkClosed=True)
-
     def wire_from_vertices(
         self, vertices: List[Tuple[float, float, float]], checkClosed=False
     ) -> int:
@@ -127,25 +109,12 @@ class CAD:
         return self.occ.add_plane_surface([channel_loop])
 
     def sync_model(self):
-        """Synchronize the CAD model, and update points and lines vertex mapping."""
+        """Synchronize the CAD model, and clear points/segments cache to avoid conflicts."""
         self.occ.synchronize()
-        cad_points = self.model.getEntities(dim=0)
-        new_points: Dict[Tuple[float, float, float], int] = {}
-        for _, cad_point in cad_points:
-            # OCC kernel can do whatever, so just read point coordinates
-            vertices = tuple(self.model.getValue(0, cad_point, []))
-            new_points[vertices] = cad_point
-        cad_lines = self.model.getEntities(dim=1)
-        new_segments: Dict[
-            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
-        ] = {}
-        for _, cad_line in cad_lines:
-            key = list(self.segments.keys())[
-                list(self.segments.values()).index(cad_line)
-            ]
-            cad_lines[key] = cad_line
-        self.points = new_points
-        self.segments = new_segments
+        # After boolean operations, clear the cache to avoid ID conflicts
+        # This prevents reuse of points/segments that may have been modified/deleted
+        self.points = {}
+        self.segments = {}
 
     def _instantiate_entity(
         self, index: int, entity_obj, progress_bars: bool
@@ -206,8 +175,6 @@ class CAD:
         # Separate and order entities
         structural_entities = [e for e in entities_list if not e.additive]
         additive_entities = [e for e in entities_list if e.additive]
-        structural_entities = order_entities(structural_entities)
-        additive_entities = order_entities(additive_entities)
 
         # Process structural entities
         structural_entity_list, max_dim = self._process_multidimensional_entities(
@@ -239,10 +206,18 @@ class CAD:
             max_dim = max(dim, max_dim)
             entity_dimensions.append((dim, index, entity_obj))
 
-        # Group entities by dimension
+        # Group entities by dimension and sort by mesh_order within each dimension
         dimension_groups = {0: [], 1: [], 2: [], 3: []}
         for dim, index, entity_obj in entity_dimensions:
             dimension_groups[dim].append((index, entity_obj))
+
+        # Sort each dimension group by mesh_order
+        for dim in dimension_groups:
+            dimension_groups[dim].sort(
+                key=lambda x: x[1].mesh_order
+                if x[1].mesh_order is not None
+                else float("inf")
+            )
 
         # Process entities by dimension (highest first)
         all_processed_entities = []
@@ -250,7 +225,7 @@ class CAD:
 
         while dim >= 0:
             if dimension_groups[dim]:
-                # First pass: Process entities of same dimension with cuts
+                # Process entities of same dimension in mesh_order sequence
                 current_dimension_entities = self._process_dimension_group_cuts(
                     dimension_groups[dim], progress_bars
                 )
