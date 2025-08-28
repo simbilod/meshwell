@@ -119,12 +119,15 @@ class LabeledEntities:
             case 1:
                 tags = self.boundaries
             case 2 | 3:
-                tags = [
-                    c
-                    for b in self.boundaries
-                    for cs in self.model.occ.getCurveLoops(b)[1]
-                    for c in cs
-                ]
+                if self.dim == 2:
+                    tags = self.boundaries  # boundaries are curves already
+                else:
+                    tags = [
+                        c
+                        for b in self.boundaries
+                        for cs in self.model.occ.getCurveLoops(b)[1]
+                        for c in cs
+                    ]
             case -1:
                 warnings.warn(
                     "Target dimension requested is 3, but entity is 2D; skipping resolution assignment."
@@ -171,12 +174,11 @@ class LabeledEntities:
         # If targeting points, need post-filtering filtering
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
-            return {
-                p[1]: None
-                for p in self.model.getBoundary(
-                    [(1, tag) for tag in filtered_tags.keys()]
-                )
-            }  # no mass in 0D
+            points_dimtags = self.model.getBoundary(
+                [(1, tag) for tag in filtered_tags.keys()]
+            )
+            points_mass_dict = {p[1]: None for p in points_dimtags}
+            return points_mass_dict
         else:
             return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
 
@@ -201,7 +203,7 @@ class LabeledEntities:
                 # Filter by shared or not shared as well; include boundary
                 entities_mass_dict_sharing = {}
                 if resolutionspec.sharing is None:
-                    superset = {x for xs in all_entities_dict.keys() for x in xs}
+                    superset = set(all_entities_dict.keys())
                     include_boundary = True
                 else:
                     include_boundary = (
@@ -275,6 +277,10 @@ class LabeledEntities:
                     restrict_to_str = "VolumesList"
                 elif self.dim == 2:
                     restrict_to_str = "SurfacesList"
+                elif self.dim == 1:
+                    restrict_to_str = "CurvesList"
+                elif self.dim == 0:
+                    restrict_to_str = "PointsList"
 
                 if entities_mass_dict_sharing:
                     refinement_field_indices.append(
