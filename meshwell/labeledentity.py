@@ -174,9 +174,10 @@ class LabeledEntities:
         # If targeting points, need post-filtering filtering
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
-            points_dimtags = self.model.getBoundary(
-                [(1, tag) for tag in filtered_tags.keys()]
-            )
+            points_boundaries_dimtags = [
+                self.model.getBoundary([(1, tag)]) for tag in filtered_tags.keys()
+            ]
+            points_dimtags = [x for xs in points_boundaries_dimtags for x in xs]
             points_mass_dict = {p[1]: None for p in points_dimtags}
             return points_mass_dict
         else:
