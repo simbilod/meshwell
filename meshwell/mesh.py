@@ -151,30 +151,24 @@ class Mesh:
 
         return physical_names
 
-    def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
-        """Get the dimtags associated with a physical group name.
-
-        Args:
-            physical_name: Name of the physical group
-
-        Returns:
-            List of (dim, tag) tuples for entities in the physical group
-        """
+    def get_physical_dimtags_mapping(self) -> list[tuple[int, int]]:
+        """Returns the mapping between physical names and their dimtags."""
         # Get all physical groups
         physical_groups = self.model.getPhysicalGroups()
 
-        dimtags = []
+        mapping = {}
         for dim, tag in physical_groups:
-            # Get name of current physical group
             current_name = self.model.getPhysicalName(dim, tag)
+            entity_tags = self.model.getEntitiesForPhysicalGroup(dim, tag)
+            mapping[current_name] = [(dim, int(t)) for t in set(entity_tags)]
 
-            if current_name == physical_name:
-                # Get entities in this physical group
-                entity_tags = self.model.getEntitiesForPhysicalGroup(dim, tag)
-                # Add dimtags for all entities
-                dimtags.extend([(dim, int(t)) for t in set(entity_tags)])
+        # Also return the reverse mapping
+        reverse_mapping = {}
+        for name, dimtags in mapping.items():
+            for dimtag in dimtags:
+                reverse_mapping[dimtag] = name
 
-        return dimtags
+        return mapping, reverse_mapping
 
     def _apply_entity_refinement(
         self,
@@ -193,6 +187,12 @@ class Mesh:
         # We address entities by "named" physicals (not default):
         top_physical_names = self.get_top_physical_names()
         all_physical_names = self.get_all_physical_names()
+
+        (
+            physical_dimtags_mapping,
+            dimtags_physical_mapping,
+        ) = self.get_physical_dimtags_mapping()
+
         for index, physical_name in enumerate(all_physical_names):
             if physical_name in resolution_specs:
                 resolutions = resolution_specs[physical_name]
@@ -204,10 +204,10 @@ class Mesh:
                 index=index,
                 physical_name=physical_name,
                 model=self.model,
-                dimtags=self.get_physical_dimtags(physical_name=physical_name),
+                dimtags=physical_dimtags_mapping[physical_name],
                 resolutions=resolutions,
             )
-            entities.update_boundaries()
+            entities.recover_interfaces(boundary_delimiter, dimtags_physical_mapping)
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities
 
@@ -216,8 +216,7 @@ class Mesh:
         for entity in final_entity_list:
             refinement_field_indices.extend(
                 entity.add_refinement_fields_to_model(
-                    final_entity_dict,
-                    boundary_delimiter,
+                    final_entity_dict, boundary_delimiter, dimtags_physical_mapping
                 )
             )
 
