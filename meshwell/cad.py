@@ -512,6 +512,12 @@ class CAD:
             boundary_delimiter=boundary_delimiter,
         )
 
+        # Delete entities that are not marked to keep
+        for entity in final_entity_list:
+            if not entity.keep and entity.dimtags:
+                self.occ.remove(entity.dimtags, recursive=True)
+                self.occ.synchronize()
+
         # Save CAD to .xao format
         gmsh.write(str(output_file.with_suffix(".xao")))
         gmsh.finalize()
