@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shapely
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 from meshwell.cad import cad
 from meshwell.mesh import mesh
 
@@ -13,19 +13,19 @@ def test_multiple_physicals():
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
-    big_prism = Prism(
+    big_prism = PolyPrism(
         polygons=polygon.buffer(10, join_style="mitre"),
         buffers=buffers,
         physical_name=("big_prism", "domain"),
         mesh_order=3,
     )
-    medium_prism = Prism(
+    medium_prism = PolyPrism(
         polygons=polygon.buffer(5, join_style="mitre"),
         buffers=buffers,
         physical_name=("medium_prism", "center"),
         mesh_order=2,
     )
-    small_prism = Prism(
+    small_prism = PolyPrism(
         polygons=polygon,
         buffers=buffers,
         physical_name="small_prism",

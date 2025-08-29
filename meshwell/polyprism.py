@@ -3,7 +3,7 @@ from shapely.geometry import Polygon, MultiPolygon
 from meshwell.validation import format_physical_name
 
 
-class Prism:
+class PolyPrism:
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
 

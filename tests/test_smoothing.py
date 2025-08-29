@@ -4,7 +4,7 @@ from pathlib import Path
 import shapely
 import gmsh
 from functools import partial
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 from meshwell.gmsh_entity import GMSH_entity
 from meshwell.resolution import ConstantInField
 from meshwell.cad import cad
@@ -23,7 +23,7 @@ def test_smoothing():
 
     buffers = {0.0: 0.0, 1.0: -0.1}
 
-    poly3D = Prism(
+    poly3D = PolyPrism(
         polygons=polygon,
         buffers=buffers,
         physical_name="first_entity",

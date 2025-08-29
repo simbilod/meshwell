@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shapely
 from meshwell.polysurface import PolySurface
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 from meshwell.resolution import ConstantInField, ThresholdField, ExponentialField
 from meshwell.utils import compare_gmsh_files
 from pathlib import Path
@@ -74,13 +74,13 @@ def test_3D_resolution():
 
     buffers = {0.0: 0.0, 3: 0.0}
 
-    prism_obj1 = Prism(
+    prism_obj1 = PolyPrism(
         polygons=polygon1,
         buffers=buffers,
         mesh_order=2,
         physical_name="outer",
     )
-    prism_obj2 = Prism(
+    prism_obj2 = PolyPrism(
         polygons=polygon2,
         buffers=buffers,
         mesh_order=1,
@@ -282,13 +282,13 @@ def test_filter(apply_to, min_mass, max_mass):
         ],
     )
 
-    prism1 = Prism(
+    prism1 = PolyPrism(
         polygons=polygon1,
         buffers=buffers1,
         mesh_order=2,
         physical_name="outer",
     )
-    prism2 = Prism(
+    prism2 = PolyPrism(
         polygons=polygon2,
         buffers=buffers2,
         mesh_order=1,
