@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from os import cpu_count
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 import gmsh
 
@@ -10,6 +10,7 @@ from meshwell.validation import (
 )
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
+from meshwell.model import Model
 
 
 class CAD:
@@ -20,10 +21,29 @@ class CAD:
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
         filename: str = "temp",
+        model: Optional[Model] = None,
     ):
-        """Initialize CAD processor."""
-        # Model initialization
-        self.n_threads = n_threads
+        """Initialize CAD processor.
+
+        Args:
+            point_tolerance: Tolerance for point merging
+            n_threads: Number of threads for processing
+            filename: Base filename for the model
+            model: Optional Model instance to use (creates new if None)
+        """
+        # Use provided model or create new one
+        if model is None:
+            self.model_instance = Model(
+                n_threads=n_threads,
+                filename=filename,
+                point_tolerance=point_tolerance,
+            )
+            self._owns_model = True
+        else:
+            self.model_instance = model
+            self._owns_model = False
+
+        # Store parameters for backward compatibility
         self.point_tolerance = point_tolerance
         self.filename = Path(filename)
 
@@ -47,7 +67,7 @@ class CAD:
         y = round(y / self.point_tolerance) * self.point_tolerance
         z = round(z / self.point_tolerance) * self.point_tolerance
         if (x, y, z) not in self.points.keys():
-            self.points[(x, y, z)] = self.occ.add_point(x, y, z)
+            self.points[(x, y, z)] = self.model.occ.add_point(x, y, z)
         return self.points[(x, y, z)]
 
     def add_get_segment(
@@ -66,7 +86,7 @@ class CAD:
         elif (xyz2, xyz1) in self.segments.keys():
             return self.segments[(xyz2, xyz1)]
         else:
-            self.segments[(xyz1, xyz2)] = self.occ.add_line(
+            self.segments[(xyz1, xyz2)] = self.model.occ.add_line(
                 self.add_get_point(xyz1[0], xyz1[1], xyz1[2]),
                 self.add_get_point(xyz2[0], xyz2[1], xyz2[2]),
             )
@@ -88,7 +108,7 @@ class CAD:
             gmsh_line = self.add_get_segment(vertex1, vertex2)
             edges.append(gmsh_line)
         if checkClosed:
-            return self.occ.add_wire(edges, checkClosed=checkClosed)
+            return self.model.occ.add_wire(edges, checkClosed=checkClosed)
         else:
             return edges
 
@@ -106,11 +126,11 @@ class CAD:
             ID of the added surface
         """
         channel_loop = self._channel_loop_from_vertices(vertices)
-        return self.occ.add_plane_surface([channel_loop])
+        return self.model.occ.add_plane_surface([channel_loop])
 
     def sync_model(self):
         """Synchronize the CAD model, and clear points/segments cache to avoid conflicts."""
-        self.occ.synchronize()
+        self.model_instance.sync_model()
         # After boolean operations, clear the cache to avoid ID conflicts
         # This prevents reuse of points/segments that may have been modified/deleted
         self.points = {}
@@ -138,29 +158,16 @@ class CAD:
 
     def _initialize_model(self):
         """Ensure GMSH is initialized before operations."""
+        # Initialize the model instance
+        self.model_instance.ensure_initialized(str(self.filename))
 
-        # Create model object
-        self.model = gmsh.model
-        self.occ = self.model.occ
+        # Set references for backward compatibility
+        self.model = self.model_instance.model
+        self.occ = self.model_instance.occ
 
-        if gmsh.is_initialized():
-            gmsh.finalize()
-            gmsh.initialize()
-        else:
-            gmsh.initialize()
-
-        # Clear model and points
-        gmsh.clear()
+        # Clear points and segments cache
         self.points = {}
         self.segments = {}
-
-        self.model.add(str(self.filename))
-        self.model.setFileName(str(self.filename))
-        gmsh.option.setNumber("General.NumThreads", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads3D", self.n_threads)
-        gmsh.option.setNumber("Geometry.OCCParallel", 1)
 
     def _process_entities(
         self,
@@ -266,13 +273,13 @@ class CAD:
                     if not higher_dim_entity.dimtags or not current_entity.dimtags:
                         continue
 
-                    fragment_result = self.occ.fragment(
+                    fragment_result = self.model.occ.fragment(
                         current_entity.dimtags,
                         higher_dim_entity.dimtags,
                         removeObject=True,
                         removeTool=True,
                     )
-                    self.occ.synchronize()
+                    self.model.occ.synchronize()
 
                     # Update current_entity dimtags based on fragment result
                     if (
@@ -322,7 +329,7 @@ class CAD:
 
                 if tool_dimtags and current_entity.dimtags:
                     try:
-                        cut = self.occ.cut(
+                        cut = self.model.occ.cut(
                             current_entity.dimtags,
                             tool_dimtags,
                             removeObject=True,
@@ -340,7 +347,7 @@ class CAD:
                     processed_entities.append(current_entity)
 
                 try:
-                    self.occ.removeAllDuplicates()
+                    self.model.occ.removeAllDuplicates()
                     self.sync_model()
                 except Exception as e:
                     if progress_bars:
@@ -388,7 +395,7 @@ class CAD:
                 additive_names = tuple(additive_names)
 
                 # Find intersection between structural and additive entities
-                intersection = self.occ.intersect(
+                intersection = self.model.occ.intersect(
                     structural_entity.dimtags,
                     additive_dimtags,
                     removeObject=False,
@@ -397,17 +404,17 @@ class CAD:
 
                 if not intersection[0]:
                     # No overlap case - keep original structural entity
-                    self.occ.synchronize()
+                    self.model.occ.synchronize()
                     updated_entities.append(structural_entity)
                 else:
                     # Cut out intersection from structural entity
-                    complement = self.occ.cut(
+                    complement = self.model.occ.cut(
                         structural_entity.dimtags,
                         intersection[0],
                         removeObject=False,
                         removeTool=False,
                     )
-                    self.occ.synchronize()
+                    self.model.occ.synchronize()
 
                     # Add complement if it exists
                     if complement[0]:
@@ -434,7 +441,7 @@ class CAD:
 
             # Update entity list for next iteration
             structural_entity_list = updated_entities
-            self.occ.removeAllDuplicates()
+            self.model.occ.removeAllDuplicates()
             self.sync_model()
 
         return structural_entity_list
@@ -472,10 +479,9 @@ class CAD:
                 self.model,
             )
 
-    def generate(
+    def process_entities(
         self,
         entities_list: List,
-        output_file: Path,
         addition_delimiter: str = "+",
         addition_intersection_physicals: bool = True,
         addition_addition_physicals: bool = True,
@@ -483,16 +489,23 @@ class CAD:
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         progress_bars: bool = False,
-    ) -> None:
-        """Generate CAD geometry and save to .xao format.
+    ) -> List:
+        """Process entities and return final entity list (no file I/O).
 
         Args:
             entities_list: List of entities to process
-            output_file: Output file path
-            ... [other args from original cad() method]
+            addition_delimiter: Delimiter for additive entity names
+            addition_intersection_physicals: Include intersection physical names
+            addition_addition_physicals: Include addition physical names
+            addition_structural_physicals: Include structural physical names
+            interface_delimiter: Delimiter for interface names
+            boundary_delimiter: Delimiter for boundary names
+            progress_bars: Show progress bars during processing
+
+        Returns:
+            List of processed LabeledEntities
         """
         self._initialize_model()
-        output_file = Path(output_file)
 
         # Process entities and get max dimension
         final_entity_list, max_dim = self._process_entities(
@@ -515,12 +528,19 @@ class CAD:
         # Delete entities that are not marked to keep
         for entity in final_entity_list:
             if not entity.keep and entity.dimtags:
-                self.occ.remove(entity.dimtags, recursive=True)
-                self.occ.synchronize()
+                self.model.occ.remove(entity.dimtags, recursive=True)
+                self.model.occ.synchronize()
 
-        # Save CAD to .xao format
+        return final_entity_list
+
+    def save_to_file(self, output_file: Path) -> None:
+        """Save current model state to .xao file.
+
+        Args:
+            output_file: Output file path (will be suffixed with .xao)
+        """
+        output_file = Path(output_file)
         gmsh.write(str(output_file.with_suffix(".xao")))
-        gmsh.finalize()
 
 
 def cad(
@@ -536,6 +556,7 @@ def cad(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     progress_bars: bool = False,
+    model: Optional[Model] = None,
 ) -> None:
     """Utility function that wraps the CAD class for easier usage.
 
@@ -552,16 +573,18 @@ def cad(
         interface_delimiter: Delimiter for interface names
         boundary_delimiter: Delimiter for boundary names
         progress_bars: Show progress bars during processing
+        model: Optional Model instance to use (creates new if None)
     """
     cad_processor = CAD(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
         filename=filename,
+        model=model,
     )
 
-    cad_processor.generate(
+    # Process entities
+    cad_processor.process_entities(
         entities_list=entities_list,
-        output_file=output_file,
         addition_delimiter=addition_delimiter,
         addition_intersection_physicals=addition_intersection_physicals,
         addition_addition_physicals=addition_addition_physicals,
@@ -570,3 +593,10 @@ def cad(
         boundary_delimiter=boundary_delimiter,
         progress_bars=progress_bars,
     )
+
+    # Save to file
+    cad_processor.save_to_file(output_file)
+
+    # Finalize if we created the model
+    if model is None:
+        cad_processor.model_instance.finalize()
