@@ -74,6 +74,7 @@ class GMSH_entity:
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
+        dimension: int | None = None,
     ):
         if not isinstance(gmsh_partial_function, partial):
             raise TypeError(
@@ -84,17 +85,24 @@ class GMSH_entity:
         self.mesh_order = mesh_order
         self.mesh_bool = mesh_bool
         self.additive = additive
-        self.dimension = GMSH_ENTITY_DIMENSIONS.get(gmsh_partial_function.func, -1)
+
+        if gmsh_partial_function.func in GMSH_ENTITY_DIMENSIONS:
+            self.dimension = GMSH_ENTITY_DIMENSIONS[gmsh_partial_function.func]
+        else:
+            if dimension is None:
+                raise ValueError(
+                    "For custom gmsh_partial_function, dimension must be specified!"
+                )
+            self.dimension = dimension
 
     def instanciate(self, cad_model):
-        """Returns dim tag from entity."""
-        model_func = getattr(
-            cad_model.model.occ, self.gmsh_partial_function.func.__name__
-        )
-        entity_output = model_func(
+        """Returns dim tag from entity.
+
+        TODO: properly use cad_model instead of relying on general gmsh.model (being activated)
+        """
+        entity_output = self.gmsh_partial_function(
             *self.gmsh_partial_function.args, **self.gmsh_partial_function.keywords
         )
-        if isinstance(entity_output, int):
-            entity_output = [(self.dimension, entity_output)]
+        entity_output = [(self.dimension, entity_output)]
         cad_model.model.occ.synchronize()
         return entity_output
