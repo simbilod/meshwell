@@ -14,7 +14,7 @@
 
 Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that provides:
 
-(1) a Prism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions;
+(1) a PolyPrism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions;
 
 (2) a simple API where such Prisms and regular GMSH OCC objects are specified in an ordered dictionary of mesh priority, and whose keys are then used to label the mesh entities and their interfaces unambiguously;
 

@@ -1,6 +1,6 @@
 import pytest
 from shapely.geometry import Point
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 
 
 @pytest.mark.skip("Validation of buffers is currently disabled!")
@@ -18,7 +18,7 @@ def test_prism_value_error():
     buffers = {0: 0, -1: 0, -1.001: 15, -5: 0}
 
     with pytest.raises(ValueError):
-        Prism(polygons=polygons, buffers=buffers)
+        PolyPrism(polygons=polygons, buffers=buffers)
 
 
 if __name__ == "__main__":

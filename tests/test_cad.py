@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gmsh
 import shapely
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 from meshwell.cad import cad
 
 from meshwell.gmsh_entity import GMSH_entity
@@ -13,7 +13,7 @@ def test_composite_cad_3D():
     # Create a prism
     polygon = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]])
     buffers = {0.0: 0.0, 1.0: 0.0}  # Extrude from z=0 to z=1
-    prism_obj = Prism(
+    prism_obj = PolyPrism(
         polygons=polygon, buffers=buffers, physical_name="prism", mesh_order=1
     )
 
@@ -71,7 +71,7 @@ def test_composite_cad_mixed():
     # Create a prism
     polygon = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]])
     buffers = {0.0: 0.0, 1.0: 0.0}  # Extrude from z=0 to z=1
-    prism_obj = Prism(
+    prism_obj = PolyPrism(
         polygons=polygon, buffers=buffers, physical_name="prism", mesh_order=2
     )
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gmsh
 import shapely
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 from meshwell.cad import cad, CAD
 import numpy as np
 
@@ -17,7 +17,7 @@ def test_prism():
 
     buffers = {0.0: 0.0, 0.3: 0.1, 1.0: -0.2}
 
-    prism_obj = Prism(polygons=polygon, buffers=buffers, physical_name="prism")
+    prism_obj = PolyPrism(polygons=polygon, buffers=buffers, physical_name="prism")
     assert prism_obj.extrude is False
     cad(entities_list=[prism_obj], output_file="test_prism")
 
@@ -32,7 +32,7 @@ def test_prism_extruded():
 
     buffers = {-1.0: 0.0, 1.0: 0.0}
 
-    prism_obj = Prism(polygons=polygon, buffers=buffers)
+    prism_obj = PolyPrism(polygons=polygon, buffers=buffers)
 
     cad_processor = CAD()
     cad_processor._initialize_model()
