@@ -6,6 +6,7 @@ root: intro
 chapters:
 - file: changelog
 - file: intro_gmsh
+- file: usage_approaches
 - file: polysurfaces
 - file: prisms
 - file: models
