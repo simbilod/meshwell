@@ -22,9 +22,16 @@ class PolySurface:
         additive: bool = False,
     ):
         # Parse (multi)polygons
-        self.polygons = list(
-            polygons.geoms if hasattr(polygons, "geoms") else [polygons]
-        )
+        if isinstance(polygons, (Polygon, MultiPolygon)):
+            self.polygons = list(
+                polygons.geoms if hasattr(polygons, "geoms") else [polygons]
+            )
+        else:
+            self.polygons = []
+            for entry in polygons:
+                self.polygons.extend(
+                    entry.geoms if hasattr(entry, "geoms") else [entry]
+                )
 
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):
