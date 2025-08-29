@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- bug fixes [#PR123](https://github.com/simbilod/meshwell/pull/123)
+- arbitrary custom gmsh entities [PR#125](https://github.com/simbilod/meshwell/pull/125)
+
 ## 2.1.0
 
 - support lower-dimensional objects being passed, will be fragmented with higher-dimensional objects [PR#117](https://github.com/simbilod/meshwell/pull/117)
