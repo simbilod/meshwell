@@ -46,42 +46,42 @@ class PolySurface:
         """Chooses z=0 if the provided coordinates are 2D."""
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
 
-    def get_gmsh_polygons(self, model) -> List[int]:
+    def get_gmsh_polygons(self, cad_model) -> List[int]:
         """Returns the fused GMSH surfaces within model from the polygons."""
         surfaces = [
-            self.add_surface_with_holes(entry, model) for entry in self.polygons
+            self.add_surface_with_holes(entry, cad_model) for entry in self.polygons
         ]
         if len(surfaces) <= 1:
             return surfaces
-        dimtags = model.occ.fuse(
+        dimtags = cad_model.model_manager.model.occ.fuse(
             [(2, surfaces[0])],
             [(2, tag) for tag in surfaces[1:]],
             removeObject=True,
             removeTool=True,
         )[0]
-        model.occ.synchronize()
+        cad_model.model_manager.model.occ.synchronize()
         return [tag for dim, tag in dimtags]
 
-    def add_surface_with_holes(self, polygon: Polygon, model) -> int:
+    def add_surface_with_holes(self, polygon: Polygon, cad_model) -> int:
         """Returns surface, removing intersection with hole surfaces."""
-        exterior = model.add_surface(
+        exterior = cad_model.add_surface(
             [self._parse_coords(coords) for coords in polygon.exterior.coords]
         )
         interior_tags = [
-            model.add_surface(
+            cad_model.add_surface(
                 [self._parse_coords(coords) for coords in interior.coords],
             )
             for interior in polygon.interiors
         ]
         for interior_tag in interior_tags:
-            exterior = model.occ.cut(
+            exterior = cad_model.model_manager.model.occ.cut(
                 [(2, exterior)], [(2, interior_tag)], removeObject=True, removeTool=True
             )
-            model.occ.synchronize()
+            cad_model.model_manager.model.occ.synchronize()
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
     def instanciate(self, cad_model) -> List[Tuple[int, int]]:
         polysurface = self.get_gmsh_polygons(cad_model)
-        cad_model.model.occ.synchronize()
+        cad_model.model_manager.occ.synchronize()
         return [(2, polysurface)]

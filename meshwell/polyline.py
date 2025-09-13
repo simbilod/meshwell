@@ -49,20 +49,22 @@ class PolyLine:
         """Chooses z=0 if the provided coordinates are 2D."""
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
 
-    def get_gmsh_wires(self, model) -> List[int]:
+    def get_gmsh_wires(self, cad_model) -> List[int]:
         """Returns the GMSH wires within model from the linestrings."""
-        edges = [self.add_wire(linestring, model) for linestring in self.linestrings]
-        model.occ.synchronize()
+        edges = [
+            self.add_wire(linestring, cad_model) for linestring in self.linestrings
+        ]
+        cad_model.model_manager.occ.synchronize()
         return edges
 
-    def add_wire(self, linestring: LineString, model) -> int:
+    def add_wire(self, linestring: LineString, cad_model) -> int:
         """Returns wire from linestring coordinates."""
-        wire = model.wire_from_vertices(
+        wire = cad_model.wire_from_vertices(
             [self._parse_coords(coords) for coords in linestring.coords]
         )
         return wire
 
     def instanciate(self, cad_model) -> List[Tuple[int, int]]:
         wires = self.get_gmsh_wires(cad_model)
-        cad_model.model.occ.synchronize()
+        cad_model.model_manager.occ.synchronize()
         return [(1, wire) for wire in wires]

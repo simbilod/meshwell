@@ -35,7 +35,7 @@ def test_prism_extruded():
     prism_obj = PolyPrism(polygons=polygon, buffers=buffers)
 
     cad_processor = CAD()
-    cad_processor._initialize_model()
+    cad_processor.model_manager.ensure_initialized()
     entity_dimtags = prism_obj.instanciate(cad_processor)
     assert prism_obj.extrude is True
     dim = entity_dimtags[0][0]

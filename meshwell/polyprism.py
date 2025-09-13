@@ -47,32 +47,34 @@ class PolyPrism:
         self.mesh_bool = mesh_bool
         self.additive = additive
 
-    def get_gmsh_volumes(self, model) -> List[int]:
+    def get_gmsh_volumes(self, cad_model) -> List[int]:
         """Returns the fused GMSH volumes within model from the polygons and buffers."""
         if self.extrude:
             surfaces = [
                 (2, surface)
                 for surface in self._add_surfaces_with_holes(
-                    model, self.polygons, self.zmin
+                    cad_model, self.polygons, self.zmin
                 )
             ]
-            entities = model.occ.extrude(surfaces, 0, 0, self.zmax - self.zmin)
+            entities = cad_model.model_manager.model.occ.extrude(
+                surfaces, 0, 0, self.zmax - self.zmin
+            )
             volumes = [tag for dim, tag in entities if dim == 3]
         else:
             volumes = [
-                self._add_volume_with_holes(model, entry)
+                self._add_volume_with_holes(cad_model, entry)
                 for entry in self.buffered_polygons
             ]
         if len(volumes) <= 1:
-            model.occ.synchronize()
+            cad_model.model_manager.model.occ.synchronize()
             return volumes
-        dimtags = model.occ.fuse(
+        dimtags = cad_model.model_manager.model.occ.fuse(
             [(3, volumes[0])],
             [(3, tag) for tag in volumes[1:]],
             removeObject=True,
             removeTool=True,
         )[0]
-        model.occ.synchronize()
+        cad_model.model_manager.model.occ.synchronize()
         return [tag for dim, tag in dimtags]
 
     def _get_buffered_polygons(
@@ -98,7 +100,7 @@ class PolyPrism:
 
     def _add_volume(
         self,
-        model,
+        cad_model,
         entry: List[Tuple[float, Polygon]],
         exterior: bool = True,
         interior_index: int = 0,
@@ -119,7 +121,7 @@ class PolyPrism:
             exterior=exterior,
             interior_index=interior_index,
         )
-        gmsh_surfaces = [model.add_surface(bottom_polygon_vertices)]
+        gmsh_surfaces = [cad_model.add_surface(bottom_polygon_vertices)]
 
         # Draw top surface
         top_polygon = entry[-1][1]
@@ -130,7 +132,7 @@ class PolyPrism:
             exterior=exterior,
             interior_index=interior_index,
         )
-        gmsh_surfaces.append(model.add_surface(top_polygon_vertices))
+        gmsh_surfaces.append(cad_model.add_surface(top_polygon_vertices))
 
         # Draw vertical surfaces
         for pair_index in range(len(entry) - 1):
@@ -164,11 +166,11 @@ class PolyPrism:
                     top_z,
                 )
                 facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(model.add_surface(facet_vertices))
+                gmsh_surfaces.append(cad_model.add_surface(facet_vertices))
 
         # Return volume from closed shell
-        surface_loop = model.occ.add_surface_loop(gmsh_surfaces)
-        return model.occ.add_volume([surface_loop])
+        surface_loop = cad_model.model_manager.model.occ.add_surface_loop(gmsh_surfaces)
+        return cad_model.model_manager.model.occ.add_volume([surface_loop])
 
     def xy_surface_vertices(
         self,
@@ -187,12 +189,14 @@ class PolyPrism:
             ]
         )
 
-    def _add_volume_with_holes(self, model, entry: List[Tuple[float, Polygon]]) -> int:
+    def _add_volume_with_holes(
+        self, cad_model, entry: List[Tuple[float, Polygon]]
+    ) -> int:
         """Returns volume, removing intersection with hole volumes."""
-        exterior = self._add_volume(model, entry, exterior=True)
+        exterior = self._add_volume(cad_model, entry, exterior=True)
         interiors = [
             self._add_volume(
-                model,
+                cad_model,
                 entry,
                 exterior=False,
                 interior_index=interior_index,
@@ -200,13 +204,13 @@ class PolyPrism:
             for interior_index in range(len(entry[0][1].interiors))
         ]
         if interiors:
-            exterior = model.occ.cut(
+            exterior = cad_model.model_manager.model.occ.cut(
                 [(3, exterior)],
                 [(3, interior) for interior in interiors],
                 removeObject=True,
                 removeTool=True,
             )
-            model.occ.synchronize()
+            cad_model.model_manager.model.occ.synchronize()
             exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
         return exterior
 
@@ -264,9 +268,11 @@ class PolyPrism:
     def instanciate(self, cad_model) -> List[Tuple[int, int]]:
         """Returns dim tag from entity."""
         prisms = self.get_gmsh_volumes(cad_model)
-        cad_model.model.occ.synchronize()
+        cad_model.model_manager.occ.synchronize()
         if self.subdivision is not None:
-            return self.subdivide(cad_model.model, prisms, self.subdivision)
+            return self.subdivide(
+                cad_model.model_manager.model, prisms, self.subdivision
+            )
         return [(3, prisms)]
 
     def _validate_polygon_buffers(self) -> bool:
@@ -321,18 +327,18 @@ class PolyPrism:
     CAD Extrusion method
     """
 
-    def _add_surfaces_with_holes(self, model, polygons, z) -> List[int]:
+    def _add_surfaces_with_holes(self, cad_model, polygons, z) -> List[int]:
         """Returns surface, removing intersection with hole surfaces."""
         surfaces = []
         for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
             # Add outer surface(s)
-            exterior = model.add_surface(
+            exterior = cad_model.add_surface(
                 self.xy_surface_vertices(
                     polygon, polygon_z=z, exterior=True, interior_index=0
                 )
             )
             interiors = [
-                model.add_surface(
+                cad_model.add_surface(
                     self.xy_surface_vertices(
                         polygon,
                         polygon_z=z,
@@ -343,13 +349,13 @@ class PolyPrism:
                 for interior_index in range(len(polygon.interiors))
             ]
             if interiors:
-                exterior = model.occ.cut(
+                exterior = cad_model.model_manager.model.occ.cut(
                     [(2, exterior)],
                     [(2, interior) for interior in interiors],
                     removeObject=True,
                     removeTool=True,
                 )
-                model.occ.synchronize()
+                cad_model.model_manager.model.occ.synchronize()
                 exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
             surfaces.append(exterior)
         return surfaces
