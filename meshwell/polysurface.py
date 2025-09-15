@@ -1,8 +1,11 @@
 from shapely.geometry import Polygon, MultiPolygon
 from typing import List, Optional, Union, Tuple
+import gmsh
+
+from meshwell.geometry_entity import GeometryEntity
 
 
-class PolySurface:
+class PolySurface(GeometryEntity):
     """
     Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
 
@@ -20,7 +23,11 @@ class PolySurface:
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
+        point_tolerance: float = 1e-3,
     ):
+        # Initialize parent class with point tracking
+        super().__init__(point_tolerance=point_tolerance)
+
         # Parse (multi)polygons
         if isinstance(polygons, (Polygon, MultiPolygon)):
             self.polygons = list(
@@ -42,46 +49,58 @@ class PolySurface:
         self.dimension = 2
         self.additive = additive
 
-    def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
-        """Chooses z=0 if the provided coordinates are 2D."""
-        return (coords[0], coords[1], 0) if len(coords) == 2 else coords
-
-    def get_gmsh_polygons(self, cad_model) -> List[int]:
-        """Returns the fused GMSH surfaces within model from the polygons."""
-        surfaces = [
-            self.add_surface_with_holes(entry, cad_model) for entry in self.polygons
+    def _create_surface_with_holes(self, polygon: Polygon) -> int:
+        """Create surface with holes directly using GMSH calls."""
+        # Create exterior surface
+        exterior_vertices = [
+            self._parse_coords(coords) for coords in polygon.exterior.coords
         ]
+        exterior = self._create_surface_from_vertices(exterior_vertices)
+
+        # Create interior surfaces (holes)
+        interior_surfaces = []
+        for interior in polygon.interiors:
+            interior_vertices = [
+                self._parse_coords(coords) for coords in interior.coords
+            ]
+            interior_surface = self._create_surface_from_vertices(interior_vertices)
+            interior_surfaces.append(interior_surface)
+
+        # Cut holes from exterior surface
+        for interior_surface in interior_surfaces:
+            cut_result = gmsh.model.occ.cut(
+                [(2, exterior)],
+                [(2, interior_surface)],
+                removeObject=True,
+                removeTool=True,
+            )
+            gmsh.model.occ.synchronize()
+            exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            # Clear caches after boolean operations that may invalidate geometry IDs
+            self._clear_caches()
+
+        return exterior
+
+    def instanciate(self, cad_model) -> List[Tuple[int, int]]:
+        """Create GMSH surfaces directly without using CAD class methods."""
+        surfaces = []
+        for polygon in self.polygons:
+            surface_id = self._create_surface_with_holes(polygon)
+            surfaces.append(surface_id)
+
+        # Fuse multiple surfaces if needed
         if len(surfaces) <= 1:
-            return surfaces
-        dimtags = cad_model.model_manager.model.occ.fuse(
+            gmsh.model.occ.synchronize()
+            return [(2, surfaces[0])] if surfaces else []
+
+        # Fuse all surfaces together
+        dimtags = gmsh.model.occ.fuse(
             [(2, surfaces[0])],
             [(2, tag) for tag in surfaces[1:]],
             removeObject=True,
             removeTool=True,
         )[0]
-        cad_model.model_manager.model.occ.synchronize()
-        return [tag for dim, tag in dimtags]
-
-    def add_surface_with_holes(self, polygon: Polygon, cad_model) -> int:
-        """Returns surface, removing intersection with hole surfaces."""
-        exterior = cad_model.add_surface(
-            [self._parse_coords(coords) for coords in polygon.exterior.coords]
-        )
-        interior_tags = [
-            cad_model.add_surface(
-                [self._parse_coords(coords) for coords in interior.coords],
-            )
-            for interior in polygon.interiors
-        ]
-        for interior_tag in interior_tags:
-            exterior = cad_model.model_manager.model.occ.cut(
-                [(2, exterior)], [(2, interior_tag)], removeObject=True, removeTool=True
-            )
-            cad_model.model_manager.model.occ.synchronize()
-            exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
-        return exterior
-
-    def instanciate(self, cad_model) -> List[Tuple[int, int]]:
-        polysurface = self.get_gmsh_polygons(cad_model)
-        cad_model.model_manager.occ.synchronize()
-        return [(2, polysurface)]
+        gmsh.model.occ.synchronize()
+        # Clear caches after boolean operations that may invalidate geometry IDs
+        self._clear_caches()
+        return dimtags

@@ -57,7 +57,8 @@ def test_smoothing():
         optimization_flags=[("HighOrderElastic", 5), ("HighOrderFastCurving", 5)],
         verbosity=10,
         n_threads=1,
-        default_characteristic_length=10,
+        default_characteristic_length=0.7,
+        mesh_element_order=1,
     )
 
     compare_gmsh_files(Path("mesh3D_smoothing.msh"))

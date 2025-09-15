@@ -45,93 +45,8 @@ class CAD:
         # Store parameters for backward compatibility
         self.point_tolerance = point_tolerance
 
-        # Track gmsh entities for bottom-up volume definition
-        self.points: Dict[Tuple[float, float, float], int] = {}
-        self.segments: Dict[
-            Tuple[Tuple[float, float, float], Tuple[float, float, float]], int
-        ] = {}
-
-    def add_get_point(self, x: float, y: float, z: float) -> int:
-        """Add a point to the model, or reuse a previously-defined point.
-        Args:
-            x: float, x-coordinate
-            y: float, y-coordinate
-            z: float, z-coordinate
-        Returns:
-            ID of the added or retrieved point
-        """
-        # Snap coordinates to point tolerance
-        x = round(x / self.point_tolerance) * self.point_tolerance
-        y = round(y / self.point_tolerance) * self.point_tolerance
-        z = round(z / self.point_tolerance) * self.point_tolerance
-        if (x, y, z) not in self.points.keys():
-            self.points[(x, y, z)] = self.model_manager.model.occ.add_point(x, y, z)
-        return self.points[(x, y, z)]
-
-    def add_get_segment(
-        self, xyz1: Tuple[float, float, float], xyz2: Tuple[float, float, float]
-    ) -> int:
-        """Add a segment (2-point line) to the gmsh model, or retrieve a previously-defined segment.
-        The OCC kernel does not care about orientation.
-        Args:
-            xyz1: first [x,y,z] coordinate
-            xyz2: second [x,y,z] coordinate
-        Returns:
-            ID of the added or retrieved line segment
-        """
-        if (xyz1, xyz2) in self.segments.keys():
-            return self.segments[(xyz1, xyz2)]
-        elif (xyz2, xyz1) in self.segments.keys():
-            return self.segments[(xyz2, xyz1)]
-        else:
-            self.segments[(xyz1, xyz2)] = self.model_manager.model.occ.add_line(
-                self.add_get_point(xyz1[0], xyz1[1], xyz1[2]),
-                self.add_get_point(xyz2[0], xyz2[1], xyz2[2]),
-            )
-            return self.segments[(xyz1, xyz2)]
-
-    def wire_from_vertices(
-        self, vertices: List[Tuple[float, float, float]], checkClosed=False
-    ) -> int:
-        """Add a wire from the list of vertices.
-        Args:
-            vertices: list of [x,y,z] coordinates
-        Returns:
-            ID of the added wire
-        """
-        edges = []
-        for vertex1, vertex2 in [
-            (vertices[i], vertices[i + 1]) for i in range(len(vertices) - 1)
-        ]:
-            gmsh_line = self.add_get_segment(vertex1, vertex2)
-            edges.append(gmsh_line)
-        if checkClosed:
-            return self.model_manager.model.occ.add_wire(edges, checkClosed=checkClosed)
-        else:
-            return edges
-
-    def _channel_loop_from_vertices(
-        self, vertices: List[Tuple[float, float, float]]
-    ) -> int:
-        return self.wire_from_vertices(vertices, checkClosed=True)
-
-    def add_surface(self, vertices: List[Tuple[float, float, float]]) -> int:
-        """Add a surface composed of the segments formed by vertices.
-
-        Args:
-            vertices: List of xyz coordinates, whose subsequent entries define a closed loop.
-        Returns:
-            ID of the added surface
-        """
-        channel_loop = self._channel_loop_from_vertices(vertices)
-        return self.model_manager.model.occ.add_plane_surface([channel_loop])
-
-    def _clear_cad_cache(self):
-        """Clear points/segments cache to avoid conflicts after boolean operations."""
-        # After boolean operations, clear the cache to avoid ID conflicts
-        # This prevents reuse of points/segments that may have been modified/deleted
-        self.points = {}
-        self.segments = {}
+        # Shared point cache for geometry entities that support point deduplication
+        self._shared_point_cache: Dict[Tuple[float, float, float], int] = {}
 
     def _instantiate_entity(
         self, index: int, entity_obj, progress_bars: bool
@@ -140,6 +55,10 @@ class CAD:
         physical_name = entity_obj.physical_name
         if progress_bars and physical_name:
             print(f"Processing {physical_name} - instantiation")
+
+        # Set up shared point cache for geometry entities that support it
+        if hasattr(entity_obj, "_set_point_cache"):
+            entity_obj._set_point_cache(self._shared_point_cache)
 
         # Instantiate entity
         dimtags_out = entity_obj.instanciate(self)
@@ -310,7 +229,8 @@ class CAD:
 
                 self.model_manager.model.occ.removeAllDuplicates()
                 self.model_manager.sync_model()
-                self._clear_cad_cache()
+                # Clear shared point cache after boolean operations
+                self._shared_point_cache.clear()
 
         return processed_entities
 

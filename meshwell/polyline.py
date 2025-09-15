@@ -1,8 +1,11 @@
 from shapely.geometry import LineString, MultiLineString
 from typing import List, Optional, Union, Tuple
+import gmsh
+
+from meshwell.geometry_entity import GeometryEntity
 
 
-class PolyLine:
+class PolyLine(GeometryEntity):
     """
     Creates bottom-up GMSH wires formed by list of shapely (multi)linestring.
 
@@ -21,7 +24,11 @@ class PolyLine:
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
+        point_tolerance: float = 1e-3,
     ):
+        # Initialize parent class with point tracking
+        super().__init__(point_tolerance=point_tolerance)
+
         # Parse (multi)linestrings
         if isinstance(linestrings, list):
             # Handle list of LineString/MultiLineString objects
@@ -45,26 +52,34 @@ class PolyLine:
         self.dimension = 1
         self.additive = additive
 
-    def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
-        """Chooses z=0 if the provided coordinates are 2D."""
-        return (coords[0], coords[1], 0) if len(coords) == 2 else coords
+    def _create_wire_from_linestring(self, linestring: LineString) -> int:
+        """Create a GMSH wire directly from linestring coordinates."""
+        vertices = [self._parse_coords(coords) for coords in linestring.coords]
 
-    def get_gmsh_wires(self, cad_model) -> List[int]:
-        """Returns the GMSH wires within model from the linestrings."""
-        edges = [
-            self.add_wire(linestring, cad_model) for linestring in self.linestrings
-        ]
-        cad_model.model_manager.occ.synchronize()
-        return edges
+        # Create points with deduplication
+        points = self._create_points_from_vertices(vertices)
 
-    def add_wire(self, linestring: LineString, cad_model) -> int:
-        """Returns wire from linestring coordinates."""
-        wire = cad_model.wire_from_vertices(
-            [self._parse_coords(coords) for coords in linestring.coords]
-        )
-        return wire
+        # Create lines between consecutive points
+        lines = []
+        for i in range(len(points) - 1):
+            line_id = gmsh.model.occ.addLine(points[i], points[i + 1])
+            lines.append(line_id)
+
+        # Create wire from lines
+        if len(lines) == 1:
+            # For a single line, we can return it as-is since GMSH treats it as a wire
+            return lines[0]
+        else:
+            # For multiple lines, create a proper wire
+            wire_id = gmsh.model.occ.addWire(lines)
+            return wire_id
 
     def instanciate(self, cad_model) -> List[Tuple[int, int]]:
-        wires = self.get_gmsh_wires(cad_model)
-        cad_model.model_manager.occ.synchronize()
+        """Create GMSH wires directly without using CAD class methods."""
+        wires = []
+        for linestring in self.linestrings:
+            wire_id = self._create_wire_from_linestring(linestring)
+            wires.append(wire_id)
+
+        gmsh.model.occ.synchronize()
         return [(1, wire) for wire in wires]
