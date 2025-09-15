@@ -61,7 +61,6 @@ def test_composite_cad_3D():
     cad(
         entities_list=entities,
         output_file="test_composite_3D",
-        addition_delimiter="*",  # Custom delimiter for testing
         progress_bars=True,
     )
 
@@ -95,6 +94,5 @@ def test_composite_cad_mixed():
     cad(
         entities_list=entities,
         output_file="test_composite_mixed",
-        addition_delimiter="*",  # Custom delimiter for testing
         progress_bars=True,
     )

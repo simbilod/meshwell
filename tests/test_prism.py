@@ -32,18 +32,21 @@ def test_prism_extruded():
 
     buffers = {-1.0: 0.0, 1.0: 0.0}
 
-    prism_obj = PolyPrism(polygons=polygon, buffers=buffers)
+    prism_obj = PolyPrism(
+        polygons=polygon, buffers=buffers, physical_name="prism_extruded"
+    )
 
     cad_processor = CAD()
-    cad_processor._initialize_model()
+    cad_processor.model_manager.ensure_initialized()
     entity_dimtags = prism_obj.instanciate(cad_processor)
     assert prism_obj.extrude is True
     dim = entity_dimtags[0][0]
     tag = entity_dimtags[0][1]
-    _, _, zmin, _, _, zmax = gmsh.model.getBoundingBox(dim, tag[0])
+    _, _, zmin, _, _, zmax = gmsh.model.getBoundingBox(dim, tag)
     assert np.isclose(zmin, min(buffers.keys()))
     assert np.isclose(zmax, max(buffers.keys()))
+    cad(entities_list=[prism_obj], output_file="test_prism_extruded")
 
 
 if __name__ == "__main__":
-    test_prism()
+    test_prism_extruded()
