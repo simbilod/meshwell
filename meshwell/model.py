@@ -252,7 +252,7 @@ class ModelManager:
 
         Example:
             model = ModelManager(filename="my_project")
-            model.mesh.load_xao_file("input.xao")
+            model.mesh.load_xao("input.xao")
             mesh_obj = model.mesh.process_geometry(dim=3, default_characteristic_length=0.1)
         """
         if self._mesh is None:
