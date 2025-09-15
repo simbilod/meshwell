@@ -1,9 +1,12 @@
 from typing import List, Dict, Optional, Tuple, Union
 from shapely.geometry import Polygon, MultiPolygon
 from meshwell.validation import format_physical_name
+import gmsh
+
+from meshwell.geometry_entity import GeometryEntity
 
 
-class Prism:
+class PolyPrism(GeometryEntity):
     """
     Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
 
@@ -24,7 +27,11 @@ class Prism:
         mesh_bool: bool = True,
         additive: bool = False,
         subdivision: tuple[int, int, int] | None = None,
+        point_tolerance: float = 1e-3,
     ):
+        # Initialize parent class with point tracking
+        super().__init__(point_tolerance=point_tolerance)
+
         # Parse buffers or prepare extrusion
         if all(buffer == 0 for buffer in buffers.values()):
             self.extrude = True
@@ -47,33 +54,34 @@ class Prism:
         self.mesh_bool = mesh_bool
         self.additive = additive
 
-    def get_gmsh_volumes(self, model) -> List[int]:
-        """Returns the fused GMSH volumes within model from the polygons and buffers."""
+    def _create_volumes_directly(self) -> List[int]:
+        """Create GMSH volumes directly without using CAD class methods."""
         if self.extrude:
-            surfaces = [
-                (2, surface)
-                for surface in self._add_surfaces_with_holes(
-                    model, self.polygons, self.zmin
-                )
-            ]
-            entities = model.occ.extrude(surfaces, 0, 0, self.zmax - self.zmin)
+            surfaces = self._create_surfaces_with_holes_at_z(self.polygons, self.zmin)
+            surface_dimtags = [(2, surface) for surface in surfaces]
+            entities = gmsh.model.occ.extrude(
+                surface_dimtags, 0, 0, self.zmax - self.zmin
+            )
             volumes = [tag for dim, tag in entities if dim == 3]
         else:
             volumes = [
-                self._add_volume_with_holes(model, entry)
+                self._create_volume_with_holes_directly(entry)
                 for entry in self.buffered_polygons
             ]
+
+        # Fuse multiple volumes if needed
         if len(volumes) <= 1:
-            model.occ.synchronize()
             return volumes
-        dimtags = model.occ.fuse(
+
+        fused_dimtags = gmsh.model.occ.fuse(
             [(3, volumes[0])],
             [(3, tag) for tag in volumes[1:]],
             removeObject=True,
             removeTool=True,
         )[0]
-        model.occ.synchronize()
-        return [tag for dim, tag in dimtags]
+        # Clear caches after boolean operations that may invalidate geometry IDs
+        self._clear_caches()
+        return [tag for dim, tag in fused_dimtags]
 
     def _get_buffered_polygons(
         self, polygons: List[Polygon], buffers: Dict[float, float]
@@ -96,20 +104,13 @@ class Prism:
 
         return all_polygons_list
 
-    def _add_volume(
+    def _create_volume_directly(
         self,
-        model,
         entry: List[Tuple[float, Polygon]],
         exterior: bool = True,
         interior_index: int = 0,
     ) -> int:
-        """Create shape from a list of the same buffered polygon and a list of z-values.
-        Args:
-            polygons: shapely polygons from the GDS
-            zs: list of z-values for each polygon
-        Returns:
-            ID of the added volume
-        """
+        """Create volume directly using GMSH calls without CAD class methods."""
         # Draw bottom surface
         bottom_polygon = entry[0][1]
         bottom_z = entry[0][0]
@@ -119,7 +120,7 @@ class Prism:
             exterior=exterior,
             interior_index=interior_index,
         )
-        gmsh_surfaces = [model.add_surface(bottom_polygon_vertices)]
+        gmsh_surfaces = [self._create_surface_from_vertices(bottom_polygon_vertices)]
 
         # Draw top surface
         top_polygon = entry[-1][1]
@@ -130,7 +131,7 @@ class Prism:
             exterior=exterior,
             interior_index=interior_index,
         )
-        gmsh_surfaces.append(model.add_surface(top_polygon_vertices))
+        gmsh_surfaces.append(self._create_surface_from_vertices(top_polygon_vertices))
 
         # Draw vertical surfaces
         for pair_index in range(len(entry) - 1):
@@ -164,11 +165,13 @@ class Prism:
                     top_z,
                 )
                 facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(model.add_surface(facet_vertices))
+                gmsh_surfaces.append(self._create_surface_from_vertices(facet_vertices))
 
         # Return volume from closed shell
-        surface_loop = model.occ.add_surface_loop(gmsh_surfaces)
-        return model.occ.add_volume([surface_loop])
+        surface_loop = gmsh.model.occ.addSurfaceLoop(gmsh_surfaces)
+        volume = gmsh.model.occ.addVolume([surface_loop])
+        gmsh.model.occ.synchronize()
+        return volume
 
     def xy_surface_vertices(
         self,
@@ -187,12 +190,13 @@ class Prism:
             ]
         )
 
-    def _add_volume_with_holes(self, model, entry: List[Tuple[float, Polygon]]) -> int:
-        """Returns volume, removing intersection with hole volumes."""
-        exterior = self._add_volume(model, entry, exterior=True)
+    def _create_volume_with_holes_directly(
+        self, entry: List[Tuple[float, Polygon]]
+    ) -> int:
+        """Create volume with holes directly using GMSH calls."""
+        exterior = self._create_volume_directly(entry, exterior=True)
         interiors = [
-            self._add_volume(
-                model,
+            self._create_volume_directly(
                 entry,
                 exterior=False,
                 interior_index=interior_index,
@@ -200,15 +204,54 @@ class Prism:
             for interior_index in range(len(entry[0][1].interiors))
         ]
         if interiors:
-            exterior = model.occ.cut(
+            cut_result = gmsh.model.occ.cut(
                 [(3, exterior)],
                 [(3, interior) for interior in interiors],
                 removeObject=True,
                 removeTool=True,
             )
-            model.occ.synchronize()
-            exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            gmsh.model.occ.synchronize()
+            # Handle cut result - if cut succeeded, use the result, otherwise keep original
+            if cut_result and cut_result[0]:
+                exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            # Clear caches after boolean operations that may invalidate geometry IDs
+            self._clear_caches()
         return exterior
+
+    def _create_surfaces_with_holes_at_z(self, polygons, z) -> List[int]:
+        """Create surfaces with holes at given z level directly using GMSH calls."""
+        surfaces = []
+        for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
+            # Create outer surface
+            exterior_vertices = [(x, y, z) for x, y in polygon.exterior.coords]
+            exterior = self._create_surface_from_vertices(exterior_vertices)
+
+            # Create interior surfaces (holes)
+            interior_surfaces = []
+            for interior in polygon.interiors:
+                interior_vertices = [(x, y, z) for x, y in interior.coords]
+                interior_surface = self._create_surface_from_vertices(interior_vertices)
+                interior_surfaces.append(interior_surface)
+
+            # Cut holes from exterior surface
+            for interior_surface in interior_surfaces:
+                cut_result = gmsh.model.occ.cut(
+                    [(2, exterior)],
+                    [(2, interior_surface)],
+                    removeObject=True,
+                    removeTool=True,
+                )
+                gmsh.model.occ.synchronize()
+                # Handle cut result - if cut succeeded, use the result, otherwise keep original
+                if cut_result and cut_result[0]:
+                    exterior = cut_result[0][0][
+                        1
+                    ]  # Parse `outDimTags', `outDimTagsMap'
+                # Clear caches after boolean operations that may invalidate geometry IDs
+                self._clear_caches()
+
+            surfaces.append(exterior)
+        return surfaces
 
     def subdivide(self, model, prisms, subdivision):
         """Split the prisms into subprisms according to subdivision."""
@@ -262,12 +305,15 @@ class Prism:
         return subdivided_prisms
 
     def instanciate(self, cad_model) -> List[Tuple[int, int]]:
-        """Returns dim tag from entity."""
-        prisms = self.get_gmsh_volumes(cad_model)
-        cad_model.model.occ.synchronize()
+        """Create GMSH volumes directly without using CAD class methods."""
+        prisms = self._create_volumes_directly()
+        gmsh.model.occ.synchronize()
         if self.subdivision is not None:
-            return self.subdivide(cad_model.model, prisms, self.subdivision)
-        return [(3, prisms)]
+            return self.subdivide(
+                cad_model.model_manager.model, prisms, self.subdivision
+            )
+        # Return format consistent with original - individual prism dimtags
+        return [(3, prism) for prism in prisms]
 
     def _validate_polygon_buffers(self) -> bool:
         """Check if any buffering operation changes the topology of the polygon."""
@@ -316,40 +362,3 @@ class Prism:
                         return False
 
         return True
-
-    """
-    CAD Extrusion method
-    """
-
-    def _add_surfaces_with_holes(self, model, polygons, z) -> List[int]:
-        """Returns surface, removing intersection with hole surfaces."""
-        surfaces = []
-        for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
-            # Add outer surface(s)
-            exterior = model.add_surface(
-                self.xy_surface_vertices(
-                    polygon, polygon_z=z, exterior=True, interior_index=0
-                )
-            )
-            interiors = [
-                model.add_surface(
-                    self.xy_surface_vertices(
-                        polygon,
-                        polygon_z=z,
-                        exterior=False,
-                        interior_index=interior_index,
-                    )
-                )
-                for interior_index in range(len(polygon.interiors))
-            ]
-            if interiors:
-                exterior = model.occ.cut(
-                    [(2, exterior)],
-                    [(2, interior) for interior in interiors],
-                    removeObject=True,
-                    removeTool=True,
-                )
-                model.occ.synchronize()
-                exterior = exterior[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
-            surfaces.append(exterior)
-        return surfaces

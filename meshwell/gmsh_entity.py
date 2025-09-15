@@ -104,5 +104,5 @@ class GMSH_entity:
             *self.gmsh_partial_function.args, **self.gmsh_partial_function.keywords
         )
         entity_output = [(self.dimension, entity_output)]
-        cad_model.model.occ.synchronize()
+        cad_model.model_manager.occ.synchronize()
         return entity_output

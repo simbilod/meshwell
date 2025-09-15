@@ -5,7 +5,7 @@
 # %%
 import shapely
 import matplotlib.pyplot as plt
-from meshwell.prism import Prism
+from meshwell.polyprism import PolyPrism
 import plotly.graph_objects as go
 from meshwell.cad import cad
 from meshwell.mesh import mesh
@@ -39,7 +39,7 @@ plt.show()
 
 buffers = {0.0: 0.05, 1.0: -0.05}
 
-poly3D = Prism(
+poly3D = PolyPrism(
     polygons=polygon,
     buffers=buffers,
     physical_name="my_prism1",
