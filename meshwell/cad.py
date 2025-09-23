@@ -49,7 +49,7 @@ class CAD:
         # Shared point cache for geometry entities that support point deduplication
         self._shared_point_cache: dict[tuple[float, float, float], int] = {}
 
-    def _instantiate_entity(
+    def _instanciate_entity(
         self, index: int, entity_obj, progress_bars: bool
     ) -> LabeledEntities:
         """Common logic for instantiating entities."""
@@ -61,7 +61,7 @@ class CAD:
         if hasattr(entity_obj, "_set_point_cache"):
             entity_obj._set_point_cache(self._shared_point_cache)
 
-        # Instantiate entity
+        # instanciate entity
         dimtags_out = entity_obj.instanciate(self)
         dimtags = unpack_dimtags(dimtags_out)
 
@@ -200,8 +200,8 @@ class CAD:
         processed_entities = []
 
         for i, (index, entity_obj) in enumerate(entity_group):
-            # Instantiate entity using helper method
-            current_entity = self._instantiate_entity(index, entity_obj, progress_bars)
+            # instanciate entity using helper method
+            current_entity = self._instanciate_entity(index, entity_obj, progress_bars)
 
             if i == 0:
                 processed_entities.append(current_entity)
