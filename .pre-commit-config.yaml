@@ -13,7 +13,7 @@ repos:
       - id: name-tests-test
         args: ["--pytest-test-first"]
       - id: trailing-whitespace
-        exclude: "tests/references/*"
+        exclude: "tests/references/.*"
 
   # - repo: https://github.com/hakancelik96/unimport
   #   rev: 0.14.1
