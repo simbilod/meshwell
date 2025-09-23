@@ -68,12 +68,12 @@ def test_gds_to_shapely():
         # Check that each layer exists and has valid geometry
         for layer in range(6):
             assert (layer, 0) in layer_polygons, f"Layer {layer} missing from output"
-            assert not layer_polygons[(layer, 0)].is_empty, (
-                f"Layer {layer} has empty geometry"
-            )
-            assert layer_polygons[(layer, 0)].is_valid, (
-                f"Layer {layer} has invalid geometry"
-            )
+            assert not layer_polygons[
+                (layer, 0)
+            ].is_empty, f"Layer {layer} has empty geometry"
+            assert layer_polygons[
+                (layer, 0)
+            ].is_valid, f"Layer {layer} has invalid geometry"
 
         # Check specific properties of some layers
         # Layer 1 should have 3 circles

@@ -39,9 +39,9 @@ class PolyPrism(GeometryEntity):
             self.zmin, self.zmax = min(buffers.keys()), max(buffers.keys())
         else:
             self.extrude = False
-            self.buffered_polygons: List[Tuple[float, Polygon]] = (
-                self._get_buffered_polygons(polygons, buffers)
-            )
+            self.buffered_polygons: List[
+                Tuple[float, Polygon]
+            ] = self._get_buffered_polygons(polygons, buffers)
 
         # Store other attributes
         self.mesh_order = mesh_order

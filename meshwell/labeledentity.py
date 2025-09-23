@@ -130,7 +130,8 @@ class LabeledEntities:
                     ]
             case -1:
                 warnings.warn(
-                    "Target dimension requested is 3, but entity is 2D; skipping resolution assignment.", stacklevel=2
+                    "Target dimension requested is 3, but entity is 2D; skipping resolution assignment.",
+                    stacklevel=2,
                 )
                 return []
 
