@@ -1,7 +1,6 @@
 import os
 import pytest
 from meshwell.config import PATH
-from contextlib import redirect_stdout
 import argparse
 import sys
 import pathlib
