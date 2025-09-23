@@ -141,6 +141,5 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix]
-      - id: ruff-format
 
 exclude: tests/generate_references.py
