@@ -141,7 +141,7 @@ class ThresholdField(SampledField):
         restrict_to_tags=None,
     ) -> int:
         if self.entity_str == "RegionsList":
-            warnings.warn("Cannot set a distance field on a Volume! Skipping")
+            warnings.warn("Cannot set a distance field on a Volume! Skipping", stacklevel=2)
         else:
             distance_field_index = self.apply_distance(
                 model=model,
@@ -195,7 +195,7 @@ class ExponentialField(SampledField):
         restrict_to_tags=None,
     ) -> int:
         if self.entity_str == "RegionsList":
-            warnings.warn("Cannot set a distance field on a Volume! Skipping")
+            warnings.warn("Cannot set a distance field on a Volume! Skipping", stacklevel=2)
         else:
             distance_field_index = self.apply_distance(
                 model=model,
