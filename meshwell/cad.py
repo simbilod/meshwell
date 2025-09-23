@@ -62,7 +62,7 @@ class CAD:
             entity_obj._set_point_cache(self._shared_point_cache)
 
         # instanciate entity
-        dimtags_out = entity_obj.instanciate(self)
+        dimtags_out = entity_obj.instanciate()
         dimtags = unpack_dimtags(dimtags_out)
 
         return LabeledEntities(
