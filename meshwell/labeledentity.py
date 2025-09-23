@@ -1,7 +1,9 @@
-import gmsh
-from typing import List, Union, Any, Tuple
-from meshwell.resolution import ResolutionSpec
 import warnings
+from typing import Any
+
+import gmsh
+
+from meshwell.resolution import ResolutionSpec
 
 
 class LabeledEntities:
@@ -11,13 +13,13 @@ class LabeledEntities:
         self,
         index: int,
         model: Any,
-        dimtags: List[Tuple[int, int]],
-        physical_name: Union[str, tuple[str, ...]],
-        resolutions: List[ResolutionSpec] | None = None,
+        dimtags: list[tuple[int, int]],
+        physical_name: str | tuple[str, ...],
+        resolutions: list[ResolutionSpec] | None = None,
         keep: bool = True,
-        boundaries: List[int] = None,
-        interfaces: List = None,
-        mesh_edge_name_interfaces: List = None,
+        boundaries: list[int] | None = None,
+        interfaces: list | None = None,
+        mesh_edge_name_interfaces: list | None = None,
     ):
         self.index = index
         self.model = model
@@ -34,6 +36,7 @@ class LabeledEntities:
 
         Returns:
             Dictionary containing serializable entity data
+
         """
         return {
             "index": self.index,
@@ -48,7 +51,7 @@ class LabeledEntities:
             "mesh_edge_name_interfaces": self.mesh_edge_name_interfaces,
         }
 
-    def update_boundaries(self) -> List[int]:
+    def update_boundaries(self) -> list[int]:
         # Filter out non-existent entities before getting boundaries
         valid_dimtags = []
         all_entities = {}
@@ -82,10 +85,10 @@ class LabeledEntities:
 
         return self.boundaries
 
-    def _fuse_self(self, dimtags: List[Union[int, str]]) -> List[Union[int, str]]:
+    def _fuse_self(self, dimtags: list[int | str]) -> list[int | str]:
         if len(dimtags) == 0:
             return []
-        elif len(dimtags) != 1:
+        if len(dimtags) != 1:
             dimtags = gmsh.model.occ.fuse(
                 [dimtags[0]],
                 dimtags[1:],
@@ -96,7 +99,7 @@ class LabeledEntities:
         return dimtags
 
     @property
-    def tags(self) -> List[int]:
+    def tags(self) -> list[int]:
         tags = [tag for dim, tag in self.dimtags]
         if any(isinstance(el, list) for el in tags):
             tags = [item for sublist in tags for item in sublist]
@@ -106,9 +109,9 @@ class LabeledEntities:
     def dim(self) -> int:
         if not self.dimtags:
             return -1  # Invalid dimension for empty entities
-        return [dim for dim, tag in self.dimtags][0]
+        return next(dim for dim, tag in self.dimtags)
 
-    def boundaries(self) -> List[int]:
+    def boundaries(self) -> list[int]:
         # Use the same safe logic as update_boundaries
         return self.update_boundaries()
 
@@ -176,22 +179,18 @@ class LabeledEntities:
         if target_dimension == 0:
             filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
             points_boundaries_dimtags = [
-                self.model.getBoundary([(1, tag)]) for tag in filtered_tags.keys()
+                self.model.getBoundary([(1, tag)]) for tag in filtered_tags
             ]
             points_dimtags = [x for xs in points_boundaries_dimtags for x in xs]
-            points_mass_dict = {p[1]: None for p in points_dimtags}
-            return points_mass_dict
-        else:
-            return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
+            return {p[1]: None for p in points_dimtags}
+        return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
 
     def add_refinement_fields_to_model(
         self,
         all_entities_dict,
         boundary_delimiter,
     ):
-        """
-        Adds refinement fields to the model based on base_resolution and resolution info.
-        """
+        """Adds refinement fields to the model based on base_resolution and resolution info."""
         refinement_field_indices = []
 
         if self.resolutions:
@@ -208,15 +207,11 @@ class LabeledEntities:
                     superset = set(all_entities_dict.keys())
                     include_boundary = True
                 else:
-                    include_boundary = (
-                        True if boundary_delimiter in resolutionspec.sharing else False
-                    )
+                    include_boundary = boundary_delimiter in resolutionspec.sharing
                     superset = set(resolutionspec.sharing)
                 if resolutionspec.not_sharing is not None:
                     include_boundary = (
-                        False
-                        if boundary_delimiter in resolutionspec.not_sharing
-                        else True
+                        boundary_delimiter not in resolutionspec.not_sharing
                     )
                     superset -= set(resolutionspec.not_sharing)
                 for other_name, other_entity in all_entities_dict.items():

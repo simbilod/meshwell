@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import gmsh
-import shapely
-from meshwell.polyprism import PolyPrism
-from meshwell.cad import cad, CAD
 import numpy as np
+import shapely
+
+from meshwell.cad import CAD, cad
+from meshwell.polyprism import PolyPrism
 
 
 def test_prism():

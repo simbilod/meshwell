@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from typing import Dict, Tuple, List, Optional
 import gmsh
 
 
 class GeometryEntity:
-    """
-    Base class for geometry entities that create GMSH geometry directly.
+    """Base class for geometry entities that create GMSH geometry directly.
 
     Provides shared functionality for point deduplication and coordinate parsing
     to ensure consistent geometry creation across PolyLine, PolySurface, and PolyPrism.
@@ -16,31 +14,31 @@ class GeometryEntity:
         """Initialize geometry entity with point tracking."""
         self.point_tolerance = point_tolerance
         # Track created points to avoid duplicates (can be shared across entities)
-        self._points: Optional[Dict[Tuple[float, float, float], int]] = None
+        self._points: dict[tuple[float, float, float], int] | None = None
         # Track created lines to avoid duplicates and ensure proper edge sharing
-        self._lines: Optional[Dict[Tuple[int, int], int]] = None
+        self._lines: dict[tuple[int, int], int] | None = None
 
-    def _parse_coords(self, coords: Tuple[float, float]) -> Tuple[float, float, float]:
+    def _parse_coords(self, coords: tuple[float, float]) -> tuple[float, float, float]:
         """Convert 2D coordinates to 3D, choosing z=0 if not provided."""
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
 
-    def _set_point_cache(self, point_cache: Dict[Tuple[float, float, float], int]):
+    def _set_point_cache(self, point_cache: dict[tuple[float, float, float], int]):
         """Set the shared point cache for this entity."""
         self._points = point_cache
 
-    def _set_line_cache(self, line_cache: Dict[Tuple[int, int], int]):
+    def _set_line_cache(self, line_cache: dict[tuple[int, int], int]):
         """Set the shared line cache for this entity."""
         self._lines = line_cache
 
     def _add_point_with_tolerance(self, x: float, y: float, z: float) -> int:
-        """
-        Add a point to the model, or reuse a previously-defined point within tolerance.
+        """Add a point to the model, or reuse a previously-defined point within tolerance.
 
         Args:
             x, y, z: Point coordinates
 
         Returns:
             GMSH point ID
+
         """
         # Initialize local cache if no shared cache is set
         if self._points is None:
@@ -60,14 +58,14 @@ class GeometryEntity:
         return self._points[key]
 
     def _add_line_with_cache(self, point1_id: int, point2_id: int) -> int:
-        """
-        Add a line to the model, or reuse a previously-defined line between the same points.
+        """Add a line to the model, or reuse a previously-defined line between the same points.
 
         Args:
             point1_id, point2_id: GMSH point IDs
 
         Returns:
             GMSH line ID
+
         """
         # Initialize local cache if no shared cache is set
         if self._lines is None:
@@ -83,16 +81,16 @@ class GeometryEntity:
         return self._lines[key]
 
     def _create_points_from_vertices(
-        self, vertices: List[Tuple[float, float, float]]
-    ) -> List[int]:
-        """
-        Create GMSH points from vertex coordinates, reusing existing points within tolerance.
+        self, vertices: list[tuple[float, float, float]]
+    ) -> list[int]:
+        """Create GMSH points from vertex coordinates, reusing existing points within tolerance.
 
         Args:
             vertices: List of (x, y, z) coordinates
 
         Returns:
             List of GMSH point IDs
+
         """
         points = []
         for x, y, z in vertices:
@@ -101,7 +99,7 @@ class GeometryEntity:
         return points
 
     def _create_surface_from_vertices(
-        self, vertices: List[Tuple[float, float, float]]
+        self, vertices: list[tuple[float, float, float]]
     ) -> int:
         """Create a GMSH surface from vertex coordinates with point and line reuse."""
         points = self._create_points_from_vertices(vertices)
@@ -114,8 +112,7 @@ class GeometryEntity:
 
         # Create closed loop and surface
         loop_id = gmsh.model.occ.addCurveLoop(lines)
-        surface_id = gmsh.model.occ.addPlaneSurface([loop_id])
-        return surface_id
+        return gmsh.model.occ.addPlaneSurface([loop_id])
 
     def _clear_caches(self):
         """Clear the point and line caches - useful after boolean operations that may invalidate geometry."""
@@ -124,14 +121,14 @@ class GeometryEntity:
         if self._lines is not None:
             self._lines.clear()
 
-    def instanciate(self, cad_model) -> List[Tuple[int, int]]:
-        """
-        Create GMSH geometry. To be implemented by subclasses.
+    def instanciate(self, cad_model) -> list[tuple[int, int]]:
+        """Create GMSH geometry. To be implemented by subclasses.
 
         Args:
             cad_model: CAD model (kept for interface compatibility)
 
         Returns:
             List of (dimension, tag) tuples representing created entities
+
         """
         raise NotImplementedError("Subclasses must implement instanciate method")

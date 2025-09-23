@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import shapely
-from meshwell.polysurface import PolySurface
-from meshwell.polyprism import PolyPrism
-from meshwell.resolution import ConstantInField, ThresholdField, ExponentialField
-from meshwell.utils import compare_gmsh_files
 from pathlib import Path
-import pytest
+
 import numpy as np
+import pytest
+import shapely
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polyprism import PolyPrism
+from meshwell.polysurface import PolySurface
+from meshwell.resolution import ConstantInField, ExponentialField, ThresholdField
+from meshwell.utils import compare_gmsh_files
 
 
 def test_2D_resolution():
@@ -335,12 +337,12 @@ def test_filter(apply_to, min_mass, max_mass):
 
 
 @pytest.mark.parametrize(
-    ("restrict_to",),
+    "restrict_to",
     [
-        (None,),
-        (["inner_left"],),
-        (["inner_right"],),
-        (["outer", "inner_right"],),
+        None,
+        ["inner_left"],
+        ["inner_right"],
+        ["outer", "inner_right"],
     ],
 )
 def test_restrict(restrict_to):
@@ -366,10 +368,7 @@ def test_restrict(restrict_to):
         physical_name="outer",
     )
 
-    if restrict_to is None:
-        restrict_to = None
-    else:
-        restrict_to = restrict_to
+    restrict_to = None if restrict_to is None else restrict_to
     poly_left = PolySurface(
         polygons=shapely.affinity.translate(polygon2, xoff=-3.1),
         mesh_order=1,

@@ -31,13 +31,11 @@ def gdstk_to_shapely(cell, layer_tuple):
 
     if polygons:
         return unary_union(polygons)
-    else:
-        return sg.MultiPolygon([])
+    return sg.MultiPolygon([])
 
 
 def read_gds_layers(gds_file, cell_name=None, layers=None):
     """Read GDS file and convert to Shapely geometries."""
-
     # Read the GDS file
     library = gdstk.read_gds(gds_file)
 

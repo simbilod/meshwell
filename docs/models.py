@@ -3,14 +3,16 @@
 # Multiple GMSH entities (and polysurfaces or prisms) can be provided to a model to create a single mesh.
 
 # %%
-import shapely
-import gmsh
 from functools import partial
-from meshwell.polysurface import PolySurface
-from meshwell.gmsh_entity import GMSH_entity
-from meshwell.visualization import plot2D
+
+import gmsh
+import shapely
+
 from meshwell.cad import cad
+from meshwell.gmsh_entity import GMSH_entity
 from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
+from meshwell.visualization import plot2D
 
 # %%
 polygon_hull = shapely.Polygon(

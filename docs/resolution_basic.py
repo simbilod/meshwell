@@ -3,13 +3,15 @@
 # When defining entities, ResolutionSpecs can be attached to control the mesh size within or near the entity and its boundaries.
 
 # %%
-import shapely
 from collections import OrderedDict
-from meshwell.polysurface import PolySurface
-from meshwell.visualization import plot2D
-from meshwell.resolution import ConstantInField, ThresholdField, ExponentialField
+
+import shapely
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
+from meshwell.resolution import ConstantInField, ExponentialField, ThresholdField
+from meshwell.visualization import plot2D
 
 # %% [markdown]
 # ## Default characteristic length

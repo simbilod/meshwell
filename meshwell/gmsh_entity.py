@@ -1,6 +1,7 @@
-import gmsh
 from functools import partial
-from typing import Optional
+
+import gmsh
+
 from meshwell.validation import format_physical_name
 
 GMSH_ENTITY_DIMENSIONS = {
@@ -56,8 +57,7 @@ GMSH_ENTITY_DIMENSIONS = {
 
 
 class GMSH_entity:
-    """
-    Delayed evaluation of a gmsh occ kernel entity.
+    """Delayed evaluation of a gmsh occ kernel entity.
 
     Attributes:
         gmsh_partial_function: entity-defining function from model.occ
@@ -65,12 +65,13 @@ class GMSH_entity:
         physical_name: name(s) of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
         mesh_bool: if True, entity will be meshed; if not, will not be meshed
+
     """
 
     def __init__(
         self,
         gmsh_partial_function: callable,
-        physical_name: Optional[str | tuple[str]] = None,
+        physical_name: str | tuple[str] | None = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,

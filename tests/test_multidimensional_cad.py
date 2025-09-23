@@ -1,5 +1,4 @@
-"""
-Test multi-dimensional entity processing capabilities.
+"""Test multi-dimensional entity processing capabilities.
 
 This test module validates the ability to process entities of different
 dimensions (3D volumes, 2D surfaces, 1D curves, 0D points) in a single model
@@ -8,8 +7,10 @@ using fragment-based integration.
 
 from __future__ import annotations
 
-import gmsh
 from functools import partial
+
+import gmsh
+
 from meshwell.cad import cad
 from meshwell.gmsh_entity import GMSH_entity
 from meshwell.mesh import mesh
@@ -18,7 +19,6 @@ from meshwell.resolution import ConstantInField
 
 def test_volume_with_internal_surface():
     """Test 3D volume with 2D surface fragment integration."""
-
     # Create a 3D box (volume)
     box_obj = GMSH_entity(
         gmsh_partial_function=partial(
@@ -65,7 +65,6 @@ def test_volume_with_internal_surface():
 
 def test_lower_dim_with_multiple_higher_entities():
     """Test lower-dimension object interacting with multiple higher-level entities."""
-
     # Create two 3D boxes that don't overlap
     box1_obj = GMSH_entity(
         gmsh_partial_function=partial(
@@ -129,7 +128,6 @@ def test_lower_dim_with_multiple_higher_entities():
 
 def test_surface_boundary_overlap():
     """Test surface that lies exactly on boundary of volume."""
-
     # Create a 3D box
     box_obj = GMSH_entity(
         gmsh_partial_function=partial(
@@ -175,7 +173,6 @@ def test_surface_boundary_overlap():
 
 def test_point_in_multiple_entities():
     """Test 0D point inside multiple overlapping entities."""
-
     # Create overlapping 3D entities
     box_obj = GMSH_entity(
         gmsh_partial_function=partial(
@@ -245,7 +242,6 @@ def test_point_in_multiple_entities():
 
 def test_sequential_fragmentation_complex():
     """Test sequential fragmentation with multiple lower-dim entities."""
-
     # Base 3D volume
     base_volume = GMSH_entity(
         gmsh_partial_function=partial(

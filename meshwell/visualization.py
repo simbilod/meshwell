@@ -37,7 +37,7 @@ def plot2D(
     ignore_lines: bool = False,
 ):
     # Create matplotlib figure
-    fig, ax = plt.subplots(figsize=(10, 10))
+    _fig, ax = plt.subplots(figsize=(10, 10))
 
     # Create mapping dicts from integer IDs to group names
     id_to_name = {}

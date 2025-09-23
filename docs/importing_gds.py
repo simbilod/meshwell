@@ -7,17 +7,17 @@
 # First, assume we have a GDS file (here we write a small one with gdstk):
 
 # %%
-from typing import List
+
 import gdstk
-from meshwell.import_gds import read_gds_layers
+import matplotlib.pyplot as plt
 import shapely
 import shapely.geometry as sg
-from meshwell.visualization import colors
-from meshwell.polysurface import PolySurface
-import matplotlib.pyplot as plt
-from meshwell.visualization import plot2D
+
 from meshwell.cad import cad
+from meshwell.import_gds import read_gds_layers
 from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
+from meshwell.visualization import colors, plot2D
 
 lib = gdstk.Library()
 cell = lib.new_cell("TOP")
@@ -50,7 +50,7 @@ circle3 = gdstk.ellipse((5, 5), 1, layer=3, datatype=0)
 # Add all shapes to cell
 shapes = [rect1a, poly1b, poly1c, rect2a, poly2b, poly2c, circle1, circle2, circle3]
 for shape in shapes:
-    if isinstance(shape, List):
+    if isinstance(shape, list):
         for subshape in shape:
             cell.add(subshape)
     else:
@@ -64,10 +64,7 @@ ymin = float("inf")
 ymax = float("-inf")
 
 for shape in shapes:
-    if isinstance(shape, List):
-        shape_list = shape
-    else:
-        shape_list = [shape]
+    shape_list = shape if isinstance(shape, list) else [shape]
 
     for s in shape_list:
         bbox = s.bounding_box()
@@ -236,7 +233,7 @@ plt.show()
 # %%
 # Helper function to plot shapely geometries
 def plot_geometry(geometry, title=None, color="blue", alpha=0.5, show_layer4=True):
-    fig, ax = plt.subplots(figsize=(8, 8))
+    _fig, ax = plt.subplots(figsize=(8, 8))
 
     # Plot the main geometry
     if isinstance(geometry, sg.MultiPolygon):

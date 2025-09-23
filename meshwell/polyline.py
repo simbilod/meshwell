@@ -1,26 +1,26 @@
-from shapely.geometry import LineString, MultiLineString
-from typing import List, Optional, Union, Tuple
 import gmsh
+from shapely.geometry import LineString, MultiLineString
 
 from meshwell.geometry_entity import GeometryEntity
 
 
 class PolyLine(GeometryEntity):
-    """
-    Creates bottom-up GMSH wires formed by list of shapely (multi)linestring.
+    """Creates bottom-up GMSH wires formed by list of shapely (multi)linestring.
 
     Attributes:
         linestrings: list of shapely (Multi)LineString
         physical_name: name of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
+
     """
 
     def __init__(
         self,
-        linestrings: Union[
-            LineString, List[LineString], MultiLineString, List[MultiLineString]
-        ],
-        physical_name: Optional[str | tuple[str, ...]] = None,
+        linestrings: LineString
+        | list[LineString]
+        | MultiLineString
+        | list[MultiLineString],
+        physical_name: str | tuple[str, ...] | None = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
@@ -69,12 +69,10 @@ class PolyLine(GeometryEntity):
         if len(lines) == 1:
             # For a single line, we can return it as-is since GMSH treats it as a wire
             return lines[0]
-        else:
-            # For multiple lines, create a proper wire
-            wire_id = gmsh.model.occ.addWire(lines)
-            return wire_id
+        # For multiple lines, create a proper wire
+        return gmsh.model.occ.addWire(lines)
 
-    def instanciate(self, cad_model) -> List[Tuple[int, int]]:
+    def instanciate(self, cad_model) -> list[tuple[int, int]]:
         """Create GMSH wires directly without using CAD class methods."""
         wires = []
         for linestring in self.linestrings:

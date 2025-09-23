@@ -1,5 +1,6 @@
-from meshwell.labeledentity import LabeledEntities
 import math
+
+from meshwell.labeledentity import LabeledEntities
 
 
 def validate_dimtags(dimtags):
@@ -8,20 +9,18 @@ def validate_dimtags(dimtags):
         raise ValueError(
             "All the entities corresponding to a mesh physical_name must be of the same dimension."
         )
-    else:
-        return dims[0]
+    return dims[0]
 
 
 def format_physical_name(physical_name: str):
     # Format physical name
     if isinstance(physical_name, str):
         return (physical_name,)
-    else:
-        return physical_name
+    return physical_name
 
 
 def unpack_dimtags(dimtags):
-    dim = [dim for dim, tag in dimtags][0]
+    dim = next(dim for dim, tag in dimtags)
     tags = [tag for dim, tag in dimtags]
     if any(isinstance(el, list) for el in tags):
         tags = [item for sublist in tags for item in sublist]

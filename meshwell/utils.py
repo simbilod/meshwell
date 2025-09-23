@@ -1,5 +1,6 @@
 from difflib import unified_diff
 from pathlib import Path
+
 from meshwell.config import PATH
 
 
@@ -16,7 +17,7 @@ def compare_gmsh_files(meshfile: Path, other_meshfile: Path | None = None):
         actual_lines = f.readlines()
 
     diff = list(unified_diff(expected_lines, actual_lines))
-    assert diff == [], f"Mesh {str(meshfile)} differs from its reference!"
+    assert diff == [], f"Mesh {meshfile!s} differs from its reference!"
 
 
 def compare_mesh_headers(meshfile: Path, other_meshfile: Path | None = None):
@@ -45,4 +46,4 @@ def compare_mesh_headers(meshfile: Path, other_meshfile: Path | None = None):
                 break
 
     diff = list(unified_diff(expected_lines, actual_lines))
-    assert diff == [], f"Mesh headers in {str(meshfile)} differ from reference!"
+    assert diff == [], f"Mesh headers in {meshfile!s} differ from reference!"

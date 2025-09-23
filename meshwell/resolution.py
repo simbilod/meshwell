@@ -1,8 +1,9 @@
-import numpy as np
 import copy
-from typing import Literal, Any, List
-from pydantic import BaseModel
 import warnings
+from typing import Any, Literal
+
+import numpy as np
+from pydantic import BaseModel
 
 
 class ResolutionSpec(BaseModel):
@@ -16,33 +17,35 @@ class ResolutionSpec(BaseModel):
     apply_to: Literal["volumes", "surfaces", "curves", "points"]
     min_mass: float = 0
     max_mass: float = np.inf
-    sharing: List[str] | None = None
-    not_sharing: List[str] | None = None
-    restrict_to: List[str] | None = None
+    sharing: list[str] | None = None
+    not_sharing: list[str] | None = None
+    restrict_to: list[str] | None = None
 
     @property
     def entity_str(self):
         """Convenience wrapper."""
         if self.apply_to == "volumes":
             return "RegionsList"
-        elif self.apply_to == "surfaces":
+        if self.apply_to == "surfaces":
             return "SurfacesList"
-        elif self.apply_to == "curves":
+        if self.apply_to == "curves":
             return "CurvesList"
-        elif self.apply_to == "points":
+        if self.apply_to == "points":
             return "PointsList"
+        return None
 
     @property
     def target_dimension(self):
         """Convenience wrapper."""
         if self.apply_to == "volumes":
             return 3
-        elif self.apply_to == "surfaces":
+        if self.apply_to == "surfaces":
             return 2
-        elif self.apply_to == "curves":
+        if self.apply_to == "curves":
             return 1
-        elif self.apply_to == "points":
+        if self.apply_to == "points":
             return 0
+        return None
 
 
 class ConstantInField(ResolutionSpec):
@@ -80,8 +83,7 @@ class SampledField(ResolutionSpec):
     sizemin: float
 
     def calculate_samplings(self, entities_mass_dict):
-        """Calculates a more optimal sampling from the masses"""
-
+        """Calculates a more optimal sampling from the masses."""
         if self.mass_per_sampling is None:
             # Default sampling is half the minimum resolution
             mass_per_sampling = 0.5 * self.sizemin
@@ -114,7 +116,7 @@ class SampledField(ResolutionSpec):
         restrict_to_str: str,
         restrict_to_tags=None,
     ):
-        """Common application"""
+        """Common application."""
         restrict_field_index = model.mesh.field.add("Restrict")
         model.mesh.field.setNumber(restrict_field_index, "InField", target_field_index)
         model.mesh.field.setNumbers(
@@ -126,7 +128,7 @@ class SampledField(ResolutionSpec):
 
 
 class ThresholdField(SampledField):
-    """Linear growth of the resolution away from the entity"""
+    """Linear growth of the resolution away from the entity."""
 
     sizemax: float
     sizemin: float
@@ -166,12 +168,11 @@ class ThresholdField(SampledField):
 
             # Restriction field
             if restrict_to_tags:
-                restrict_field_index = self.apply_restrict(
+                return self.apply_restrict(
                     model, threshold_field_index, restrict_to_str, restrict_to_tags
                 )
-                return restrict_field_index
-            else:
-                return threshold_field_index
+            return threshold_field_index
+        return None
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
@@ -184,7 +185,7 @@ class ThresholdField(SampledField):
 
 
 class ExponentialField(SampledField):
-    """Exponential growth of the characteristic length away from the entity"""
+    """Exponential growth of the characteristic length away from the entity."""
 
     growth_factor: float
     lengthscale: float
@@ -216,12 +217,11 @@ class ExponentialField(SampledField):
 
             # Restriction field
             if restrict_to_tags:
-                restrict_field_index = self.apply_restrict(
+                return self.apply_restrict(
                     model, matheval_field_index, restrict_to_str, restrict_to_tags
                 )
-                return restrict_field_index
-            else:
-                return matheval_field_index
+            return matheval_field_index
+        return None
 
     def refine(self, resolution_factor: float):
         result = copy.copy(self)
