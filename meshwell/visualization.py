@@ -1,3 +1,4 @@
+"""Plotting routines."""
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -35,8 +36,17 @@ def plot2D(
     wireframe: bool = False,
     title: str | None = None,
     ignore_lines: bool = False,
-):
-    # Create matplotlib figure
+) -> None:
+    """Plot a 2D mesh using matplotlib.
+
+    Args:
+        mesh: The mesh object to be plotted
+        physicals: Physical regions to highlight
+        wireframe: Whether to display mesh as wireframe
+        title: Plot title
+        ignore_lines: Whether to ignore line elements in the mesh
+    """
+    # Create matplotlib figure with specified dimensions
     _fig, ax = plt.subplots(figsize=(10, 10))
 
     # Create mapping dicts from integer IDs to group names
@@ -68,9 +78,12 @@ def plot2D(
     # Plot triangles for each 2D physical group
     for i, group in enumerate(physical_groups_2D):
         # Skip if physicals specified and this group not in them
-        if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
-            if not any(name in physicals for name in id_to_name[group]):
-                continue
+        if (
+            physicals is not None
+            and "gmsh:physical" in mesh.cell_data_dict
+            and not any(name in physicals for name in id_to_name[group])
+        ):
+            continue
 
         # Get cells for this physical group
         if (
@@ -117,9 +130,12 @@ def plot2D(
     if not ignore_lines:
         for i, group in enumerate(physical_groups_1D):
             # Skip if physicals specified and this group not in them
-            if physicals is not None and "gmsh:physical" in mesh.cell_data_dict:
-                if not any(name in physicals for name in id_to_name[group]):
-                    continue
+            if (
+                physicals is not None
+                and "gmsh:physical" in mesh.cell_data_dict
+                and not any(name in physicals for name in id_to_name[group])
+            ):
+                continue
 
             # Get cells for this physical group
             if (

@@ -131,6 +131,7 @@ ignore = [
   "C901", # too complex
   "B905", # `zip()` without an explicit `strict=` parameter
   "C408", # C408 Unnecessary `dict` call (rewrite as a literal)
+  "D107", # docstrings for __init__
 ]
 select = [
   "E",    # pycodestyle errors
@@ -158,8 +159,17 @@ select = [
   "RUF",  # ruff
 ]
 
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
 [tool.ruff.lint.per-file-ignores]
-"docs/*.py" = ["B018"] # allow useless expressions for notebooks
+"docs/*.py" = [
+    "B018", # allow useless expressions for notebooks
+    "D100",
+    "D103"
+]
+"tests/**/*.py" = ["S101", "D100", "D102", "D103"]
 
 [tool.setuptools.package-data]
 mypkg = ["*.csv", "*.yaml"]

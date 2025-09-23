@@ -1,3 +1,4 @@
+"""Gmsh wire definitions."""
 import gmsh
 from shapely.geometry import LineString, MultiLineString
 
@@ -72,7 +73,7 @@ class PolyLine(GeometryEntity):
         # For multiple lines, create a proper wire
         return gmsh.model.occ.addWire(lines)
 
-    def instanciate(self, cad_model) -> list[tuple[int, int]]:
+    def instanciate(self) -> list[tuple[int, int]]:
         """Create GMSH wires directly without using CAD class methods."""
         wires = []
         for linestring in self.linestrings:

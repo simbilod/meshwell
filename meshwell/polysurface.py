@@ -1,3 +1,4 @@
+"""PolySurface definitions."""
 import gmsh
 from shapely.geometry import MultiPolygon, Polygon
 
@@ -80,7 +81,7 @@ class PolySurface(GeometryEntity):
 
         return exterior
 
-    def instanciate(self, cad_model) -> list[tuple[int, int]]:
+    def instantiate(self) -> list[tuple[int, int]]:
         """Create GMSH surfaces directly without using CAD class methods."""
         surfaces = []
         for polygon in self.polygons:

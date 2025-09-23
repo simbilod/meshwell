@@ -1,3 +1,4 @@
+"""Mesh class definition."""
 from __future__ import annotations
 
 import contextlib
@@ -73,7 +74,7 @@ class Mesh:
         self.model_manager.sync_model()
 
     def _apply_periodic_boundaries(
-        self, final_entity_list: list, periodic_entities: list[tuple[str, str]]
+        self, periodic_entities: list[tuple[str, str]]
     ) -> None:
         """Apply periodic boundary conditions."""
         mapping = {
@@ -160,7 +161,6 @@ class Mesh:
 
         Returns:
             Tuple of (final_entity_list, final_entity_dict)
-
         """
         final_entity_list = []
         final_entity_dict = {}
@@ -195,8 +195,8 @@ class Mesh:
         """Apply mesh refinement based on entity information.
 
         Args:
-            final_entity_list: List of LabeledEntities to process
             boundary_delimiter: String used to identify boundary entities
+            resolution_specs: Resolution specifications
 
         """
         # Recover labeled entities from loaded CAD model
@@ -261,11 +261,12 @@ class Mesh:
                 self.model_manager.model.mesh.optimize(optimization_flag, niter=niter)
 
         # Return mesh object without writing to file
-        with contextlib.redirect_stdout(None):
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                temp_mesh_path = f"{tmpdirname}/mesh.msh"
-                gmsh.write(temp_mesh_path)
-                return meshio.read(temp_mesh_path)
+        with contextlib.redirect_stdout(
+            None
+        ), tempfile.TemporaryDirectory() as tmpdirname:
+            temp_mesh_path = f"{tmpdirname}/mesh.msh"
+            gmsh.write(temp_mesh_path)
+            return meshio.read(temp_mesh_path)
 
     def save_to_file(self, output_file: Path) -> None:
         """Save current mesh to file.
@@ -281,6 +282,7 @@ class Mesh:
 
         Args:
             output_file: Output file path (will be suffixed with .format)
+            format: File format to use in gmsh
 
         """
         self.model_manager.save_to_mesh(output_file, format)
@@ -292,11 +294,12 @@ class Mesh:
             meshio.Mesh: Current mesh as meshio object
 
         """
-        with contextlib.redirect_stdout(None):
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                temp_mesh_path = f"{tmpdirname}/mesh.msh"
-                gmsh.write(temp_mesh_path)
-                return meshio.read(temp_mesh_path)
+        with contextlib.redirect_stdout(
+            None
+        ), tempfile.TemporaryDirectory() as tmpdirname:
+            temp_mesh_path = f"{tmpdirname}/mesh.msh"
+            gmsh.write(temp_mesh_path)
+            return meshio.read(temp_mesh_path)
 
     def load_xao_file(self, input_file: Path) -> None:
         """Load CAD geometry from .xao file.
@@ -317,7 +320,7 @@ class Mesh:
         global_3D_algorithm: int = 1,
         mesh_element_order: int = 1,
         verbosity: int | None = 0,
-        periodic_entities: list[tuple[str, str]] | None = None,
+        periodic_entities: list[tuple[str, str]] | None = None,  # noqa: ARG002
         optimization_flags: tuple[tuple[str, int]] | None = None,
         boundary_delimiter: str = "None",
         resolution_specs: dict = (),
@@ -393,6 +396,7 @@ def mesh(
     """Utility function that wraps the Mesh class for easier usage.
 
     Args:
+        dim: Dimension of mesh to generate
         input_file: Path to input .xao file
         output_file: Path for output mesh file
         entities_list: Optional list of entities with mesh parameters
@@ -401,6 +405,7 @@ def mesh(
         global_scaling: Global scaling factor
         global_2D_algorithm: GMSH 2D meshing algorithm
         global_3D_algorithm: GMSH 3D meshing algorithm
+        mesh_element_order: Element order
         verbosity: GMSH verbosity level
         periodic_entities: List of periodic boundary pairs
         optimization_flags: Mesh optimization flags

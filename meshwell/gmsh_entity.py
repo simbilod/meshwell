@@ -1,3 +1,5 @@
+"""Class definition for delayed gmhs entity evaluation."""
+
 from functools import partial
 
 import gmsh
@@ -96,7 +98,7 @@ class GMSH_entity:
                 )
             self.dimension = dimension
 
-    def instanciate(self, cad_model):
+    def instantiate(self, cad_model):
         """Returns dim tag from entity.
 
         TODO: properly use cad_model instead of relying on general gmsh.model (being activated)

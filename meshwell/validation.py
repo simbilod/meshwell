@@ -1,9 +1,21 @@
+"""Mesh validation routines."""
 import math
 
 from meshwell.labeledentity import LabeledEntities
 
 
 def validate_dimtags(dimtags):
+    """Validate that all dimension-tag pairs have the same dimension.
+
+    Args:
+        dimtags: List of (dimension, tag) tuples representing geometric entities
+
+    Returns:
+        int: The common dimension of all entities
+
+    Raises:
+        ValueError: If entities have different dimensions
+    """
     dims = [dim for dim, tag in dimtags]
     if len(set(dims)) != 1:
         raise ValueError(
@@ -12,14 +24,32 @@ def validate_dimtags(dimtags):
     return dims[0]
 
 
-def format_physical_name(physical_name: str):
-    # Format physical name
+def format_physical_name(physical_name: str | tuple[str, ...]) -> tuple[str, ...]:
+    """Format a physical name to ensure consistent tuple representation.
+
+    Args:
+        physical_name: The physical name to format
+
+    Returns:
+        tuple: A tuple containing the physical name
+    """
     if isinstance(physical_name, str):
         return (physical_name,)
     return physical_name
 
 
 def unpack_dimtags(dimtags):
+    """Unpack and flatten dimension-tag pairs into a consistent format.
+
+    Takes a list of (dimension, tag) pairs and ensures all tags are at the same
+    level, flattening any nested lists of tags while preserving the dimension.
+
+    Args:
+        dimtags: List of (dimension, tag) tuples, where tags may be nested lists
+
+    Returns:
+        list: List of (dimension, tag) tuples with flattened tags
+    """
     dim = next(dim for dim, tag in dimtags)
     tags = [tag for dim, tag in dimtags]
     if any(isinstance(el, list) for el in tags):
@@ -61,7 +91,6 @@ def order_entities(entities):
 
 def consolidate_entities_by_physical_name(entities):
     """Returns a new list of LabeledEntities, with a single entity per physical_name."""
-    consolidated_entities = []
     physical_name_dict = {}
 
     for entity in entities:
@@ -80,7 +109,4 @@ def consolidate_entities_by_physical_name(entities):
             )
             physical_name_dict[entity.physical_name] = combined_entity
 
-    for entity in physical_name_dict.values():
-        consolidated_entities.append(entity)
-
-    return consolidated_entities
+    return list(physical_name_dict.values())

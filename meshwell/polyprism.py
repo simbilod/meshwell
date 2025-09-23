@@ -1,3 +1,4 @@
+"""Gmsh polyprism definitions."""
 import gmsh
 from shapely.geometry import MultiPolygon, Polygon
 
@@ -180,8 +181,7 @@ class PolyPrism(GeometryEntity):
         exterior: bool,
         interior_index: int,
     ) -> list[tuple[float, float, float]]:
-        """"""
-        # Draw xy surface
+        """Draw xy surface."""
         return (
             [(x, y, polygon_z) for x, y in polygon.exterior.coords]
             if exterior
@@ -304,7 +304,7 @@ class PolyPrism(GeometryEntity):
         model.occ.remove(list(prisms_dimtags))
         return subdivided_prisms
 
-    def instanciate(self, cad_model) -> list[tuple[int, int]]:
+    def instantiate(self, cad_model) -> list[tuple[int, int]]:
         """Create GMSH volumes directly without using CAD class methods."""
         prisms = self._create_volumes_directly()
         gmsh.model.occ.synchronize()

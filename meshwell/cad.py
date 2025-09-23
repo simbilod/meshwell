@@ -1,3 +1,4 @@
+"""Class definition for generating geometry and saving to a CAD file."""
 from __future__ import annotations
 
 from os import cpu_count

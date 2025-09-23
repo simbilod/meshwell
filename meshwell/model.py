@@ -1,3 +1,4 @@
+"""Main gmsh model definitions."""
 from __future__ import annotations
 
 from os import cpu_count

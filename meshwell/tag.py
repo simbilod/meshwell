@@ -1,3 +1,4 @@
+"""Mesh tagging utilities."""
 from itertools import combinations, product
 
 

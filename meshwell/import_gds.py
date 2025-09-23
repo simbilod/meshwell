@@ -1,3 +1,4 @@
+"""GDS import routines."""
 import gdstk
 import shapely.geometry as sg
 from shapely.ops import unary_union

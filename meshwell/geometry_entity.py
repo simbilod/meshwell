@@ -1,3 +1,4 @@
+"""Class definition for entities that create GMHS geometry."""
 from __future__ import annotations
 
 import gmsh
@@ -34,7 +35,9 @@ class GeometryEntity:
         """Add a point to the model, or reuse a previously-defined point within tolerance.
 
         Args:
-            x, y, z: Point coordinates
+            x: x-coordinate
+            y: y-coordinate
+            z: z-coordinate
 
         Returns:
             GMSH point ID
@@ -61,7 +64,8 @@ class GeometryEntity:
         """Add a line to the model, or reuse a previously-defined line between the same points.
 
         Args:
-            point1_id, point2_id: GMSH point IDs
+            point1_id: GMSH point ID #1
+            point2_id: GMSH point ID #2
 
         Returns:
             GMSH line ID
