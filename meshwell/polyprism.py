@@ -13,7 +13,7 @@ class PolyPrism(GeometryEntity):
     Attributes:
         polygons: list of shapely (Multi)Polygon
         buffers: dict of {z: buffer} used to shrink/grow base polygons at specified z-values
-        physical_name: name of the physical this entity wil belong to
+        physical_name: name of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
     """

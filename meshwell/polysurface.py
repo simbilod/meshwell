@@ -12,7 +12,7 @@ class PolySurface(GeometryEntity):
     Attributes:
         polygons: list of shapely (Multi)Polygon
         model: GMSH model to synchronize
-        physical_name: name of the physical this entity wil belong to
+        physical_name: name of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
     """
 
