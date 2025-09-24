@@ -4,6 +4,7 @@ from functools import partial
 
 import gmsh
 
+from meshwell.cad import CAD
 from meshwell.validation import format_physical_name
 
 GMSH_ENTITY_DIMENSIONS = {
@@ -98,7 +99,7 @@ class GMSH_entity:
                 )
             self.dimension = dimension
 
-    def instanciate(self, cad_model):
+    def instanciate(self, cad_model: CAD):
         """Returns dim tag from entity.
 
         TODO: properly use cad_model instead of relying on general gmsh.model (being activated)

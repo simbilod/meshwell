@@ -1,4 +1,5 @@
 """Class definition for generating geometry and saving to a CAD file."""
+
 from __future__ import annotations
 
 from os import cpu_count
@@ -61,8 +62,8 @@ class CAD:
         if hasattr(entity_obj, "_set_point_cache"):
             entity_obj._set_point_cache(self._shared_point_cache)
 
-        # instanciate entity
-        dimtags_out = entity_obj.instanciate()
+        # instantiate entity
+        dimtags_out = entity_obj.instanciate(self)
         dimtags = unpack_dimtags(dimtags_out)
 
         return LabeledEntities(
@@ -200,7 +201,7 @@ class CAD:
         processed_entities = []
 
         for i, (index, entity_obj) in enumerate(entity_group):
-            # instanciate entity using helper method
+            # instantiate entity using helper method
             current_entity = self._instanciate_entity(index, entity_obj, progress_bars)
 
             if i == 0:

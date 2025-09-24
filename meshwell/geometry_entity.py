@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import gmsh
 
+from meshwell.cad import CAD
+
 
 class GeometryEntity:
     """Base class for geometry entities that create GMSH geometry directly.
@@ -125,7 +127,7 @@ class GeometryEntity:
         if self._lines is not None:
             self._lines.clear()
 
-    def instanciate(self, cad_model) -> list[tuple[int, int]]:
+    def instanciate(self, cad_model: CAD | None = None) -> list[tuple[int, int]]:
         """Create GMSH geometry. To be implemented by subclasses.
 
         Args:
