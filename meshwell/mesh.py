@@ -121,33 +121,6 @@ class Mesh:
         else:
             self._apply_background_refinement()
 
-    def get_top_physical_names(self) -> list[str]:
-        """Get all physical names of dimension dim from the GMSH model.
-
-        Returns:
-            List of physical names as strings
-        """
-        return self.model_manager.get_top_physical_names()
-
-    def get_all_physical_names(self) -> list[str]:
-        """Get all physical names from the GMSH model.
-
-        Returns:
-            List of physical names as strings
-        """
-        return self.model_manager.get_physical_names()
-
-    def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
-        """Get the dimtags associated with a physical group name.
-
-        Args:
-            physical_name: Name of the physical group
-
-        Returns:
-            List of (dim, tag) tuples for entities in the physical group
-        """
-        return self.model_manager.get_physical_dimtags(physical_name)
-
     def _recover_labels_from_cad(self, resolution_specs: Dict) -> Tuple[List, Dict]:
         """Recover labeled entities from loaded CAD model.
 
@@ -161,8 +134,8 @@ class Mesh:
         final_entity_dict = {}
 
         # We address entities by "named" physicals (not default):
-        top_physical_names = self.get_top_physical_names()
-        all_physical_names = self.get_all_physical_names()
+        top_physical_names = self.model_manager.get_top_physical_names()
+        all_physical_names = self.model_manager.get_physical_names()
 
         for index, physical_name in enumerate(all_physical_names):
             if physical_name in resolution_specs:
@@ -176,7 +149,7 @@ class Mesh:
                 index=index,
                 physical_name=physical_name,
                 model=self.model_manager.model,
-                dimtags=self.get_physical_dimtags(physical_name=physical_name),
+                dimtags=self.model_manager.get_physical_dimtags(physical_name),
                 resolutions=resolutions,
             )
             entities.update_boundaries()
@@ -264,16 +237,8 @@ class Mesh:
                 gmsh.write(temp_mesh_path)
                 return meshio.read(temp_mesh_path)
 
-    def save_to_file(self, output_file: Path) -> None:
+    def save_mesh(self, output_file: Path, format: str = "msh") -> None:
         """Save current mesh to file.
-
-        Args:
-            output_file: Output mesh file path
-        """
-        self.model_manager.save_to_mesh(output_file)
-
-    def to_msh(self, output_file: Path, format: str = "msh") -> None:
-        """Save current mesh to .msh file.
 
         Args:
             output_file: Output file path (will be suffixed with .format)
@@ -292,7 +257,7 @@ class Mesh:
                 gmsh.write(temp_mesh_path)
                 return meshio.read(temp_mesh_path)
 
-    def load_xao_file(self, input_file: Path) -> None:
+    def load_xao(self, input_file: Path) -> None:
         """Load CAD geometry from .xao file.
 
         Args:
@@ -415,7 +380,7 @@ def mesh(
         resolution_specs = {}
 
     # Load geometry from file
-    mesh_generator.load_xao_file(input_file)
+    mesh_generator.load_xao(input_file)
 
     # Process geometry into mesh
     mesh_obj = mesh_generator.process_geometry(
@@ -434,7 +399,7 @@ def mesh(
     )
 
     # Save to file
-    mesh_generator.save_to_file(output_file)
+    mesh_generator.model_manager.save_to_mesh(output_file)
 
     # Finalize if we created the model
     if model is None:

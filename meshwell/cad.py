@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from os import cpu_count
-from typing import Dict, List, Tuple, Optional
+from typing import List, Tuple, Optional
 from pathlib import Path
 
 from meshwell.validation import (
@@ -45,9 +45,6 @@ class CAD:
         # Store parameters for backward compatibility
         self.point_tolerance = point_tolerance
 
-        # Shared point cache for geometry entities that support point deduplication
-        self._shared_point_cache: Dict[Tuple[float, float, float], int] = {}
-
     def _instantiate_entity(
         self, index: int, entity_obj, progress_bars: bool
     ) -> LabeledEntities:
@@ -55,10 +52,6 @@ class CAD:
         physical_name = entity_obj.physical_name
         if progress_bars and physical_name:
             print(f"Processing {physical_name} - instantiation")
-
-        # Set up shared point cache for geometry entities that support it
-        if hasattr(entity_obj, "_set_point_cache"):
-            entity_obj._set_point_cache(self._shared_point_cache)
 
         # Instantiate entity
         dimtags_out = entity_obj.instanciate(self)
@@ -77,7 +70,7 @@ class CAD:
         entities_list: List,
         progress_bars: bool,
     ) -> Tuple[List, int]:
-        """Process structura entities."""
+        """Process structural entities."""
         # Separate and order entities
         structural_entities = [e for e in entities_list if not e.additive]
 
@@ -229,8 +222,6 @@ class CAD:
 
                 self.model_manager.model.occ.removeAllDuplicates()
                 self.model_manager.sync_model()
-                # Clear shared point cache after boolean operations
-                self._shared_point_cache.clear()
 
         return processed_entities
 
@@ -312,7 +303,7 @@ class CAD:
 
         return final_entity_list
 
-    def to_xao(self, output_file: Path) -> None:
+    def save_xao(self, output_file: Path) -> None:
         """Save current model state to .xao file.
 
         Args:
@@ -361,7 +352,7 @@ def cad(
     )
 
     # Save to file
-    cad_processor.to_xao(output_file)
+    cad_processor.save_xao(output_file)
 
     # Finalize if we created the model
     if model is None:
