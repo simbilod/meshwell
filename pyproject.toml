@@ -159,6 +159,9 @@ select = [
   "RUF",  # ruff
 ]
 
+[tool.codespell]
+ignore-words-list = "instanciate"
+count = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
