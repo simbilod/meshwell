@@ -1,15 +1,16 @@
+"""Class definition for generating geometry and saving to a CAD file."""
+
 from __future__ import annotations
 
 from os import cpu_count
-from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
+from meshwell.labeledentity import LabeledEntities
+from meshwell.model import ModelManager
+from meshwell.tag import tag_boundaries, tag_entities, tag_interfaces
 from meshwell.validation import (
     unpack_dimtags,
 )
-from meshwell.labeledentity import LabeledEntities
-from meshwell.tag import tag_entities, tag_interfaces, tag_boundaries
-from meshwell.model import ModelManager
 
 
 class CAD:
@@ -20,7 +21,7 @@ class CAD:
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
         filename: str = "temp",
-        model: Optional[ModelManager] = None,
+        model: ModelManager | None = None,
     ):
         """Initialize CAD processor.
 
@@ -29,6 +30,7 @@ class CAD:
             n_threads: Number of threads for processing
             filename: Base filename for the model
             model: Optional Model instance to use (creates new if None)
+
         """
         # Use provided model or create new one
         if model is None:
@@ -46,9 +48,9 @@ class CAD:
         self.point_tolerance = point_tolerance
 
         # Shared point cache for geometry entities that support point deduplication
-        self._shared_point_cache: Dict[Tuple[float, float, float], int] = {}
+        self._shared_point_cache: dict[tuple[float, float, float], int] = {}
 
-    def _instantiate_entity(
+    def _instanciate_entity(
         self, index: int, entity_obj, progress_bars: bool
     ) -> LabeledEntities:
         """Common logic for instantiating entities."""
@@ -60,7 +62,7 @@ class CAD:
         if hasattr(entity_obj, "_set_point_cache"):
             entity_obj._set_point_cache(self._shared_point_cache)
 
-        # Instantiate entity
+        # instantiate entity
         dimtags_out = entity_obj.instanciate(self)
         dimtags = unpack_dimtags(dimtags_out)
 
@@ -74,9 +76,9 @@ class CAD:
 
     def _process_entities(
         self,
-        entities_list: List,
+        entities_list: list,
         progress_bars: bool,
-    ) -> Tuple[List, int]:
+    ) -> tuple[list, int]:
         """Process structura entities."""
         # Separate and order entities
         structural_entities = [e for e in entities_list if not e.additive]
@@ -89,10 +91,9 @@ class CAD:
         return structural_entity_list, max_dim
 
     def _process_multidimensional_entities(
-        self, structural_entities: List, progress_bars: bool
-    ) -> Tuple[List, int]:
+        self, structural_entities: list, progress_bars: bool
+    ) -> tuple[list, int]:
         """Process entities with mixed dimensions using hierarchical approach."""
-
         entity_dimensions = []
         max_dim = 0
         for index, entity_obj in enumerate(structural_entities):
@@ -141,10 +142,10 @@ class CAD:
 
     def _process_dimension_group_fragments(
         self,
-        entity_group: List[LabeledEntities],
+        entity_group: list[LabeledEntities],
         progress_bars: bool,
-        higher_dim_entities: List[LabeledEntities],
-    ) -> List[LabeledEntities]:
+        higher_dim_entities: list[LabeledEntities],
+    ) -> list[LabeledEntities]:
         """Fragment processing for entities against higher dimensional entities."""
         processed_entities = []
 
@@ -194,14 +195,14 @@ class CAD:
         return processed_entities
 
     def _process_dimension_group_cuts(
-        self, entity_group: List, progress_bars: bool
-    ) -> List[LabeledEntities]:
+        self, entity_group: list, progress_bars: bool
+    ) -> list[LabeledEntities]:
         """Process entities of same dimension using cuts."""
         processed_entities = []
 
         for i, (index, entity_obj) in enumerate(entity_group):
-            # Instantiate entity using helper method
-            current_entity = self._instantiate_entity(index, entity_obj, progress_bars)
+            # instantiate entity using helper method
+            current_entity = self._instanciate_entity(index, entity_obj, progress_bars)
 
             if i == 0:
                 processed_entities.append(current_entity)
@@ -236,7 +237,7 @@ class CAD:
 
     def _tag_mesh_components(
         self,
-        final_entity_list: List,
+        final_entity_list: list,
         max_dim: int,
         interface_delimiter: str,
         boundary_delimiter: str,
@@ -272,11 +273,11 @@ class CAD:
 
     def process_entities(
         self,
-        entities_list: List,
+        entities_list: list,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
         progress_bars: bool = False,
-    ) -> List:
+    ) -> list:
         """Process entities and return final entity list (no file I/O).
 
         Args:
@@ -287,6 +288,7 @@ class CAD:
 
         Returns:
             List of processed LabeledEntities
+
         """
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
@@ -317,12 +319,13 @@ class CAD:
 
         Args:
             output_file: Output file path (will be suffixed with .xao)
+
         """
         self.model_manager.save_to_xao(output_file)
 
 
 def cad(
-    entities_list: List,
+    entities_list: list,
     output_file: Path,
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
@@ -330,7 +333,7 @@ def cad(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     progress_bars: bool = False,
-    model: Optional[ModelManager] = None,
+    model: ModelManager | None = None,
 ) -> None:
     """Utility function that wraps the CAD class for easier usage.
 
@@ -344,6 +347,7 @@ def cad(
         boundary_delimiter: Delimiter for boundary names
         progress_bars: Show progress bars during processing
         model: Optional Model instance to use (creates new if None)
+
     """
     cad_processor = CAD(
         point_tolerance=point_tolerance,

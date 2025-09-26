@@ -1,14 +1,14 @@
-from typing import List, Dict, Optional, Tuple, Union
-from shapely.geometry import Polygon, MultiPolygon
-from meshwell.validation import format_physical_name
+"""Gmsh polyprism definitions."""
 import gmsh
+from shapely.geometry import MultiPolygon, Polygon
 
+from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
+from meshwell.validation import format_physical_name
 
 
 class PolyPrism(GeometryEntity):
-    """
-    Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
+    """Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
 
     Attributes:
         polygons: list of shapely (Multi)Polygon
@@ -16,13 +16,14 @@ class PolyPrism(GeometryEntity):
         physical_name: name of the physical this entity wil belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
+
     """
 
     def __init__(
         self,
-        polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
-        buffers: Dict[float, float],
-        physical_name: Optional[str | tuple[str, ...]] = None,
+        polygons: Polygon | list[Polygon] | MultiPolygon | list[MultiPolygon],
+        buffers: dict[float, float],
+        physical_name: str | tuple[str, ...] | None = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
@@ -39,8 +40,8 @@ class PolyPrism(GeometryEntity):
             self.zmin, self.zmax = min(buffers.keys()), max(buffers.keys())
         else:
             self.extrude = False
-            self.buffered_polygons: List[
-                Tuple[float, Polygon]
+            self.buffered_polygons: list[
+                tuple[float, Polygon]
             ] = self._get_buffered_polygons(polygons, buffers)
 
         # Store other attributes
@@ -54,7 +55,7 @@ class PolyPrism(GeometryEntity):
         self.mesh_bool = mesh_bool
         self.additive = additive
 
-    def _create_volumes_directly(self) -> List[int]:
+    def _create_volumes_directly(self) -> list[int]:
         """Create GMSH volumes directly without using CAD class methods."""
         if self.extrude:
             surfaces = self._create_surfaces_with_holes_at_z(self.polygons, self.zmin)
@@ -84,8 +85,8 @@ class PolyPrism(GeometryEntity):
         return [tag for dim, tag in fused_dimtags]
 
     def _get_buffered_polygons(
-        self, polygons: List[Polygon], buffers: Dict[float, float]
-    ) -> List[Tuple[float, Polygon]]:
+        self, polygons: list[Polygon], buffers: dict[float, float]
+    ) -> list[tuple[float, Polygon]]:
         """Break up polygons on each layer into lists of (z,polygon) tuples according to buffer entries.
 
         Arguments (implicit):
@@ -94,6 +95,7 @@ class PolyPrism(GeometryEntity):
 
         Returns:
             buffered_polygons: list of (z, buffered_polygons)
+
         """
         all_polygons_list = []
         for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
@@ -106,7 +108,7 @@ class PolyPrism(GeometryEntity):
 
     def _create_volume_directly(
         self,
-        entry: List[Tuple[float, Polygon]],
+        entry: list[tuple[float, Polygon]],
         exterior: bool = True,
         interior_index: int = 0,
     ) -> int:
@@ -179,9 +181,8 @@ class PolyPrism(GeometryEntity):
         polygon_z: float,
         exterior: bool,
         interior_index: int,
-    ) -> List[Tuple[float, float, float]]:
-        """"""
-        # Draw xy surface
+    ) -> list[tuple[float, float, float]]:
+        """Draw xy surface."""
         return (
             [(x, y, polygon_z) for x, y in polygon.exterior.coords]
             if exterior
@@ -191,7 +192,7 @@ class PolyPrism(GeometryEntity):
         )
 
     def _create_volume_with_holes_directly(
-        self, entry: List[Tuple[float, Polygon]]
+        self, entry: list[tuple[float, Polygon]]
     ) -> int:
         """Create volume with holes directly using GMSH calls."""
         exterior = self._create_volume_directly(entry, exterior=True)
@@ -218,7 +219,7 @@ class PolyPrism(GeometryEntity):
             self._clear_caches()
         return exterior
 
-    def _create_surfaces_with_holes_at_z(self, polygons, z) -> List[int]:
+    def _create_surfaces_with_holes_at_z(self, polygons, z) -> list[int]:
         """Create surfaces with holes at given z level directly using GMSH calls."""
         surfaces = []
         for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
@@ -304,7 +305,7 @@ class PolyPrism(GeometryEntity):
         model.occ.remove(list(prisms_dimtags))
         return subdivided_prisms
 
-    def instanciate(self, cad_model) -> List[Tuple[int, int]]:
+    def instanciate(self, cad_model: CAD) -> list[tuple[int, int]]:
         """Create GMSH volumes directly without using CAD class methods."""
         prisms = self._create_volumes_directly()
         gmsh.model.occ.synchronize()

@@ -6,9 +6,9 @@
 import matplotlib.pyplot as plt
 import shapely
 
-from meshwell.polysurface import PolySurface
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot2D
 
 # %%

@@ -1,25 +1,26 @@
-from shapely.geometry import Polygon, MultiPolygon
-from typing import List, Optional, Union, Tuple
+"""PolySurface definitions."""
 import gmsh
+from shapely.geometry import MultiPolygon, Polygon
 
+from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
 
 
 class PolySurface(GeometryEntity):
-    """
-    Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
+    """Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
 
     Attributes:
         polygons: list of shapely (Multi)Polygon
         model: GMSH model to synchronize
         physical_name: name of the physical this entity wil belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
+
     """
 
     def __init__(
         self,
-        polygons: Union[Polygon, List[Polygon], MultiPolygon, List[MultiPolygon]],
-        physical_name: Optional[str | tuple[str, ...]] = None,
+        polygons: Polygon | list[Polygon] | MultiPolygon | list[MultiPolygon],
+        physical_name: str | tuple[str, ...] | None = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
@@ -81,7 +82,10 @@ class PolySurface(GeometryEntity):
 
         return exterior
 
-    def instanciate(self, cad_model) -> List[Tuple[int, int]]:
+    def instanciate(
+        self,
+        cad_model: CAD | None = None,  # noqa: ARG002
+    ) -> list[tuple[int, int]]:
         """Create GMSH surfaces directly without using CAD class methods."""
         surfaces = []
         for polygon in self.polygons:
