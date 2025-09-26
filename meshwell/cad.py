@@ -166,7 +166,7 @@ class CAD:
                         removeObject=True,
                         removeTool=True,
                     )
-                    self.model_manager.model.occ.synchronize()
+                    self.model_manager.sync_model()
 
                     # Update current_entity dimtags based on fragment result
                     if (
@@ -226,8 +226,6 @@ class CAD:
 
                 if current_entity.dimtags:
                     processed_entities.append(current_entity)
-
-                self.model_manager.model.occ.removeAllDuplicates()
                 self.model_manager.sync_model()
                 # Clear shared point cache after boolean operations
                 self._shared_point_cache.clear()
