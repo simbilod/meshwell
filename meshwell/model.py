@@ -196,6 +196,7 @@ class ModelManager:
         """Synchronize the OCC model."""
         if not self._is_initialized:
             return
+        self.occ.removeAllDuplicates()
         self.occ.synchronize()
 
     def clear_and_reinitialize(self, model_name: str | None = None) -> None:
