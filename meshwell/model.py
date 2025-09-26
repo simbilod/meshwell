@@ -1,8 +1,9 @@
+"""Main gmsh model definitions."""
 from __future__ import annotations
 
 from os import cpu_count
 from pathlib import Path
-from typing import Optional, List, Tuple
+
 import gmsh
 
 
@@ -19,7 +20,7 @@ class ModelManager:
         self,
         n_threads: int = cpu_count(),
         filename: str = "temp",
-        point_tolerance: Optional[float] = None,
+        point_tolerance: float | None = None,
     ):
         """Initialize Model with common settings.
 
@@ -27,6 +28,7 @@ class ModelManager:
             n_threads: Number of threads for GMSH operations
             filename: Base filename for the model
             point_tolerance: Point tolerance for CAD operations (optional)
+
         """
         self.n_threads = n_threads
         self.filename = Path(filename)
@@ -43,11 +45,12 @@ class ModelManager:
         self._cad = None
         self._mesh = None
 
-    def _initialize(self, model_name: Optional[str] = None) -> None:
+    def _initialize(self, model_name: str | None = None) -> None:
         """Initialize GMSH model and set basic configuration.
 
         Args:
             model_name: Optional model name override
+
         """
         if self._is_initialized:
             return
@@ -81,6 +84,7 @@ class ModelManager:
 
         Args:
             output_file: Output file path.
+
         """
         output_file = Path(output_file)
         gmsh.write(str(output_file))
@@ -90,6 +94,7 @@ class ModelManager:
 
         Args:
             input_file: Input .xao file path
+
         """
         self.ensure_initialized("temp")
         input_file = Path(input_file)
@@ -100,6 +105,7 @@ class ModelManager:
 
         Args:
             output_file: Output file path (will be suffixed with .xao)
+
         """
         output_file = Path(output_file).with_suffix(".xao")
         gmsh.write(str(output_file))
@@ -110,11 +116,12 @@ class ModelManager:
         Args:
             output_file: Output file path (will be suffixed with format)
             format: File format (msh, vtk, etc.)
+
         """
         output_file = Path(output_file).with_suffix(f".{format}")
         gmsh.write(str(output_file))
 
-    def get_physical_names(self, dim: Optional[int] = None) -> List[str]:
+    def get_physical_names(self, dim: int | None = None) -> list[str]:
         """Get physical names, optionally filtered by dimension.
 
         Args:
@@ -123,6 +130,7 @@ class ModelManager:
 
         Returns:
             List of physical names as strings
+
         """
         if not self._is_initialized or self.model is None:
             return []
@@ -134,11 +142,12 @@ class ModelManager:
 
         return [self.model.getPhysicalName(d, tag) for d, tag in physical_groups]
 
-    def get_top_physical_names(self) -> List[str]:
+    def get_top_physical_names(self) -> list[str]:
         """Get physical names of highest dimension.
 
         Returns:
             List of physical names as strings
+
         """
         if not self._is_initialized or self.model is None:
             return []
@@ -151,7 +160,7 @@ class ModelManager:
         max_dim = max(dim for dim, _ in physical_groups)
         return self.get_physical_names(dim=max_dim)
 
-    def get_physical_dimtags(self, physical_name: str) -> List[Tuple[int, int]]:
+    def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
         """Get dimtags for a physical group name.
 
         Args:
@@ -159,6 +168,7 @@ class ModelManager:
 
         Returns:
             List of (dim, tag) tuples for entities in the physical group
+
         """
         if not self._is_initialized or self.model is None:
             return []
@@ -188,11 +198,12 @@ class ModelManager:
             return
         self.occ.synchronize()
 
-    def clear_and_reinitialize(self, model_name: Optional[str] = None) -> None:
+    def clear_and_reinitialize(self, model_name: str | None = None) -> None:
         """Clear current model and reinitialize.
 
         Args:
             model_name: Optional model name override
+
         """
         self._is_initialized = False
         self._initialize(model_name)
@@ -212,11 +223,12 @@ class ModelManager:
         """Check if model is initialized."""
         return self._is_initialized
 
-    def ensure_initialized(self, model_name: Optional[str] = None) -> None:
+    def ensure_initialized(self, model_name: str | None = None) -> None:
         """Ensure model is initialized, initialize if not.
 
         Args:
             model_name: Optional model name override
+
         """
         if not self._is_initialized:
             self._initialize(model_name)
@@ -232,6 +244,7 @@ class ModelManager:
             model = ModelManager(filename="my_project")
             model.cad.process_entities(entities_list)
             model.save_to_xao("output.xao")
+
         """
         if self._cad is None:
             # Import here to avoid circular imports
@@ -254,6 +267,7 @@ class ModelManager:
             model = ModelManager(filename="my_project")
             model.mesh.load_xao_file("input.xao")
             mesh_obj = model.mesh.process_geometry(dim=3, default_characteristic_length=0.1)
+
         """
         if self._mesh is None:
             # Import here to avoid circular imports

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shapely
+
 from meshwell.polysurface import PolySurface
 from meshwell.validation import order_entities
 

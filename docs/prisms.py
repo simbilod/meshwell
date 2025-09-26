@@ -3,12 +3,13 @@
 # Polygons can be associated with arbitrarily complex extrusion rules to form 3D Prisms.
 
 # %%
-import shapely
 import matplotlib.pyplot as plt
-from meshwell.polyprism import PolyPrism
 import plotly.graph_objects as go
+import shapely
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polyprism import PolyPrism
 
 # %%
 # We use shapely as an API to enter polygons

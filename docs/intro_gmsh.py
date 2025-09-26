@@ -5,6 +5,7 @@
 # %%
 import gmsh
 import meshio
+
 from meshwell.visualization import plot2D
 
 # %% [markdown]

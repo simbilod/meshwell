@@ -1,5 +1,6 @@
 import pytest
 from shapely.geometry import Point
+
 from meshwell.polyprism import PolyPrism
 
 
@@ -17,7 +18,7 @@ def test_prism_value_error():
     # Buffers that will cause a change in the topology of the polygon
     buffers = {0: 0, -1: 0, -1.001: 15, -5: 0}
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError):  # noqa: PT011
         PolyPrism(polygons=polygons, buffers=buffers)
 
 

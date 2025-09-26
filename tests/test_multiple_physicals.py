@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import shapely
-from meshwell.polyprism import PolyPrism
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polyprism import PolyPrism
 
 
 def test_multiple_physicals():
