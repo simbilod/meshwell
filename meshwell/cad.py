@@ -1,9 +1,10 @@
-"""Class definition for generating geometry and saving to a CAD file."""
-
+"""CAD processor."""
 from __future__ import annotations
 
 from os import cpu_count
 from pathlib import Path
+
+import gmsh
 
 from meshwell.labeledentity import LabeledEntities
 from meshwell.model import ModelManager
@@ -11,6 +12,22 @@ from meshwell.tag import tag_boundaries, tag_entities, tag_interfaces
 from meshwell.validation import (
     unpack_dimtags,
 )
+
+
+def _validate_dimtags_exist(dimtags):
+    """Validate that dimtags exist in the model."""
+    if not dimtags:
+        return []
+
+    valid_dimtags = []
+    for dim, tag in dimtags:
+        all_entities = gmsh.model.getEntities(dim)
+        existing_tags = {entity_tag for _, entity_tag in all_entities}
+        if tag not in existing_tags:
+            raise ValueError(f"Entity ({dim}, {tag}) does not exist in the model")
+        valid_dimtags.append((dim, tag))
+
+    return valid_dimtags
 
 
 class CAD:
@@ -30,7 +47,6 @@ class CAD:
             n_threads: Number of threads for processing
             filename: Base filename for the model
             model: Optional Model instance to use (creates new if None)
-
         """
         # Use provided model or create new one
         if model is None:
@@ -50,7 +66,7 @@ class CAD:
         # Shared point cache for geometry entities that support point deduplication
         self._shared_point_cache: dict[tuple[float, float, float], int] = {}
 
-    def _instanciate_entity(
+    def _instantiate_entity(
         self, index: int, entity_obj, progress_bars: bool
     ) -> LabeledEntities:
         """Common logic for instantiating entities."""
@@ -62,7 +78,7 @@ class CAD:
         if hasattr(entity_obj, "_set_point_cache"):
             entity_obj._set_point_cache(self._shared_point_cache)
 
-        # instantiate entity
+        # Instantiate entity
         dimtags_out = entity_obj.instanciate(self)
         dimtags = unpack_dimtags(dimtags_out)
 
@@ -147,52 +163,82 @@ class CAD:
         higher_dim_entities: list[LabeledEntities],
     ) -> list[LabeledEntities]:
         """Fragment processing for entities against higher dimensional entities."""
-        processed_entities = []
+        if not higher_dim_entities or not entity_group:
+            return entity_group
 
-        for current_entity in entity_group:
-            if progress_bars and current_entity.physical_name:
-                print(
-                    f"Processing {current_entity.physical_name} - fragment integration"
-                )
+        # Collect all dimtags for group fragment operation
+        object_dimtags = []
+        tool_dimtags = []
 
-            # Fragment against higher-dimensional entities if they exist
-            if higher_dim_entities and current_entity.dimtags:
-                for higher_dim_entity in higher_dim_entities:
-                    if not higher_dim_entity.dimtags or not current_entity.dimtags:
-                        continue
+        for entity in entity_group:
+            if entity.dimtags:
+                object_dimtags.extend(entity.dimtags)
 
-                    fragment_result = self.model_manager.model.occ.fragment(
-                        current_entity.dimtags,
-                        higher_dim_entity.dimtags,
-                        removeObject=True,
-                        removeTool=True,
-                    )
-                    self.model_manager.sync_model()
+        for entity in higher_dim_entities:
+            if entity.dimtags:
+                tool_dimtags.extend(entity.dimtags)
 
-                    # Update current_entity dimtags based on fragment result
-                    if (
-                        fragment_result
-                        and len(fragment_result) > 1
-                        and fragment_result[1]
-                    ):
-                        num_object_dimtags = len(current_entity.dimtags)
-                        new_object_dimtags = []
+        if not object_dimtags or not tool_dimtags:
+            return entity_group
 
-                        for idx in range(num_object_dimtags):
-                            if idx < len(fragment_result[1]):
-                                mapping = fragment_result[1][idx]
-                                if mapping:
-                                    if isinstance(mapping, list):
-                                        new_object_dimtags.extend(mapping)
-                                    else:
-                                        new_object_dimtags.append(mapping)
+        if progress_bars:
+            print("Processing fragment integration for dimension group")
 
-                        current_entity.dimtags = new_object_dimtags
+        # Validate all dimtags exist before fragment
+        _validate_dimtags_exist(object_dimtags)
+        _validate_dimtags_exist(tool_dimtags)
 
-            if current_entity.dimtags:
-                processed_entities.append(current_entity)
+        # Perform single fragment operation for all entities
+        fragment_result = self.model_manager.model.occ.fragment(
+            object_dimtags,
+            tool_dimtags,
+            removeObject=True,
+            removeTool=True,
+        )
+        self.model_manager.model.occ.synchronize()
 
-        return processed_entities
+        if not fragment_result or len(fragment_result) < 2:
+            raise ValueError("Fragment operation failed or returned invalid result")
+
+        mapping = fragment_result[1]
+
+        if not mapping or len(mapping) != (len(object_dimtags) + len(tool_dimtags)):
+            raise ValueError(
+                f"Fragment mapping incomplete: expected {len(object_dimtags) + len(tool_dimtags)} entries, got {len(mapping) if mapping else 0}"
+            )
+
+        # Update entity dimtags based on mapping
+        object_idx = 0
+        for entity in entity_group:
+            if entity.dimtags:
+                new_dimtags = []
+                for _ in entity.dimtags:
+                    if object_idx < len(mapping) and mapping[object_idx]:
+                        if isinstance(mapping[object_idx], list):
+                            new_dimtags.extend(mapping[object_idx])
+                        else:
+                            new_dimtags.append(mapping[object_idx])
+                    object_idx += 1
+
+                entity.dimtags = _validate_dimtags_exist(new_dimtags)
+
+        # Update higher dimension entities
+        tool_idx = len(object_dimtags)
+        for entity in higher_dim_entities:
+            if entity.dimtags:
+                new_dimtags = []
+                for _ in entity.dimtags:
+                    if tool_idx < len(mapping) and mapping[tool_idx]:
+                        if isinstance(mapping[tool_idx], list):
+                            new_dimtags.extend(mapping[tool_idx])
+                        else:
+                            new_dimtags.append(mapping[tool_idx])
+                    tool_idx += 1
+
+                entity.dimtags = _validate_dimtags_exist(new_dimtags)
+
+        # Return entities that still have valid dimtags
+        return [entity for entity in entity_group if entity.dimtags]
 
     def _process_dimension_group_cuts(
         self, entity_group: list, progress_bars: bool
@@ -201,8 +247,8 @@ class CAD:
         processed_entities = []
 
         for i, (index, entity_obj) in enumerate(entity_group):
-            # instantiate entity using helper method
-            current_entity = self._instanciate_entity(index, entity_obj, progress_bars)
+            # Instantiate entity using helper method
+            current_entity = self._instantiate_entity(index, entity_obj, progress_bars)
 
             if i == 0:
                 processed_entities.append(current_entity)
@@ -227,6 +273,8 @@ class CAD:
 
                 if current_entity.dimtags:
                     processed_entities.append(current_entity)
+
+                self.model_manager.model.occ.removeAllDuplicates()
                 self.model_manager.sync_model()
                 # Clear shared point cache after boolean operations
                 self._shared_point_cache.clear()
@@ -286,7 +334,6 @@ class CAD:
 
         Returns:
             List of processed LabeledEntities
-
         """
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
@@ -317,7 +364,6 @@ class CAD:
 
         Args:
             output_file: Output file path (will be suffixed with .xao)
-
         """
         self.model_manager.save_to_xao(output_file)
 
@@ -345,7 +391,6 @@ def cad(
         boundary_delimiter: Delimiter for boundary names
         progress_bars: Show progress bars during processing
         model: Optional Model instance to use (creates new if None)
-
     """
     cad_processor = CAD(
         point_tolerance=point_tolerance,
