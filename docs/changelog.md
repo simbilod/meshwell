@@ -2,8 +2,13 @@
 
 ## Unreleased
 
+## 2.1.1
+
 - bug fixes [#PR123](https://github.com/simbilod/meshwell/pull/123)
 - arbitrary custom gmsh entities [PR#125](https://github.com/simbilod/meshwell/pull/125)
+- refactor to expose some Model [#PR127](https://github.com/simbilod/meshwell/pull/127)
+- more refactoring [#PR126](https://github.com/simbilod/meshwell/pull/130)[#PR126](https://github.com/simbilod/meshwell/pull/130)
+- more bug fixes [#PR142](https://github.com/simbilod/meshwell/pull/142)[#PR143](https://github.com/simbilod/meshwell/pull/143)
 
 ## 2.1.0
 
