@@ -91,6 +91,104 @@ class Remesh:
         if current_model:
             gmsh.model.setCurrent(current_model)
 
+    def get_current_mesh_sizes(self, input_mesh: Path) -> np.ndarray:
+        """Calculate current mesh size at each node (average connected edge length).
+
+        Args:
+            input_mesh: Path to input .msh file
+
+        Returns:
+            Array of size values at mesh nodes
+        """
+        # Load mesh data if not already loaded
+        if self.vxyz is None:
+            self._load_mesh_data(input_mesh)
+
+        # Calculate edge lengths
+        # We need to reconstruct edges from elements
+        edges = set()
+
+        # Helper to add edges from elements
+        def add_edges(elements):
+            if elements is None:
+                return
+            for elem in elements:
+                # Create edges (i, j) with i < j
+                num_nodes = len(elem)
+                for i in range(num_nodes):
+                    n1, n2 = elem[i], elem[(i + 1) % num_nodes]
+                    if n1 > n2:
+                        n1, n2 = n2, n1
+                    edges.add((n1, n2))
+
+        add_edges(self.triangles)
+
+        # Also check for 3D elements (tetrahedra) if triangles are empty or we want full connectivity
+        # But _load_mesh_data only loads 2D or 3D elements into self.triangles (which is a bit of a misnomer in 3D case in the original code,
+        # let's check _load_mesh_data implementation).
+        # In _load_mesh_data:
+        # self.triangles = evid.reshape((self.triangles_tags.shape[-1], -1))
+        # It loads either 2D or 3D elements into self.triangles.
+        # If it's 3D (tetrahedra), the logic above (looping over nodes) creates edges on the surface of the tet,
+        # but we need all edges.
+        # For a tetrahedron (4 nodes), edges are (0,1), (0,2), (0,3), (1,2), (1,3), (2,3).
+        # The loop above does (0,1), (1,2), (2,3), (3,0) which misses (0,2) and (1,3).
+
+        # Let's refine the edge extraction based on element type
+        # But self.triangles just contains indices. We don't strictly know if it's triangles or tets from just the array
+        # without checking the dimension or the source.
+        # However, _load_mesh_data tries 2D then 3D.
+
+        # Let's re-implement edge extraction to be more robust
+        edges = set()
+        if self.triangles is not None:
+            num_nodes_per_elem = self.triangles.shape[1]
+
+            if num_nodes_per_elem == 3:  # Triangles
+                for elem in self.triangles:
+                    e1 = tuple(sorted((elem[0], elem[1])))
+                    e2 = tuple(sorted((elem[1], elem[2])))
+                    e3 = tuple(sorted((elem[2], elem[0])))
+                    edges.add(e1)
+                    edges.add(e2)
+                    edges.add(e3)
+            elif num_nodes_per_elem == 4:  # Tetrahedra
+                for elem in self.triangles:
+                    # 6 edges
+                    edges.add(tuple(sorted((elem[0], elem[1]))))
+                    edges.add(tuple(sorted((elem[0], elem[2]))))
+                    edges.add(tuple(sorted((elem[0], elem[3]))))
+                    edges.add(tuple(sorted((elem[1], elem[2]))))
+                    edges.add(tuple(sorted((elem[1], elem[3]))))
+                    edges.add(tuple(sorted((elem[2], elem[3]))))
+
+        # Initialize accumulators
+        node_sum_lengths = np.zeros(len(self.vxyz))
+        node_counts = np.zeros(len(self.vxyz))
+
+        # Compute lengths and accumulate
+        for n1, n2 in edges:
+            # Indices in self.vxyz are n1, n2 (assuming 0-based from _load_mesh_data)
+            # _load_mesh_data maps tags to indices 0..N-1
+            # self.triangles contains these indices
+
+            p1 = self.vxyz[n1]
+            p2 = self.vxyz[n2]
+            length = np.linalg.norm(p1 - p2)
+
+            node_sum_lengths[n1] += length
+            node_counts[n1] += 1
+            node_sum_lengths[n2] += length
+            node_counts[n2] += 1
+
+        # Compute average
+        # Avoid division by zero for isolated nodes (though unlikely in a valid mesh)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            node_sizes = node_sum_lengths / node_counts
+            node_sizes[node_counts == 0] = 0.0
+
+        return node_sizes
+
     def _create_size_field_from_map(
         self,
         size_map: np.ndarray,
@@ -267,6 +365,241 @@ class Remesh:
             format: File format (default: "msh")
         """
         self.model_manager.save_to_mesh(output_file, format)
+
+    def load_mesh(self, input_mesh: Path) -> None:
+        """Load mesh data from .msh file.
+
+        Args:
+            input_mesh: Path to input .msh file
+        """
+        self._load_mesh_data(input_mesh)
+
+    def _interpolate_edges(
+        self,
+        coords: np.ndarray,
+        connectivity: np.ndarray | None,
+        sizes: np.ndarray,
+    ) -> np.ndarray:
+        """Interpolate size field along edges to ensure sufficient density.
+
+        If the edge length is larger than the target size at the nodes,
+        intermediate points are added with interpolated sizes.
+
+        Args:
+            coords: Array of shape (N, 3) containing node coordinates
+            connectivity: Array of shape (M, 2) containing edges (node indices).
+                          If None, edges are extracted from loaded mesh.
+            sizes: Array of shape (N,) containing target sizes at nodes
+
+        Returns:
+            Array of shape (K, 4) containing (x, y, z, size) for all points
+            (original + interpolated)
+        """
+        # If connectivity is not provided, try to extract from loaded mesh
+        if connectivity is None:
+            if self.triangles is None:
+                # No connectivity available, return original points
+                return np.column_stack([coords, sizes])
+
+            # Extract edges from self.triangles (similar to get_current_mesh_sizes)
+            edges_set = set()
+            num_nodes_per_elem = self.triangles.shape[1]
+            if num_nodes_per_elem == 3:  # Triangles
+                for elem in self.triangles:
+                    edges_set.add(tuple(sorted((elem[0], elem[1]))))
+                    edges_set.add(tuple(sorted((elem[1], elem[2]))))
+                    edges_set.add(tuple(sorted((elem[2], elem[0]))))
+            elif num_nodes_per_elem == 4:  # Tetrahedra
+                for elem in self.triangles:
+                    edges_set.add(tuple(sorted((elem[0], elem[1]))))
+                    edges_set.add(tuple(sorted((elem[0], elem[2]))))
+                    edges_set.add(tuple(sorted((elem[0], elem[3]))))
+                    edges_set.add(tuple(sorted((elem[1], elem[2]))))
+                    edges_set.add(tuple(sorted((elem[1], elem[3]))))
+                    edges_set.add(tuple(sorted((elem[2], elem[3]))))
+            connectivity = np.array(list(edges_set))
+
+        new_points = []
+
+        # Add original points
+        for i in range(len(coords)):
+            new_points.append([coords[i][0], coords[i][1], coords[i][2], sizes[i]])
+
+        # Iterate over edges and add intermediate points
+        for n1, n2 in connectivity:
+            p1 = coords[n1]
+            p2 = coords[n2]
+            s1 = sizes[n1]
+            s2 = sizes[n2]
+
+            length = np.linalg.norm(p1 - p2)
+
+            # Determine target size for this edge
+            # We can use the average size or the minimum size
+            target_size = (s1 + s2) / 2.0
+
+            # If edge is too long, subdivide
+            if length > target_size:
+                num_segments = int(np.ceil(length / target_size))
+
+                for k in range(1, num_segments):
+                    t = k / num_segments
+                    p_interp = (1 - t) * p1 + t * p2
+                    s_interp = (1 - t) * s1 + t * s2
+                    new_points.append([p_interp[0], p_interp[1], p_interp[2], s_interp])
+
+        return np.array(new_points)
+
+    def refine_by_gradient(
+        self,
+        coords: np.ndarray,
+        data: np.ndarray,
+        current_sizes: np.ndarray,
+        threshold: float,
+        factor: float = 0.5,
+        min_size: float | None = None,
+        max_size: float | None = None,
+        k: int = 4,
+    ) -> np.ndarray:
+        """Refine mesh based on the gradient of the data.
+
+        Args:
+            coords: Array of shape (N, 3) containing node coordinates
+            data: Array of shape (N,) containing data values at nodes
+            current_sizes: Array of shape (N,) containing current mesh sizes
+            threshold: Gradient magnitude threshold for refinement
+            factor: Factor to multiply current size by (default: 0.5)
+            min_size: Minimum allowed mesh size
+            max_size: Maximum allowed mesh size
+            k: Number of neighbors for gradient estimation (default: 4)
+
+        Returns:
+            Array of shape (K, 4) containing (x, y, z, new_size)
+        """
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(coords)
+        k = max(k, 4)
+        distances, indices = tree.query(coords, k=k)
+
+        new_sizes = current_sizes.copy()
+
+        for i in range(len(coords)):
+            neighbor_indices = indices[i]
+            neighbor_coords = coords[neighbor_indices]
+            neighbor_data = data[neighbor_indices]
+
+            local_coords = neighbor_coords - coords[i]
+
+            try:
+                grad, _, _, _ = np.linalg.lstsq(
+                    local_coords, neighbor_data - data[i], rcond=None
+                )
+                grad_norm = np.linalg.norm(grad)
+
+                if grad_norm > threshold:
+                    new_sizes[i] *= factor
+            except:  # noqa: E722
+                pass
+
+        if min_size is not None:
+            new_sizes = np.maximum(new_sizes, min_size)
+        if max_size is not None:
+            new_sizes = np.minimum(new_sizes, max_size)
+
+        # Interpolate edges to ensure density
+        return self._interpolate_edges(coords, None, new_sizes)
+
+    def refine_by_value_difference(
+        self,
+        coords: np.ndarray,
+        connectivity: np.ndarray,
+        data: np.ndarray,
+        current_sizes: np.ndarray,
+        threshold: float,
+        factor: float = 0.5,
+        min_size: float | None = None,
+        max_size: float | None = None,
+    ) -> np.ndarray:
+        """Refine mesh based on value difference between connected nodes.
+
+        Args:
+            coords: Array of shape (N, 3) containing node coordinates
+            connectivity: Array of shape (M, 2) containing edges (node indices)
+            data: Array of shape (N,) containing data values at nodes
+            current_sizes: Array of shape (N,) containing current mesh sizes
+            threshold: Value difference threshold for refinement
+            factor: Factor to multiply current size by (default: 0.5)
+            min_size: Minimum allowed mesh size
+            max_size: Maximum allowed mesh size
+
+        Returns:
+            Array of shape (K, 4) containing (x, y, z, new_size)
+        """
+        new_sizes = current_sizes.copy()
+
+        for n1, n2 in connectivity:
+            diff = abs(data[n1] - data[n2])
+
+            if diff > threshold:
+                new_sizes[n1] *= factor
+                new_sizes[n2] *= factor
+
+        if min_size is not None:
+            new_sizes = np.maximum(new_sizes, min_size)
+        if max_size is not None:
+            new_sizes = np.minimum(new_sizes, max_size)
+
+        return self._interpolate_edges(coords, connectivity, new_sizes)
+
+    def refine_by_error(
+        self,
+        coords: np.ndarray,
+        data: np.ndarray,
+        current_sizes: np.ndarray,
+        total_error_fraction: float = 0.8,
+        factor: float = 0.5,
+        min_size: float | None = None,
+        max_size: float | None = None,
+    ) -> np.ndarray:
+        """Refine mesh based on error contribution.
+
+        Args:
+            coords: Array of shape (N, 3) containing node coordinates
+            data: Array of shape (N,) containing error values at nodes
+            current_sizes: Array of shape (N,) containing current mesh sizes
+            total_error_fraction: Fraction of total error to target
+            factor: Factor to multiply current size by (default: 0.5)
+            min_size: Minimum allowed mesh size
+            max_size: Maximum allowed mesh size
+
+        Returns:
+            Array of shape (K, 4) containing (x, y, z, new_size)
+        """
+        if np.any(data < 0):
+            raise ValueError("Error data must be non-negative.")
+
+        new_sizes = current_sizes.copy()
+
+        sorted_indices = np.argsort(data)[::-1]
+        sorted_error = data[sorted_indices]
+
+        total_error = np.sum(data)
+        cumulative_error = np.cumsum(sorted_error)
+
+        cutoff_index = np.searchsorted(
+            cumulative_error, total_error * total_error_fraction
+        )
+
+        nodes_to_refine = sorted_indices[: cutoff_index + 1]
+        new_sizes[nodes_to_refine] *= factor
+
+        if min_size is not None:
+            new_sizes = np.maximum(new_sizes, min_size)
+        if max_size is not None:
+            new_sizes = np.minimum(new_sizes, max_size)
+
+        return self._interpolate_edges(coords, None, new_sizes)
 
 
 def remesh(

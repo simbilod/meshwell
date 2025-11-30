@@ -18,7 +18,7 @@ import shapely
 import meshio
 from meshwell.cad import cad
 from meshwell.mesh import mesh
-from meshwell.remesh import remesh
+from meshwell.remesh import remesh, Remesh
 from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot2D
 
@@ -157,8 +157,91 @@ print(f"Final mesh points: {len(final_mesh.points)}")
 
 plot2D(final_mesh, title="Adaptive Remesh (Oval Refinement)", wireframe=True)
 
+# %% [markdown]
+# ## Data-Driven Refinement
+#
+# In this section, we demonstrate how to refine the mesh based on solution data.
+# We will use the `refine_by_value_difference` function to refine the mesh where the solution value changes abruptly.
+
+# %%
+# Define a scalar field with a step change
+# f(x, y) = 1 if x > 5 else 0
+# We use the coordinates from the previous final mesh
+points = initial_mesh.points
+y = points[:, 1]
+data = np.zeros(len(points))
+data[y > 5.0] = 1.0
+
+
+# Extract edges for connectivity
+def get_edges(mesh):
+    edges = set()
+    for block in mesh.cells:
+        if block.type == "triangle":
+            for elem in block.data:
+                edges.add(tuple(sorted((elem[0], elem[1]))))
+                edges.add(tuple(sorted((elem[1], elem[2]))))
+                edges.add(tuple(sorted((elem[2], elem[0]))))
+    return np.array(list(edges))
+
+
+edges = get_edges(initial_mesh)
+
+# Get current mesh sizes using Remesh class
+remesher_instance = Remesh()
+current_sizes = remesher_instance.get_current_mesh_sizes(
+    Path("remesh_example_initial.msh")
+)
+
+# Refine based on value difference
+new_size_map = remesher_instance.refine_by_value_difference(
+    coords=points,
+    connectivity=edges,
+    data=data,
+    current_sizes=current_sizes,
+    threshold=0.5,  # Data jumps from 0 to 1
+    factor=0.5,  # Halve the size at the step
+    min_size=0.05,
+)
+
+# %% [markdown]
+# ## Visualize Refinement Field
+#
+# Let's verify the target sizes.
+
+# %%
+plt.figure(figsize=(10, 10))
+sc = plt.scatter(
+    new_size_map[:, 0], new_size_map[:, 1], c=new_size_map[:, 3], cmap="viridis_r", s=5
+)
+plt.colorbar(sc, label="Target Mesh Size")
+plt.title("Target Size Field (Data-Driven)")
+plt.axis("equal")
+plt.show()
+
+# %% [markdown]
+# ## Perform Refinement
+#
+# Now we generate the new mesh using this data-driven size field.
+
+# %%
+remesh(
+    input_mesh=Path("remesh_example_initial.msh"),
+    geometry_file=Path("remesh_example.xao"),
+    output_mesh=Path("remesh_example_refined.msh"),
+    size_map=new_size_map,
+    dim=2,
+    field_smoothing_steps=3,
+    verbosity=0,
+    n_threads=1,
+)
+
+refined_mesh = meshio.read("remesh_example_refined.msh")
+plot2D(refined_mesh, title="Data-Driven Refinement (Step at x=5)", wireframe=True)
+
 # %%
 # Clean up files
 Path("remesh_example.xao").unlink(missing_ok=True)
 Path("remesh_example_initial.msh").unlink(missing_ok=True)
 Path("remesh_example_final.msh").unlink(missing_ok=True)
+Path("remesh_example_refined.msh").unlink(missing_ok=True)
