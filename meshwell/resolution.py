@@ -225,3 +225,73 @@ class ExponentialField(SampledField):
             result.sizemin *= resolution_factor
 
         return result
+
+
+class DirectSizeSpecification(ResolutionSpec):
+    """Dataclass for directly specifying mesh sizes from data points."""
+
+    refinement_data: np.ndarray
+    min_size: float | None = None
+    max_size: float | None = None
+
+    # Apply to all dimensions by default
+    apply_to: Literal["volumes", "surfaces", "curves", "points"] | None = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int:
+        import gmsh
+        import tempfile
+        import os
+
+        # 1. Use Data Directly
+        r_data = self.refinement_data
+
+        # Ensure 2D array
+        if r_data.ndim == 1:
+            r_data = r_data.reshape(1, -1)
+
+        # Parse coords and values (Assume x,y,z,size)
+        if r_data.shape[1] != 4:
+            raise ValueError(
+                f"refinement_data must be (N, 4) [x,y,z,size], got shape {r_data.shape}"
+            )
+
+        coords = r_data[:, :3]
+        sizes = r_data[:, 3]
+
+        # 2. Clamp sizes
+        if self.min_size:
+            sizes = np.maximum(sizes, self.min_size)
+        if self.max_size:
+            sizes = np.minimum(sizes, self.max_size)
+
+        # 3. Create PostView
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pos", delete=False) as tmp:
+            tmp_path = tmp.name
+            tmp.write('View "size_field" {\n')
+            for i in range(len(coords)):
+                x, y, z = coords[i]
+                s = sizes[i]
+                tmp.write(f"SP({x}, {y}, {z}){{{s}}};\n")
+            tmp.write("};\n")
+
+        gmsh.merge(tmp_path)
+        view_tag = gmsh.view.getTags()[-1]
+        os.unlink(tmp_path)
+
+        # 4. Create Field
+        field_index = model.mesh.field.add("PostView")
+        model.mesh.field.setNumber(field_index, "ViewTag", view_tag)
+
+        # 5. Apply Restriction
+        if kwargs.get("restrict_to_tags"):
+            restrict_field = model.mesh.field.add("Restrict")
+            model.mesh.field.setNumber(restrict_field, "InField", field_index)
+            model.mesh.field.setNumbers(
+                restrict_field, self.entity_str, kwargs["restrict_to_tags"]
+            )
+            return restrict_field
+
+        return field_index

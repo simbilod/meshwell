@@ -203,6 +203,16 @@ class Mesh:
 
         # Collect all refinement fields
         refinement_field_indices = []
+
+        # Handle Global Specs (key is None)
+        if None in resolution_specs:
+            for spec in resolution_specs[None]:
+                # Apply globally (empty dict means no mass filtering, restrict_to_tags=None means global)
+                field_index = spec.apply(
+                    self.model_manager.model, {}, restrict_to_tags=None
+                )
+                refinement_field_indices.append(field_index)
+
         for entity in final_entity_list:
             refinement_field_indices.extend(
                 entity.add_refinement_fields_to_model(
