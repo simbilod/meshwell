@@ -169,3 +169,88 @@ def plot2D(
 
     # Show plot
     plt.show()
+
+
+def plot3D(
+    mesh,
+    title: str = "3D Mesh",
+    output_file: str | None = None,
+):
+    """Plot 3D mesh using plotly.
+
+    Args:
+        mesh: meshio mesh object
+        title: Plot title
+        output_file: Optional path to save HTML plot
+    """
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print(
+            "Plotly is required for 3D visualization. Please install it with `pip install plotly`."
+        )
+        return
+
+    # Create lists to store all vertices and edges
+    vertices_x = []
+    vertices_y = []
+    vertices_z = []
+    edge_x = []
+    edge_y = []
+    edge_z = []
+
+    # Handle Tetrahedra
+    if "tetra" in mesh.cells_dict:
+        for tet in mesh.cells_dict["tetra"]:
+            vertices = mesh.points[tet]
+
+            # Add vertices
+            vertices_x.extend(vertices[:, 0])
+            vertices_y.extend(vertices[:, 1])
+            vertices_z.extend(vertices[:, 2])
+
+            # Add edges by connecting vertices
+            # Edges of a tetrahedron: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
+            for i in range(4):
+                for j in range(i + 1, 4):
+                    edge_x.extend([vertices[i, 0], vertices[j, 0], None])
+                    edge_y.extend([vertices[i, 1], vertices[j, 1], None])
+                    edge_z.extend([vertices[i, 2], vertices[j, 2], None])
+
+    # Create the vertices scatter plot
+    vertices_trace = go.Scatter3d(
+        x=vertices_x,
+        y=vertices_y,
+        z=vertices_z,
+        mode="markers",
+        marker=dict(size=3, color="blue"),
+        name="Vertices",
+    )
+
+    # Create the edges scatter plot
+    edges_trace = go.Scatter3d(
+        x=edge_x,
+        y=edge_y,
+        z=edge_z,
+        mode="lines",
+        line=dict(color="blue", width=1),
+        opacity=0.1,
+        name="Edges",
+    )
+
+    # Create the figure and add traces
+    fig = go.Figure(data=[vertices_trace, edges_trace])
+
+    # Update layout for better visualization
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis_title="X", yaxis_title="Y", zaxis_title="Z", aspectmode="cube"
+        ),
+        showlegend=True,
+    )
+
+    if output_file:
+        fig.write_html(output_file)
+    else:
+        fig.show()

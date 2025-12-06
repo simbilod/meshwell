@@ -17,7 +17,7 @@ import numpy as np
 import shapely
 from meshwell.cad import cad
 from meshwell.mesh import mesh
-from meshwell.remesh import remesh, RemeshingStrategy
+from meshwell.remesh import remesh_gmsh, RemeshingStrategy
 import meshio
 from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot2D
@@ -158,7 +158,7 @@ strategy = RemeshingStrategy(
     field_smoothing_steps=2,
 )
 
-size_map = remesh(
+size_map = remesh_gmsh(
     input_mesh=Path("remesh_example_initial.msh"),
     geometry_file=Path("remesh_example.xao"),
     output_mesh=Path("remesh_example_final.msh"),
@@ -213,7 +213,7 @@ grid_strategy = RemeshingStrategy(
     field_smoothing_steps=5,
 )
 
-size_map = remesh(
+size_map = remesh_gmsh(
     input_mesh=Path("remesh_example_initial.msh"),
     geometry_file=Path("remesh_example.xao"),
     output_mesh=Path("remesh_example_final.msh"),
@@ -340,7 +340,7 @@ line_strategy = RemeshingStrategy(
 )
 
 # Combine both strategies
-multi_size_map = remesh(
+multi_size_map = remesh_gmsh(
     input_mesh=Path("remesh_example_initial.msh"),
     geometry_file=Path("remesh_example.xao"),
     output_mesh=Path("remesh_example_multi.msh"),
@@ -371,13 +371,20 @@ plt.show()
 # Load and visualize the final mesh
 multi_mesh = meshio.read("remesh_example_multi.msh")
 print(f"Multi-strategy mesh points: {len(multi_mesh.points)}")
-plot2D(multi_mesh, title="Multi-Strategy Refinement (Circle + Line)", wireframe=True)
+plot2D(multi_mesh, title="Multi-Strategy Refinement", wireframe=True)
 
 
 # %%
 # Clean up files
-Path("remesh_example.xao").unlink(missing_ok=True)
-Path("remesh_example_initial.msh").unlink(missing_ok=True)
-Path("remesh_example_final.msh").unlink(missing_ok=True)
-Path("remesh_example_multi.msh").unlink(missing_ok=True)
+for f in [
+    "remesh_example.xao",
+    "remesh_example_initial.msh",
+    "remesh_example_final.msh",
+    "remesh_example_multi.msh",
+    "remesh_example_3d.xao",
+    "remesh_example_3d_initial.msh",
+    "remesh_example_3d_final.msh",
+]:
+    if Path(f).exists():
+        Path(f).unlink()
 Path("remesh_example_direct.msh").unlink(missing_ok=True)

@@ -171,7 +171,7 @@ plot2D(
 
 # %%
 constant_spec = ConstantInField(
-    apply_to="volumes", resolution=0.2  # In 2D, "volumes" refers to the surface areas
+    apply_to="surfaces", resolution=0.2  # In 2D, we apply to surfaces
 )
 
 mesh_combined = mesh(

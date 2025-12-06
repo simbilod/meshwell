@@ -324,6 +324,7 @@ class Mesh:
         optimization_flags: Optional[tuple[tuple[str, int]]] = None,
         boundary_delimiter: str = "None",  # noqa: B006
         resolution_specs: Dict = (),
+        gmsh_version: Optional[float] = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -352,7 +353,7 @@ class Mesh:
             default_characteristic_length=default_characteristic_length,
             global_2D_algorithm=global_2D_algorithm,
             global_3D_algorithm=global_3D_algorithm,
-            gmsh_version=None,
+            gmsh_version=gmsh_version,
             mesh_element_order=mesh_element_order,
         )
 
@@ -391,6 +392,7 @@ def mesh(
     n_threads: int = cpu_count(),
     filename: str = "temp",
     model: Optional[ModelManager] = None,
+    gmsh_version: Optional[float] = None,
 ) -> Optional[meshio.Mesh]:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -411,6 +413,7 @@ def mesh(
         n_threads: Number of threads to use
         filename: Temporary filename for GMSH model
         model: Optional Model instance to use (creates new if None)
+        gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -441,6 +444,7 @@ def mesh(
         optimization_flags=optimization_flags,
         boundary_delimiter=boundary_delimiter,
         resolution_specs=resolution_specs,
+        gmsh_version=gmsh_version,
     )
 
     # Save to file

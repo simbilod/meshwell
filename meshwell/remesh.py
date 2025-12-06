@@ -1,6 +1,9 @@
 """Remesh module for adaptive mesh refinement."""
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from os import cpu_count
 from pathlib import Path
@@ -9,8 +12,11 @@ from typing import Callable, List, Optional, Tuple, Union
 import gmsh
 import meshio
 import numpy as np
+from scipy.interpolate import NearestNDInterpolator
+from scipy.spatial import cKDTree
 
 from meshwell.model import ModelManager
+from meshwell.resolution import DirectSizeSpecification
 
 
 @dataclass
@@ -40,37 +46,15 @@ class RemeshingStrategy:
     field_smoothing_steps: int = 0
 
 
-@dataclass
-class DirectSizeSpecification:
-    """Dataclass for directly specifying mesh sizes.
-
-    Args:
-        func: Callable taking (coords, data) and returning desired mesh sizes.
-              coords: (N, 3) array of node coordinates.
-              data: (N,) array of data values at nodes.
-              Returns: (N,) array of desired mesh sizes.
-        refinement_data: Optional (N, 4) array of (x, y, z, data) to evaluate on.
-                        If None, evaluated on input mesh nodes.
-        min_size: Minimum allowed mesh size.
-        max_size: Maximum allowed mesh size.
-        field_smoothing_steps: Number of smoothing steps for the size field.
-    """
-
-    func: Callable[[np.ndarray, np.ndarray], np.ndarray]
-    refinement_data: Optional[Union[Path, np.ndarray]] = None
-    min_size: Optional[float] = None
-    max_size: Optional[float] = None
-    field_smoothing_steps: int = 0
-
-
-class Remesh:
-    """Remesh class for adaptive mesh refinement/coarsening based on size fields."""
+class Remesher:
+    """Base class for adaptive mesh refinement."""
 
     def __init__(
         self,
         n_threads: int = cpu_count(),
         filename: str = "temp_remesh",
         model: Optional[ModelManager] = None,
+        verbosity: int = 0,
     ):
         """Initialize remesh processor.
 
@@ -78,7 +62,11 @@ class Remesh:
             n_threads: Number of threads for processing
             filename: Base filename for the model
             model: Optional Model instance to use (creates new if None)
+            verbosity: Verbosity level
         """
+        self.n_threads = n_threads
+        self.verbosity = verbosity
+
         # Use provided model or create new one
         if model is None:
             self.model_manager = ModelManager(
@@ -140,18 +128,17 @@ class Remesh:
                 self.triangles = None
 
         elif isinstance(input_mesh, ModelManager):
+            current_model = gmsh.model.getCurrent()
             # Assuming the model is already active or we can switch to it
             # But ModelManager wraps gmsh model, so we might need to be careful about current model
             # For now, let's assume we can extract from it if it's the current one or we make it current
             # This path might be tricky if ModelManager doesn't expose everything,
             # but let's try to use the underlying gmsh model
-            current_model = gmsh.model.getCurrent()
-            gmsh.model.setCurrent(
-                input_mesh.model.getCurrent()
-            )  # This might be wrong API usage for ModelManager
-            # Actually ModelManager has .model which is the gmsh module usually? No, it's likely a wrapper or just manages state.
-            # Looking at code, ModelManager seems to manage the session.
-            # Let's assume we can just use gmsh.model if it's the active one.
+            if input_mesh.model:
+                # If ModelManager has a model object, try to use it
+                pass  # It's just a module reference usually
+
+            # Just extract from current state assuming user set it up
             self._extract_gmsh_mesh_data()
             if current_model:
                 gmsh.model.setCurrent(current_model)
@@ -163,15 +150,15 @@ class Remesh:
 
         vmap = {j: i for i, j in enumerate(self.vtags)}
 
-        # Try 2D first
+        # Try 3D first
         try:
-            self.triangles_tags, evtags = gmsh.model.mesh.getElementsByType(2)
+            self.triangles_tags, evtags = gmsh.model.mesh.getElementsByType(4)
             evid = np.array([vmap[j] for j in evtags])
             self.triangles = evid.reshape((self.triangles_tags.shape[-1], -1))
         except:  # noqa: E722
-            # Try 3D
+            # Try 2D
             try:
-                self.triangles_tags, evtags = gmsh.model.mesh.getElementsByType(4)
+                self.triangles_tags, evtags = gmsh.model.mesh.getElementsByType(2)
                 evid = np.array([vmap[j] for j in evtags])
                 self.triangles = evid.reshape((self.triangles_tags.shape[-1], -1))
             except:  # noqa: E722
@@ -231,83 +218,22 @@ class Remesh:
 
         return node_sizes
 
-    def _create_size_field_view(
-        self,
-        size_map: np.ndarray,
-        field_smoothing_steps: int = 0,
-    ) -> int:
-        """Create a gmsh size field from a sizing map.
+    def compute_size_field(self, strategies: List[RemeshingStrategy]) -> np.ndarray:
+        """Compute the target size field based on strategies.
 
         Args:
-            size_map: Array of shape (N, 4) containing (x, y, z, size) values
-            field_smoothing_steps: Number of smoothing iterations
+            strategies: List of remeshing strategies.
 
         Returns:
-            View tag
+            np.ndarray: Size map (N, 4) containing (x, y, z, size).
         """
-        import tempfile
-        import os
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".pos", delete=False) as tmp:
-            tmp_path = tmp.name
-            tmp.write('View "size_field" {\n')
-            for i in range(len(size_map)):
-                x, y, z, size = size_map[i]
-                tmp.write(f"SP({x}, {y}, {z}){{{size}}};\n")
-            tmp.write("};\n")
-
-        gmsh.merge(tmp_path)
-        view_tag = gmsh.view.getTags()[-1]
-
-        if field_smoothing_steps > 0:
-            for _ in range(field_smoothing_steps):
-                gmsh.plugin.setNumber("Smooth", "View", gmsh.view.getIndex(view_tag))
-                gmsh.plugin.run("Smooth")
-
-        os.unlink(tmp_path)
-        return view_tag
-
-    def remesh(
-        self,
-        input_mesh: Union[Path, meshio.Mesh, ModelManager],
-        geometry_file: Path,
-        strategies: List[Union[RemeshingStrategy, DirectSizeSpecification]],
-        dim: int = 2,
-        global_2D_algorithm: int = 6,
-        global_3D_algorithm: int = 1,
-        mesh_element_order: int = 1,
-        optimization_flags: Optional[Tuple[Tuple[str, int]]] = None,
-        verbosity: int = 0,
-    ) -> np.ndarray:
-        """Remesh using CAD geometry and strategies.
-
-        Args:
-            input_mesh: Input mesh source (defines baseline size field).
-            geometry_file: Path to .xao geometry file.
-            strategies: List of remeshing strategies or direct size specifications.
-            dim: Dimension.
-            global_2D_algorithm: GMSH 2D algo.
-            global_3D_algorithm: GMSH 3D algo.
-            mesh_element_order: Element order.
-            optimization_flags: Optimization flags.
-            verbosity: Verbosity.
-
-        Returns:
-            np.ndarray: The generated size map (N, 4) containing (x, y, z, size).
-        """
-        from scipy.interpolate import NearestNDInterpolator
-        from scipy.spatial import cKDTree
-
-        # 1. Load Mesh Data (Baseline)
-        self._load_mesh_data(input_mesh)
-
-        # 2. Calculate Current Sizes (Baseline)
+        # 1. Calculate Current Sizes (Baseline)
         current_sizes = self.get_current_mesh_sizes()
 
         # Create interpolator for baseline sizes
         baseline_interpolator = NearestNDInterpolator(self.vxyz, current_sizes)
 
-        # 3. Process each strategy independently
+        # 2. Process each strategy independently
         all_coords = []
         all_sizes = []
 
@@ -373,21 +299,15 @@ class Remesh:
                         eval_sizes[indices], strategy.min_size
                     )
                 if strategy.max_size is not None:
-                    # Clamp
-                    if strategy.min_size is not None:
-                        eval_sizes[indices] = np.maximum(
-                            eval_sizes[indices], strategy.min_size
-                        )
-                    if strategy.max_size is not None:
-                        eval_sizes[indices] = np.minimum(
-                            eval_sizes[indices], strategy.max_size
-                        )
+                    eval_sizes[indices] = np.minimum(
+                        eval_sizes[indices], strategy.max_size
+                    )
 
             # Store results
             all_coords.append(eval_coords)
             all_sizes.append(eval_sizes)
 
-        # 4. Combine all strategy results
+        # 3. Combine all strategy results
         if len(all_coords) == 0:
             # No strategies or all empty, use baseline
             size_map = np.column_stack([self.vxyz, current_sizes])
@@ -424,43 +344,6 @@ class Remesh:
 
             size_map = np.column_stack([np.array(final_coords), np.array(final_sizes)])
 
-        # 5. Create Size Field
-        smoothing_steps = max((s.field_smoothing_steps for s in strategies), default=0)
-
-        # Initialize model for remeshing
-        self.model_manager.ensure_initialized(str(self.model_manager.filename))
-
-        # Load geometry
-        gmsh.open(str(geometry_file))
-        gmsh.model.occ.synchronize()
-
-        # Create view
-        view_tag = self._create_size_field_view(
-            size_map, field_smoothing_steps=smoothing_steps
-        )
-
-        # 7. Setup Background Mesh
-        gmsh.option.setNumber("General.Terminal", verbosity)
-        gmsh.option.setNumber("Mesh.Algorithm", global_2D_algorithm)
-        gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
-        gmsh.option.setNumber("Mesh.ElementOrder", mesh_element_order)
-
-        bg_field = gmsh.model.mesh.field.add("PostView")
-        gmsh.model.mesh.field.setNumber(bg_field, "ViewTag", view_tag)
-        gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
-
-        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-
-        # 7. Generate
-        gmsh.model.mesh.clear()
-        gmsh.model.mesh.generate(dim)
-
-        if optimization_flags:
-            for optimization_flag, niter in optimization_flags:
-                gmsh.model.mesh.optimize(optimization_flag, niter=niter)
-
         return size_map
 
     def to_msh(self, output_file: Path, format: str = "msh") -> None:
@@ -472,12 +355,323 @@ class Remesh:
         """
         self.model_manager.save_to_mesh(output_file, format)
 
+    def finalize(self):
+        """Finalize resources."""
+        if self._owns_model:
+            self.model_manager.finalize()
 
-def remesh(
+
+class RemeshGMSH(Remesher):
+    """Remesher using GMSH backend."""
+
+    def remesh(
+        self,
+        input_mesh: Union[Path, meshio.Mesh, ModelManager],
+        geometry_file: Path,
+        strategies: List[Union[RemeshingStrategy]],
+        dim: int = 2,
+        global_2D_algorithm: int = 6,
+        global_3D_algorithm: int = 1,
+        mesh_element_order: int = 1,
+        optimization_flags: Optional[Tuple[Tuple[str, int]]] = None,
+        output_mesh: Optional[Path] = None,
+        default_characteristic_length: float = 1.0,
+    ) -> np.ndarray:
+        """Remesh using GMSH.
+
+        Args:
+            input_mesh: Input mesh source.
+            geometry_file: Path to .xao geometry file.
+            strategies: List of remeshing strategies.
+            dim: Dimension.
+            global_2D_algorithm: GMSH 2D algo.
+            global_3D_algorithm: GMSH 3D algo.
+            mesh_element_order: Element order.
+            optimization_flags: Optimization flags.
+            output_mesh: Optional output path (if not provided, result is in model).
+            default_characteristic_length: Default characteristic length.
+
+        Returns:
+            np.ndarray: The generated size map.
+        """
+        # 1. Load Mesh Data (Baseline)
+        self._load_mesh_data(input_mesh)
+
+        # 2. Compute Size Field
+        size_map = self.compute_size_field(strategies)
+
+        # 3. Create DirectSizeSpecification
+        spec = DirectSizeSpecification(
+            refinement_data=size_map,
+            apply_to=None,  # Global
+        )
+
+        # 4. Run Mesh Generation using meshwell.mesh.Mesh logic
+        # We can reuse self.model_manager
+        from meshwell.mesh import Mesh
+
+        # Initialize model for remeshing
+        self.model_manager.ensure_initialized(str(self.model_manager.filename))
+
+        # Load geometry
+        gmsh.open(str(geometry_file))
+        gmsh.model.occ.synchronize()
+
+        # Create Mesh instance attached to our model manager
+        mesh_gen = Mesh(model=self.model_manager)
+
+        # Process geometry with our resolution spec
+        # Note: We pass the spec as a global resolution spec
+        resolution_specs = {None: [spec]}
+
+        # We need to adapt the call to process_geometry or similar
+        # mesh() utility does this:
+        # mesh_generator.process_geometry(...)
+
+        mesh_gen.process_geometry(
+            dim=dim,
+            resolution_specs=resolution_specs,
+            global_2D_algorithm=global_2D_algorithm,
+            global_3D_algorithm=global_3D_algorithm,
+            mesh_element_order=mesh_element_order,
+            optimization_flags=optimization_flags,
+            verbosity=self.verbosity,
+            default_characteristic_length=default_characteristic_length,
+        )
+
+        if output_mesh:
+            self.to_msh(output_mesh)
+
+        return size_map
+
+
+class RemeshMMG(Remesher):
+    """Remesher using MMG backend."""
+
+    def __init__(
+        self,
+        mmg_executable: str = "mmg2d_O3",
+        verbosity: int = 0,
+        n_threads: int = cpu_count(),
+        filename: str = "temp_remesh_mmg",
+        model: Optional[ModelManager] = None,
+    ):
+        super().__init__(n_threads, filename, model, verbosity)
+        self.mmg_executable = mmg_executable
+
+    def _find_executable(self) -> str:
+        """Find the MMG executable."""
+        # Check if absolute path
+        if Path(self.mmg_executable).is_file():
+            return self.mmg_executable
+
+        # Check in system PATH
+        path = shutil.which(self.mmg_executable)
+        if path:
+            return path
+
+        # Check in .venv/bin (common pattern)
+        venv_bin = Path(__file__).parent.parent / ".venv" / "bin" / self.mmg_executable
+        if venv_bin.is_file():
+            return str(venv_bin)
+
+        # Check in .venv/bin relative to cwd (fallback)
+        cwd_venv_bin = Path.cwd() / ".venv" / "bin" / self.mmg_executable
+        if cwd_venv_bin.is_file():
+            return str(cwd_venv_bin)
+
+        raise FileNotFoundError(
+            f"MMG executable '{self.mmg_executable}' not found. "
+            "Please install MMG (e.g. `pip install pymmg`) or provide the full path."
+        )
+
+    def _write_sol_file(self, path: Path, sizes: np.ndarray, dim: int = 2) -> None:
+        """Write solution file (.sol) for MMG."""
+        with open(path, "w") as f:
+            f.write("MeshVersionFormatted 2\n")
+            f.write(f"Dimension {dim}\n")
+            f.write("SolAtVertices\n")
+            f.write(f"{len(sizes)}\n")
+            f.write("1 1\n")  # 1 solution field, type 1 (scalar)
+            for s in sizes:
+                f.write(f"{s:.16f}\n")
+            f.write("End\n")
+
+    def remesh(
+        self,
+        input_mesh: Union[Path, meshio.Mesh],
+        output_mesh: Path,
+        strategies: List[RemeshingStrategy],
+        dim: int = 2,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+    ) -> np.ndarray:
+        """Remesh using MMG.
+
+        Args:
+            input_mesh: Input mesh file or object.
+            output_mesh: Output mesh file path.
+            strategies: List of remeshing strategies.
+            dim: Dimension (2 or 3).
+            hmin: Minimum edge size (MMG parameter).
+            hmax: Maximum edge size (MMG parameter).
+            hausd: Hausdorff distance (MMG parameter).
+            hgrad: Gradation (MMG parameter).
+
+        Returns:
+            np.ndarray: The generated size map.
+        """
+        # 1. Load Mesh Data (Baseline)
+        self._load_mesh_data(input_mesh)
+
+        # 2. Compute Size Field
+        # Note: compute_size_field returns (x, y, z, size) at combined points
+        # But MMG needs sizes at the INPUT MESH vertices.
+        # So we need to interpolate the result of compute_size_field back to self.vxyz
+
+        target_size_map = self.compute_size_field(strategies)
+
+        # Interpolate back to mesh nodes
+        interpolator = NearestNDInterpolator(
+            target_size_map[:, :3], target_size_map[:, 3]
+        )
+        final_sizes = interpolator(self.vxyz)
+
+        # Also respect the baseline size at the node itself (already handled in compute_size_field logic?
+        # compute_size_field combines strategies. If strategies didn't cover a node, it used baseline.
+        # But if we have refinement data points, compute_size_field returns those points.
+        # So interpolation is correct.)
+
+        # 3. Run MMG
+        executable = self._find_executable()
+
+        # Load meshio object for writing
+        if isinstance(input_mesh, (str, Path)):
+            mesh = meshio.read(input_mesh)
+        elif isinstance(input_mesh, meshio.Mesh):
+            mesh = input_mesh
+        else:
+            # If loaded via ModelManager, we need to export it to meshio
+            # This is a bit inefficient but robust
+            with tempfile.NamedTemporaryFile(suffix=".msh") as tmp:
+                self.model_manager.save_to_mesh(tmp.name)
+                mesh = meshio.read(tmp.name)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            mesh_file = tmp_path / "input.mesh"
+            sol_file = tmp_path / "input.sol"
+            out_file = tmp_path / "output.mesh"
+
+            # Prepare mesh for writing
+            points_to_write = mesh.points
+            if dim == 2:
+                if points_to_write.shape[1] == 3:
+                    if not np.allclose(points_to_write[:, 2], 0):
+                        if self.verbosity > 0:
+                            print(
+                                "Warning: 2D remeshing requested but mesh has non-zero Z coordinates. Projecting to Z=0."
+                            )
+                    points_to_write = points_to_write[:, :2]
+            elif dim == 3:
+                if points_to_write.shape[1] == 2:
+                    # Pad with Z=0 if 2D points provided for 3D
+                    points_to_write = np.column_stack(
+                        [points_to_write, np.zeros(len(points_to_write))]
+                    )
+
+            # Create temporary mesh object with correct dimension
+            # Handle physical tags: Map gmsh:physical -> medit:ref
+            cell_data = {}
+            if "gmsh:physical" in mesh.cell_data:
+                cell_data["medit:ref"] = mesh.cell_data["gmsh:physical"]
+            elif "gmsh:geometrical" in mesh.cell_data:
+                cell_data["medit:ref"] = mesh.cell_data["gmsh:geometrical"]
+
+            mesh_to_write = meshio.Mesh(
+                points_to_write, mesh.cells, cell_data=cell_data
+            )
+
+            # Write mesh in Medit format
+            meshio.write(mesh_file, mesh_to_write, file_format="medit")
+
+            # Write solution
+            self._write_sol_file(sol_file, final_sizes, dim=dim)
+
+            # Build command
+            cmd = [
+                executable,
+                "-in",
+                str(mesh_file),
+                "-sol",
+                str(sol_file),
+                "-out",
+                str(out_file),
+            ]
+
+            if hmin is not None:
+                cmd.extend(["-hmin", str(hmin)])
+            if hmax is not None:
+                cmd.extend(["-hmax", str(hmax)])
+            if hausd is not None:
+                cmd.extend(["-hausd", str(hausd)])
+            if hgrad is not None:
+                cmd.extend(["-hgrad", str(hgrad)])
+            if self.verbosity > 0:
+                cmd.extend(["-v", str(self.verbosity)])
+            else:
+                cmd.extend(["-v", "-1"])  # Silent
+
+            # Run
+            try:
+                subprocess.run(cmd, check=True, capture_output=(self.verbosity == 0))
+            except subprocess.CalledProcessError as e:
+                if self.verbosity == 0 and e.stdout:
+                    print(e.stdout.decode())
+                    if e.stderr:
+                        print(e.stderr.decode())
+                raise RuntimeError(f"MMG failed with exit code {e.returncode}") from e
+
+            # Read result
+            new_mesh = meshio.read(out_file)
+
+            # Restore physical tags: medit:ref -> gmsh:physical
+            if "medit:ref" in new_mesh.cell_data:
+                new_mesh.cell_data["gmsh:physical"] = new_mesh.cell_data["medit:ref"]
+                del new_mesh.cell_data["medit:ref"]
+
+            # Add dummy geometrical tags to satisfy GMSH 2.2 format expectations
+            new_mesh.cell_data["gmsh:geometrical"] = [
+                np.zeros(len(c), dtype=int) for c in new_mesh.cells
+            ]
+
+            # Restore field_data (names)
+            new_mesh.field_data = mesh.field_data
+
+            # Save to requested output
+            new_points = new_mesh.points
+            if new_points.shape[1] == 2:
+                new_points = np.column_stack([new_points, np.zeros(len(new_points))])
+
+            new_mesh.points = new_points
+
+            # Explicitly specify format if .msh to avoid ANSYS confusion
+            file_format = None
+            if output_mesh.suffix == ".msh":
+                file_format = "gmsh22"
+
+            meshio.write(output_mesh, new_mesh, file_format=file_format)
+
+            return target_size_map
+
+
+def remesh_gmsh(
     input_mesh: Union[Path, meshio.Mesh, ModelManager],
     geometry_file: Path,
     output_mesh: Path,
-    strategies: List[Union[RemeshingStrategy, DirectSizeSpecification]],
+    strategies: List[Union[RemeshingStrategy]],
     dim: int = 2,
     global_2D_algorithm: int = 6,
     global_3D_algorithm: int = 1,
@@ -487,31 +681,14 @@ def remesh(
     n_threads: int = cpu_count(),
     filename: str = "temp_remesh",
     model: Optional[ModelManager] = None,
+    default_characteristic_length: float = 1.0,
 ) -> np.ndarray:
-    """Utility function for adaptive mesh refinement/coarsening.
-
-    Args:
-        input_mesh: Input mesh source.
-        geometry_file: Path to .xao geometry file.
-        output_mesh: Path for output .msh file.
-        strategies: List of remeshing strategies or direct size specifications.
-        dim: Dimension.
-        global_2D_algorithm: GMSH 2D algo.
-        global_3D_algorithm: GMSH 3D algo.
-        mesh_element_order: Element order.
-        optimization_flags: Optimization flags.
-        verbosity: Verbosity.
-        n_threads: Number of threads.
-        filename: Temporary filename.
-        model: Optional Model instance.
-
-    Returns:
-        np.ndarray: The generated size map (N, 4) containing (x, y, z, size).
-    """
-    remesher = Remesh(
+    """Utility function for adaptive mesh refinement using GMSH."""
+    remesher = RemeshGMSH(
         n_threads=n_threads,
         filename=filename,
         model=model,
+        verbosity=verbosity,
     )
 
     size_map = remesher.remesh(
@@ -523,12 +700,30 @@ def remesh(
         global_3D_algorithm=global_3D_algorithm,
         mesh_element_order=mesh_element_order,
         optimization_flags=optimization_flags,
-        verbosity=verbosity,
+        output_mesh=output_mesh,
+        default_characteristic_length=default_characteristic_length,
     )
 
-    remesher.to_msh(output_mesh)
-
-    if model is None:
-        remesher.model_manager.finalize()
+    remesher.finalize()
 
     return size_map
+
+
+def remesh_mmg(
+    input_mesh: Union[Path, meshio.Mesh],
+    output_mesh: Path,
+    strategies: List[RemeshingStrategy],
+    dim: int = 2,
+    mmg_executable: str = "mmg2d_O3",
+    verbosity: int = 0,
+    **kwargs,
+) -> np.ndarray:
+    """Utility function for adaptive mesh refinement using MMG."""
+    remesher = RemeshMMG(mmg_executable=mmg_executable, verbosity=verbosity)
+    return remesher.remesh(
+        input_mesh=input_mesh,
+        output_mesh=output_mesh,
+        strategies=strategies,
+        dim=dim,
+        **kwargs,
+    )

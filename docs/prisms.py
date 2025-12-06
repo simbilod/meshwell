@@ -6,9 +6,9 @@
 import shapely
 import matplotlib.pyplot as plt
 from meshwell.polyprism import PolyPrism
-import plotly.graph_objects as go
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.visualization import plot3D
 
 # %%
 # We use shapely as an API to enter polygons
@@ -64,60 +64,6 @@ output_mesh = mesh(
 
 # %%
 
-# Create lists to store all vertices and edges
-vertices_x = []
-vertices_y = []
-vertices_z = []
-edge_x = []
-edge_y = []
-edge_z = []
 
-# Plot each tetrahedron
-for tet in output_mesh.cells_dict["tetra"]:
-    vertices = output_mesh.points[tet]
-
-    # Add vertices
-    vertices_x.extend(vertices[:, 0])
-    vertices_y.extend(vertices[:, 1])
-    vertices_z.extend(vertices[:, 2])
-
-    # Add edges by connecting vertices
-    for i in range(4):
-        for j in range(i + 1, 4):
-            edge_x.extend([vertices[i, 0], vertices[j, 0], None])
-            edge_y.extend([vertices[i, 1], vertices[j, 1], None])
-            edge_z.extend([vertices[i, 2], vertices[j, 2], None])
-
-# Create the vertices scatter plot
-vertices_trace = go.Scatter3d(
-    x=vertices_x,
-    y=vertices_y,
-    z=vertices_z,
-    mode="markers",
-    marker=dict(size=3, color="blue"),
-    name="Vertices",
-)
-
-# Create the edges scatter plot
-edges_trace = go.Scatter3d(
-    x=edge_x,
-    y=edge_y,
-    z=edge_z,
-    mode="lines",
-    line=dict(color="blue", width=1),
-    opacity=0.1,
-    name="Edges",
-)
-
-# Create the figure and add traces
-fig = go.Figure(data=[vertices_trace, edges_trace])
-
-# Update layout for better visualization
-fig.update_layout(
-    title="Interactive 3D Mesh",
-    scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z", aspectmode="cube"),
-    showlegend=True,
-)
-
-fig.show()
+plot3D(output_mesh, title="Interactive 3D Mesh")
 # %%
