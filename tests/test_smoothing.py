@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
-import shapely
-import gmsh
 from functools import partial
-from meshwell.polyprism import PolyPrism
-from meshwell.gmsh_entity import GMSH_entity
-from meshwell.resolution import ConstantInField
-from meshwell.cad import cad
-from meshwell.mesh import mesh
+from pathlib import Path
 
+import gmsh
+import shapely
+
+from meshwell.cad import cad
+from meshwell.gmsh_entity import GMSH_entity
+from meshwell.mesh import mesh
+from meshwell.polyprism import PolyPrism
+from meshwell.resolution import ConstantInField
 from meshwell.utils import compare_gmsh_files
 
 

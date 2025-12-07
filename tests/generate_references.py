@@ -1,23 +1,28 @@
-import os
-import pytest
-from meshwell.config import PATH
-from contextlib import redirect_stdout
 import argparse
-import sys
+import os
 import pathlib
+import sys
+
+import pytest
+
+from meshwell.config import PATH
 
 if __name__ == "__main__":
-
     # Set up argument parser
-    parser = argparse.ArgumentParser(description='Generate reference files for tests')
-    parser.add_argument('--references-path', type=str, help='Path to references directory', default=PATH.references)
+    parser = argparse.ArgumentParser(description="Generate reference files for tests")
+    parser.add_argument(
+        "--references-path",
+        type=str,
+        help="Path to references directory",
+        default=PATH.references,
+    )
     args, remaining_argv = parser.parse_known_args()
 
     # Override PATH.references with command line argument if provided
     PATH.references = pathlib.Path(args.references_path)
 
     # Remove custom arguments from sys.argv
-    sys.argv = [sys.argv[0]] + remaining_argv
+    sys.argv = [sys.argv[0], *remaining_argv]
 
     # Delete existing references
     exec_dir_name = "./"

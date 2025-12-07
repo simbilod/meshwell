@@ -1,6 +1,8 @@
-import gdstk
 from pathlib import Path
+
+import gdstk
 import shapely.geometry as sg
+
 from meshwell.import_gds import read_gds_layers
 
 
@@ -83,7 +85,7 @@ def test_gds_to_shapely():
         # Layer 2 should have a polygon with a hole
         layer2_poly = layer_polygons[(2, 0)]
         if isinstance(layer2_poly, sg.MultiPolygon):
-            polygon = list(layer2_poly.geoms)[0]
+            polygon = next(iter(layer2_poly.geoms))
         else:
             polygon = layer2_poly
         assert len(polygon.interiors) > 0

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from functools import partial
+
 import gmsh
 import shapely
-from meshwell.polyprism import PolyPrism
-from meshwell.cad import cad
 
+from meshwell.cad import cad
 from meshwell.gmsh_entity import GMSH_entity
-from functools import partial
+from meshwell.polyprism import PolyPrism
 
 
 def test_composite_cad_3D():

@@ -65,7 +65,7 @@
 #     gmsh.initialize()
 #     gmsh.open("heater_uz.msh")
 #     gmsh.fltk.run()
-# except:  # noqa: E722
+# except:
 #     print("Skipping CAD GUI visualization - only available when running locally")
 # ```
 
@@ -93,7 +93,7 @@
 #     gmsh.initialize()
 #     gmsh.open("heater_3D.msh")
 #     gmsh.fltk.run()
-# except:  # noqa: E722
+# except:
 #     print("Skipping CAD GUI visualization - only available when running locally")
 # ```
 # %%

@@ -4,11 +4,12 @@
 
 # %%
 import shapely
-from meshwell.polysurface import PolySurface
-from meshwell.visualization import plot2D
-from meshwell.resolution import ConstantInField, ThresholdField
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
+from meshwell.resolution import ConstantInField, ThresholdField
+from meshwell.visualization import plot2D
 
 # %% [markdown]
 # ## Filtering by mass

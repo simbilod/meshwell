@@ -1,8 +1,11 @@
 from __future__ import annotations
-import gmsh
-from meshwell.gmsh_entity import GMSH_entity
-from meshwell.cad import cad
+
 from functools import partial
+
+import gmsh
+
+from meshwell.cad import cad
+from meshwell.gmsh_entity import GMSH_entity
 
 
 def test_gmsh_entity():
@@ -20,7 +23,6 @@ def test_gmsh_entity():
 def test_custom_partial():
     def front_face_rectangle(x_min, x_max, y, z_min, z_max):
         """Assumes model is already initialized."""
-
         # Define the four corners of the rectangle in 3D space
         # Front face is at y=y_max, spanning x and z
         p1 = gmsh.model.occ.addPoint(x_min, y, z_min)
@@ -36,9 +38,7 @@ def test_custom_partial():
 
         # Create a curve loop and plane surface
         loop = gmsh.model.occ.addCurveLoop([l1, l2, l3, l4])
-        surface = gmsh.model.occ.addPlaneSurface([loop])
-
-        return surface
+        return gmsh.model.occ.addPlaneSurface([loop])
 
     gmsh_obj = GMSH_entity(
         gmsh_partial_function=partial(

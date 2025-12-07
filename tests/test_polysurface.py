@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import shapely
-from meshwell.polysurface import PolySurface
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
 from meshwell.utils import compare_gmsh_files
-from pathlib import Path
 
 
 def test_polysurface():
