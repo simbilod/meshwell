@@ -19,31 +19,97 @@ from meshwell.model import ModelManager
 from meshwell.resolution import DirectSizeSpecification
 
 
+def _identity_threshold_func(
+    metric_values: np.ndarray, current_sizes: np.ndarray
+) -> np.ndarray:
+    """Default threshold function that returns sizes unchanged."""
+    return current_sizes
+
+
 @dataclass
 class RemeshingStrategy:
-    """Dataclass for defining a remeshing strategy.
+    """Base dataclass for defining a remeshing strategy.
 
     Args:
-        func: Callable taking (coords, data) and returning a metric array.
-              coords: (N, 3) array of node coordinates.
-              data: (N,) array of data values at nodes.
-              Returns: (N,) array of metric values.
-        threshold: Metric value above which refinement is triggered.
-        factor: Factor to multiply current mesh size by (e.g., 0.5 for halving).
         refinement_data: Optional (N, 4) array of (x, y, z, data) to evaluate strategy on.
-                        If None, strategy is evaluated on input mesh nodes.
+        func: Optional callable taking refinement_data and returning a metric array.
+              Returns: (N,) array of metric values.
+        threshold_func: Callable mapping (metric_values, current_sizes) to new_sizes.
         min_size: Minimum allowed mesh size.
         max_size: Maximum allowed mesh size.
         field_smoothing_steps: Number of smoothing steps for the size field.
     """
 
-    func: Callable[[np.ndarray, np.ndarray], np.ndarray]
-    threshold: float
-    factor: float
-    refinement_data: Optional[Union[Path, np.ndarray]] = None
+    refinement_data: Optional[Union[Path, np.ndarray]]
+    func: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
+    threshold_func: Callable[
+        [np.ndarray, np.ndarray], np.ndarray
+    ] = _identity_threshold_func
     min_size: Optional[float] = None
     max_size: Optional[float] = None
     field_smoothing_steps: int = 0
+
+    def apply(self, current_sizes: np.ndarray, metric_values: np.ndarray) -> np.ndarray:
+        """Apply the strategy to calculate new sizes based on metric values."""
+        new_sizes = self.threshold_func(metric_values, current_sizes)
+
+        # Clamp sizes
+        if self.min_size is not None:
+            new_sizes = np.maximum(new_sizes, self.min_size)
+        if self.max_size is not None:
+            new_sizes = np.minimum(new_sizes, self.max_size)
+
+        return new_sizes
+
+
+@dataclass
+class BinaryScalingStrategy(RemeshingStrategy):
+    """Strategy that scales mesh size by a factor where metric > threshold."""
+
+    threshold: float = 0.5
+    factor: float = 0.5
+
+    def __post_init__(self):
+        if self.threshold_func is _identity_threshold_func:
+            self.threshold_func = self._binary_scaling
+
+    def _binary_scaling(
+        self, metric_values: np.ndarray, current_sizes: np.ndarray
+    ) -> np.ndarray:
+        mask = metric_values > self.threshold
+        new_sizes = current_sizes.copy()
+        new_sizes[mask] *= self.factor
+        return new_sizes
+
+
+@dataclass
+class SigmoidScalingStrategy(RemeshingStrategy):
+    """Strategy that scales mesh size smoothly using a sigmoid transition."""
+
+    threshold: float = 0.5
+    factor: float = 0.5
+    steepness: float = 1.0
+
+    def __post_init__(self):
+        if self.threshold_func is _identity_threshold_func:
+            self.threshold_func = self._sigmoid_scaling
+
+    def _sigmoid_scaling(
+        self, metric_values: np.ndarray, current_sizes: np.ndarray
+    ) -> np.ndarray:
+        weights = 1.0 / (
+            1.0 + np.exp(-self.steepness * (metric_values - self.threshold))
+        )
+        target_sizes = current_sizes * self.factor
+        return current_sizes * (1.0 - weights) + target_sizes * weights
+
+
+@dataclass
+class MMGRemeshingStrategy(BinaryScalingStrategy):
+    """Strategy for MMG remeshing with specific parameters."""
+
+    hausd: Optional[float] = None
+    hgrad: Optional[float] = None
 
 
 class Remesher:
@@ -280,28 +346,24 @@ class Remesher:
 
             # Apply strategy or direct size specification
             # Calculate metric/size
-            if eval_values is None:
-                result = strategy.func(eval_coords, None)
+            if strategy.func is not None:
+                if eval_values is None:
+                    result = strategy.func(eval_coords, None)
+                else:
+                    result = strategy.func(eval_coords, eval_values)
             else:
-                result = strategy.func(eval_coords, eval_values)
-
-            # RemeshingStrategy: apply factor where metric exceeds threshold
-            mask = result > strategy.threshold
-            indices = np.where(mask)[0]
-
-            if len(indices) > 0:
-                # Apply factor
-                eval_sizes[indices] *= strategy.factor
-
-                # Clamp
-                if strategy.min_size is not None:
-                    eval_sizes[indices] = np.maximum(
-                        eval_sizes[indices], strategy.min_size
+                # If no func provided, use the data values directly as metric
+                if eval_values is not None:
+                    result = eval_values
+                else:
+                    # No data and no func? This is likely an error or identity
+                    # For now, let's assume it's an error unless we want to support coordinate-based identity
+                    raise ValueError(
+                        "Strategy must have either 'func' or 'refinement_data' with values."
                     )
-                if strategy.max_size is not None:
-                    eval_sizes[indices] = np.minimum(
-                        eval_sizes[indices], strategy.max_size
-                    )
+
+            # RemeshingStrategy: apply factor based on metric and interpolation function
+            eval_sizes = strategy.apply(eval_sizes, result)
 
             # Store results
             all_coords.append(eval_coords)
@@ -611,6 +673,14 @@ class RemeshMMG(Remesher):
                 str(out_file),
             ]
 
+            # Check for MMGRemeshingStrategy parameters
+            for strategy in strategies:
+                if isinstance(strategy, MMGRemeshingStrategy):
+                    if strategy.hausd is not None:
+                        hausd = strategy.hausd
+                    if strategy.hgrad is not None:
+                        hgrad = strategy.hgrad
+
             if hmin is not None:
                 cmd.extend(["-hmin", str(hmin)])
             if hmax is not None:
@@ -727,3 +797,15 @@ def remesh_mmg(
         dim=dim,
         **kwargs,
     )
+
+
+def compute_total_size_map(
+    input_mesh: Union[Path, meshio.Mesh, ModelManager],
+    strategies: List[RemeshingStrategy],
+    n_threads: int = cpu_count(),
+    verbosity: int = 0,
+) -> np.ndarray:
+    """Compute the combined size map from multiple strategies without remeshing."""
+    remesher = Remesher(n_threads=n_threads, verbosity=verbosity)
+    remesher._load_mesh_data(input_mesh)
+    return remesher.compute_size_field(strategies)

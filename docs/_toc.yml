@@ -12,5 +12,8 @@ chapters:
 - file: models
 - file: resolution_basic
 - file: resolution_advanced
+- file: direct_size_specification
+- file: adaptive_remeshing_gmsh
+- file: adaptive_remeshing_mmg
 - file: importing_gds
 - file: gdsfactory_interface

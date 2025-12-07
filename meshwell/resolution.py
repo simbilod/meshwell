@@ -287,10 +287,13 @@ class DirectSizeSpecification(ResolutionSpec):
 
         # 5. Apply Restriction
         if kwargs.get("restrict_to_tags"):
+            restrict_to_str = kwargs.get(
+                "restrict_to_str", "SurfacesList"
+            )  # Default to surfaces
             restrict_field = model.mesh.field.add("Restrict")
             model.mesh.field.setNumber(restrict_field, "InField", field_index)
             model.mesh.field.setNumbers(
-                restrict_field, self.entity_str, kwargs["restrict_to_tags"]
+                restrict_field, restrict_to_str, kwargs["restrict_to_tags"]
             )
             return restrict_field
 

@@ -129,35 +129,7 @@ mesh_global = mesh(
 plot2D(mesh_global, title="Global Direct Size Specification", wireframe=True)
 
 # %% [markdown]
-# ## Case 2: Restricting to Specific Entities
-#
-# We can restrict the size specification to apply only to specific physical groups.
-# This is done by adding the spec to the list for that physical group key.
-#
-# Here, we apply the radial size field ONLY to the "outer_box". The "inner_box" will use the default size.
-
-# %%
-# Note: When applied to a specific entity, the field is automatically restricted to that entity's volume/surface.
-mesh_restricted = mesh(
-    dim=2,
-    input_file="direct_size_example.xao",
-    output_file="direct_size_restricted.msh",
-    default_characteristic_length=2.0,
-    resolution_specs={
-        "outer_box": [size_spec_global],  # Apply only to outer_box
-        "inner_box": [],  # No specific refinement for inner_box (uses default)
-    },
-    n_threads=1,
-)
-
-plot2D(
-    mesh_restricted,
-    title="Restricted Direct Size Specification (Outer Box Only)",
-    wireframe=True,
-)
-
-# %% [markdown]
-# ## Case 3: Combining with Other Resolution Specs
+# ## Case 2: Combining with Other Resolution Specs
 #
 # We can combine `DirectSizeSpecification` with other specs like `ConstantInField`.
 # GMSH will take the minimum size requested by all active fields at any point.
@@ -196,5 +168,4 @@ plot2D(
 # Clean up files
 Path("direct_size_example.xao").unlink(missing_ok=True)
 Path("direct_size_global.msh").unlink(missing_ok=True)
-Path("direct_size_restricted.msh").unlink(missing_ok=True)
 Path("direct_size_combined.msh").unlink(missing_ok=True)

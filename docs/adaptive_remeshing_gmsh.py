@@ -17,7 +17,10 @@ import numpy as np
 import shapely
 from meshwell.cad import cad
 from meshwell.mesh import mesh
-from meshwell.remesh import remesh_gmsh, RemeshingStrategy
+from meshwell.remesh import (
+    remesh_gmsh,
+    BinaryScalingStrategy,
+)
 import meshio
 from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot2D
@@ -95,7 +98,7 @@ plot2D(initial_mesh, title="Initial Coarse Mesh", wireframe=True)
 # ## Define Remeshing Strategy
 #
 # We define a strategy that refines the mesh along an oval shape.
-# The strategy function calculates a metric (e.g., distance from boundary), and if it exceeds a threshold, refinement is triggered.
+# The strategy function calculates a solution/error (e.g., distance from boundary), and if it exceeds a threshold, refinement is triggered.
 
 # %%
 # Define oval parameters
@@ -103,8 +106,8 @@ center_x, center_y = 0.0, 0.0
 radius_x, radius_y = 3.0, 3.0
 
 
-def oval_metric(coords, data=None):
-    """Calculate metric based on proximity to oval boundary.
+def oval_looking_data(coords, data=None):
+    """Calculate solution/error based on proximity to oval boundary.
     Returns 1.0 if close to boundary, 0.0 otherwise.
     """
     x = coords[:, 0]
@@ -118,24 +121,23 @@ def oval_metric(coords, data=None):
 
     # Invert distance: high value near boundary
     # e.g., 1.0 at boundary, decaying to 0.0 at distance 1.0
-    metric = np.maximum(0, 1.0 - dist_from_boundary)
-    return metric
+    return np.maximum(0, 1.0 - dist_from_boundary)
 
 
 # %% [markdown]
 # ## Visualize Metric Field
 #
-# We can visualize the metric field on the initial mesh to see where refinement will occur.
+# We can visualize the solution/error field on the initial mesh to see where refinement will occur.
 
 # %%
-# Calculate metric on initial mesh points
-metric_values = oval_metric(initial_mesh.points)
+# Calculate solution/error on initial mesh points
+data_values = oval_looking_data(initial_mesh.points)
 
 plt.figure(figsize=(8, 8))
 plt.scatter(
     initial_mesh.points[:, 0],
     initial_mesh.points[:, 1],
-    c=metric_values,
+    c=data_values,
     cmap="viridis",
     s=10,
 )
@@ -144,12 +146,12 @@ plt.title("Refinement Metric (Oval)")
 plt.axis("equal")
 plt.show()
 
-# refinement_data as (N, 4) -> x, y, z, metric
-refinement_data = np.column_stack([initial_mesh.points, metric_values])
+# refinement_data as (N, 4) -> x, y, z, data
+refinement_data = np.column_stack([initial_mesh.points, data_values])
 
 # Create strategy with refinement_data
-strategy = RemeshingStrategy(
-    func=oval_metric,
+strategy = BinaryScalingStrategy(
+    func=oval_looking_data,
     threshold=0.7,
     factor=0.2,
     refinement_data=refinement_data,
@@ -186,7 +188,7 @@ plot2D(final_mesh, title="Adaptive Remesh (Oval Refinement)", wireframe=True)
 # %% [markdown]
 # ## Perform Remeshing with Finer Grid Evaluation
 #
-# To capture the oval shape more accurately, we can evaluate the metric on a dense grid of points
+# To capture the oval shape more accurately, we can evaluate the solution/error on a dense grid of points
 # in addition to the mesh nodes. This ensures that features smaller than the initial mesh elements are detected.
 
 # %%
@@ -196,15 +198,14 @@ y = np.linspace(-large_rect / 2, large_rect / 2, 100)
 X, Y = np.meshgrid(x, y)
 grid_coords = np.column_stack([X.ravel(), Y.ravel(), np.zeros_like(X.ravel())])
 
-# Evaluate metric on the grid
-grid_metric = oval_metric(grid_coords)
+# Evaluate solution/error on the grid
+grid_data = oval_looking_data(grid_coords)
 
-# refinement_data as (N, 4) -> x, y, z, metric
-grid_refinement_data = np.column_stack([grid_coords, grid_metric])
+# refinement_data as (N, 4) -> x, y, z, data
+grid_refinement_data = np.column_stack([grid_coords, grid_data])
 
 # Create strategy with grid refinement data
-grid_strategy = RemeshingStrategy(
-    func=oval_metric,
+grid_strategy = BinaryScalingStrategy(
     threshold=0.8,
     factor=0.2,
     refinement_data=grid_refinement_data,
@@ -250,6 +251,7 @@ print(f"Final mesh points: {len(final_mesh.points)}")
 
 plot2D(final_mesh, title="Adaptive Remesh (Oval Refinement)", wireframe=True)
 
+
 # %% [markdown]
 # ## Multiple Strategies
 #
@@ -261,8 +263,8 @@ circle_center_x, circle_center_y = 2.0, 2.0
 circle_radius = 1.5
 
 
-def circle_metric(coords, data=None):
-    """Calculate metric based on proximity to circle boundary."""
+def circle_looking_data(coords, data=None):
+    """Calculate solution/error based on proximity to circle boundary."""
     if data is not None:
         return data
 
@@ -274,8 +276,7 @@ def circle_metric(coords, data=None):
     dist_from_boundary = np.abs(dist_from_center - circle_radius)
 
     # High value near boundary
-    metric = np.maximum(0, 1.0 - dist_from_boundary / 0.5)
-    return metric
+    return np.maximum(0, 1.0 - dist_from_boundary / 0.5)
 
 
 # Define line parameters (vertical line at x = -2)
@@ -283,8 +284,8 @@ line_x = -2.0
 line_width = 0.3
 
 
-def line_metric(coords, data=None):
-    """Calculate metric based on proximity to vertical line."""
+def line_looking_data(coords, data=None):
+    """Calculate solution/error based on proximity to vertical line."""
     if data is not None:
         return data
 
@@ -294,8 +295,7 @@ def line_metric(coords, data=None):
     dist_from_line = np.abs(x - line_x)
 
     # High value near line
-    metric = np.maximum(0, 1.0 - dist_from_line / line_width)
-    return metric
+    return np.maximum(0, 1.0 - dist_from_line / line_width)
 
 
 # Generate evaluation points for circle
@@ -305,8 +305,8 @@ X_circle, Y_circle = np.meshgrid(x_circle, y_circle)
 circle_coords = np.column_stack(
     [X_circle.ravel(), Y_circle.ravel(), np.zeros_like(X_circle.ravel())]
 )
-circle_metric_values = circle_metric(circle_coords)
-circle_refinement_data = np.column_stack([circle_coords, circle_metric_values])
+circle_data_values = circle_looking_data(circle_coords)
+circle_refinement_data = np.column_stack([circle_coords, circle_data_values])
 
 # Generate evaluation points for line
 x_line = np.linspace(-large_rect / 2, large_rect / 2, 80)
@@ -315,12 +315,12 @@ X_line, Y_line = np.meshgrid(x_line, y_line)
 line_coords = np.column_stack(
     [X_line.ravel(), Y_line.ravel(), np.zeros_like(X_line.ravel())]
 )
-line_metric_values = line_metric(line_coords)
-line_refinement_data = np.column_stack([line_coords, line_metric_values])
+line_data_values = line_looking_data(line_coords)
+line_refinement_data = np.column_stack([line_coords, line_data_values])
 
 # Create strategies
-circle_strategy = RemeshingStrategy(
-    func=circle_metric,
+circle_strategy = BinaryScalingStrategy(
+    func=circle_looking_data,
     threshold=0.5,  # Lower threshold to refine more area
     factor=0.15,  # Stronger refinement (smaller factor)
     refinement_data=circle_refinement_data,
@@ -329,8 +329,8 @@ circle_strategy = RemeshingStrategy(
     field_smoothing_steps=5,
 )
 
-line_strategy = RemeshingStrategy(
-    func=line_metric,
+line_strategy = BinaryScalingStrategy(
+    func=line_looking_data,
     threshold=0.4,  # Lower threshold to refine more area
     factor=0.2,  # Stronger refinement
     refinement_data=line_refinement_data,
