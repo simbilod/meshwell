@@ -3,18 +3,35 @@
 
 format: jb-book
 root: intro
-chapters:
-- file: changelog
-- file: intro_gmsh
-- file: intro_meshwell
-- file: usage_approaches
-- file: polysurfaces
-- file: prisms
-- file: models
-- file: resolution_basic
-- file: resolution_advanced
-- file: direct_size_specification
-- file: adaptive_remeshing_gmsh
-- file: adaptive_remeshing_mmg
-- file: importing_gds
-- file: gdsfactory_interface
+
+parts:
+  - caption: Getting Started
+    chapters:
+    - file: changelog
+    - file: intro_gmsh
+    - file: intro_meshwell
+    - file: usage_approaches
+
+  - caption: CAD
+    chapters:
+    - file: gmsh_entity
+    - file: polysurfaces
+    - file: prisms
+    - file: models
+
+  - caption: Mesh
+    chapters:
+    - file: resolution_basic
+    - file: resolution_advanced
+    - file: direct_size_specification
+
+  - caption: Remesh
+    chapters:
+    - file: adaptive_remeshing_gmsh
+    - file: adaptive_remeshing_mmg
+
+  - caption: Misc
+    chapters:
+    - file: mesh_quality
+    - file: importing_gds
+    - file: gdsfactory_interface

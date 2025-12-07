@@ -550,6 +550,11 @@ class MeshQualityAnalyzer:
         max_angles = []
         edge_lengths = []
 
+        # Per-physical-group metrics
+        group_metrics = defaultdict(
+            lambda: {"aspect_ratios": [], "volumes": [], "min_angles": [], "count": 0}
+        )
+
         degenerate_count = 0
         negative_volume_count = 0
 
@@ -610,8 +615,17 @@ class MeshQualityAnalyzer:
                                 angles.append(angle)
 
                 if angles:
-                    min_angles.append(min(angles))
+                    min_angle = min(angles)
+                    min_angles.append(min_angle)
                     max_angles.append(max(angles))
+
+                    # Track per-group metrics
+                    phys_tag = tetra.get("physical_tag")
+                    if phys_tag is not None:
+                        group_metrics[phys_tag]["aspect_ratios"].append(aspect_ratio)
+                        group_metrics[phys_tag]["volumes"].append(vol)
+                        group_metrics[phys_tag]["min_angles"].append(min_angle)
+                        group_metrics[phys_tag]["count"] += 1
 
             except Exception as e:
                 print(f"⚠️ Error analyzing tetrahedron {tetra['id']}: {e}")
@@ -683,6 +697,7 @@ class MeshQualityAnalyzer:
             "edge_lengths": edge_lengths,
             "degenerate_count": degenerate_count,
             "negative_volume_count": negative_volume_count,
+            "group_metrics": dict(group_metrics),  # Convert defaultdict to dict
         }
 
         return degenerate_count == 0 and negative_volume_count == 0
@@ -698,6 +713,11 @@ class MeshQualityAnalyzer:
         min_angles = []
         max_angles = []
         edge_lengths = []
+
+        # Per-physical-group metrics
+        group_metrics = defaultdict(
+            lambda: {"aspect_ratios": [], "areas": [], "min_angles": [], "count": 0}
+        )
 
         degenerate_count = 0
         negative_area_count = 0
@@ -766,8 +786,17 @@ class MeshQualityAnalyzer:
                 cos_C = np.clip(cos_C, -1, 1)
                 angles.append(math.degrees(math.acos(cos_C)))
 
-                min_angles.append(min(angles))
+                min_angle = min(angles)
+                min_angles.append(min_angle)
                 max_angles.append(max(angles))
+
+                # Track per-group metrics
+                phys_tag = triangle.get("physical_tag")
+                if phys_tag is not None:
+                    group_metrics[phys_tag]["aspect_ratios"].append(aspect_ratio)
+                    group_metrics[phys_tag]["areas"].append(area)
+                    group_metrics[phys_tag]["min_angles"].append(min_angle)
+                    group_metrics[phys_tag]["count"] += 1
 
             except Exception as e:
                 print(f"⚠️ Error analyzing triangle {triangle['id']}: {e}")
@@ -842,6 +871,7 @@ class MeshQualityAnalyzer:
             "edge_lengths": edge_lengths,
             "degenerate_count": degenerate_count,
             "negative_area_count": negative_area_count,
+            "group_metrics": dict(group_metrics),  # Convert defaultdict to dict
         }
 
         return degenerate_count == 0 and negative_area_count == 0
@@ -894,6 +924,79 @@ class MeshQualityAnalyzer:
                     )
         else:
             print("No elements with physical tags found")
+
+        return True
+
+    def report_per_group_quality(self):
+        """Report quality metrics broken down by physical group"""
+        print("\n=== Quality Metrics Per Physical Group ===")
+
+        group_metrics = self.quality_metrics.get("group_metrics", {})
+        if not group_metrics:
+            print("No per-group metrics available")
+            return True
+
+        # Determine if 2D or 3D
+        is_3d = "volumes" in list(group_metrics.values())[0] if group_metrics else False
+
+        for tag in sorted(group_metrics.keys()):
+            metrics = group_metrics[tag]
+            count = metrics["count"]
+
+            if count == 0:
+                continue
+
+            # Get physical name
+            if tag in self.physical_names:
+                dim, name = self.physical_names[tag]
+                print(f"\n{name} (tag={tag}, {count} elements):")
+            else:
+                print(f"\nPhysical group {tag} ({count} elements):")
+
+            # Aspect ratios
+            ars = metrics.get("aspect_ratios", [])
+            if ars:
+                print(
+                    f"  Aspect ratio: min={min(ars):.2f}, max={max(ars):.2f}, mean={np.mean(ars):.2f}"
+                )
+
+                # Quality breakdown
+                if is_3d:
+                    poor = sum(1 for ar in ars if ar >= 10)
+                    if poor > 0:
+                        print(
+                            f"  ⚠️ {poor} elements with AR >= 10 ({100*poor/len(ars):.1f}%)"
+                        )
+                else:
+                    poor = sum(1 for ar in ars if ar >= 5)
+                    if poor > 0:
+                        print(
+                            f"  ⚠️ {poor} elements with AR >= 5 ({100*poor/len(ars):.1f}%)"
+                        )
+
+            # Volumes or areas
+            if is_3d:
+                vols = metrics.get("volumes", [])
+                if vols:
+                    print(
+                        f"  Volume: min={min(vols):.2e}, max={max(vols):.2e}, mean={np.mean(vols):.2e}"
+                    )
+            else:
+                areas = metrics.get("areas", [])
+                if areas:
+                    print(
+                        f"  Area: min={min(areas):.2e}, max={max(areas):.2e}, mean={np.mean(areas):.2e}"
+                    )
+
+            # Angles
+            min_angles = metrics.get("min_angles", [])
+            if min_angles:
+                print(f"  Min angle: {min(min_angles):.1f}°")
+                small_angles = sum(1 for a in min_angles if a < 5.0)
+                if small_angles > 0:
+                    print(
+                        f"  ⚠️ {small_angles} elements with angle < 5° ({100*small_angles/len(min_angles):.1f}%)"
+                    )
 
         return True
 
@@ -1149,6 +1252,7 @@ def main(mesh_file):
         ("Connectivity", analyzer.check_mesh_connectivity),
         ("Geometric Quality", analyzer.analyze_geometric_quality),
         ("Physical Regions", analyzer.check_physical_regions),
+        ("Per-Group Quality", analyzer.report_per_group_quality),
         ("Contacts/Boundaries", analyzer.check_contacts_and_boundaries),
         ("Mesh Gradation", analyzer.check_mesh_gradation),
     ]

@@ -9,7 +9,6 @@
 
 # %%
 from pathlib import Path
-import matplotlib.pyplot as plt
 import numpy as np
 import shapely
 from meshwell.cad import cad
@@ -18,7 +17,6 @@ from meshwell.remesh import (
     remesh_mmg,
     BinaryScalingStrategy,
     MMGRemeshingStrategy,
-    compute_total_size_map,
 )
 import meshio
 from meshwell.polysurface import PolySurface
@@ -135,16 +133,7 @@ data_values = oval_looking_data(initial_mesh.points)
 refinement_data = np.column_stack([initial_mesh.points, data_values])
 
 # %% [markdown]
-# ## Create strategy
-# The data is associated with a RemeshingStrategy to resize the mesh locally.
-# The strategy is created using the `BinaryScalingStrategy` class, which takes the following arguments:
-# - `refinement_data`: The data associated with the mesh. This should be a (N, 4) array where N is the number of points in the mesh. The first three columns are the x, y, z coordinates of the points, and the fourth column is the data associated with the points.
-# - (Optional) `func`: A generic callable(refinement_data) that can transform the data prior to passing to the RemeshingStrategy.
-# - `threshold`: The threshold value for func(refinement_data). The mesh is refined where the data is above this threshold.
-# - `factor`: The factor by which the mesh is refined. The mesh is refined by a factor of `factor` where the data is above the threshold.
-# - `min_size`: The minimum size of the mesh. The mesh is refined to a minimum size of `min_size` where the data is above the threshold.
-# - `max_size`: The maximum size of the mesh. The mesh is refined to a maximum size of `max_size` where the data is above the threshold.
-
+# Use a strategy based on this data
 # %%
 
 # Create strategy with refinement_data
@@ -187,7 +176,7 @@ plot2D(final_mesh, title="Adaptive Remesh with MMG (Oval Refinement)", wireframe
 # %% [markdown]
 # ## Multiple Strategies with Grid Evaluation
 #
-# Just like the standard remesher, we can use multiple strategies and grid-based evaluation.
+# Just like the GMSH remesher, we can use multiple strategies and grid-based evaluation.
 
 # %%
 # Generate a dense grid of points
@@ -207,153 +196,6 @@ grid_strategy = BinaryScalingStrategy(
     refinement_data=grid_refinement_data,
     min_size=0.1,
     max_size=2.0,
-)
-
-# %% [markdown]
-# ## Soft Thresholding with Fine Grid (MMG)
-#
-# We can use MMG's gradation parameter (hgrad) to create a smooth transition between refined and coarse regions.
-# This avoids the need for a manual sigmoid function.
-
-# %%
-
-soft_grid_strategy = MMGRemeshingStrategy(
-    threshold=0.8,
-    factor=0.1,
-    refinement_data=grid_refinement_data,
-    min_size=0.1,
-    max_size=2.0,
-    hgrad=1.1,  # Control gradation for smoothness
-)
-
-# Compute size map for visualization
-soft_size_map = compute_total_size_map(
-    input_mesh=initial_mesh,
-    strategies=[soft_grid_strategy],
-)
-
-# Visualize the soft size field
-plt.figure(figsize=(10, 10))
-sc = plt.scatter(
-    soft_size_map[:, 0],
-    soft_size_map[:, 1],
-    c=soft_size_map[:, 3],
-    cmap="viridis_r",
-    s=3,
-)
-plt.colorbar(sc, label="Target Mesh Size")
-plt.title("Soft Threshold Size Field (MMG hgrad)")
-plt.axis("equal")
-plt.show()
-
-# Remesh with soft threshold
-remesh_mmg(
-    input_mesh=initial_mesh,
-    output_mesh=Path("remesh_mmg_example_soft.msh"),
-    strategies=[soft_grid_strategy],
-    dim=2,
-    verbosity=1,
-)
-
-# Visualize final mesh
-soft_mesh = meshio.read("remesh_mmg_example_soft.msh")
-print(f"Soft threshold mesh points: {len(soft_mesh.points)}")
-plot2D(soft_mesh, title="Soft Threshold Refinement (MMG)", wireframe=True)
-
-# %% [markdown]
-# ## MMG Parameter Effects
-#
-# Let's demonstrate how different MMG parameters affect the mesh quality.
-# We'll compare different values of `hausd` (Hausdorff distance) and `hgrad` (gradation).
-
-# %%
-# Create a simple circular refinement strategy
-circle_center = np.array([0.0, 0.0, 0.0])
-circle_radius = 2.0
-
-
-def simple_circle_looking_data(coords, data=None):
-    """Calculate solution/error based on proximity to circle boundary."""
-    if data is not None:
-        return data
-
-    x = coords[:, 0]
-    y = coords[:, 1]
-
-    dist_from_center = np.sqrt(
-        (x - circle_center[0]) ** 2 + (y - circle_center[1]) ** 2
-    )
-    dist_from_boundary = np.abs(dist_from_center - circle_radius)
-
-    # High value near boundary
-    return np.maximum(0, 1.0 - dist_from_boundary / 0.5)
-
-
-# Test different parameter combinations
-param_configs = [
-    {"name": "Default", "hausd": None, "hgrad": None},
-    {"name": "Fine Hausdorff", "hausd": 0.01, "hgrad": None},
-    {"name": "Smooth Gradation", "hausd": None, "hgrad": 1.1},
-    {"name": "Fine + Smooth", "hausd": 0.01, "hgrad": 1.1},
-]
-
-# Create figure for comparison
-fig, axes = plt.subplots(2, 2, figsize=(15, 15))
-axes = axes.flatten()
-
-for idx, config in enumerate(param_configs):
-    # Create strategy with specific parameters
-    strategy = MMGRemeshingStrategy(
-        func=simple_circle_looking_data,
-        threshold=0.8,
-        factor=0.2,
-        min_size=0.1,
-        max_size=1.0,
-        refinement_data=None,
-        hausd=config["hausd"],
-        hgrad=config["hgrad"],
-    )
-
-    # Remesh
-    output_file = Path(f"remesh_mmg_params_{idx}.msh")
-    remesh_mmg(
-        input_mesh=initial_mesh,
-        output_mesh=output_file,
-        strategies=[strategy],
-        dim=2,
-        verbosity=0,
-    )
-
-    # Load and plot
-    result_mesh = meshio.read(output_file)
-
-    ax = axes[idx]
-    # Plot mesh edges
-    for cell_block in result_mesh.cells:
-        if cell_block.type == "triangle":
-            for tri in cell_block.data:
-                pts = result_mesh.points[tri]
-                triangle = plt.Polygon(
-                    pts[:, :2], fill=False, edgecolor="blue", linewidth=0.5
-                )
-                ax.add_patch(triangle)
-
-    ax.set_xlim(-5.5, 5.5)
-    ax.set_ylim(-5.5, 5.5)
-    ax.set_aspect("equal")
-    ax.set_title(f"{config['name']}\n({len(result_mesh.points)} vertices)")
-    ax.grid(True, alpha=0.3)
-
-    # Clean up
-    output_file.unlink()
-
-plt.tight_layout()
-plt.show()
-
-print("\nParameter Effects:")
-print("- hausd (Hausdorff): Controls surface approximation quality (smaller = finer)")
-print(
-    "- hgrad (Gradation): Controls mesh size transition smoothness (smaller = smoother)"
 )
 
 
@@ -444,7 +286,7 @@ plot2D(
 # %% [markdown]
 # ## 3D Remeshing (MMG)
 #
-# We can also remesh 3D geometries using MMG3D. Here we'll create a prism using `PolyPrism` and refine it.
+# We can also remesh 3D geometries using MMG3D. Here we'll create a prism using `PolyPrism` and refine it. We will also use MMGRemeshingStrategy, which directly exposes the MMG parameters.
 
 # %%
 # Create a 3D prism geometry

@@ -12,4 +12,4 @@
 
 **Project is under active development, stay tuned for improved features, documentation, and releases!**
 
-Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that streamlines the CAD definition, meshing, and remeshing of geometries parametrized by polygons (and more).
+Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) and [MMG](https://github.com/MmgTools/MMG) that streamlines the CAD definition, meshing, and remeshing of geometries parametrized by [Shapely](https://shapely.readthedocs.io/en/stable/) polygons (and more).

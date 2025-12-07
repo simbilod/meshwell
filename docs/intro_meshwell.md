@@ -68,11 +68,9 @@ For more advanced meshing options, see:
 
 ---
 
-## 3. mesh --> mesh
+## 3. mesh --> (re)mesh
 
 DirectSizeSpecification allows fine grained control of mesh sizing over space. Often, however, we want  this process to be guided by some data field we have computed over an existing mesh. The remeshing utilities are here for that.
-
-### RemeshingStrategies
 
 Remeshing is controlled by `RemeshingStrategy` objects that define how mesh sizes should change. Generic strategies have the following attributes:
 
@@ -86,9 +84,7 @@ Remeshing is controlled by `RemeshingStrategy` objects that define how mesh size
 
 Note that while `refinement_data` is often specified at the existing mesh nodes, it can actually be any set of points in space.
 
-### BinaryScalingStrategy
-
-A simple strategy that refines the mesh where data exceeds a threshold:
+For example, here is a simple pre-implemented strategy that refines the mesh by some factor where data exceeds a threshold:
 
 ```python
 from meshwell.remesh import BinaryScalingStrategy
@@ -102,11 +98,9 @@ strategy = BinaryScalingStrategy(
 )
 ```
 
-### Backend Options
-
 Meshwell supports two remeshing backends:
 
-- **GMSH** (`remesh_gmsh`): Uses GMSH for remeshing, requires the original geometry file
+- **GMSH** (`remesh_gmsh`): Uses GMSH for remeshing (by transforming the strategy into the appropriate DirectSizeSpecification), can reuse the original CAD file
 - **MMG** (`remesh_mmg`): Uses MMG library, often produces higher quality meshes
 
 See the detailed examples:
