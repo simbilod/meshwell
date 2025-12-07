@@ -1,14 +1,7 @@
 # %% [markdown]
-# # Adaptive Remeshing
+# # Adaptive Remeshing (GMSH)
 #
-# Meshwell supports adaptive remeshing based on a provided size field. This allows you to refine or coarsen the mesh in specific regions based on your requirements.
-#
-# The `remesh` module provides functionality to:
-# 1.  Load an existing mesh and geometry.
-# 2.  Define remeshing strategies based on data or geometry.
-# 3.  Generate a new mesh that respects the size field.
-#
-# In this example, we will create a simple 2D geometry with two physical groups and refine the mesh based on the distance from a vertical line.
+# The RemeshingStrategies can be passed to a GMSH remesher.
 
 # %%
 from pathlib import Path

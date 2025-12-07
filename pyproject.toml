@@ -43,7 +43,8 @@ dev = [
     "sphinx-click",
     "myst-parser",
     "plotly",
-    "matplotlib"
+    "matplotlib",
+    "pymmg",
     ]
 
 [tool.setuptools.packages]

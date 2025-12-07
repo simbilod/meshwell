@@ -1,14 +1,11 @@
 # %% [markdown]
-# # Adaptive Remeshing with MMG
+# # Adaptive Remeshing (MMG)
 #
-# Meshwell supports adaptive remeshing using MMG as a backend. This provides an alternative to the default GMSH-based remeshing, often yielding higher quality meshes and supporting anisotropic refinement.
-#
-# The `remesh_mmg` module provides functionality to:
-# 1.  Load an existing mesh.
-# 2.  Define remeshing strategies (same as standard remeshing).
-# 3.  Generate a new mesh using MMG.
-#
-# In this example, we will use the same geometry and strategies as the standard example but use MMG for the remeshing step.
+# The RemeshingStrategies can be passed to a MMG remesher.
+
+# %% [markdown]
+# **Note**: To use MMG remeshing, you need to install `pymmg` (e.g., `pip install pymmg`) or build MMG from source and ensure it's accessible in your environment.
+
 
 # %%
 from pathlib import Path
@@ -103,9 +100,9 @@ print(f"Initial mesh points: {len(initial_mesh.points)}")
 plot2D(initial_mesh, title="Initial Coarse Mesh", wireframe=True)
 
 # %% [markdown]
-# ## Define Remeshing Strategy
+# ## Emulate input data for refinement
 #
-# We define a strategy that refines the mesh along an oval shape.
+# We generate some fake data. This could be a solution, error, or any other quantity that you want to refine based on.
 
 # %%
 # Define oval parameters
@@ -136,6 +133,19 @@ data_values = oval_looking_data(initial_mesh.points)
 
 # refinement_data as (N, 4) -> x, y, z, data
 refinement_data = np.column_stack([initial_mesh.points, data_values])
+
+# %% [markdown]
+# ## Create strategy
+# The data is associated with a RemeshingStrategy to resize the mesh locally.
+# The strategy is created using the `BinaryScalingStrategy` class, which takes the following arguments:
+# - `refinement_data`: The data associated with the mesh. This should be a (N, 4) array where N is the number of points in the mesh. The first three columns are the x, y, z coordinates of the points, and the fourth column is the data associated with the points.
+# - (Optional) `func`: A generic callable(refinement_data) that can transform the data prior to passing to the RemeshingStrategy.
+# - `threshold`: The threshold value for func(refinement_data). The mesh is refined where the data is above this threshold.
+# - `factor`: The factor by which the mesh is refined. The mesh is refined by a factor of `factor` where the data is above the threshold.
+# - `min_size`: The minimum size of the mesh. The mesh is refined to a minimum size of `min_size` where the data is above the threshold.
+# - `max_size`: The maximum size of the mesh. The mesh is refined to a maximum size of `max_size` where the data is above the threshold.
+
+# %%
 
 # Create strategy with refinement_data
 strategy = BinaryScalingStrategy(
