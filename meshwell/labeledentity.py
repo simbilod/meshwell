@@ -288,8 +288,12 @@ class LabeledEntities:
 
         if self.resolutions:
             for resolutionspec in self.resolutions:
+                target_dim = resolutionspec.target_dimension
+                if target_dim is None:
+                    target_dim = self.dim
+
                 entities_mass_dict = self.filter_by_mass(
-                    target_dimension=resolutionspec.target_dimension,
+                    target_dimension=target_dim,
                     min_mass=resolutionspec.min_mass,
                     max_mass=resolutionspec.max_mass,
                 )
@@ -310,13 +314,11 @@ class LabeledEntities:
                 for other_name, other_entity in all_entities_dict.items():
                     # If itself
                     if all(item in other_name for item in self.physical_name):
-                        tags = self.filter_tags_by_target_dimension(
-                            resolutionspec.target_dimension
-                        )
+                        tags = self.filter_tags_by_target_dimension(target_dim)
                         if not include_boundary:
                             tags = set(tags) - set(
                                 self.filter_mesh_boundary_tags_by_target_dimension(
-                                    resolutionspec.target_dimension
+                                    target_dim
                                 )
                             )
                         for tag in tags:
@@ -327,22 +329,19 @@ class LabeledEntities:
                         continue
                     if any(item in other_name for item in superset):
                         other_tags = other_entity.filter_tags_by_target_dimension(
-                            resolutionspec.target_dimension
+                            target_dim
                         )
                         # Special case if other tag contains a boundary line also shared with self
-                        if (
-                            not include_boundary
-                            and resolutionspec.target_dimension == 1
-                        ):
+                        if not include_boundary and target_dim == 1:
                             other_tags = set(other_tags) - (
                                 set(
                                     other_entity.filter_mesh_boundary_tags_by_target_dimension(
-                                        resolutionspec.target_dimension
+                                        target_dim
                                     )
                                 )
                                 & set(
                                     self.filter_mesh_boundary_tags_by_target_dimension(
-                                        resolutionspec.target_dimension
+                                        target_dim
                                     )
                                 )
                             )

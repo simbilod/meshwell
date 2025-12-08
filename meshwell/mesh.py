@@ -206,6 +206,16 @@ class Mesh:
 
         # Collect all refinement fields
         refinement_field_indices = []
+
+        # Handle Global Specs (key is None)
+        if None in resolution_specs:
+            for spec in resolution_specs[None]:
+                # Apply globally (empty dict means no mass filtering, restrict_to_tags=None means global)
+                field_index = spec.apply(
+                    self.model_manager.model, {}, restrict_to_tags=None
+                )
+                refinement_field_indices.append(field_index)
+
         for entity in final_entity_list:
             refinement_field_indices.extend(
                 entity.add_refinement_fields_to_model(
@@ -324,6 +334,7 @@ class Mesh:
         optimization_flags: tuple[tuple[str, int]] | None = None,
         boundary_delimiter: str = "None",
         resolution_specs: dict = (),
+        gmsh_version: float | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -340,6 +351,7 @@ class Mesh:
             optimization_flags: Mesh optimization flags
             boundary_delimiter: Delimiter for boundary names
             resolution_specs: Mesh resolution specifications
+            gmsh_version: GMSH version
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -353,7 +365,7 @@ class Mesh:
             default_characteristic_length=default_characteristic_length,
             global_2D_algorithm=global_2D_algorithm,
             global_3D_algorithm=global_3D_algorithm,
-            gmsh_version=None,
+            gmsh_version=gmsh_version,
             mesh_element_order=mesh_element_order,
         )
 
@@ -392,6 +404,7 @@ def mesh(
     n_threads: int = cpu_count(),
     filename: str = "temp",
     model: ModelManager | None = None,
+    gmsh_version: float | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -414,6 +427,7 @@ def mesh(
         n_threads: Number of threads to use
         filename: Temporary filename for GMSH model
         model: Optional Model instance to use (creates new if None)
+        gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -445,6 +459,7 @@ def mesh(
         optimization_flags=optimization_flags,
         boundary_delimiter=boundary_delimiter,
         resolution_specs=resolution_specs,
+        gmsh_version=gmsh_version,
     )
 
     # Save to file
