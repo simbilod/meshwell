@@ -8,12 +8,10 @@ from functools import partial
 from pathlib import Path
 
 import gmsh
-import shapely
 
 from meshwell.cad import cad
 from meshwell.gmsh_entity import GMSH_entity
 from meshwell.mesh import mesh
-from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot3D
 
 # %% [markdown]
@@ -112,47 +110,10 @@ print(f"Custom surface mesh: {len(custom_mesh.points)} vertices")
 plot3D(custom_mesh, title="Custom GMSH Surface")
 
 # %% [markdown]
-# ## Combining GMSH Entities with Meshwell Entities
-#
-# You can mix GMSH entities with regular meshwell entities (PolySurface, PolyPrism) in the same model. The `mesh_order` parameter controls boolean operations between overlapping entities.
-
-# %%
-
-# Create a GMSH sphere
-sphere_entity = GMSH_entity(
-    gmsh_partial_function=partial(
-        gmsh.model.occ.add_sphere, xc=0, yc=0, zc=0, radius=1.5  # Center
-    ),
-    physical_name="sphere",
-    mesh_order=1,
-)
-
-# Create a meshwell box that will be subtracted
-polygon = shapely.box(-1, -1, 1, 1)
-box_surface = PolySurface(
-    polygons=polygon,
-    physical_name="box_cutout",
-    mesh_order=2,  # Higher order = subtracted from sphere
-)
-
-# Combine both entities
-cad(entities_list=[sphere_entity, box_surface], output_file="combined.xao")
-
-combined_mesh = mesh(
-    dim=2,
-    input_file="combined.xao",
-    output_file="combined.msh",
-    default_characteristic_length=0.3,
-)
-
-print(f"Combined mesh: {len(combined_mesh.points)} vertices")
-plot3D(combined_mesh, title="GMSH + Meshwell Combined")
-
-# %% [markdown]
 # ## Key Concepts
 #
 # - **`gmsh_partial_function`**: A `functools.partial` object that will be evaluated during CAD generation
-# - **`dimension`**: Explicitly specify the topological dimension (1=line, 2=surface, 3=volume) if needed
+# - **`dimension`**: Explicitly specify the topological dimension, if needed
 # - **`physical_name`**: Label for the entity in the mesh file
 # - **`mesh_order`**: Controls boolean operations with overlapping entities (lower order takes precedence)
 #
@@ -164,7 +125,7 @@ plot3D(combined_mesh, title="GMSH + Meshwell Combined")
 # - Import of STEP/IGES files
 # - Precise control over GMSH's OpenCascade kernel
 #
-# For simple polygon-based geometries, `PolySurface` and `PolyPrism` are more convenient.
+# For simple polygon-based geometries, `PolySurface` and `PolyPrism` are more convenient and expose more advanced features.
 
 # %%
 # Clean up files
@@ -174,7 +135,5 @@ for f in [
     "gmsh_box.msh",
     "custom_surface.xao",
     "custom_surface.msh",
-    "combined.xao",
-    "combined.msh",
 ]:
     Path(f).unlink(missing_ok=True)
