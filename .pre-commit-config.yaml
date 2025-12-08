@@ -21,11 +21,11 @@ repos:
     hooks:
       - id: black
 
-  - repo: https://github.com/asottile/pyupgrade
-    rev: ddb39ad37166dbc938d853cc77606526a0b1622a
-    hooks:
-      - id: pyupgrade
-        args: [--py37-plus, --keep-runtime-typing]
+  # - repo: https://github.com/asottile/pyupgrade
+  #   rev: ddb39ad37166dbc938d853cc77606526a0b1622a
+  #   hooks:
+  #     - id: pyupgrade
+  #       args: [--py37-plus, --keep-runtime-typing]
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
