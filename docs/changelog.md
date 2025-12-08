@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.2.0
+
 - remeshing + improved docs [#PR148](https://github.com/simbilod/meshwell/pull/148)
 
 ## 2.1.1
