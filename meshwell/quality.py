@@ -1,14 +1,19 @@
-import sys
-import os
+"""Mesh quality analysis utilities for GMSH meshes."""
+
 import math
-import numpy as np
-from collections import defaultdict
+import sys
 import warnings
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
 
 warnings.filterwarnings("ignore")
 
 
 class MeshQualityAnalyzer:
+    """Analyzer for mesh quality metrics and diagnostics."""
+
     def __init__(self, mesh_file):
         self.mesh_file = mesh_file
         self.nodes = {}
@@ -24,14 +29,14 @@ class MeshQualityAnalyzer:
         self.file_type = 0  # 0=ASCII, 1=binary
 
     def check_mesh_file(self):
-        """Check if mesh file exists and get basic info"""
+        """Check if mesh file exists and get basic info."""
         print("=== Mesh File Check ===")
 
-        if not os.path.exists(self.mesh_file):
+        if not Path(self.mesh_file).exists():
             print(f"❌ Mesh file '{self.mesh_file}' does not exist")
             return False
 
-        file_size = os.path.getsize(self.mesh_file)
+        file_size = Path(self.mesh_file).stat().st_size
         print(f"✓ Mesh file exists: {self.mesh_file}")
         print(f"✓ File size: {file_size} bytes")
 
@@ -40,7 +45,7 @@ class MeshQualityAnalyzer:
             return False
 
         try:
-            with open(self.mesh_file) as f:
+            with Path(self.mesh_file).open() as f:
                 lines = f.readlines()[:10]
                 print("✓ File is readable, first 10 lines preview:")
                 for i, line in enumerate(lines):
@@ -52,11 +57,11 @@ class MeshQualityAnalyzer:
         return True
 
     def parse_gmsh_mesh(self):
-        """Parse the GMSH mesh file and extract all data"""
+        """Parse the GMSH mesh file and extract all data."""
         print("\n=== Parsing GMSH Mesh ===")
 
         try:
-            with open(self.mesh_file) as f:
+            with Path(self.mesh_file).open() as f:
                 lines = f.readlines()
 
             # Parse sections
@@ -80,14 +85,14 @@ class MeshQualityAnalyzer:
             return False
 
     def _parse_mesh_format(self, lines):
-        """Parse MeshFormat section to determine GMSH version and file type"""
+        """Parse MeshFormat section to determine GMSH version and file type."""
         in_section = False
         for line in lines:
             line = line.strip()
             if line == "$MeshFormat":
                 in_section = True
                 continue
-            elif line == "$EndMeshFormat":
+            if line == "$EndMeshFormat":
                 break
             if in_section and line:
                 parts = line.split()
@@ -110,14 +115,14 @@ class MeshQualityAnalyzer:
             )
 
     def _parse_physical_names(self, lines):
-        """Parse PhysicalNames section"""
+        """Parse PhysicalNames section."""
         in_section = False
         for _, line in enumerate(lines):
             line = line.strip()
             if line == "$PhysicalNames":
                 in_section = True
                 continue
-            elif line == "$EndPhysicalNames":
+            if line == "$EndPhysicalNames":
                 break
             if in_section and line and not line.startswith("$"):
                 parts = line.split()
@@ -126,14 +131,14 @@ class MeshQualityAnalyzer:
                     self.physical_names[tag] = (dim, name)
 
     def _parse_nodes(self, lines):
-        """Parse Nodes section based on GMSH format version"""
+        """Parse Nodes section based on GMSH format version."""
         if self.gmsh_version >= 4.0:
             self._parse_nodes_v4(lines)
         else:
             self._parse_nodes_legacy(lines)
 
     def _parse_nodes_v4(self, lines):
-        """Parse Nodes section for GMSH 4.x format"""
+        """Parse Nodes section for GMSH 4.x format."""
         in_section = False
         expecting_node_ids = False
         expecting_coords = False
@@ -145,7 +150,7 @@ class MeshQualityAnalyzer:
             if line == "$Nodes":
                 in_section = True
                 continue
-            elif line == "$EndNodes":
+            if line == "$EndNodes":
                 break
             if in_section and line:
                 parts = line.split()
@@ -194,14 +199,14 @@ class MeshQualityAnalyzer:
                     continue
 
     def _parse_nodes_legacy(self, lines):
-        """Parse Nodes section for GMSH 2.x and earlier formats"""
+        """Parse Nodes section for GMSH 2.x and earlier formats."""
         in_section = False
         for line in lines:
             line = line.strip()
             if line == "$Nodes":
                 in_section = True
                 continue
-            elif line == "$EndNodes":
+            if line == "$EndNodes":
                 break
             if in_section and line:
                 parts = line.split()
@@ -218,14 +223,14 @@ class MeshQualityAnalyzer:
                         pass
 
     def _parse_elements(self, lines):
-        """Parse Elements section based on GMSH format version"""
+        """Parse Elements section based on GMSH format version."""
         if self.gmsh_version >= 4.0:
             self._parse_elements_v4(lines)
         else:
             self._parse_elements_legacy(lines)
 
     def _parse_elements_v4(self, lines):
-        """Parse Elements section for GMSH 4.x format"""
+        """Parse Elements section for GMSH 4.x format."""
         in_section = False
         current_entity_type = None
         current_entity_tag = None
@@ -235,7 +240,7 @@ class MeshQualityAnalyzer:
             if line == "$Elements":
                 in_section = True
                 continue
-            elif line == "$EndElements":
+            if line == "$EndElements":
                 break
             if in_section and line:
                 parts = line.split()
@@ -257,7 +262,7 @@ class MeshQualityAnalyzer:
                     and int(parts[0]) <= 3
                     and int(parts[2]) <= 15
                 ):
-                    entity_dim, entity_tag, elm_type, _ = map(int, parts)
+                    _, entity_tag, elm_type, _ = map(int, parts)
                     current_entity_type = elm_type
                     current_entity_tag = entity_tag
                     continue
@@ -286,37 +291,38 @@ class MeshQualityAnalyzer:
                                     self.physical_groups.add(physical_tag)
                             except ValueError:
                                 pass
-                    elif current_entity_type == 2:  # 3-node triangle
-                        if len(parts) >= 4:  # elementTag + 3 nodes
-                            try:
-                                elm_id = int(parts[0])
-                                node_ids = [int(p) for p in parts[1:4]]
+                    elif (
+                        current_entity_type == 2 and len(parts) >= 4
+                    ):  # 3-node triangle
+                        try:
+                            elm_id = int(parts[0])
+                            node_ids = [int(p) for p in parts[1:4]]
 
-                                # Find physical tag based on entity tag
-                                physical_tag = self._find_physical_tag_for_entity(
-                                    current_entity_tag, 2
-                                )
+                            # Find physical tag based on entity tag
+                            physical_tag = self._find_physical_tag_for_entity(
+                                current_entity_tag, 2
+                            )
 
-                                element = {
-                                    "id": elm_id,
-                                    "nodes": node_ids,
-                                    "physical_tag": physical_tag,
-                                }
-                                self.surface_elements.append(element)
-                                if physical_tag:
-                                    self.physical_groups.add(physical_tag)
-                            except ValueError:
-                                pass
+                            element = {
+                                "id": elm_id,
+                                "nodes": node_ids,
+                                "physical_tag": physical_tag,
+                            }
+                            self.surface_elements.append(element)
+                            if physical_tag:
+                                self.physical_groups.add(physical_tag)
+                        except ValueError:
+                            pass
 
     def _parse_elements_legacy(self, lines):
-        """Parse Elements section for GMSH 2.x and earlier formats"""
+        """Parse Elements section for GMSH 2.x and earlier formats."""
         in_section = False
         for line in lines:
             line = line.strip()
             if line == "$Elements":
                 in_section = True
                 continue
-            elif line == "$EndElements":
+            if line == "$EndElements":
                 break
             if in_section and line:
                 parts = line.split()
@@ -346,18 +352,17 @@ class MeshQualityAnalyzer:
                                     "physical_tag": physical_tag,
                                 }
                             )
-                    elif elm_type == 2:  # 3-node triangle
-                        if len(parts) >= 6:
-                            node_ids = [int(p) for p in parts[-3:]]
-                            element = {
-                                "id": elm_id,
-                                "nodes": node_ids,
-                                "physical_tag": physical_tag,
-                            }
-                            self.surface_elements.append(element)
+                    elif elm_type == 2 and len(parts) >= 6:  # 3-node triangle
+                        node_ids = [int(p) for p in parts[-3:]]
+                        element = {
+                            "id": elm_id,
+                            "nodes": node_ids,
+                            "physical_tag": physical_tag,
+                        }
+                        self.surface_elements.append(element)
 
-    def _find_physical_tag_for_entity(self, entity_tag, target_dim):
-        """Find physical tag for a given entity tag and dimension"""
+    def _find_physical_tag_for_entity(self, _entity_tag, target_dim):
+        """Find physical tag for a given entity tag and dimension."""
         # In GMSH 4.x, physical tags are often the same as entity tags for their dimension
         for tag, (dim, _) in self.physical_names.items():
             if dim == target_dim:
@@ -365,7 +370,7 @@ class MeshQualityAnalyzer:
         return None
 
     def _determine_mesh_dimension(self):
-        """Determine if this is a 2D or 3D mesh and classify triangular elements appropriately"""
+        """Determine if this is a 2D or 3D mesh and classify triangular elements appropriately."""
         # Check if we have any tetrahedral elements
         if self.tetra_elements:
             self.mesh_dimension = 3
@@ -402,19 +407,18 @@ class MeshQualityAnalyzer:
             self.mesh_dimension = 3
 
     def check_mesh_connectivity(self):
-        """Check mesh connectivity and topology"""
+        """Check mesh connectivity and topology."""
         print("\n=== Mesh Connectivity Analysis ===")
 
         if self.mesh_dimension == 3:
             return self._check_3d_connectivity()
-        elif self.mesh_dimension == 2:
+        if self.mesh_dimension == 2:
             return self._check_2d_connectivity()
-        else:
-            print("❌ Unknown mesh dimension")
-            return False
+        print("❌ Unknown mesh dimension")
+        return False
 
     def _check_3d_connectivity(self):
-        """Check connectivity for 3D tetrahedral meshes"""
+        """Check connectivity for 3D tetrahedral meshes."""
         if not self.tetra_elements:
             print("❌ No tetrahedral elements found")
             return False
@@ -425,7 +429,7 @@ class MeshQualityAnalyzer:
             for node_id in tetra["nodes"]:
                 node_usage[node_id] += 1
 
-        orphaned_nodes = [nid for nid in self.nodes.keys() if node_usage[nid] == 0]
+        orphaned_nodes = [nid for nid in self.nodes if node_usage[nid] == 0]
         if orphaned_nodes:
             print(
                 f"⚠️ Found {len(orphaned_nodes)} orphaned nodes (not connected to any tetrahedron)"
@@ -481,7 +485,7 @@ class MeshQualityAnalyzer:
         return True
 
     def _check_2d_connectivity(self):
-        """Check connectivity for 2D triangular meshes"""
+        """Check connectivity for 2D triangular meshes."""
         if not self.triangle_elements:
             print("❌ No triangular elements found")
             return False
@@ -492,7 +496,7 @@ class MeshQualityAnalyzer:
             for node_id in triangle["nodes"]:
                 node_usage[node_id] += 1
 
-        orphaned_nodes = [nid for nid in self.nodes.keys() if node_usage[nid] == 0]
+        orphaned_nodes = [nid for nid in self.nodes if node_usage[nid] == 0]
         if orphaned_nodes:
             print(
                 f"⚠️ Found {len(orphaned_nodes)} orphaned nodes (not connected to any triangle)"
@@ -527,19 +531,18 @@ class MeshQualityAnalyzer:
         return True
 
     def analyze_geometric_quality(self):
-        """Analyze geometric quality metrics"""
+        """Analyze geometric quality metrics."""
         print("\n=== Geometric Quality Analysis ===")
 
         if self.mesh_dimension == 3:
             return self._analyze_3d_quality()
-        elif self.mesh_dimension == 2:
+        if self.mesh_dimension == 2:
             return self._analyze_2d_quality()
-        else:
-            print("❌ Unknown mesh dimension")
-            return False
+        print("❌ Unknown mesh dimension")
+        return False
 
     def _analyze_3d_quality(self):
-        """Analyze geometric quality metrics for tetrahedra"""
+        """Analyze geometric quality metrics for tetrahedra."""
         if not self.tetra_elements:
             print("❌ No tetrahedral elements to analyze")
             return False
@@ -703,7 +706,7 @@ class MeshQualityAnalyzer:
         return degenerate_count == 0 and negative_volume_count == 0
 
     def _analyze_2d_quality(self):
-        """Analyze geometric quality metrics for triangular elements"""
+        """Analyze geometric quality metrics for triangular elements."""
         if not self.triangle_elements:
             print("❌ No triangular elements to analyze")
             return False
@@ -877,7 +880,7 @@ class MeshQualityAnalyzer:
         return degenerate_count == 0 and negative_area_count == 0
 
     def check_physical_regions(self):
-        """Report element counts for all physical groups across all dimensions"""
+        """Report element counts for all physical groups across all dimensions."""
         print("\n=== Physical Region Analysis ===")
 
         # Collect all elements with their physical tags
@@ -928,7 +931,7 @@ class MeshQualityAnalyzer:
         return True
 
     def report_per_group_quality(self):
-        """Report quality metrics broken down by physical group"""
+        """Report quality metrics broken down by physical group."""
         print("\n=== Quality Metrics Per Physical Group ===")
 
         group_metrics = self.quality_metrics.get("group_metrics", {})
@@ -937,7 +940,9 @@ class MeshQualityAnalyzer:
             return True
 
         # Determine if 2D or 3D
-        is_3d = "volumes" in list(group_metrics.values())[0] if group_metrics else False
+        is_3d = (
+            "volumes" in next(iter(group_metrics.values())) if group_metrics else False
+        )
 
         for tag in sorted(group_metrics.keys()):
             metrics = group_metrics[tag]
@@ -948,7 +953,7 @@ class MeshQualityAnalyzer:
 
             # Get physical name
             if tag in self.physical_names:
-                dim, name = self.physical_names[tag]
+                _, name = self.physical_names[tag]
                 print(f"\n{name} (tag={tag}, {count} elements):")
             else:
                 print(f"\nPhysical group {tag} ({count} elements):")
@@ -1001,7 +1006,7 @@ class MeshQualityAnalyzer:
         return True
 
     def check_contacts_and_boundaries(self):
-        """Simple report of physical groups by dimension"""
+        """Simple report of physical groups by dimension."""
         print("\n=== Physical Groups by Dimension ===")
 
         # Group physical names by dimension
@@ -1024,19 +1029,18 @@ class MeshQualityAnalyzer:
         return True
 
     def check_mesh_gradation(self):
-        """Check mesh gradation and smoothness"""
+        """Check mesh gradation and smoothness."""
         print("\n=== Mesh Gradation Analysis ===")
 
         if self.mesh_dimension == 3:
             return self._check_3d_gradation()
-        elif self.mesh_dimension == 2:
+        if self.mesh_dimension == 2:
             return self._check_2d_gradation()
-        else:
-            print("❌ Unknown mesh dimension")
-            return False
+        print("❌ Unknown mesh dimension")
+        return False
 
     def _check_3d_gradation(self):
-        """Check gradation for 3D tetrahedral meshes"""
+        """Check gradation for 3D tetrahedral meshes."""
         if not self.tetra_elements or len(self.tetra_elements) < 2:
             print("❌ Insufficient elements for gradation analysis")
             return False
@@ -1056,7 +1060,7 @@ class MeshQualityAnalyzer:
 
         # Calculate size ratios between adjacent elements
         size_ratios = []
-        for _face, element_indices in face_to_elements.items():
+        for element_indices in face_to_elements.values():
             if len(element_indices) == 2:  # Internal face
                 i, j = element_indices
                 vol_i = self.quality_metrics.get("volumes", [1])[
@@ -1084,7 +1088,7 @@ class MeshQualityAnalyzer:
         return True
 
     def _check_2d_gradation(self):
-        """Check gradation for 2D triangular meshes"""
+        """Check gradation for 2D triangular meshes."""
         if not self.triangle_elements or len(self.triangle_elements) < 2:
             print("❌ Insufficient elements for gradation analysis")
             return False
@@ -1103,7 +1107,7 @@ class MeshQualityAnalyzer:
 
         # Calculate size ratios between adjacent elements
         size_ratios = []
-        for _edge, element_indices in edge_to_elements.items():
+        for element_indices in edge_to_elements.values():
             if len(element_indices) == 2:  # Internal edge
                 i, j = element_indices
                 area_i = self.quality_metrics.get("areas", [1])[
@@ -1131,7 +1135,7 @@ class MeshQualityAnalyzer:
         return True
 
     def generate_quality_report(self):
-        """Generate a comprehensive quality report"""
+        """Generate a comprehensive quality report."""
         print("\n" + "=" * 60)
         print("  MESH QUALITY SUMMARY REPORT")
         print("=" * 60)
@@ -1236,8 +1240,7 @@ class MeshQualityAnalyzer:
 
 
 def main(mesh_file):
-    """Main diagnostic function"""
-
+    """Main diagnostic function."""
     print("=" * 60)
     print("  ENHANCED MESH QUALITY ANALYZER")
     print("=" * 60)
@@ -1274,11 +1277,10 @@ def main(mesh_file):
     if all_passed:
         print("\n🎉 All checks passed! Mesh is ready for simulations.")
         return 0
-    else:
-        print(
-            "\n⚠️ Some checks failed. Review the issues above before running simulations."
-        )
-        return 1
+    print(
+        "\n⚠️ Some checks failed. Review the issues above before running simulations."
+    )
+    return 1
 
 
 if __name__ == "__main__":

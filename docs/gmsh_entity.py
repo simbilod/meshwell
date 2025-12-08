@@ -5,15 +5,16 @@
 
 # %%
 from functools import partial
-import gmsh
-from meshwell.gmsh_entity import GMSH_entity
-from meshwell.cad import cad
-from meshwell.mesh import mesh
-from meshwell.visualization import plot3D
-from meshwell.polysurface import PolySurface
-import shapely
 from pathlib import Path
 
+import gmsh
+import shapely
+
+from meshwell.cad import cad
+from meshwell.gmsh_entity import GMSH_entity
+from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
+from meshwell.visualization import plot3D
 
 # %% [markdown]
 # ## Basic Example: Box
@@ -83,9 +84,8 @@ def front_face_rectangle(x_min, x_max, y, z_min, z_max):
 
     # Create a curve loop and plane surface
     loop = gmsh.model.occ.addCurveLoop([l1, l2, l3, l4])
-    surface = gmsh.model.occ.addPlaneSurface([loop])
-
-    return surface
+    # Create plane surface from the loop
+    return gmsh.model.occ.addPlaneSurface([loop])
 
 
 # Create the entity with our custom function

@@ -5,17 +5,19 @@
 
 # %%
 from pathlib import Path
+
 import matplotlib.pyplot as plt
+import meshio
 import numpy as np
 import shapely
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
-from meshwell.remesh import (
-    remesh_gmsh,
-    BinaryScalingStrategy,
-)
-import meshio
 from meshwell.polysurface import PolySurface
+from meshwell.remesh import (
+    BinaryScalingStrategy,
+    remesh_gmsh,
+)
 from meshwell.visualization import plot2D
 
 # %% [markdown]
@@ -99,8 +101,9 @@ center_x, center_y = 0.0, 0.0
 radius_x, radius_y = 3.0, 3.0
 
 
-def oval_looking_data(coords, data=None):
+def oval_looking_data(coords, _data=None):
     """Calculate solution/error based on proximity to oval boundary.
+
     Returns 1.0 if close to boundary, 0.0 otherwise.
     """
     x = coords[:, 0]

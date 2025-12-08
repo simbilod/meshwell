@@ -4,10 +4,10 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from os import cpu_count
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple, Union
 
 import gmsh
 import meshio
@@ -20,7 +20,7 @@ from meshwell.resolution import DirectSizeSpecification
 
 
 def _identity_threshold_func(
-    metric_values: np.ndarray, current_sizes: np.ndarray
+    _metric_values: np.ndarray, current_sizes: np.ndarray
 ) -> np.ndarray:
     """Default threshold function that returns sizes unchanged."""
     return current_sizes
@@ -40,13 +40,13 @@ class RemeshingStrategy:
         field_smoothing_steps: Number of smoothing steps for the size field.
     """
 
-    refinement_data: Optional[Union[Path, np.ndarray]]
-    func: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None
+    refinement_data: Path | np.ndarray | None
+    func: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None
     threshold_func: Callable[
         [np.ndarray, np.ndarray], np.ndarray
     ] = _identity_threshold_func
-    min_size: Optional[float] = None
-    max_size: Optional[float] = None
+    min_size: float | None = None
+    max_size: float | None = None
     field_smoothing_steps: int = 0
 
     def apply(self, current_sizes: np.ndarray, metric_values: np.ndarray) -> np.ndarray:
@@ -70,6 +70,7 @@ class BinaryScalingStrategy(RemeshingStrategy):
     factor: float = 0.5
 
     def __post_init__(self):
+        """Initialize threshold function if not set."""
         if self.threshold_func is _identity_threshold_func:
             self.threshold_func = self._binary_scaling
 
@@ -91,6 +92,7 @@ class SigmoidScalingStrategy(RemeshingStrategy):
     steepness: float = 1.0
 
     def __post_init__(self):
+        """Initialize threshold function if not set."""
         if self.threshold_func is _identity_threshold_func:
             self.threshold_func = self._sigmoid_scaling
 
@@ -108,8 +110,8 @@ class SigmoidScalingStrategy(RemeshingStrategy):
 class MMGRemeshingStrategy(BinaryScalingStrategy):
     """Strategy for MMG remeshing with specific parameters."""
 
-    hausd: Optional[float] = None
-    hgrad: Optional[float] = None
+    hausd: float | None = None
+    hgrad: float | None = None
 
 
 class Remesher:
@@ -119,7 +121,7 @@ class Remesher:
         self,
         n_threads: int = cpu_count(),
         filename: str = "temp_remesh",
-        model: Optional[ModelManager] = None,
+        model: ModelManager | None = None,
         verbosity: int = 0,
     ):
         """Initialize remesh processor.
@@ -150,9 +152,7 @@ class Remesher:
         self.triangles_tags = None
         self.triangles = None
 
-    def _load_mesh_data(
-        self, input_mesh: Union[Path, meshio.Mesh, ModelManager]
-    ) -> None:
+    def _load_mesh_data(self, input_mesh: Path | meshio.Mesh | ModelManager) -> None:
         """Load mesh data from file, meshio object, or ModelManager.
 
         Args:
@@ -284,7 +284,7 @@ class Remesher:
 
         return node_sizes
 
-    def compute_size_field(self, strategies: List[RemeshingStrategy]) -> np.ndarray:
+    def compute_size_field(self, strategies: list[RemeshingStrategy]) -> np.ndarray:
         """Compute the target size field based on strategies.
 
         Args:
@@ -428,15 +428,15 @@ class RemeshGMSH(Remesher):
 
     def remesh(
         self,
-        input_mesh: Union[Path, meshio.Mesh, ModelManager],
+        input_mesh: Path | meshio.Mesh | ModelManager,
         geometry_file: Path,
-        strategies: List[Union[RemeshingStrategy]],
+        strategies: list[RemeshingStrategy],
         dim: int = 2,
         global_2D_algorithm: int = 6,
         global_3D_algorithm: int = 1,
         mesh_element_order: int = 1,
-        optimization_flags: Optional[Tuple[Tuple[str, int]]] = None,
-        output_mesh: Optional[Path] = None,
+        optimization_flags: tuple[tuple[str, int]] | None = None,
+        output_mesh: Path | None = None,
         default_characteristic_length: float = 1.0,
     ) -> np.ndarray:
         """Remesh using GMSH.
@@ -516,7 +516,7 @@ class RemeshMMG(Remesher):
         verbosity: int = 0,
         n_threads: int = cpu_count(),
         filename: str = "temp_remesh_mmg",
-        model: Optional[ModelManager] = None,
+        model: ModelManager | None = None,
     ):
         super().__init__(n_threads, filename, model, verbosity)
         self.mmg_executable = mmg_executable
@@ -549,7 +549,7 @@ class RemeshMMG(Remesher):
 
     def _write_sol_file(self, path: Path, sizes: np.ndarray, dim: int = 2) -> None:
         """Write solution file (.sol) for MMG."""
-        with open(path, "w") as f:
+        with path.open("w") as f:
             f.write("MeshVersionFormatted 2\n")
             f.write(f"Dimension {dim}\n")
             f.write("SolAtVertices\n")
@@ -561,14 +561,14 @@ class RemeshMMG(Remesher):
 
     def remesh(
         self,
-        input_mesh: Union[Path, meshio.Mesh],
+        input_mesh: Path | meshio.Mesh,
         output_mesh: Path,
-        strategies: List[RemeshingStrategy],
+        strategies: list[RemeshingStrategy],
         dim: int = 2,
-        hmin: Optional[float] = None,
-        hmax: Optional[float] = None,
-        hausd: Optional[float] = None,
-        hgrad: Optional[float] = None,
+        hmin: float | None = None,
+        hmax: float | None = None,
+        hausd: float | None = None,
+        hgrad: float | None = None,
     ) -> np.ndarray:
         """Remesh using MMG.
 
@@ -631,18 +631,16 @@ class RemeshMMG(Remesher):
             points_to_write = mesh.points
             if dim == 2:
                 if points_to_write.shape[1] == 3:
-                    if not np.allclose(points_to_write[:, 2], 0):
-                        if self.verbosity > 0:
-                            print(
-                                "Warning: 2D remeshing requested but mesh has non-zero Z coordinates. Projecting to Z=0."
-                            )
+                    if not np.allclose(points_to_write[:, 2], 0) and self.verbosity > 0:
+                        print(
+                            "Warning: 2D remeshing requested but mesh has non-zero Z coordinates. Projecting to Z=0."
+                        )
                     points_to_write = points_to_write[:, :2]
-            elif dim == 3:
-                if points_to_write.shape[1] == 2:
-                    # Pad with Z=0 if 2D points provided for 3D
-                    points_to_write = np.column_stack(
-                        [points_to_write, np.zeros(len(points_to_write))]
-                    )
+            elif dim == 3 and points_to_write.shape[1] == 2:
+                # Pad with Z=0 if 2D points provided for 3D
+                points_to_write = np.column_stack(
+                    [points_to_write, np.zeros(len(points_to_write))]
+                )
 
             # Create temporary mesh object with correct dimension
             # Handle physical tags: Map gmsh:physical -> medit:ref
@@ -696,7 +694,9 @@ class RemeshMMG(Remesher):
 
             # Run
             try:
-                subprocess.run(cmd, check=True, capture_output=(self.verbosity == 0))
+                subprocess.run(  # noqa: S603
+                    cmd, check=True, capture_output=(self.verbosity == 0)
+                )
             except subprocess.CalledProcessError as e:
                 if self.verbosity == 0 and e.stdout:
                     print(e.stdout.decode())
@@ -738,19 +738,19 @@ class RemeshMMG(Remesher):
 
 
 def remesh_gmsh(
-    input_mesh: Union[Path, meshio.Mesh, ModelManager],
+    input_mesh: Path | meshio.Mesh | ModelManager,
     geometry_file: Path,
     output_mesh: Path,
-    strategies: List[Union[RemeshingStrategy]],
+    strategies: list[RemeshingStrategy],
     dim: int = 2,
     global_2D_algorithm: int = 6,
     global_3D_algorithm: int = 1,
     mesh_element_order: int = 1,
-    optimization_flags: Optional[Tuple[Tuple[str, int]]] = None,
+    optimization_flags: tuple[tuple[str, int]] | None = None,
     verbosity: int = 0,
     n_threads: int = cpu_count(),
     filename: str = "temp_remesh",
-    model: Optional[ModelManager] = None,
+    model: ModelManager | None = None,
     default_characteristic_length: float = 1.0,
 ) -> np.ndarray:
     """Utility function for adaptive mesh refinement using GMSH."""
@@ -780,9 +780,9 @@ def remesh_gmsh(
 
 
 def remesh_mmg(
-    input_mesh: Union[Path, meshio.Mesh],
+    input_mesh: Path | meshio.Mesh,
     output_mesh: Path,
-    strategies: List[RemeshingStrategy],
+    strategies: list[RemeshingStrategy],
     dim: int = 2,
     mmg_executable: str = "mmg2d_O3",
     verbosity: int = 0,
@@ -800,8 +800,8 @@ def remesh_mmg(
 
 
 def compute_total_size_map(
-    input_mesh: Union[Path, meshio.Mesh, ModelManager],
-    strategies: List[RemeshingStrategy],
+    input_mesh: Path | meshio.Mesh | ModelManager,
+    strategies: list[RemeshingStrategy],
     n_threads: int = cpu_count(),
     verbosity: int = 0,
 ) -> np.ndarray:

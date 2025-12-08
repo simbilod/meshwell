@@ -10,12 +10,14 @@
 
 # %%
 from pathlib import Path
+
 import numpy as np
 import shapely
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
-from meshwell.resolution import DirectSizeSpecification, ConstantInField
 from meshwell.polysurface import PolySurface
+from meshwell.resolution import ConstantInField, DirectSizeSpecification
 from meshwell.visualization import plot2D
 
 # %% [markdown]
@@ -85,10 +87,8 @@ def radial_size_function(coords):
     # Size grows linearly with distance: 0.1 at center, 1.0 at distance 5
     size = 0.1 + (dist_from_center / 5.0) * 0.9
 
-    # Clamp to reasonable range
-    size = np.clip(size, 0.05, 1.5)
-
-    return size
+    # Clip to reasonable range
+    return np.clip(size, 0.05, 1.5)
 
 
 # Generate evaluation grid

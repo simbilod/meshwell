@@ -4,15 +4,16 @@
 # After generating a mesh, it's important to assess its quality before using it in simulations. Poor quality meshes can lead to convergence issues, numerical instability, or incorrect results. Meshwell provides a comprehensive `MeshQualityAnalyzer` that checks various aspects of your mesh.
 
 # %%
+from pathlib import Path
+
 import numpy as np
 import shapely
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
 from meshwell.polysurface import PolySurface
-from meshwell.quality import MeshQualityAnalyzer
-from meshwell.quality import main
+from meshwell.quality import MeshQualityAnalyzer, main
 from meshwell.resolution import ResolutionSpec
-from pathlib import Path
 
 # %% [markdown]
 # ## Creating a Mesh to Analyze

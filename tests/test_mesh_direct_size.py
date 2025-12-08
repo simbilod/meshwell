@@ -1,11 +1,13 @@
-import numpy as np
 from pathlib import Path
+
 import meshio
+import numpy as np
 import shapely
-from meshwell.mesh import mesh
-from meshwell.resolution import DirectSizeSpecification
-from meshwell.polysurface import PolySurface
+
 from meshwell.cad import cad
+from meshwell.mesh import mesh
+from meshwell.polysurface import PolySurface
+from meshwell.resolution import DirectSizeSpecification
 
 
 def test_mesh_direct_size_specification_global():
