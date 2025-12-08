@@ -390,7 +390,7 @@ class DirectSizeSpecification(ResolutionSpec):
 
         arbitrary_types_allowed = True
 
-    def apply(self, model: Any, **kwargs) -> int:
+    def apply(self, model: Any, _entities_mass_dict, **kwargs) -> int:
         """Apply the direct size specification to the mesh model."""
         import tempfile
 
