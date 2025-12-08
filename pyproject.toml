@@ -148,7 +148,6 @@ select = [
   "C",    # flake8-comprehensions
   "B",    # flake8-bugbear
   "D",    # pydocstyle
-  "UP",   # pyupgrade
   "T10",  # flake8-debugger
   "S",    # flake8-bandit
   "PT",   # flake8-pytest-style
