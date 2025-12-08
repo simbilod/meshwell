@@ -12,10 +12,4 @@
 
 **Project is under active development, stay tuned for improved features, documentation, and releases!**
 
-Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) that provides:
-
-(1) a PolyPrism class that simplifies, to the point of automating, the definition of solids from arbitrary (multi)polygons with "buffered" extrusions;
-
-(2) a simple API where such Prisms and regular GMSH OCC objects are specified in an ordered dictionary of mesh priority, and whose keys are then used to label the mesh entities and their interfaces unambiguously;
-
-See the documentation (under construction) for more information and examples. If you encounter a bug, you can make an issue so we can improve the software over time. Contributions are also welcome, see open issues for current bugs and requested features.
+Meshwell is a Python wrapper around [GMSH](https://gmsh.info/) and [MMG](https://github.com/MmgTools/MMG) that streamlines the CAD definition, meshing, and remeshing of geometries parametrized by [Shapely](https://shapely.readthedocs.io/en/stable/) polygons (and more).

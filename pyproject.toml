@@ -11,7 +11,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Operating System :: OS Independent",
 ]
-dependencies = ["shapely", "gmsh", "meshio", "tqdm", "pydantic", "gdstk"]
+dependencies = ["shapely", "gmsh", "meshio", "tqdm", "pydantic", "gdstk", "scipy"]
 description = "GMSH wrapper, with integrated photonics focus"
 keywords = ["python"]
 license = { file = "LICENSE" }
@@ -22,21 +22,28 @@ version = "2.1.1"
 
 [project.optional-dependencies]
 dev = [
-  "pre-commit",
-  "pytest",
-  "pytest-xdist",
-  "pytest-cov",
-  "pytest_regressions",
-  "jupytext",
-  "autodoc_pydantic",
-  "jupytext",
-  "jupyter-book==1.0.4.post1",
-  "sphinx-autodoc-typehints",
-  "sphinx-click",
-  "myst-parser",
-  "plotly",
-  "matplotlib",
-]
+    "pre-commit",
+    "pytest",
+    "pytest-xdist",
+    "pytest-cov",
+    "pytest_regressions",
+    "jupytext",
+    "autodoc_pydantic",
+    "jupytext",
+    "jupyter-book==1.0.4.post1",
+    "sphinx-autodoc-typehints",
+    "sphinx-click",
+    "myst-parser",
+    "plotly",
+    "matplotlib",
+    "pymmg",
+    ]
+
+[tool.setuptools.packages]
+find = {}
+
+# [project.scripts]
+# meshwell = "meshwell.cli:cli"
 
 [tool.black]
 exclude = '''  # Specify the files/dirs that should be ignored by the black formatter
@@ -141,7 +148,6 @@ select = [
   "C",    # flake8-comprehensions
   "B",    # flake8-bugbear
   "D",    # pydocstyle
-  "UP",   # pyupgrade
   "T10",  # flake8-debugger
   "S",    # flake8-bandit
   "PT",   # flake8-pytest-style
@@ -176,6 +182,3 @@ convention = "google"
 
 [tool.setuptools.package-data]
 mypkg = ["*.csv", "*.yaml"]
-
-[tool.setuptools.packages]
-find = {}
