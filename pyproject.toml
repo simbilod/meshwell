@@ -30,7 +30,7 @@ dev = [
     "jupytext",
     "autodoc_pydantic",
     "jupytext",
-    "jupyter-book==1.0.4.post1",
+    "jupyter-book==2.1.0",
     "sphinx-autodoc-typehints",
     "sphinx-click",
     "myst-parser",
