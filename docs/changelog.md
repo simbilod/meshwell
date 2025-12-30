@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-## 2.2.0
+- fix mmg physicals [#PR150](https://github.com/simbilod/meshwell/pull/150)
+
+## 2.2.0s
 
 - remeshing + improved docs [#PR148](https://github.com/simbilod/meshwell/pull/148)
 
