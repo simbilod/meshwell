@@ -644,14 +644,36 @@ class RemeshMMG(Remesher):
 
             # Create temporary mesh object with correct dimension
             # Handle physical tags: Map gmsh:physical -> medit:ref
-            cell_data = {}
+            cell_data_in = {}
             if "gmsh:physical" in mesh.cell_data:
-                cell_data["medit:ref"] = mesh.cell_data["gmsh:physical"]
+                cell_data_in["medit:ref"] = mesh.cell_data["gmsh:physical"]
             elif "gmsh:geometrical" in mesh.cell_data:
-                cell_data["medit:ref"] = mesh.cell_data["gmsh:geometrical"]
+                cell_data_in["medit:ref"] = mesh.cell_data["gmsh:geometrical"]
+
+            # Merge cell blocks of the same type to avoid tag loss in Medit format
+            unique_types = []
+            for cell_block in mesh.cells:
+                if cell_block.type not in unique_types:
+                    unique_types.append(cell_block.type)
+
+            merged_cells = []
+            merged_cell_data = {}
+            if "medit:ref" in cell_data_in:
+                merged_cell_data["medit:ref"] = []
+
+            for ctype in unique_types:
+                data_list = [c.data for c in mesh.cells if c.type == ctype]
+                merged_cells.append((ctype, np.concatenate(data_list)))
+                if "medit:ref" in cell_data_in:
+                    tag_list = [
+                        cell_data_in["medit:ref"][i]
+                        for i, c in enumerate(mesh.cells)
+                        if c.type == ctype
+                    ]
+                    merged_cell_data["medit:ref"].append(np.concatenate(tag_list))
 
             mesh_to_write = meshio.Mesh(
-                points_to_write, mesh.cells, cell_data=cell_data
+                points_to_write, merged_cells, cell_data=merged_cell_data
             )
 
             # Write mesh in Medit format
