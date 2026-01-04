@@ -159,6 +159,38 @@ def test_preservation_mmg(tmp_path):
     check_physicals(final_mesh, expected)
 
 
+def test_preservation_parmmg(tmp_path):
+    """Test physical preservation with ParMMG in parallel."""
+    if not shutil.which("parmmg_O3"):
+        pytest.skip("parmmg_O3 not found")
+    if not shutil.which("mpirun") and not shutil.which("mpiexec"):
+        pytest.skip("MPI not found")
+
+    # 1. Create initial mesh
+    _, msh_path, _ = create_geometry_and_mesh(3, "test_parmmg_init", tmp_path)
+
+    # 2. Remesh with ParMMG (defaults for dim=3)
+    out_parmmg_path = tmp_path / "test_parmmg_out.msh"
+
+    remesh_mmg(
+        input_mesh=msh_path,
+        output_mesh=out_parmmg_path,
+        strategies=[],  # Use current sizes
+        dim=3,
+        n_threads=2,    # Trigger MPI
+        verbosity=1,
+    )
+
+    # 3. Read back and check
+    import meshio
+
+    final_mesh = meshio.read(out_parmmg_path)
+
+    expected = ["volume_phys", "surface_phys"]
+    check_physicals(final_mesh, expected)
+
+
+
 if __name__ == "__main__":
     # Manually run tests if executed as script
     import tempfile
@@ -178,6 +210,20 @@ if __name__ == "__main__":
         print("\nRunning test_preservation_mmg...")
         try:
             test_preservation_mmg(tmp_path)
+            print("PASS")
+        except Exception as e:
+            # Check for skip
+            if "Skipped" in type(e).__name__ or "skip" in str(e).lower():
+                print(f"SKIP: {e}")
+            else:
+                print(f"FAIL: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+        print("\nRunning test_preservation_parmmg...")
+        try:
+            test_preservation_parmmg(tmp_path)
             print("PASS")
         except Exception as e:
             # Check for skip

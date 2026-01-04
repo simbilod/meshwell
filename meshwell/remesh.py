@@ -683,15 +683,28 @@ class RemeshMMG(Remesher):
             self._write_sol_file(sol_file, final_sizes, dim=dim)
 
             # Build command
-            cmd = [
-                executable,
-                "-in",
-                str(mesh_file),
-                "-sol",
-                str(sol_file),
-                "-out",
-                str(out_file),
-            ]
+            cmd = [executable]
+
+            # Check for MPI execution (ParMMG)
+            if "parmmg" in Path(executable).name and self.n_threads > 1:
+                mpirun = shutil.which("mpirun") or shutil.which("mpiexec")
+                if mpirun:
+                    cmd = [mpirun, "-np", str(self.n_threads)] + cmd
+                elif self.verbosity > 0:
+                    print(
+                        "Warning: ParMMG selected with n_threads > 1 but mpirun not found. Running sequentially."
+                    )
+
+            cmd.extend(
+                [
+                    "-in",
+                    str(mesh_file),
+                    "-sol",
+                    str(sol_file),
+                    "-out",
+                    str(out_file),
+                ]
+            )
 
             # Check for MMGRemeshingStrategy parameters
             for strategy in strategies:
@@ -726,6 +739,9 @@ class RemeshMMG(Remesher):
                         print(e.stderr.decode())
                 raise RuntimeError(f"MMG failed with exit code {e.returncode}") from e
 
+            # Clean up Medit file (remove unsupported keywords like RequiredEdges)
+            self._clean_medit_file(out_file)
+
             # Read result
             new_mesh = meshio.read(out_file)
 
@@ -757,6 +773,33 @@ class RemeshMMG(Remesher):
             meshio.write(output_mesh, new_mesh, file_format=file_format)
 
             return target_size_map
+
+    def _clean_medit_file(self, path: Path) -> None:
+        """Remove unsupported keywords from Medit file."""
+        with path.open("r") as f:
+            lines = f.readlines()
+
+        new_lines = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if "RequiredEdges" in line:
+                i += 1  # Skip keyword
+                # Next line should be count
+                if i < len(lines):
+                    try:
+                        count = int(lines[i].strip())
+                        i += 1  # Skip count
+                        i += count  # Skip data lines
+                    except ValueError:
+                        # Parsing failed, just keep line (might be comment or something else)
+                        new_lines.append(line)
+                continue
+            new_lines.append(line)
+            i += 1
+
+        with path.open("w") as f:
+            f.writelines(new_lines)
 
 
 def remesh_gmsh(
@@ -806,12 +849,24 @@ def remesh_mmg(
     output_mesh: Path,
     strategies: list[RemeshingStrategy],
     dim: int = 2,
-    mmg_executable: str = "mmg2d_O3",
+    mmg_executable: str | None = None,
     verbosity: int = 0,
     **kwargs,
 ) -> np.ndarray:
     """Utility function for adaptive mesh refinement using MMG."""
-    remesher = RemeshMMG(mmg_executable=mmg_executable, verbosity=verbosity)
+    if mmg_executable is None:
+        if dim == 3:
+            mmg_executable = "parmmg_O3"
+        else:
+            mmg_executable = "mmg2d_O3"
+
+    # Extract n_threads if present in kwargs, defaulting to cpu_count()
+    # It is an init argument, not a remesh argument
+    n_threads = kwargs.pop("n_threads", None)
+    if n_threads is None:
+        n_threads = cpu_count()
+    
+    remesher = RemeshMMG(mmg_executable=mmg_executable, verbosity=verbosity, n_threads=n_threads)
     return remesher.remesh(
         input_mesh=input_mesh,
         output_mesh=output_mesh,
