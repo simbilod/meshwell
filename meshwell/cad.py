@@ -270,6 +270,8 @@ class CAD:
                     )
                     if cut and cut[0]:
                         current_entity.dimtags = list(set(cut[0]))
+                    else:
+                        current_entity.dimtags = []
 
                 if current_entity.dimtags:
                     processed_entities.append(current_entity)

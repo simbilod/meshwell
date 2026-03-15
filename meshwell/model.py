@@ -276,3 +276,39 @@ class ModelManager:
 
             self._mesh = Mesh(model=self)
         return self._mesh
+
+    def mesh_parallel(
+        self,
+        entities_list: list,
+        subdomains: list,
+        halo_buffer: float,
+        n_jobs: int = 4,
+        default_characteristic_length: float = 2.0,
+        resolution_specs: dict | None = None,
+        dim: int = 2,
+    ):
+        """Run parallel meshing pipeline on decomposed subdomains.
+
+        Args:
+            entities_list: List of un-processed meshwell geometric entities
+            subdomains: List of shapely Polygons representing the decomposed domain tiles
+            halo_buffer: Size of the overlapping boundary buffer appended to each task for deterministic edge meshing
+            n_jobs: Number of parallel processing workers to spawn
+            default_characteristic_length: Global unstructured element size parameter
+            resolution_specs: Dict mapping entity physical-tags to lists of `ResolutionSpec` fields
+            dim: dimension of the meshing
+
+        Returns:
+            meshio.Mesh: The final stitched and joined fully continuous mesh.
+        """
+        from meshwell.parallel import mesh_parallel as _run_parallel
+
+        return _run_parallel(
+            entities_list=entities_list,
+            subdomains=subdomains,
+            halo_buffer=halo_buffer,
+            n_jobs=n_jobs,
+            default_characteristic_length=default_characteristic_length,
+            resolution_specs=resolution_specs,
+            dim=dim,
+        )
