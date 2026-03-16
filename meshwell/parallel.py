@@ -269,11 +269,11 @@ def _meshing_task(
     gmsh.model.removePhysicalGroups()
 
     for name, info in name_to_entities.items():
-        dim = info["dim"]
+        dim_ent = info["dim"]
         entities = info["entities"]
         new_tag_id = _string_to_tag(name)
-        gmsh.model.addPhysicalGroup(dim, entities, new_tag_id, name)
-        new_field_data[name] = np.array([new_tag_id, dim], dtype=np.int32)
+        gmsh.model.addPhysicalGroup(dim_ent, entities, new_tag_id, name)
+        new_field_data[name] = np.array([new_tag_id, dim_ent], dtype=np.int32)
 
     gmsh.write(tmp_path)
     model.finalize()
@@ -309,6 +309,10 @@ def mesh_parallel(
 
     tasks = decompose_domain(entities_list, subdomains, halo_buffer)
 
+    from shapely.ops import unary_union
+    union_subdomains = unary_union(subdomains)
+    global_boundary = union_subdomains.boundary
+
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     futures = []
@@ -341,6 +345,7 @@ def mesh_parallel(
             if name not in aggregated_field_data:
                 aggregated_field_data[name] = data
 
+
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 0)
 
@@ -348,6 +353,70 @@ def mesh_parallel(
         gmsh.merge(p)
 
     gmsh.model.mesh.removeDuplicateNodes()
+
+    # Post-process: Identify internal ___None interfaces using multiplicity
+    # 1. Group entities by (name, dim) using aggregated_field_data as the source of truth
+    # This is more robust than gmsh.model.getPhysicalName which might be empty after merge
+    name_dim_to_entities = {}
+    for name, data in aggregated_field_data.items():
+        p_tag = data[0] if isinstance(data, (list, np.ndarray)) else data
+        p_dim = data[1] if isinstance(data, (list, np.ndarray)) else (dim - 1)
+        
+        entities = gmsh.model.getEntitiesForPhysicalGroup(p_dim, p_tag)
+        if len(entities) > 0:
+            key = (name, p_dim)
+            if key not in name_dim_to_entities:
+                name_dim_to_entities[key] = []
+            name_dim_to_entities[key].extend(entities)
+
+    # 2. Identify internal ___None interfaces
+    internal_entities = set() # (dim, tag)
+    none_keys = [k for k in name_dim_to_entities if "___None" in k[0]]
+    if none_keys:
+        all_bcs = []
+        entity_metadata = [] # (d, e_tag, num_elements)
+        
+        for (g_name, d_g) in none_keys:
+            entities = name_dim_to_entities[(g_name, d_g)]
+            for e_tag in entities:
+                elem_types, elem_tags, _ = gmsh.model.mesh.getElements(d_g, e_tag)
+                num_ent_elems = 0
+                for i, etype in enumerate(elem_types):
+                    if len(elem_tags[i]) > 0:
+                        bcs = gmsh.model.mesh.getBarycenters(etype, e_tag, False, True).reshape(-1, 3)
+                        all_bcs.append(np.round(bcs, 6))
+                        num_ent_elems += bcs.shape[0]
+                if num_ent_elems > 0:
+                    entity_metadata.append((d_g, e_tag, num_ent_elems))
+        
+        if all_bcs:
+            all_bcs = np.vstack(all_bcs)
+            _, inverse_indices, counts = np.unique(all_bcs, axis=0, return_inverse=True, return_counts=True)
+            is_internal_elem = counts[inverse_indices] > 1
+            
+            offset = 0
+            for d, e_tag, n in entity_metadata:
+                if np.any(is_internal_elem[offset : offset + n]):
+                    internal_entities.add((d, e_tag))
+                offset += n
+
+    # 3. Re-build physical groups with deterministic tags and filtered ___None
+    gmsh.model.removePhysicalGroups()
+    final_field_data = {}
+
+    for (g_name, d_g), g_ents in name_dim_to_entities.items():
+        if "___None" in g_name:
+            # Filter ___None groups: keep only those that were NOT identified as internal duplicates
+            entities_to_keep = [e for e in g_ents if (d_g, e) not in internal_entities]
+            if entities_to_keep:
+                new_tag = _string_to_tag(g_name)
+                gmsh.model.addPhysicalGroup(d_g, entities_to_keep, new_tag, g_name)
+                final_field_data[g_name] = np.array([new_tag, d_g], dtype=np.int32)
+        else:
+            new_tag = _string_to_tag(g_name)
+            gmsh.model.addPhysicalGroup(d_g, g_ents, new_tag, g_name)
+            final_field_data[g_name] = np.array([new_tag, d_g], dtype=np.int32)
+
     gmsh.model.mesh.removeDuplicateElements()
 
     final_path = (
@@ -358,117 +427,7 @@ def mesh_parallel(
 
     final_mesh = meshio.read(final_path)
 
-    # Collect all physical tags actually present in the final stitched mesh
-    present_tags = set()
-    for i, _cell_block in enumerate(final_mesh.cells):
-        if "gmsh:physical" in final_mesh.cell_data:
-            tags = final_mesh.cell_data["gmsh:physical"][i]
-            if len(tags) > 0:
-                present_tags.update(tags)
-
-    # Filter aggregated_field_data to only include present tags, and handle unnamed ones
-    filtered_field_data = {}
-    known_tags = set()
-
-    for name, data in aggregated_field_data.items():
-        tag_id = data[0] if isinstance(data, (list, np.ndarray)) else data
-
-        if tag_id in present_tags:
-            filtered_field_data[name] = data
-            known_tags.add(tag_id)
-
-    # Auto-generate entries for any physical tags that lack a name (required by meshio gmsh4 writer)
-    unnamed_tags = present_tags - known_tags
-    if unnamed_tags:
-        for tag_id in unnamed_tags:
-            tag_id = int(tag_id)  # ensure native int
-            # Assign a generic fallback name and default to dimension 2 (meshio needs an array [id, dim])
-            # Determine dim by searching the cells for this tag
-            detected_dim = 2
-            for i, cell_block in enumerate(final_mesh.cells):
-                if (
-                    "gmsh:physical" in final_mesh.cell_data
-                    and tag_id in final_mesh.cell_data["gmsh:physical"][i]
-                ):
-                    if cell_block.type in ["vertex"]:
-                        detected_dim = 0
-                    elif cell_block.type in ["line"]:
-                        detected_dim = 1
-                    elif cell_block.type in ["triangle", "quad"]:
-                        detected_dim = 2
-                    elif cell_block.type in ["tetra", "hexahedron"]:
-                        detected_dim = 3
-                    break
-
-            filtered_field_data[f"unnamed_{tag_id}"] = np.array(
-                [tag_id, detected_dim], dtype=np.int32
-            )
-
-    # Inject the filtered physical names mapping back into the final mesh
-    final_mesh.field_data = filtered_field_data
-
-    # Post-process: Remove internal ___None boundaries lining the stitched subdomains
-    if "line" in final_mesh.cells_dict:
-        # Collect lines from the interior of the union of all subdomains
-        from shapely.geometry import LineString, Point
-        from shapely.ops import unary_union
-
-        # Calculate the union of subdomains to find external boundaries
-        union_subdomains = unary_union(subdomains)
-        global_boundary = union_subdomains.exterior
-
-        # Collect all subdomain exterior edges
-        subdomain_lines = []
-        for sub in subdomains:
-            coords = list(sub.exterior.coords)
-            subdomain_lines.extend(
-                [LineString([coords[j], coords[j + 1]]) for j in range(len(coords) - 1)]
-            )
-
-        # Identify tags that represent ___None boundaries
-        none_tags = set()
-        for name, data in filtered_field_data.items():
-            if "___None" in name:
-                if isinstance(data, (list, np.ndarray)):
-                    none_tags.add(data[0])
-                else:
-                    none_tags.add(data)
-
-        new_cells = []
-        new_cell_data = []
-        cell_data_dict = final_mesh.cell_data_dict.get("gmsh:physical", {})
-
-        for c_idx, cell_block in enumerate(final_mesh.cells):
-            if cell_block.type == "line" and "line" in cell_data_dict:
-                keep_mask = np.ones(len(cell_block.data), dtype=bool)
-                tags = final_mesh.cell_data["gmsh:physical"][c_idx]
-
-                for j, line in enumerate(cell_block.data):
-                    tag = tags[j]
-                    if tag in none_tags:
-                        pts = final_mesh.points[line]
-                        midpoint = Point(np.mean(pts, axis=0)[:2])
-
-                        # Only remove if it is NOT on the global boundary
-                        if global_boundary.distance(midpoint) > 1e-5:
-                            # It is not on global boundary, check if it is on ANY subdomain interface
-                            for sl in subdomain_lines:
-                                if sl.distance(midpoint) < 1e-5:
-                                    keep_mask[j] = False
-                                    break
-
-                if keep_mask.any():
-                    new_cells.append(
-                        meshio.CellBlock("line", cell_block.data[keep_mask])
-                    )
-                    new_cell_data.append(tags[keep_mask])
-            else:
-                new_cells.append(cell_block)
-                if "gmsh:physical" in final_mesh.cell_data:
-                    new_cell_data.append(final_mesh.cell_data["gmsh:physical"][c_idx])
-
-        final_mesh.cells = new_cells
-        if "gmsh:physical" in final_mesh.cell_data:
-            final_mesh.cell_data["gmsh:physical"] = new_cell_data
+    # Synchronize physical names for the final mesh to match what was actually added
+    final_mesh.field_data = final_field_data
 
     return final_mesh
