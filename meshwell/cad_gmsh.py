@@ -255,6 +255,12 @@ class CAD:
         if not all_dimtags:
             return []
 
+        # If only one entity, no need to fragment
+        if len(all_dimtags) == 1:
+            self.model_manager.model.occ.removeAllDuplicates()
+            self.model_manager.sync_model()
+            return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
+
         # 2. Single fragment operation to resolve all overlaps
         # We use an empty tool list to fragment everything against everything
         fragment_result = self.model_manager.model.occ.fragment(all_dimtags, [])
@@ -286,6 +292,21 @@ class CAD:
             # In case of tie, first in list (original order) wins
             best_ent = min(owners, key=lambda x: x[1])[0]
             best_ent.dimtags.append(piece)
+
+        # 4. Self-fusion: Merge fragments belonging to the same entity
+        # This recovers the "single surface" behavior and removes fake internal interfaces
+        for ent, obj in labeled_entities_with_objs:
+            if len(ent.dimtags) > 1:
+                # Fuse fragments together
+                fuse_result = self.model_manager.model.occ.fuse(
+                    [ent.dimtags[0]],
+                    ent.dimtags[1:],
+                    removeObject=True,
+                    removeTool=True,
+                )
+                self.model_manager.model.occ.synchronize()
+                if fuse_result and len(fuse_result) >= 1:
+                    ent.dimtags = fuse_result[0]
 
         # Final cleanup and sync
         self.model_manager.model.occ.removeAllDuplicates()
