@@ -11,7 +11,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Operating System :: OS Independent",
 ]
-dependencies = ["shapely", "gmsh", "meshio", "tqdm", "pydantic", "gdstk", "scipy"]
+dependencies = ["shapely", "gmsh", "meshio", "tqdm", "pydantic", "gdstk", "scipy", "cadquery"]
 description = "GMSH wrapper, with integrated photonics focus"
 keywords = ["python"]
 license = { file = "LICENSE" }
@@ -21,7 +21,6 @@ requires-python = ">=3.11"
 version = "2.2.0"
 
 [project.optional-dependencies]
-occ = ["cadquery"]
 dev = [
     "pre-commit",
     "pytest",

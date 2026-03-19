@@ -1,9 +1,9 @@
   1. CAD Batching Boolean Tool Operands
    * Goal: Reduce O(N^2) time complexity in CAD boolean cuts by batching tool operands.
-   * Implementation: 
+   * Implementation:
        * OCC Backend: In cad_occ.py, previous shapes are now grouped into a single TopoDS_Compound before cutting current shapes against them.
        * GMSH Backend: In cad_gmsh.py, entities are grouped by mesh_order and processed in batches using a single gmsh.model.occ.cut call for all entities of the same priority.
-   * Performance Impact: 
+   * Performance Impact:
        * OCC: Speedup from 0.87s to 0.28s (~3x) for 50 overlapping entities.
        * GMSH: Speedup from 2.50s to 1.54s (~1.6x) for 50 overlapping entities.
    * Verified by: tests/benchmarks/benchmark_cad_batching.py.
@@ -42,7 +42,7 @@
 
   6. Unified CAD Backend Pipeline
    * Goal: Consolidate GMSH and OCC backends behind a unified protocol and orchestrator.
-   * Implementation: 
+   * Implementation:
        * Defined CADBackend Protocol in backend_protocol.py.
        * Implemented GmshBackend and OccBackend wrappers.
        * Created generate_mesh(entities, backend="occ/gmsh", ...) orchestrator in orchestrator.py.
