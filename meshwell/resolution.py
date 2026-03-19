@@ -392,8 +392,6 @@ class DirectSizeSpecification(ResolutionSpec):
 
     def apply(self, model: Any, _entities_mass_dict, **kwargs) -> int:
         """Apply the direct size specification to the mesh model."""
-        import tempfile
-
         import gmsh
 
         # 1. Use Data Directly
@@ -418,19 +416,11 @@ class DirectSizeSpecification(ResolutionSpec):
         if self.max_size:
             sizes = np.minimum(sizes, self.max_size)
 
-        # 3. Create PostView
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".pos", delete=False) as tmp:
-            tmp_path = tmp.name
-            tmp.write('View "size_field" {\n')
-            for i in range(len(coords)):
-                x, y, z = coords[i]
-                s = sizes[i]
-                tmp.write(f"SP({x}, {y}, {z}){{{s}}};\n")
-            tmp.write("};\n")
-
-        gmsh.merge(tmp_path)
-        view_tag = gmsh.view.getTags()[-1]
-        Path(tmp_path).unlink()
+        # 3. Create PostView In-Memory
+        view_tag = gmsh.view.add("size_field")
+        # GMSH expects a flat list of (x, y, z, val) per point for SP (scalar point)
+        flattened_data = np.column_stack((coords, sizes)).flatten().tolist()
+        gmsh.view.addListData(view_tag, "SP", len(coords), flattened_data)
 
         # 4. Create Field
         field_index = model.mesh.field.add("PostView")
