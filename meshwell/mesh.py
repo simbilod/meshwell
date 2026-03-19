@@ -206,6 +206,15 @@ class Mesh:
             resolution_specs
         )
 
+        # Build reverse indices for performance
+        tag_to_entity_names = defaultdict(set)
+        for name, entity in final_entity_dict.items():
+            # Include tags for all dimensions that this entity covers
+            for d in range(entity.dim + 1):
+                tags = entity.filter_tags_by_target_dimension(d)
+                for tag in tags:
+                    tag_to_entity_names[(d, tag)].add(name)
+
         # Collect all refinement fields
         refinement_field_indices = []
 
@@ -227,6 +236,7 @@ class Mesh:
                     final_entity_dict,
                     boundary_delimiter,
                     constant_collector=constant_collector,
+                    tag_to_entity_names=tag_to_entity_names,
                 )
             )
 
