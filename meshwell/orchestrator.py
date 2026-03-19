@@ -31,10 +31,17 @@ def generate_mesh(
     Returns:
         meshio.Mesh: The generated mesh object
     """
+    # Extract common backend arguments from mesh_kwargs
+    backend_kwargs = {}
+    if "n_threads" in mesh_kwargs:
+        backend_kwargs["n_threads"] = mesh_kwargs["n_threads"]
+    if "point_tolerance" in mesh_kwargs:
+        backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
+
     if backend == "occ":
-        backend_obj = OccBackend()
+        backend_obj = OccBackend(**backend_kwargs)
     elif backend == "gmsh":
-        backend_obj = GmshBackend()
+        backend_obj = GmshBackend(**backend_kwargs)
     else:
         raise ValueError(f"Unknown backend: {backend}. Use 'occ' or 'gmsh'.")
 

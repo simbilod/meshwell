@@ -194,7 +194,7 @@ class ModelManager:
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", self.n_threads)
-        gmsh.option.setNumber("Geometry.OCCParallel", 1)
+        gmsh.option.setNumber("Geometry.OCCParallel", 1 if self.n_threads > 1 else 0)
 
     def sync_model(self) -> None:
         """Synchronize the OCC model."""

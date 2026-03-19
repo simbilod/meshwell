@@ -112,7 +112,7 @@ class CAD_OCC:
             # 1. Resolve overlaps within the group using BOPAlgo_Builder (Parallel)
             if len(current_group) > 1:
                 builder = BOPAlgo_Builder()
-                builder.SetRunParallel(True)
+                builder.SetRunParallel(self.n_threads > 1)
                 builder.SetFuzzyValue(self.point_tolerance)
                 builder.SetNonDestructive(False)
 
@@ -152,7 +152,7 @@ class CAD_OCC:
 
                 for ent in current_group:
                     cut_api = BRepAlgoAPI_Cut(ent.shape, compound_tool)
-                    cut_api.SetRunParallel(True)
+                    cut_api.SetRunParallel(self.n_threads > 1)
                     cut_api.SetFuzzyValue(self.point_tolerance)
                     cut_api.SetNonDestructive(False)
                     cut_api.Build()
@@ -174,7 +174,7 @@ class CAD_OCC:
             return entity_group
 
         builder = BOPAlgo_Builder()
-        builder.SetRunParallel(True)
+        builder.SetRunParallel(self.n_threads > 1)
         builder.SetFuzzyValue(self.point_tolerance)
         builder.SetNonDestructive(False)
 
