@@ -10,6 +10,17 @@
 
 ---
 
+### Task 0: Generate Reference Results
+
+**Files:**
+- Script: `tests/generate_references.sh`
+
+- [ ] **Step 1: Run reference generation**
+Run the reference generation script in an isolated shell from the `tests` directory to compute baseline results for regressions. Make sure `PYTHONPATH` is empty to avoid numpy errors, and that the reference commit is `7d1bdb7844ae85855cdfa5d7ac5a742964e89cfa` in the script.
+```bash
+(cd tests && export PYTHONPATH="" && bash generate_references.sh)
+```
+
 ### Task 1: Refactor Resolution Field Aggregation
 
 **Files:**
