@@ -1,6 +1,7 @@
 """OCC CAD processor using OCP (OpenCASCADE Python) bindings."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
@@ -236,11 +237,16 @@ class CAD_OCC:
         dimension_groups: dict[int, list[Any]] = {0: [], 1: [], 2: [], 3: []}
         max_dim = 0
 
-        # Instantiate and infer dimension early
-        for i, ent_obj in enumerate(structural_entities):
-            # Instantiate to get the shape
-            labeled_ent = self._instantiate_entity_occ(i, ent_obj)
+        # Instantiate and infer dimension early in parallel
+        with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
+            labeled_entities = list(
+                executor.map(
+                    lambda x: self._instantiate_entity_occ(x[0], x[1]),
+                    enumerate(structural_entities),
+                )
+            )
 
+        for ent_obj, labeled_ent in zip(structural_entities, labeled_entities):
             # Use dimension from entity if available, otherwise from shape
             dim = getattr(ent_obj, "dimension", None)
             if dim is None:
