@@ -140,16 +140,22 @@ class CAD_OCC:
 
             # 2. Cut current group against ALL previous shapes (Parallel)
             if accumulated_shapes:
-                # We can use a single BOPAlgo_Builder for multiple objects vs multiple tools
-                # But for simplicity and to respect mesh_order strictness between groups:
+                from OCP.BRep import BRep_Builder
+                from OCP.TopoDS import TopoDS_Compound
+
+                comp_builder = BRep_Builder()
+                compound_tool = TopoDS_Compound()
+                comp_builder.MakeCompound(compound_tool)
+                for s in accumulated_shapes:
+                    comp_builder.Add(compound_tool, s)
+
                 for ent in current_group:
-                    for prev_shape in accumulated_shapes:
-                        cut_api = BRepAlgoAPI_Cut(ent.shape, prev_shape)
-                        cut_api.SetRunParallel(True)
-                        cut_api.SetFuzzyValue(self.point_tolerance)
-                        cut_api.SetNonDestructive(False)
-                        cut_api.Build()
-                        ent.shape = cut_api.Shape()
+                    cut_api = BRepAlgoAPI_Cut(ent.shape, compound_tool)
+                    cut_api.SetRunParallel(True)
+                    cut_api.SetFuzzyValue(self.point_tolerance)
+                    cut_api.SetNonDestructive(False)
+                    cut_api.Build()
+                    ent.shape = cut_api.Shape()
 
             # 3. Add to processed and accumulated
             all_processed_entities.extend(current_group)
