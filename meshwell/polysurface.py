@@ -1,9 +1,16 @@
 """PolySurface definitions."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import gmsh
 from shapely.geometry import MultiPolygon, Polygon
 
 from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
+
+if TYPE_CHECKING:
+    from OCP.TopoDS import TopoDS_Shape
 
 
 class PolySurface(GeometryEntity):
@@ -108,3 +115,40 @@ class PolySurface(GeometryEntity):
         # Clear caches after boolean operations that may invalidate geometry IDs
         self._clear_caches()
         return dimtags
+
+    def instanciate_occ(self) -> TopoDS_Shape:
+        """Create OCC surfaces directly using OCP."""
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+
+        surfaces = []
+        for polygon in self.polygons:
+            # Create exterior face
+            exterior_vertices = [
+                self._parse_coords(coords) for coords in polygon.exterior.coords
+            ]
+            exterior_face = self._make_occ_face_from_vertices(exterior_vertices)
+
+            # Create interior surfaces (holes) and cut them
+            for interior in polygon.interiors:
+                interior_vertices = [
+                    self._parse_coords(coords) for coords in interior.coords
+                ]
+                interior_face = self._make_occ_face_from_vertices(interior_vertices)
+
+                cut_api = BRepAlgoAPI_Cut(exterior_face, interior_face)
+                cut_api.Build()
+                exterior_face = cut_api.Shape()
+
+            surfaces.append(exterior_face)
+
+        if not surfaces:
+            return None
+
+        # Fuse multiple surfaces if needed
+        result = surfaces[0]
+        for surface in surfaces[1:]:
+            fuse_api = BRepAlgoAPI_Fuse(result, surface)
+            fuse_api.Build()
+            result = fuse_api.Shape()
+
+        return result

@@ -21,6 +21,7 @@ requires-python = ">=3.11"
 version = "2.2.0"
 
 [project.optional-dependencies]
+occ = ["cadquery"]
 dev = [
     "pre-commit",
     "pytest",

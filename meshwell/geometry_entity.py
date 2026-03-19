@@ -1,7 +1,13 @@
 """Class definition for entities that create GMHS geometry."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import gmsh
+
+if TYPE_CHECKING:
+    from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
 
 from meshwell.cad import CAD
 
@@ -127,6 +133,36 @@ class GeometryEntity:
         if self._lines is not None:
             self._lines.clear()
 
+    def _make_occ_points(
+        self, vertices: list[tuple[float, float, float]]
+    ) -> list[gp_Pnt]:
+        """Convert vertex coordinates to OCP gp_Pnt objects."""
+        from OCP.gp import gp_Pnt
+
+        return [gp_Pnt(v[0], v[1], v[2]) for v in vertices]
+
+    def _make_occ_wire_from_vertices(
+        self, vertices: list[tuple[float, float, float]]
+    ) -> TopoDS_Wire:
+        """Create an OCC wire from vertex coordinates."""
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+
+        points = self._make_occ_points(vertices)
+        wire_builder = BRepBuilderAPI_MakeWire()
+        for i in range(len(points) - 1):
+            edge = BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
+            wire_builder.Add(edge)
+        return wire_builder.Wire()
+
+    def _make_occ_face_from_vertices(
+        self, vertices: list[tuple[float, float, float]]
+    ) -> TopoDS_Face:
+        """Create an OCC face from vertex coordinates."""
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+        wire = self._make_occ_wire_from_vertices(vertices)
+        return BRepBuilderAPI_MakeFace(wire).Face()
+
     def instanciate(self, cad_model: CAD | None = None) -> list[tuple[int, int]]:
         """Create GMSH geometry. To be implemented by subclasses.
 
@@ -138,3 +174,12 @@ class GeometryEntity:
 
         """
         raise NotImplementedError("Subclasses must implement instanciate method")
+
+    def instanciate_occ(self) -> TopoDS_Shape:
+        """Create OCC geometry. To be implemented by subclasses.
+
+        Returns:
+            TopoDS_Shape: Created OCC shape
+
+        """
+        raise NotImplementedError("Subclasses must implement instanciate_occ method")
