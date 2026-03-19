@@ -199,6 +199,8 @@ class Mesh:
             resolution_specs: Resolution specifications
 
         """
+        from collections import defaultdict
+
         # Recover labeled entities from loaded CAD model
         final_entity_list, final_entity_dict = self._recover_labels_from_cad(
             resolution_specs
@@ -216,13 +218,37 @@ class Mesh:
                 )
                 refinement_field_indices.append(field_index)
 
+        # Collect constant fields for batching
+        constant_collector = defaultdict(lambda: defaultdict(list))
+
         for entity in final_entity_list:
             refinement_field_indices.extend(
                 entity.add_refinement_fields_to_model(
                     final_entity_dict,
                     boundary_delimiter,
+                    constant_collector=constant_collector,
                 )
             )
+
+        # Process constant fields in batches
+        for resolution, entity_types in constant_collector.items():
+            matheval_field_index = self.model_manager.model.mesh.field.add("MathEval")
+            self.model_manager.model.mesh.field.setString(
+                matheval_field_index, "F", f"{resolution}"
+            )
+
+            restrict_field_index = self.model_manager.model.mesh.field.add("Restrict")
+            self.model_manager.model.mesh.field.setNumber(
+                restrict_field_index, "InField", matheval_field_index
+            )
+
+            for entity_str, tags in entity_types.items():
+                self.model_manager.model.mesh.field.setNumbers(
+                    restrict_field_index,
+                    entity_str,
+                    list(set(tags)),
+                )
+            refinement_field_indices.append(restrict_field_index)
 
         # If we have refinement fields, create a minimum field
         if refinement_field_indices:

@@ -282,8 +282,11 @@ class LabeledEntities:
         self,
         all_entities_dict,
         boundary_delimiter,
+        constant_collector=None,
     ):
         """Adds refinement fields to the model based on base_resolution and resolution info."""
+        from meshwell.resolution import ConstantInField
+
         refinement_field_indices = []
 
         if self.resolutions:
@@ -372,13 +375,20 @@ class LabeledEntities:
                     restrict_to_str = "PointsList"
 
                 if entities_mass_dict_sharing:
-                    refinement_field_indices.append(
-                        resolutionspec.apply(
-                            model=self.model,
-                            entities_mass_dict=entities_mass_dict_sharing,
-                            restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
-                            restrict_to_tags=restrict_to_tags,
+                    if constant_collector is not None and isinstance(
+                        resolutionspec, ConstantInField
+                    ):
+                        constant_collector[resolutionspec.resolution][
+                            resolutionspec.entity_str
+                        ].extend(entities_mass_dict_sharing.keys())
+                    else:
+                        refinement_field_indices.append(
+                            resolutionspec.apply(
+                                model=self.model,
+                                entities_mass_dict=entities_mass_dict_sharing,
+                                restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
+                                restrict_to_tags=restrict_to_tags,
+                            )
                         )
-                    )
 
         return refinement_field_indices
