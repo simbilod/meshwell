@@ -2,7 +2,7 @@
 
 import os
 import time
-
+import pytest
 import shapely
 
 from meshwell.cad_gmsh import CAD as CAD_GMSH
@@ -10,7 +10,7 @@ from meshwell.cad_occ import CAD_OCC
 from meshwell.model import ModelManager
 from meshwell.polyprism import PolyPrism
 
-
+@pytest.mark.skip(reason="Too slow")
 def test_performance_comparison():
     """Benchmark CAD processing time for a large number of entities."""
     # Create a grid of prisms that overlap slightly or are adjacent
