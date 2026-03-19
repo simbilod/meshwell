@@ -22,25 +22,17 @@ class GeometryEntity:
     def __init__(self, point_tolerance: float = 1e-3):
         """Initialize geometry entity with point tracking."""
         self.point_tolerance = point_tolerance
-        # Track created points to avoid duplicates (can be shared across entities)
-        self._points: dict[tuple[float, float, float], int] | None = None
-        # Track created lines to avoid duplicates and ensure proper edge sharing
-        self._lines: dict[tuple[int, int], int] | None = None
+        # Track created points to avoid duplicates (strictly instance-local)
+        self._points: dict[tuple[float, float, float], int] = {}
+        # Track created lines to avoid duplicates and ensure proper edge sharing (strictly instance-local)
+        self._lines: dict[tuple[int, int], int] = {}
 
     def _parse_coords(self, coords: tuple[float, float]) -> tuple[float, float, float]:
         """Convert 2D coordinates to 3D, choosing z=0 if not provided."""
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
 
-    def _set_point_cache(self, point_cache: dict[tuple[float, float, float], int]):
-        """Set the shared point cache for this entity."""
-        self._points = point_cache
-
-    def _set_line_cache(self, line_cache: dict[tuple[int, int], int]):
-        """Set the shared line cache for this entity."""
-        self._lines = line_cache
-
     def _add_point_with_tolerance(self, x: float, y: float, z: float) -> int:
-        """Add a point to the model, or reuse a previously-defined point within tolerance.
+        """Add a point to the model, or reuse a previously-defined point.
 
         Args:
             x: x-coordinate
@@ -51,22 +43,19 @@ class GeometryEntity:
             GMSH point ID
 
         """
-        # Initialize local cache if no shared cache is set
-        if self._points is None:
-            self._points = {}
+        key = (x, y, z)
 
-        # Snap coordinates to tolerance grid to enable point reuse
-        snapped_x = round(x / self.point_tolerance) * self.point_tolerance
-        snapped_y = round(y / self.point_tolerance) * self.point_tolerance
-        snapped_z = round(z / self.point_tolerance) * self.point_tolerance
+        if key in self._points:
+            # Verify that the cached point still exists
+            point_tag = self._points[key]
+            # Check existence first to avoid GMSH error logging
+            if (0, point_tag) in gmsh.model.getEntities(0):
+                return point_tag
 
-        key = (snapped_x, snapped_y, snapped_z)
-
-        if key not in self._points:
-            # Create new point with snapped coordinates
-            self._points[key] = gmsh.model.occ.addPoint(snapped_x, snapped_y, snapped_z)
-
-        return self._points[key]
+        # Create new point if not in cache or if cached point is stale/invalid
+        tag = gmsh.model.occ.addPoint(x, y, z)
+        self._points[key] = tag
+        return tag
 
     def _add_line_with_cache(self, point1_id: int, point2_id: int) -> int:
         """Add a line to the model, or reuse a previously-defined line between the same points.
