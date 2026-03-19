@@ -424,9 +424,9 @@ class Mesh:
 
 def mesh(
     dim: int,
-    input_file: Path,
-    output_file: Path,
     default_characteristic_length: float,
+    input_file: Path | None = None,
+    output_file: Path | None = None,
     resolution_specs: dict | None = None,
     background_remeshing_file: Path | None = None,
     global_scaling: float = 1.0,
@@ -446,11 +446,11 @@ def mesh(
 
     Args:
         dim: Dimension of mesh to generate
+        default_characteristic_length: Default mesh size
         input_file: Path to input .xao file
         output_file: Path for output mesh file
-        entities_list: Optional list of entities with mesh parameters
+        resolution_specs: Mesh resolution specifications
         background_remeshing_file: Optional background mesh file for refinement
-        default_characteristic_length: Default mesh size
         global_scaling: Global scaling factor
         global_2D_algorithm: GMSH 2D meshing algorithm
         global_3D_algorithm: GMSH 3D meshing algorithm
@@ -459,7 +459,6 @@ def mesh(
         periodic_entities: List of periodic boundary pairs
         optimization_flags: Mesh optimization flags
         boundary_delimiter: Delimiter for boundary names
-        resolution_specs: Mesh resolution specifications
         n_threads: Number of threads to use
         filename: Temporary filename for GMSH model
         model: Optional Model instance to use (creates new if None)
@@ -478,8 +477,9 @@ def mesh(
     if resolution_specs is None:
         resolution_specs = {}
 
-    # Load geometry from file
-    mesh_generator.load_xao_file(input_file)
+    # Load geometry from file if provided
+    if input_file is not None:
+        mesh_generator.load_xao_file(input_file)
 
     # Process geometry into mesh
     mesh_obj = mesh_generator.process_geometry(
@@ -498,8 +498,9 @@ def mesh(
         gmsh_version=gmsh_version,
     )
 
-    # Save to file
-    mesh_generator.save_to_file(output_file)
+    # Save to file if output file provided
+    if output_file is not None:
+        mesh_generator.save_to_file(output_file)
 
     # Finalize if we created the model
     if model is None:
