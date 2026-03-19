@@ -79,7 +79,7 @@ class ModelManager:
 
         # Configure OCC tolerance if provided
         if self.point_tolerance is not None:
-            gmsh.option.setNumber("Geometry.OCCTolerance", self.point_tolerance)
+            gmsh.option.setNumber("Geometry.Tolerance", self.point_tolerance)
 
         self._is_initialized = True
 

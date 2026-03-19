@@ -63,9 +63,6 @@ class CAD:
         # Store parameters for backward compatibility
         self.point_tolerance = point_tolerance
 
-        # Shared point cache for geometry entities that support point deduplication
-        self._shared_point_cache: dict[tuple[float, float, float], int] = {}
-
     def _instantiate_entity(
         self, index: int, entity_obj, progress_bars: bool
     ) -> LabeledEntities:
@@ -73,10 +70,6 @@ class CAD:
         physical_name = entity_obj.physical_name
         if progress_bars and physical_name:
             print(f"Processing {physical_name} - instantiation")
-
-        # Set up shared point cache for geometry entities that support it
-        if hasattr(entity_obj, "_set_point_cache"):
-            entity_obj._set_point_cache(self._shared_point_cache)
 
         # Instantiate entity
         dimtags_out = entity_obj.instanciate(self)
@@ -220,7 +213,7 @@ class CAD:
                             new_dimtags.append(mapping[object_idx])
                     object_idx += 1
 
-                entity.dimtags = _validate_dimtags_exist(new_dimtags)
+                entity.dimtags = list(set(new_dimtags))
 
         # Update higher dimension entities
         tool_idx = len(object_dimtags)
@@ -235,7 +228,9 @@ class CAD:
                             new_dimtags.append(mapping[tool_idx])
                     tool_idx += 1
 
-                entity.dimtags = _validate_dimtags_exist(new_dimtags)
+                entity.dimtags = list(set(new_dimtags))
+
+        self.model_manager.model.occ.synchronize()
 
         # Return entities that still have valid dimtags
         return [entity for entity in entity_group if entity.dimtags]
@@ -243,71 +238,60 @@ class CAD:
     def _process_dimension_group_cuts(
         self, entity_group: list, progress_bars: bool
     ) -> list[LabeledEntities]:
-        """Process entities of same dimension using cuts."""
-        from collections import defaultdict
+        """Process entities of same dimension using unified fragment and mesh_order selection."""
+        if not entity_group:
+            return []
 
-        # Group entities by mesh_order
-        groups = defaultdict(list)
+        # 1. Instantiate all entities independently
+        labeled_entities_with_objs = []
         for index, entity_obj in entity_group:
-            mo = (
-                entity_obj.mesh_order
-                if entity_obj.mesh_order is not None
-                else float("inf")
-            )
-            groups[mo].append((index, entity_obj))
+            ent = self._instantiate_entity(index, entity_obj, progress_bars)
+            labeled_entities_with_objs.append((ent, entity_obj))
 
-        sorted_orders = sorted(groups.keys())
-        processed_entities = []
-        accumulated_tool_dimtags = []
+        all_dimtags = []
+        for ent, _ in labeled_entities_with_objs:
+            all_dimtags.extend(ent.dimtags)
 
-        for mo in sorted_orders:
-            current_group_entities = []
-            for index, entity_obj in groups[mo]:
-                # 1. Instantiate all entities in this mesh_order group
-                ent = self._instantiate_entity(index, entity_obj, progress_bars)
-                current_group_entities.append(ent)
+        if not all_dimtags:
+            return []
 
-            # 2. Cut current mesh_order group against ALL previous (higher priority) shapes
-            if accumulated_tool_dimtags:
-                object_dimtags = []
-                for ent in current_group_entities:
-                    object_dimtags.extend(ent.dimtags)
+        # 2. Single fragment operation to resolve all overlaps
+        # We use an empty tool list to fragment everything against everything
+        fragment_result = self.model_manager.model.occ.fragment(all_dimtags, [])
+        self.model_manager.model.occ.synchronize()
 
-                if object_dimtags:
-                    cut_result = self.model_manager.model.occ.cut(
-                        object_dimtags,
-                        accumulated_tool_dimtags,
-                        removeObject=True,
-                        removeTool=False,
-                    )
+        if not fragment_result or len(fragment_result) < 2:
+            return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
 
-                    if cut_result and len(cut_result) >= 2:
-                        mapping = cut_result[1]
-                        # Map results back to each entity
-                        obj_idx = 0
-                        for ent in current_group_entities:
-                            new_dimtags = []
-                            for _ in ent.dimtags:
-                                if obj_idx < len(mapping) and mapping[obj_idx]:
-                                    if isinstance(mapping[obj_idx], list):
-                                        new_dimtags.extend(mapping[obj_idx])
-                                    else:
-                                        new_dimtags.append(mapping[obj_idx])
-                                obj_idx += 1
-                            ent.dimtags = list(set(new_dimtags))
+        mapping = fragment_result[1]
 
-            # 3. Add valid entities to processed and accumulated
-            for ent in current_group_entities:
-                if ent.dimtags:
-                    processed_entities.append(ent)
-                    accumulated_tool_dimtags.extend(ent.dimtags)
+        # 3. Assign each fragment to the entity with the lowest mesh_order
+        piece_to_owners = {}  # (dim, tag) -> list of (ent, mesh_order)
+        dimtag_idx = 0
+        for ent, obj in labeled_entities_with_objs:
+            mo = obj.mesh_order if obj.mesh_order is not None else float("inf")
+            for _ in ent.dimtags:
+                for piece in mapping[dimtag_idx]:
+                    if piece not in piece_to_owners:
+                        piece_to_owners[piece] = []
+                    piece_to_owners[piece].append((ent, mo))
+                dimtag_idx += 1
 
+        # Reset entity tags and reassign
+        for ent, _ in labeled_entities_with_objs:
+            ent.dimtags = []
+
+        for piece, owners in piece_to_owners.items():
+            # Find owner with minimum mesh_order
+            # In case of tie, first in list (original order) wins
+            best_ent = min(owners, key=lambda x: x[1])[0]
+            best_ent.dimtags.append(piece)
+
+        # Final cleanup and sync
         self.model_manager.model.occ.removeAllDuplicates()
         self.model_manager.sync_model()
-        # Clear shared point cache once at the end of the batch
-        self._shared_point_cache.clear()
 
-        return processed_entities
+        return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
 
     def _tag_mesh_components(
         self,
