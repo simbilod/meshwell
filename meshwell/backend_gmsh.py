@@ -1,3 +1,4 @@
+"""GMSH CAD backend implementation."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,7 +23,7 @@ class GmshBackend:
         """Save GMSH model to XAO."""
         self.processor.to_xao(path)
 
-    def to_gmsh_model(self, model_manager: Any) -> None:
+    def to_gmsh_model(self, model_manager: Any) -> None:  # noqa: ARG002
         """This is a no-op as the GMSH backend already populates the model.
 
         Wait, if model_manager is DIFFERENT from self.processor.model_manager,

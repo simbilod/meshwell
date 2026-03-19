@@ -1,7 +1,6 @@
 """Resolution specifications."""
 import copy
 import warnings
-from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np

@@ -334,35 +334,37 @@ class LabeledEntities:
                         # If tag is owned by self or by any entity in superset
                         if (tag_owners & self_names) or (tag_owners & superset):
                             # Handle boundary filtering
-                            if not include_boundary and target_dim == 1:
-                                if tag in boundary_tags:
-                                    # Still might share if another owner is in superset and it's NOT a boundary of self?
-                                    # Actually the existing logic says if NOT include_boundary, and it IS a boundary of self,
-                                    # then it must also NOT be a boundary of the other entity.
-                                    # Wait, the old logic was more complex:
-                                    # set(other_tags) - (set(other_boundary) & set(self_boundary))
-                                    # This means if it's a boundary of self AND a boundary of other, it's removed.
-                                    
-                                    # If tag is a boundary of self
-                                    is_shared_boundary = False
-                                    other_owners = tag_owners - self_names
-                                    for owner_name in other_owners:
-                                        if owner_name in superset:
-                                            other_entity = all_entities_dict[owner_name]
-                                            other_boundary_tags = (
-                                                other_entity.filter_mesh_boundary_tags_by_target_dimension(
-                                                    target_dim
-                                                )
+                            if (
+                                not include_boundary
+                                and target_dim == 1
+                                and tag in boundary_tags
+                            ):
+                                # Still might share if another owner is in superset and it's NOT a boundary of self?
+                                # Actually the existing logic says if NOT include_boundary, and it IS a boundary of self,
+                                # then it must also NOT be a boundary of the other entity.
+                                # Wait, the old logic was more complex:
+                                # set(other_tags) - (set(other_boundary) & set(self_boundary))
+                                # This means if it's a boundary of self AND a boundary of other, it's removed.
+
+                                # If tag is a boundary of self
+                                is_shared_boundary = False
+                                other_owners = tag_owners - self_names
+                                for owner_name in other_owners:
+                                    if owner_name in superset:
+                                        other_entity = all_entities_dict[owner_name]
+                                        other_boundary_tags = other_entity.filter_mesh_boundary_tags_by_target_dimension(
+                                            target_dim
+                                        )
+                                        if tag not in other_boundary_tags:
+                                            is_shared_boundary = (
+                                                False  # Not a shared boundary?
                                             )
-                                            if tag not in other_boundary_tags:
-                                                is_shared_boundary = False # Not a shared boundary? 
-                                                # Wait, if it's NOT a boundary of other, it's kept.
-                                                break
-                                            else:
-                                                is_shared_boundary = True
-                                    
-                                    if is_shared_boundary:
-                                        continue
+                                            # Wait, if it's NOT a boundary of other, it's kept.
+                                            break
+                                        is_shared_boundary = True
+
+                                if is_shared_boundary:
+                                    continue
 
                             entities_mass_dict_sharing[tag] = mass
 
@@ -380,9 +382,9 @@ class LabeledEntities:
                                 )
                             for tag in tags:
                                 if tag in entities_mass_dict:
-                                    entities_mass_dict_sharing[tag] = entities_mass_dict[
+                                    entities_mass_dict_sharing[
                                         tag
-                                    ]
+                                    ] = entities_mass_dict[tag]
                             continue
                         if any(item in other_name for item in superset):
                             other_tags = other_entity.filter_tags_by_target_dimension(
@@ -404,9 +406,9 @@ class LabeledEntities:
                                 )
                             for tag in other_tags:
                                 if tag in entities_mass_dict:
-                                    entities_mass_dict_sharing[tag] = entities_mass_dict[
+                                    entities_mass_dict_sharing[
                                         tag
-                                    ]
+                                    ] = entities_mass_dict[tag]
 
                 # Also retrieve tags of entities restricted_to
                 restrict_to_tags = []
