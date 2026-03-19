@@ -77,6 +77,10 @@ class ModelManager:
         # Configure threading
         self._configure_threading()
 
+        # Configure OCC tolerance if provided
+        if self.point_tolerance is not None:
+            gmsh.option.setNumber("Geometry.OCCTolerance", self.point_tolerance)
+
         self._is_initialized = True
 
     def to_file(self, output_file: Path) -> None:
