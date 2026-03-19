@@ -4,7 +4,7 @@
 
 **Goal:** Refactor `CAD_GMSH` to use a single `fragment` operation per dimension instead of sequential cuts, ensuring topological robustness and respecting `mesh_order` priority.
 
-**Architecture:** 
+**Architecture:**
 1.  Shift `GeometryEntity` to instance-local point/line caches to ensure closed loops while avoiding cross-entity tag collisions.
 2.  Implement `mesh_order` priority in `CAD_GMSH` by mapping fragment results back to original entities and selecting the owner with the lowest order.
 3.  Utilize GMSH's `Geometry.OCCTolerance` for "fuzzy" geometric matching instead of coordinate snapping.
@@ -105,12 +105,12 @@ git commit -m "refactor: switch to instance-local caching in GeometryEntity"
         # 2. Single fragment operation to resolve all overlaps
         fragment_result = self.model_manager.model.occ.fragment(all_dimtags, [])
         self.model_manager.model.occ.synchronize()
-        
+
         if not fragment_result or len(fragment_result) < 2:
             return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
 
         mapping = fragment_result[1]
-        
+
         # 3. Assign each fragment to the entity with the lowest mesh_order
         piece_to_owners = {} # (dim, tag) -> list of (ent, mesh_order)
         dimtag_idx = 0
@@ -122,11 +122,11 @@ git commit -m "refactor: switch to instance-local caching in GeometryEntity"
                         piece_to_owners[piece] = []
                     piece_to_owners[piece].append((ent, mo))
                 dimtag_idx += 1
-        
+
         # Reset entity tags and reassign
         for ent, _ in labeled_entities_with_objs:
             ent.dimtags = []
-            
+
         for piece, owners in piece_to_owners.items():
             # Find owner with minimum mesh_order
             # In case of tie, first in list (original order) wins

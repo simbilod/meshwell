@@ -295,7 +295,7 @@ class CAD:
 
         # 4. Self-fusion: Merge fragments belonging to the same entity
         # This recovers the "single surface" behavior and removes fake internal interfaces
-        for ent, obj in labeled_entities_with_objs:
+        for ent, _obj in labeled_entities_with_objs:
             if len(ent.dimtags) > 1:
                 # Fuse fragments together
                 fuse_result = self.model_manager.model.occ.fuse(

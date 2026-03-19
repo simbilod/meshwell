@@ -1,11 +1,12 @@
 import shapely
-from meshwell.polysurface import PolySurface
+
 from meshwell.orchestrator import generate_mesh
-import meshio
+from meshwell.polysurface import PolySurface
+
 
 def test_overlapping_boxes_robustness():
     """Verify that overlapping boxes with specific mesh_order resolve correctly.
-    
+
     This scenario replicates the conditions where coordinate snapping previously
     caused incorrect vertex connections.
     """
@@ -37,7 +38,7 @@ def test_overlapping_boxes_robustness():
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    
+
     # Check that we have the expected physical groups
     # 'core___cladding', 'core___buried_oxide', 'cladding___buried_oxide' should exist
     physical_names = list(m.field_data.keys())
@@ -47,10 +48,11 @@ def test_overlapping_boxes_robustness():
     assert "core___cladding" in physical_names
     assert "core___buried_oxide" in physical_names
     assert "cladding___buried_oxide" in physical_names
-    
+
     # Ensure no node connection artifacts
     # The new robust logic produces 131 nodes for this geometry.
     assert len(m.points) == 131
+
 
 if __name__ == "__main__":
     test_overlapping_boxes_robustness()
