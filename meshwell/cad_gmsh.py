@@ -244,40 +244,68 @@ class CAD:
         self, entity_group: list, progress_bars: bool
     ) -> list[LabeledEntities]:
         """Process entities of same dimension using cuts."""
+        from collections import defaultdict
+
+        # Group entities by mesh_order
+        groups = defaultdict(list)
+        for index, entity_obj in entity_group:
+            mo = (
+                entity_obj.mesh_order
+                if entity_obj.mesh_order is not None
+                else float("inf")
+            )
+            groups[mo].append((index, entity_obj))
+
+        sorted_orders = sorted(groups.keys())
         processed_entities = []
+        accumulated_tool_dimtags = []
 
-        for i, (index, entity_obj) in enumerate(entity_group):
-            # Instantiate entity using helper method
-            current_entity = self._instantiate_entity(index, entity_obj, progress_bars)
+        for mo in sorted_orders:
+            current_group_entities = []
+            for index, entity_obj in groups[mo]:
+                # 1. Instantiate all entities in this mesh_order group
+                ent = self._instantiate_entity(index, entity_obj, progress_bars)
+                current_group_entities.append(ent)
 
-            if i == 0:
-                processed_entities.append(current_entity)
-            else:
-                # Cut against previously processed entities
-                tool_dimtags = [
-                    dimtag
-                    for prev_entity in processed_entities
-                    for dimtag in prev_entity.dimtags
-                    if dimtag
-                ]
+            # 2. Cut current mesh_order group against ALL previous (higher priority) shapes
+            if accumulated_tool_dimtags:
+                object_dimtags = []
+                for ent in current_group_entities:
+                    object_dimtags.extend(ent.dimtags)
 
-                if tool_dimtags and current_entity.dimtags:
-                    cut = self.model_manager.model.occ.cut(
-                        current_entity.dimtags,
-                        tool_dimtags,
+                if object_dimtags:
+                    cut_result = self.model_manager.model.occ.cut(
+                        object_dimtags,
+                        accumulated_tool_dimtags,
                         removeObject=True,
                         removeTool=False,
                     )
-                    if cut and cut[0]:
-                        current_entity.dimtags = list(set(cut[0]))
 
-                if current_entity.dimtags:
-                    processed_entities.append(current_entity)
+                    if cut_result and len(cut_result) >= 2:
+                        mapping = cut_result[1]
+                        # Map results back to each entity
+                        obj_idx = 0
+                        for ent in current_group_entities:
+                            new_dimtags = []
+                            for _ in ent.dimtags:
+                                if obj_idx < len(mapping) and mapping[obj_idx]:
+                                    if isinstance(mapping[obj_idx], list):
+                                        new_dimtags.extend(mapping[obj_idx])
+                                    else:
+                                        new_dimtags.append(mapping[obj_idx])
+                                obj_idx += 1
+                            ent.dimtags = list(set(new_dimtags))
 
-                self.model_manager.model.occ.removeAllDuplicates()
-                self.model_manager.sync_model()
-                # Clear shared point cache after boolean operations
-                self._shared_point_cache.clear()
+            # 3. Add valid entities to processed and accumulated
+            for ent in current_group_entities:
+                if ent.dimtags:
+                    processed_entities.append(ent)
+                    accumulated_tool_dimtags.extend(ent.dimtags)
+
+        self.model_manager.model.occ.removeAllDuplicates()
+        self.model_manager.sync_model()
+        # Clear shared point cache once at the end of the batch
+        self._shared_point_cache.clear()
 
         return processed_entities
 
