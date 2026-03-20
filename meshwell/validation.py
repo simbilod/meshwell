@@ -50,6 +50,8 @@ def unpack_dimtags(dimtags):
     Returns:
         list: List of (dimension, tag) tuples with flattened tags
     """
+    if not dimtags:
+        return []
     dim = next(dim for dim, tag in dimtags)
     tags = [tag for dim, tag in dimtags]
     if any(isinstance(el, list) for el in tags):

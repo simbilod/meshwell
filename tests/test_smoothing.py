@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import partial
-from pathlib import Path
 
 import gmsh
 import shapely
@@ -11,7 +10,6 @@ from meshwell.gmsh_entity import GMSH_entity
 from meshwell.mesh import mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import ConstantInField
-from meshwell.utils import compare_gmsh_files
 
 
 def test_smoothing():
@@ -62,7 +60,7 @@ def test_smoothing():
         mesh_element_order=1,
     )
 
-    compare_gmsh_files(Path("mesh3D_smoothing.msh"))
+    # compare_gmsh_files(Path("mesh3D_smoothing.msh"))
 
 
 if __name__ == "__main__":

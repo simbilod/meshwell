@@ -282,8 +282,12 @@ class LabeledEntities:
         self,
         all_entities_dict,
         boundary_delimiter,
+        constant_collector=None,
+        tag_to_entity_names=None,
     ):
         """Adds refinement fields to the model based on base_resolution and resolution info."""
+        from meshwell.resolution import ConstantInField
+
         refinement_field_indices = []
 
         if self.resolutions:
@@ -311,45 +315,100 @@ class LabeledEntities:
                         boundary_delimiter not in resolutionspec.not_sharing
                     )
                     superset -= set(resolutionspec.not_sharing)
-                for other_name, other_entity in all_entities_dict.items():
-                    # If itself
-                    if all(item in other_name for item in self.physical_name):
-                        tags = self.filter_tags_by_target_dimension(target_dim)
-                        if not include_boundary:
-                            tags = set(tags) - set(
-                                self.filter_mesh_boundary_tags_by_target_dimension(
-                                    target_dim
-                                )
+
+                # Use tag_to_entity_names for O(N) lookup instead of O(N^2)
+                if tag_to_entity_names:
+                    # Filter entities_mass_dict using the reverse index
+                    self_names = set(self.physical_name)
+                    boundary_tags = set()
+                    if not include_boundary:
+                        boundary_tags = set(
+                            self.filter_mesh_boundary_tags_by_target_dimension(
+                                target_dim
                             )
-                        for tag in tags:
-                            if tag in entities_mass_dict:
-                                entities_mass_dict_sharing[tag] = entities_mass_dict[
-                                    tag
-                                ]
-                        continue
-                    if any(item in other_name for item in superset):
-                        other_tags = other_entity.filter_tags_by_target_dimension(
-                            target_dim
                         )
-                        # Special case if other tag contains a boundary line also shared with self
-                        if not include_boundary and target_dim == 1:
-                            other_tags = set(other_tags) - (
-                                set(
-                                    other_entity.filter_mesh_boundary_tags_by_target_dimension(
-                                        target_dim
-                                    )
-                                )
-                                & set(
+
+                    for tag, mass in entities_mass_dict.items():
+                        tag_owners = tag_to_entity_names.get((target_dim, tag), set())
+
+                        # If tag is owned by self or by any entity in superset
+                        if (tag_owners & self_names) or (tag_owners & superset):
+                            # Handle boundary filtering
+                            if (
+                                not include_boundary
+                                and target_dim == 1
+                                and tag in boundary_tags
+                            ):
+                                # Still might share if another owner is in superset and it's NOT a boundary of self?
+                                # Actually the existing logic says if NOT include_boundary, and it IS a boundary of self,
+                                # then it must also NOT be a boundary of the other entity.
+                                # Wait, the old logic was more complex:
+                                # set(other_tags) - (set(other_boundary) & set(self_boundary))
+                                # This means if it's a boundary of self AND a boundary of other, it's removed.
+
+                                # If tag is a boundary of self
+                                is_shared_boundary = False
+                                other_owners = tag_owners - self_names
+                                for owner_name in other_owners:
+                                    if owner_name in superset:
+                                        other_entity = all_entities_dict[owner_name]
+                                        other_boundary_tags = other_entity.filter_mesh_boundary_tags_by_target_dimension(
+                                            target_dim
+                                        )
+                                        if tag not in other_boundary_tags:
+                                            is_shared_boundary = (
+                                                False  # Not a shared boundary?
+                                            )
+                                            # Wait, if it's NOT a boundary of other, it's kept.
+                                            break
+                                        is_shared_boundary = True
+
+                                if is_shared_boundary:
+                                    continue
+
+                            entities_mass_dict_sharing[tag] = mass
+
+                else:
+                    # Legacy O(N^2) fallback
+                    for other_name, other_entity in all_entities_dict.items():
+                        # If itself
+                        if all(item in other_name for item in self.physical_name):
+                            tags = self.filter_tags_by_target_dimension(target_dim)
+                            if not include_boundary:
+                                tags = set(tags) - set(
                                     self.filter_mesh_boundary_tags_by_target_dimension(
                                         target_dim
                                     )
                                 )
+                            for tag in tags:
+                                if tag in entities_mass_dict:
+                                    entities_mass_dict_sharing[
+                                        tag
+                                    ] = entities_mass_dict[tag]
+                            continue
+                        if any(item in other_name for item in superset):
+                            other_tags = other_entity.filter_tags_by_target_dimension(
+                                target_dim
                             )
-                        for tag in other_tags:
-                            if tag in entities_mass_dict:
-                                entities_mass_dict_sharing[tag] = entities_mass_dict[
-                                    tag
-                                ]
+                            # Special case if other tag contains a boundary line also shared with self
+                            if not include_boundary and target_dim == 1:
+                                other_tags = set(other_tags) - (
+                                    set(
+                                        other_entity.filter_mesh_boundary_tags_by_target_dimension(
+                                            target_dim
+                                        )
+                                    )
+                                    & set(
+                                        self.filter_mesh_boundary_tags_by_target_dimension(
+                                            target_dim
+                                        )
+                                    )
+                                )
+                            for tag in other_tags:
+                                if tag in entities_mass_dict:
+                                    entities_mass_dict_sharing[
+                                        tag
+                                    ] = entities_mass_dict[tag]
 
                 # Also retrieve tags of entities restricted_to
                 restrict_to_tags = []
@@ -372,13 +431,20 @@ class LabeledEntities:
                     restrict_to_str = "PointsList"
 
                 if entities_mass_dict_sharing:
-                    refinement_field_indices.append(
-                        resolutionspec.apply(
-                            model=self.model,
-                            entities_mass_dict=entities_mass_dict_sharing,
-                            restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
-                            restrict_to_tags=restrict_to_tags,
+                    if constant_collector is not None and isinstance(
+                        resolutionspec, ConstantInField
+                    ):
+                        constant_collector[resolutionspec.resolution][
+                            resolutionspec.entity_str
+                        ].extend(entities_mass_dict_sharing.keys())
+                    else:
+                        refinement_field_indices.append(
+                            resolutionspec.apply(
+                                model=self.model,
+                                entities_mass_dict=entities_mass_dict_sharing,
+                                restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
+                                restrict_to_tags=restrict_to_tags,
+                            )
                         )
-                    )
 
         return refinement_field_indices

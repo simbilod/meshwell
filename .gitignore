@@ -156,3 +156,4 @@ cython_debug/
 *.gds
 *.oas
 *.dxf
+.worktrees/

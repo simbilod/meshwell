@@ -77,6 +77,10 @@ class ModelManager:
         # Configure threading
         self._configure_threading()
 
+        # Configure OCC tolerance if provided
+        if self.point_tolerance is not None:
+            gmsh.option.setNumber("Geometry.Tolerance", self.point_tolerance)
+
         self._is_initialized = True
 
     def to_file(self, output_file: Path) -> None:
@@ -190,13 +194,12 @@ class ModelManager:
         gmsh.option.setNumber("Mesh.MaxNumThreads1D", self.n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads2D", self.n_threads)
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", self.n_threads)
-        gmsh.option.setNumber("Geometry.OCCParallel", 1)
+        gmsh.option.setNumber("Geometry.OCCParallel", 1 if self.n_threads > 1 else 0)
 
     def sync_model(self) -> None:
         """Synchronize the OCC model."""
         if not self._is_initialized:
             return
-        self.occ.removeAllDuplicates()
         self.occ.synchronize()
 
     def clear_and_reinitialize(self, model_name: str | None = None) -> None:

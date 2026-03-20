@@ -199,10 +199,21 @@ class Mesh:
             resolution_specs: Resolution specifications
 
         """
+        from collections import defaultdict
+
         # Recover labeled entities from loaded CAD model
         final_entity_list, final_entity_dict = self._recover_labels_from_cad(
             resolution_specs
         )
+
+        # Build reverse indices for performance
+        tag_to_entity_names = defaultdict(set)
+        for name, entity in final_entity_dict.items():
+            # Include tags for all dimensions that this entity covers
+            for d in range(entity.dim + 1):
+                tags = entity.filter_tags_by_target_dimension(d)
+                for tag in tags:
+                    tag_to_entity_names[(d, tag)].add(name)
 
         # Collect all refinement fields
         refinement_field_indices = []
@@ -216,13 +227,38 @@ class Mesh:
                 )
                 refinement_field_indices.append(field_index)
 
+        # Collect constant fields for batching
+        constant_collector = defaultdict(lambda: defaultdict(list))
+
         for entity in final_entity_list:
             refinement_field_indices.extend(
                 entity.add_refinement_fields_to_model(
                     final_entity_dict,
                     boundary_delimiter,
+                    constant_collector=constant_collector,
+                    tag_to_entity_names=tag_to_entity_names,
                 )
             )
+
+        # Process constant fields in batches
+        for resolution, entity_types in constant_collector.items():
+            matheval_field_index = self.model_manager.model.mesh.field.add("MathEval")
+            self.model_manager.model.mesh.field.setString(
+                matheval_field_index, "F", f"{resolution}"
+            )
+
+            restrict_field_index = self.model_manager.model.mesh.field.add("Restrict")
+            self.model_manager.model.mesh.field.setNumber(
+                restrict_field_index, "InField", matheval_field_index
+            )
+
+            for entity_str, tags in entity_types.items():
+                self.model_manager.model.mesh.field.setNumbers(
+                    restrict_field_index,
+                    entity_str,
+                    list(set(tags)),
+                )
+            refinement_field_indices.append(restrict_field_index)
 
         # If we have refinement fields, create a minimum field
         if refinement_field_indices:
@@ -388,9 +424,9 @@ class Mesh:
 
 def mesh(
     dim: int,
-    input_file: Path,
-    output_file: Path,
     default_characteristic_length: float,
+    input_file: Path | None = None,
+    output_file: Path | None = None,
     resolution_specs: dict | None = None,
     background_remeshing_file: Path | None = None,
     global_scaling: float = 1.0,
@@ -410,11 +446,11 @@ def mesh(
 
     Args:
         dim: Dimension of mesh to generate
+        default_characteristic_length: Default mesh size
         input_file: Path to input .xao file
         output_file: Path for output mesh file
-        entities_list: Optional list of entities with mesh parameters
+        resolution_specs: Mesh resolution specifications
         background_remeshing_file: Optional background mesh file for refinement
-        default_characteristic_length: Default mesh size
         global_scaling: Global scaling factor
         global_2D_algorithm: GMSH 2D meshing algorithm
         global_3D_algorithm: GMSH 3D meshing algorithm
@@ -423,7 +459,6 @@ def mesh(
         periodic_entities: List of periodic boundary pairs
         optimization_flags: Mesh optimization flags
         boundary_delimiter: Delimiter for boundary names
-        resolution_specs: Mesh resolution specifications
         n_threads: Number of threads to use
         filename: Temporary filename for GMSH model
         model: Optional Model instance to use (creates new if None)
@@ -442,8 +477,9 @@ def mesh(
     if resolution_specs is None:
         resolution_specs = {}
 
-    # Load geometry from file
-    mesh_generator.load_xao_file(input_file)
+    # Load geometry from file if provided
+    if input_file is not None:
+        mesh_generator.load_xao_file(input_file)
 
     # Process geometry into mesh
     mesh_obj = mesh_generator.process_geometry(
@@ -462,8 +498,9 @@ def mesh(
         gmsh_version=gmsh_version,
     )
 
-    # Save to file
-    mesh_generator.save_to_file(output_file)
+    # Save to file if output file provided
+    if output_file is not None:
+        mesh_generator.save_to_file(output_file)
 
     # Finalize if we created the model
     if model is None:

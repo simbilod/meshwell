@@ -48,7 +48,11 @@ def test_coinciding_polysurface():
 
     entities = [core_surface, cladding_surface, buried_oxide_surface]
 
-    cad(entities_list=entities, output_file="test_polysurface_coinciding.xao")
+    cad(
+        entities_list=entities,
+        output_file="test_polysurface_coinciding.xao",
+        n_threads=1,
+    )
     mesh(
         input_file="test_polysurface_coinciding.xao",
         output_file="test_polysurface_coinciding.msh",

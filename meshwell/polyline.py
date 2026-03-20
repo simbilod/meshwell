@@ -1,9 +1,16 @@
 """Gmsh wire definitions."""
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import gmsh
 from shapely.geometry import LineString, MultiLineString
 
 from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
+
+if TYPE_CHECKING:
+    from OCP.TopoDS import TopoDS_Shape
 
 
 class PolyLine(GeometryEntity):
@@ -64,10 +71,13 @@ class PolyLine(GeometryEntity):
         # Create lines between consecutive points
         lines = []
         for i in range(len(points) - 1):
-            line_id = gmsh.model.occ.addLine(points[i], points[i + 1])
-            lines.append(line_id)
+            line_id = self._add_line_with_cache(points[i], points[i + 1])
+            if line_id != 0:
+                lines.append(line_id)
 
         # Create wire from lines
+        if not lines:
+            return 0
         if len(lines) == 1:
             # For a single line, we can return it as-is since GMSH treats it as a wire
             return lines[0]
@@ -86,3 +96,25 @@ class PolyLine(GeometryEntity):
 
         gmsh.model.occ.synchronize()
         return [(1, wire) for wire in wires]
+
+    def instanciate_occ(self) -> TopoDS_Shape:
+        """Create OCC wires directly using OCP."""
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+        wires = []
+        for linestring in self.linestrings:
+            vertices = [self._parse_coords(coords) for coords in linestring.coords]
+            wire = self._make_occ_wire_from_vertices(vertices)
+            wires.append(wire)
+
+        if not wires:
+            return None
+
+        # Fuse multiple wires if needed
+        result = wires[0]
+        for wire in wires[1:]:
+            fuse_api = BRepAlgoAPI_Fuse(result, wire)
+            fuse_api.Build()
+            result = fuse_api.Shape()
+
+        return result
