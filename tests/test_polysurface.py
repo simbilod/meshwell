@@ -7,7 +7,7 @@ import shapely
 from meshwell.cad import cad
 from meshwell.mesh import mesh
 from meshwell.polysurface import PolySurface
-from meshwell.utils import compare_gmsh_files, compare_mesh_headers
+from meshwell.utils import compare_gmsh_files
 
 
 def test_polysurface():
