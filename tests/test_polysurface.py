@@ -60,7 +60,7 @@ def test_coinciding_polysurface():
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    compare_mesh_headers(Path("test_polysurface_coinciding.msh"))
+    compare_gmsh_files(Path("test_polysurface_coinciding.msh"))
 
 
 if __name__ == "__main__":
