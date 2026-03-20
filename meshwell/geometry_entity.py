@@ -1,3 +1,4 @@
+"""Shared utilities for geometries."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -239,7 +240,9 @@ class GeometryEntity:
         if not identify_arcs or len(vertices) < min_arc_points:
             # Fallback to simple line segments
             return [
-                DecompositionSegment(points=[vertices[i], vertices[i + 1]], is_arc=False)
+                DecompositionSegment(
+                    points=[vertices[i], vertices[i + 1]], is_arc=False
+                )
                 for i in range(len(vertices) - 1)
             ]
 

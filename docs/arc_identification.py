@@ -7,14 +7,15 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
-from meshwell.polyline import PolyLine
-from meshwell.polysurface import PolySurface
+
 from meshwell.cad import cad
 from meshwell.mesh import mesh
+from meshwell.polyline import PolyLine
+from meshwell.polysurface import PolySurface
 
 # %%
 # Create a circular geometry with many points
-theta = np.linspace(0, np.pi/2, 50)
+theta = np.linspace(0, np.pi / 2, 50)
 vertices = [(np.cos(t), np.sin(t)) for t in theta]
 vertices += [(0, 1), (0, 0), (1, 0)]
 poly = shapely.Polygon(vertices)
@@ -25,11 +26,11 @@ poly = shapely.Polygon(vertices)
 
 # %%
 ps = PolySurface(
-    poly, 
-    identify_arcs=True, 
-    min_arc_points=4, 
+    poly,
+    identify_arcs=True,
+    min_arc_points=4,
     arc_tolerance=1e-3,
-    physical_name="curved_surface"
+    physical_name="curved_surface",
 )
 
 # %% [markdown]
@@ -52,9 +53,7 @@ line_vertices = [(1, 0), (2, 0), (2, 1)]
 all_vertices = line_vertices + arc_vertices
 
 pl = PolyLine(
-    shapely.LineString(all_vertices),
-    identify_arcs=True,
-    physical_name="curved_wire"
+    shapely.LineString(all_vertices), identify_arcs=True, physical_name="curved_wire"
 )
 
 # %%
@@ -72,7 +71,5 @@ output_mesh = mesh(
     input_file="arc_example.xao",
     output_file="arc_example.msh",
     default_characteristic_length=0.1,
-    mesh_element_order=2
+    mesh_element_order=2,
 )
-
-

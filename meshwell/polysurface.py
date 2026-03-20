@@ -192,7 +192,9 @@ class PolySurface(GeometryEntity):
         """Visualize the decomposition of all polygons into lines and arcs."""
         for polygon in self.polygons:
             # Exterior
-            vertices = [self._parse_coords(coords) for coords in polygon.exterior.coords]
+            vertices = [
+                self._parse_coords(coords) for coords in polygon.exterior.coords
+            ]
             ax = super().plot_decomposition(
                 vertices,
                 ax=ax,

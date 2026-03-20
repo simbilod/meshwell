@@ -61,7 +61,12 @@ def plot_decomposition(
             # instead of just connecting the points.
             # But for simple verification, connecting points with arc_color is fine.
             ax.plot(
-                pts[:, 0], pts[:, 1], color=arc_color, linewidth=2, label="arc", **kwargs
+                pts[:, 0],
+                pts[:, 1],
+                color=arc_color,
+                linewidth=2,
+                label="arc",
+                **kwargs,
             )
             if show_centers and seg.center:
                 ax.plot(
