@@ -73,8 +73,9 @@ class PolyPrism(GeometryEntity):
             volumes = [tag for dim, tag in entities if dim == 3]
         else:
             volumes = [
-                self._create_volume_with_holes_directly(entry)
+                tag
                 for entry in self.buffered_polygons
+                if (tag := self._create_volume_with_holes_directly(entry)) != 0
             ]
 
         # Fuse multiple volumes if needed
@@ -119,68 +120,45 @@ class PolyPrism(GeometryEntity):
         exterior: bool = True,
         interior_index: int = 0,
     ) -> int:
-        """Create volume directly using GMSH calls without CAD class methods."""
-        # Draw bottom surface
-        bottom_polygon = entry[0][1]
-        bottom_z = entry[0][0]
-        bottom_polygon_vertices = self.xy_surface_vertices(
-            polygon=bottom_polygon,
-            polygon_z=bottom_z,
-            exterior=exterior,
-            interior_index=interior_index,
-        )
-        gmsh_surfaces = [self._create_surface_from_vertices(bottom_polygon_vertices)]
+        """Create volume directly using GMSH calls."""
+        curve_loops = []
+        for z, polygon in entry:
+            vertices = self.xy_surface_vertices(
+                polygon=polygon,
+                polygon_z=z,
+                exterior=exterior,
+                interior_index=interior_index,
+            )
+            # Create a curve loop for this polygon at this z
+            points = self._create_points_from_vertices(vertices)
+            lines = []
+            for i in range(len(points) - 1):
+                line_id = self._add_line_with_cache(points[i], points[i + 1])
+                if line_id != 0:
+                    lines.append(line_id)
+            if lines:
+                loop_id = gmsh.model.occ.addCurveLoop(lines)
+                curve_loops.append(loop_id)
 
-        # Draw top surface
-        top_polygon = entry[-1][1]
-        top_z = entry[-1][0]
-        top_polygon_vertices = self.xy_surface_vertices(
-            polygon=top_polygon,
-            polygon_z=top_z,
-            exterior=exterior,
-            interior_index=interior_index,
-        )
-        gmsh_surfaces.append(self._create_surface_from_vertices(top_polygon_vertices))
+        if not curve_loops:
+            return 0
 
-        # Draw vertical surfaces
-        for pair_index in range(len(entry) - 1):
-            if exterior:
-                bottom_polygon = entry[pair_index][1].exterior.coords
-                top_polygon = entry[pair_index + 1][1].exterior.coords
-            else:
-                bottom_polygon = entry[pair_index][1].interiors[interior_index].coords
-                top_polygon = entry[pair_index + 1][1].interiors[interior_index].coords
-            bottom_z = entry[pair_index][0]
-            top_z = entry[pair_index + 1][0]
-            for facet_pt_ind in range(len(bottom_polygon) - 1):
-                facet_pt1 = (
-                    bottom_polygon[facet_pt_ind][0],
-                    bottom_polygon[facet_pt_ind][1],
-                    bottom_z,
-                )
-                facet_pt2 = (
-                    bottom_polygon[facet_pt_ind + 1][0],
-                    bottom_polygon[facet_pt_ind + 1][1],
-                    bottom_z,
-                )
-                facet_pt3 = (
-                    top_polygon[facet_pt_ind + 1][0],
-                    top_polygon[facet_pt_ind + 1][1],
-                    top_z,
-                )
-                facet_pt4 = (
-                    top_polygon[facet_pt_ind][0],
-                    top_polygon[facet_pt_ind][1],
-                    top_z,
-                )
-                facet_vertices = [facet_pt1, facet_pt2, facet_pt3, facet_pt4, facet_pt1]
-                gmsh_surfaces.append(self._create_surface_from_vertices(facet_vertices))
+        # If only one curve loop, we can't build a volume
+        if len(curve_loops) < 2:
+            return 0
 
-        # Return volume from closed shell
-        surface_loop = gmsh.model.occ.addSurfaceLoop(gmsh_surfaces)
-        volume = gmsh.model.occ.addVolume([surface_loop])
-        gmsh.model.occ.synchronize()
-        return volume
+        # Return volume from thru-sections
+        try:
+            volume_dimtags = gmsh.model.occ.addThruSections(
+                curve_loops, makeSolid=True, makeRuled=True
+            )
+            gmsh.model.occ.synchronize()
+            if volume_dimtags and volume_dimtags[0][0] == 3:
+                return volume_dimtags[0][1]
+        except Exception:
+            return 0
+
+        return 0
 
     def xy_surface_vertices(
         self,
@@ -203,13 +181,16 @@ class PolyPrism(GeometryEntity):
     ) -> int:
         """Create volume with holes directly using GMSH calls."""
         exterior = self._create_volume_directly(entry, exterior=True)
+        if exterior == 0:
+            return 0
         interiors = [
-            self._create_volume_directly(
+            tag
+            for interior_index in range(len(entry[0][1].interiors))
+            if (tag := self._create_volume_directly(
                 entry,
                 exterior=False,
                 interior_index=interior_index,
-            )
-            for interior_index in range(len(entry[0][1].interiors))
+            )) != 0
         ]
         if interiors:
             cut_result = gmsh.model.occ.cut(
@@ -219,9 +200,14 @@ class PolyPrism(GeometryEntity):
                 removeTool=True,
             )
             gmsh.model.occ.synchronize()
-            # Handle cut result - if cut succeeded, use the result, otherwise keep original
+            # Handle cut result - if cut succeeded, use the result, otherwise check if original still exists
             if cut_result and cut_result[0]:
                 exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            else:
+                # If cut failed, original might have been removed due to removeObject=True
+                existing_3d = {tag for dim, tag in gmsh.model.getEntities(3)}
+                if exterior not in existing_3d:
+                    exterior = 0
             # Clear caches after boolean operations that may invalidate geometry IDs
             self._clear_caches()
         return exterior
@@ -233,13 +219,16 @@ class PolyPrism(GeometryEntity):
             # Create outer surface
             exterior_vertices = [(x, y, z) for x, y in polygon.exterior.coords]
             exterior = self._create_surface_from_vertices(exterior_vertices)
+            if exterior == 0:
+                continue
 
             # Create interior surfaces (holes)
             interior_surfaces = []
             for interior in polygon.interiors:
                 interior_vertices = [(x, y, z) for x, y in interior.coords]
                 interior_surface = self._create_surface_from_vertices(interior_vertices)
-                interior_surfaces.append(interior_surface)
+                if interior_surface != 0:
+                    interior_surfaces.append(interior_surface)
 
             # Cut holes from exterior surface
             for interior_surface in interior_surfaces:

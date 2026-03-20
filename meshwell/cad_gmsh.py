@@ -257,7 +257,6 @@ class CAD:
 
         # If only one entity, no need to fragment
         if len(all_dimtags) == 1:
-            self.model_manager.model.occ.removeAllDuplicates()
             self.model_manager.sync_model()
             return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
 

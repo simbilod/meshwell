@@ -97,7 +97,8 @@ class PolySurface(GeometryEntity):
         surfaces = []
         for polygon in self.polygons:
             surface_id = self._create_surface_with_holes(polygon)
-            surfaces.append(surface_id)
+            if surface_id != 0:
+                surfaces.append(surface_id)
 
         # Fuse multiple surfaces if needed
         if len(surfaces) <= 1:

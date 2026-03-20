@@ -65,9 +65,12 @@ class GeometryEntity:
             point2_id: GMSH point ID #2
 
         Returns:
-            GMSH line ID
+            Signed GMSH line ID (negative if reversed), or 0 if points are identical
 
         """
+        if point1_id == point2_id:
+            return 0
+
         # Initialize local cache if no shared cache is set
         if self._lines is None:
             self._lines = {}
@@ -76,10 +79,16 @@ class GeometryEntity:
         key = tuple(sorted([point1_id, point2_id]))
 
         if key not in self._lines:
-            # Create new line
-            self._lines[key] = gmsh.model.occ.addLine(point1_id, point2_id)
+            # Create new line and store its original orientation
+            line_tag = gmsh.model.occ.addLine(point1_id, point2_id)
+            self._lines[key] = (line_tag, point1_id, point2_id)
 
-        return self._lines[key]
+        line_tag, orig_p1, orig_p2 = self._lines[key]
+
+        # Return signed tag based on requested orientation
+        if point1_id == orig_p1:
+            return line_tag
+        return -line_tag
 
     def _create_points_from_vertices(
         self, vertices: list[tuple[float, float, float]]
@@ -109,7 +118,11 @@ class GeometryEntity:
         lines = []
         for i in range(len(points) - 1):  # Skip last point as it should equal first
             line_id = self._add_line_with_cache(points[i], points[i + 1])
-            lines.append(line_id)
+            if line_id != 0:
+                lines.append(line_id)
+
+        if not lines:
+            return 0
 
         # Create closed loop and surface
         loop_id = gmsh.model.occ.addCurveLoop(lines)

@@ -71,10 +71,13 @@ class PolyLine(GeometryEntity):
         # Create lines between consecutive points
         lines = []
         for i in range(len(points) - 1):
-            line_id = gmsh.model.occ.addLine(points[i], points[i + 1])
-            lines.append(line_id)
+            line_id = self._add_line_with_cache(points[i], points[i + 1])
+            if line_id != 0:
+                lines.append(line_id)
 
         # Create wire from lines
+        if not lines:
+            return 0
         if len(lines) == 1:
             # For a single line, we can return it as-is since GMSH treats it as a wire
             return lines[0]

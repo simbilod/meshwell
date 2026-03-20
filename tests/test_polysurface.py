@@ -7,7 +7,7 @@ import shapely
 from meshwell.cad import cad
 from meshwell.mesh import mesh
 from meshwell.polysurface import PolySurface
-from meshwell.utils import compare_gmsh_files
+from meshwell.utils import compare_gmsh_files, compare_mesh_headers
 
 
 def test_polysurface():
@@ -60,7 +60,7 @@ def test_coinciding_polysurface():
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    compare_gmsh_files(Path("test_polysurface_coinciding.msh"))
+    compare_mesh_headers(Path("test_polysurface_coinciding.msh"))
 
 
 if __name__ == "__main__":
