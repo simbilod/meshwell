@@ -36,6 +36,9 @@ class PolyPrism(GeometryEntity):
         additive: bool = False,
         subdivision: tuple[int, int, int] | None = None,
         point_tolerance: float = 1e-3,
+        identify_arcs: bool = False,
+        min_arc_points: int = 4,
+        arc_tolerance: float = 1e-3,
     ):
         # Initialize parent class with point tracking
         super().__init__(point_tolerance=point_tolerance)
@@ -56,6 +59,14 @@ class PolyPrism(GeometryEntity):
         self.additive = additive
         self.dimension = 3
         self.subdivision = subdivision
+        self.identify_arcs = identify_arcs
+        self.min_arc_points = min_arc_points
+        self.arc_tolerance = arc_tolerance
+
+        if self.identify_arcs and not self.extrude:
+            raise NotImplementedError(
+                "Arc identification is currently only supported for PolyPrism when extrude=True."
+            )
 
         # Format physical name
         self.physical_name = format_physical_name(physical_name)
@@ -221,7 +232,12 @@ class PolyPrism(GeometryEntity):
         for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
             # Create outer surface
             exterior_vertices = [(x, y, z) for x, y in polygon.exterior.coords]
-            exterior = self._create_surface_from_vertices(exterior_vertices)
+            exterior = self._create_surface_from_vertices(
+                exterior_vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
             if exterior == 0:
                 continue
 
@@ -229,7 +245,12 @@ class PolyPrism(GeometryEntity):
             interior_surfaces = []
             for interior in polygon.interiors:
                 interior_vertices = [(x, y, z) for x, y in interior.coords]
-                interior_surface = self._create_surface_from_vertices(interior_vertices)
+                interior_surface = self._create_surface_from_vertices(
+                    interior_vertices,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                )
                 if interior_surface != 0:
                     interior_surfaces.append(interior_surface)
 
@@ -244,9 +265,7 @@ class PolyPrism(GeometryEntity):
                 gmsh.model.occ.synchronize()
                 # Handle cut result - if cut succeeded, use the result, otherwise keep original
                 if cut_result and cut_result[0]:
-                    exterior = cut_result[0][0][
-                        1
-                    ]  # Parse `outDimTags', `outDimTagsMap'
+                    exterior = cut_result[0][0][1]
                 # Clear caches after boolean operations that may invalidate geometry IDs
                 self._clear_caches()
 
@@ -337,7 +356,14 @@ class PolyPrism(GeometryEntity):
             exterior=exterior,
             interior_index=interior_index,
         )
-        faces = [self._make_occ_face_from_vertices(bottom_polygon_vertices)]
+        faces = [
+            self._make_occ_face_from_vertices(
+                bottom_polygon_vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
+        ]
 
         # Draw top surface
         top_polygon = entry[-1][1]
@@ -348,9 +374,19 @@ class PolyPrism(GeometryEntity):
             exterior=exterior,
             interior_index=interior_index,
         )
-        faces.append(self._make_occ_face_from_vertices(top_polygon_vertices))
+        faces.append(
+            self._make_occ_face_from_vertices(
+                top_polygon_vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
+        )
 
         # Draw vertical surfaces
+        # Note: Vertical surfaces remain straight lines between layers for now
+        # unless we want to also identify arcs in the vertical direction.
+        # But usually PolyPrism arcs are in the XY plane.
         for pair_index in range(len(entry) - 1):
             if exterior:
                 bottom_coords = entry[pair_index][1].exterior.coords
@@ -381,6 +417,7 @@ class PolyPrism(GeometryEntity):
                 p4 = (top_coords[facet_pt_ind][0], top_coords[facet_pt_ind][1], top_z)
 
                 facet_vertices = [p1, p2, p3, p4, p1]
+                # For vertical facets, we use simple linear interpolation
                 faces.append(self._make_occ_face_from_vertices(facet_vertices))
 
         # Build shell and solid
@@ -393,6 +430,84 @@ class PolyPrism(GeometryEntity):
         solid_builder = BRepBuilderAPI_MakeSolid()
         solid_builder.Add(shell)
         return solid_builder.Solid()
+
+    def plot_decomposition(
+        self,
+        ax=None,
+        line_color: str = "blue",
+        arc_color: str = "red",
+        show_centers: bool = True,
+        **kwargs,
+    ):
+        """Visualize the decomposition of the base cross-section."""
+        # For PolyPrism, we plot the base polygon (buffered_polygons[0] or polygons)
+        if self.extrude:
+            polygons = (
+                self.polygons.geoms
+                if hasattr(self.polygons, "geoms")
+                else [self.polygons]
+            )
+            for polygon in polygons:
+                vertices = [
+                    self._parse_coords(coords) for coords in polygon.exterior.coords
+                ]
+                ax = super().plot_decomposition(
+                    vertices,
+                    ax=ax,
+                    line_color=line_color,
+                    arc_color=arc_color,
+                    show_centers=show_centers,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                    **kwargs,
+                )
+                for interior in polygon.interiors:
+                    vertices = [
+                        self._parse_coords(coords) for coords in interior.coords
+                    ]
+                    ax = super().plot_decomposition(
+                        vertices,
+                        ax=ax,
+                        line_color=line_color,
+                        arc_color=arc_color,
+                        show_centers=show_centers,
+                        identify_arcs=self.identify_arcs,
+                        min_arc_points=self.min_arc_points,
+                        arc_tolerance=self.arc_tolerance,
+                        **kwargs,
+                    )
+        else:
+            # For buffered polygons, we plot the first layer
+            for entry in self.buffered_polygons:
+                # entry is list of (z, polygon)
+                z, polygon = entry[0]
+                vertices = [(x, y, z) for x, y in polygon.exterior.coords]
+                ax = super().plot_decomposition(
+                    vertices,
+                    ax=ax,
+                    line_color=line_color,
+                    arc_color=arc_color,
+                    show_centers=show_centers,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                    **kwargs,
+                )
+                for interior in polygon.interiors:
+                    vertices = [(x, y, z) for x, y in interior.coords]
+                    ax = super().plot_decomposition(
+                        vertices,
+                        ax=ax,
+                        line_color=line_color,
+                        arc_color=arc_color,
+                        show_centers=show_centers,
+                        identify_arcs=self.identify_arcs,
+                        min_arc_points=self.min_arc_points,
+                        arc_tolerance=self.arc_tolerance,
+                        **kwargs,
+                    )
+        return ax
 
     def _create_occ_volume_with_holes(
         self, entry: list[tuple[float, Polygon]]
@@ -428,11 +543,21 @@ class PolyPrism(GeometryEntity):
             for poly in polys:
                 # Create face (with holes) at zmin
                 exterior_vertices = [(x, y, self.zmin) for x, y in poly.exterior.coords]
-                face = self._make_occ_face_from_vertices(exterior_vertices)
+                face = self._make_occ_face_from_vertices(
+                    exterior_vertices,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                )
 
                 for interior in poly.interiors:
                     hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
-                    hole_face = self._make_occ_face_from_vertices(hole_vertices)
+                    hole_face = self._make_occ_face_from_vertices(
+                        hole_vertices,
+                        identify_arcs=self.identify_arcs,
+                        min_arc_points=self.min_arc_points,
+                        arc_tolerance=self.arc_tolerance,
+                    )
                     cut_api = BRepAlgoAPI_Cut(face, hole_face)
                     cut_api.Build()
                     face = cut_api.Shape()
