@@ -8,8 +8,9 @@ using fragment-based integration.
 from __future__ import annotations
 
 from functools import partial
-import pytest
+
 import gmsh
+import pytest
 
 from meshwell.cad import cad
 from meshwell.gmsh_entity import GMSH_entity
@@ -170,7 +171,8 @@ def test_surface_boundary_overlap():
         default_characteristic_length=1,
     )
 
-@pytest.mark.skip()
+
+@pytest.mark.skip
 def test_point_in_multiple_entities():
     """Test 0D point inside multiple overlapping entities."""
     # Create overlapping 3D entities

@@ -83,7 +83,7 @@ class GeometryEntity:
             line_tag = gmsh.model.occ.addLine(point1_id, point2_id)
             self._lines[key] = (line_tag, point1_id, point2_id)
 
-        line_tag, orig_p1, orig_p2 = self._lines[key]
+        line_tag, orig_p1, _orig_p2 = self._lines[key]
 
         # Return signed tag based on requested orientation
         if point1_id == orig_p1:

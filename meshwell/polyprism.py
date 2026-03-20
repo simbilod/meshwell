@@ -186,11 +186,14 @@ class PolyPrism(GeometryEntity):
         interiors = [
             tag
             for interior_index in range(len(entry[0][1].interiors))
-            if (tag := self._create_volume_directly(
-                entry,
-                exterior=False,
-                interior_index=interior_index,
-            )) != 0
+            if (
+                tag := self._create_volume_directly(
+                    entry,
+                    exterior=False,
+                    interior_index=interior_index,
+                )
+            )
+            != 0
         ]
         if interiors:
             cut_result = gmsh.model.occ.cut(
