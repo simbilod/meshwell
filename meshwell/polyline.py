@@ -34,6 +34,9 @@ class PolyLine(GeometryEntity):
         mesh_bool: bool = True,
         additive: bool = False,
         point_tolerance: float = 1e-3,
+        identify_arcs: bool = False,
+        min_arc_points: int = 4,
+        arc_tolerance: float = 1e-3,
     ):
         # Initialize parent class with point tracking
         super().__init__(point_tolerance=point_tolerance)
@@ -60,29 +63,68 @@ class PolyLine(GeometryEntity):
         self.mesh_bool = mesh_bool
         self.dimension = 1
         self.additive = additive
+        self.identify_arcs = identify_arcs
+        self.min_arc_points = min_arc_points
+        self.arc_tolerance = arc_tolerance
 
     def _create_wire_from_linestring(self, linestring: LineString) -> int:
         """Create a GMSH wire directly from linestring coordinates."""
         vertices = [self._parse_coords(coords) for coords in linestring.coords]
 
-        # Create points with deduplication
-        points = self._create_points_from_vertices(vertices)
+        if not self.identify_arcs:
+            # ORIGINAL BEHAVIOR
+            # Create points with deduplication
+            points = self._create_points_from_vertices(vertices)
 
-        # Create lines between consecutive points
-        lines = []
-        for i in range(len(points) - 1):
-            line_id = self._add_line_with_cache(points[i], points[i + 1])
-            if line_id != 0:
-                lines.append(line_id)
+            # Create lines between consecutive points
+            lines = []
+            for i in range(len(points) - 1):
+                line_id = self._add_line_with_cache(points[i], points[i + 1])
+                if line_id != 0:
+                    lines.append(line_id)
 
-        # Create wire from lines
-        if not lines:
+            # Create wire from lines
+            if not lines:
+                return 0
+            if len(lines) == 1:
+                # For a single line, we can return it as-is since GMSH treats it as a wire
+                return lines[0]
+            # For multiple lines, create a proper wire
+            return gmsh.model.occ.addWire(lines)
+
+        # ARC IDENTIFICATION BEHAVIOR
+        # Decompose vertices into segments
+        segments = self.decompose_vertices(
+            vertices,
+            identify_arcs=self.identify_arcs,
+            min_arc_points=self.min_arc_points,
+            arc_tolerance=self.arc_tolerance,
+        )
+
+        entities = []
+        for seg in segments:
+            if seg.is_arc:
+                # Create arc
+                start_pt = self._add_point_with_tolerance(*seg.points[0])
+                center_pt = self._add_point_with_tolerance(*seg.center)
+                end_pt = self._add_point_with_tolerance(*seg.points[-1])
+                arc_id = gmsh.model.occ.addCircleArc(start_pt, center_pt, end_pt)
+                if arc_id != 0:
+                    entities.append(arc_id)
+            else:
+                # Create line
+                p1 = self._add_point_with_tolerance(*seg.points[0])
+                p2 = self._add_point_with_tolerance(*seg.points[1])
+                line_id = self._add_line_with_cache(p1, p2)
+                if line_id != 0:
+                    entities.append(line_id)
+
+        # Create wire from lines/arcs
+        if not entities:
             return 0
-        if len(lines) == 1:
-            # For a single line, we can return it as-is since GMSH treats it as a wire
-            return lines[0]
-        # For multiple lines, create a proper wire
-        return gmsh.model.occ.addWire(lines)
+        if len(entities) == 1:
+            return entities[0]
+        return gmsh.model.occ.addWire(entities)
 
     def instanciate(
         self,
@@ -104,7 +146,12 @@ class PolyLine(GeometryEntity):
         wires = []
         for linestring in self.linestrings:
             vertices = [self._parse_coords(coords) for coords in linestring.coords]
-            wire = self._make_occ_wire_from_vertices(vertices)
+            wire = self._make_occ_wire_from_vertices(
+                vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
             wires.append(wire)
 
         if not wires:
@@ -118,3 +165,27 @@ class PolyLine(GeometryEntity):
             result = fuse_api.Shape()
 
         return result
+
+    def plot_decomposition(
+        self,
+        ax=None,
+        line_color: str = "blue",
+        arc_color: str = "red",
+        show_centers: bool = True,
+        **kwargs,
+    ):
+        """Visualize the decomposition of all linestrings into lines and arcs."""
+        for linestring in self.linestrings:
+            vertices = [self._parse_coords(coords) for coords in linestring.coords]
+            ax = super().plot_decomposition(
+                vertices,
+                ax=ax,
+                line_color=line_color,
+                arc_color=arc_color,
+                show_centers=show_centers,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+                **kwargs,
+            )
+        return ax

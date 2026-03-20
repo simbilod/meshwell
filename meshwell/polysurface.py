@@ -32,6 +32,9 @@ class PolySurface(GeometryEntity):
         mesh_bool: bool = True,
         additive: bool = False,
         point_tolerance: float = 1e-3,
+        identify_arcs: bool = False,
+        min_arc_points: int = 4,
+        arc_tolerance: float = 1e-3,
     ):
         # Initialize parent class with point tracking
         super().__init__(point_tolerance=point_tolerance)
@@ -56,6 +59,9 @@ class PolySurface(GeometryEntity):
         self.mesh_bool = mesh_bool
         self.dimension = 2
         self.additive = additive
+        self.identify_arcs = identify_arcs
+        self.min_arc_points = min_arc_points
+        self.arc_tolerance = arc_tolerance
 
     def _create_surface_with_holes(self, polygon: Polygon) -> int:
         """Create surface with holes directly using GMSH calls."""
@@ -63,7 +69,12 @@ class PolySurface(GeometryEntity):
         exterior_vertices = [
             self._parse_coords(coords) for coords in polygon.exterior.coords
         ]
-        exterior = self._create_surface_from_vertices(exterior_vertices)
+        exterior = self._create_surface_from_vertices(
+            exterior_vertices,
+            identify_arcs=self.identify_arcs,
+            min_arc_points=self.min_arc_points,
+            arc_tolerance=self.arc_tolerance,
+        )
 
         # Create interior surfaces (holes)
         interior_surfaces = []
@@ -71,8 +82,14 @@ class PolySurface(GeometryEntity):
             interior_vertices = [
                 self._parse_coords(coords) for coords in interior.coords
             ]
-            interior_surface = self._create_surface_from_vertices(interior_vertices)
-            interior_surfaces.append(interior_surface)
+            interior_surface = self._create_surface_from_vertices(
+                interior_vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
+            if interior_surface != 0:
+                interior_surfaces.append(interior_surface)
 
         # Cut holes from exterior surface
         for interior_surface in interior_surfaces:
@@ -127,14 +144,24 @@ class PolySurface(GeometryEntity):
             exterior_vertices = [
                 self._parse_coords(coords) for coords in polygon.exterior.coords
             ]
-            exterior_face = self._make_occ_face_from_vertices(exterior_vertices)
+            exterior_face = self._make_occ_face_from_vertices(
+                exterior_vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
 
             # Create interior surfaces (holes) and cut them
             for interior in polygon.interiors:
                 interior_vertices = [
                     self._parse_coords(coords) for coords in interior.coords
                 ]
-                interior_face = self._make_occ_face_from_vertices(interior_vertices)
+                interior_face = self._make_occ_face_from_vertices(
+                    interior_vertices,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                )
 
                 cut_api = BRepAlgoAPI_Cut(exterior_face, interior_face)
                 cut_api.Build()
@@ -153,3 +180,44 @@ class PolySurface(GeometryEntity):
             result = fuse_api.Shape()
 
         return result
+
+    def plot_decomposition(
+        self,
+        ax=None,
+        line_color: str = "blue",
+        arc_color: str = "red",
+        show_centers: bool = True,
+        **kwargs,
+    ):
+        """Visualize the decomposition of all polygons into lines and arcs."""
+        for polygon in self.polygons:
+            # Exterior
+            vertices = [
+                self._parse_coords(coords) for coords in polygon.exterior.coords
+            ]
+            ax = super().plot_decomposition(
+                vertices,
+                ax=ax,
+                line_color=line_color,
+                arc_color=arc_color,
+                show_centers=show_centers,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+                **kwargs,
+            )
+            # Interiors
+            for interior in polygon.interiors:
+                vertices = [self._parse_coords(coords) for coords in interior.coords]
+                ax = super().plot_decomposition(
+                    vertices,
+                    ax=ax,
+                    line_color=line_color,
+                    arc_color=arc_color,
+                    show_centers=show_centers,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                    **kwargs,
+                )
+        return ax

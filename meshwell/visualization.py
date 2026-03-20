@@ -30,6 +30,74 @@ colors = [
 ]
 
 
+def plot_decomposition(
+    segments,
+    ax: plt.Axes | None = None,
+    line_color: str = "blue",
+    arc_color: str = "red",
+    show_centers: bool = True,
+    **kwargs,
+) -> plt.Axes:
+    """Generic plotting utility for decomposition segments.
+
+    Args:
+        segments: List of DecompositionSegment objects
+        ax: Matplotlib axes
+        line_color: Color for line segments
+        arc_color: Color for arc segments
+        show_centers: Whether to plot arc center points
+        kwargs: Additional arguments for plot
+
+    Returns:
+        plt.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots()
+
+    for seg in segments:
+        pts = np.array(seg.points)
+        if seg.is_arc:
+            # For better visualization, we should draw a smooth arc
+            # instead of just connecting the points.
+            # But for simple verification, connecting points with arc_color is fine.
+            ax.plot(
+                pts[:, 0],
+                pts[:, 1],
+                color=arc_color,
+                linewidth=2,
+                label="arc",
+                **kwargs,
+            )
+            if show_centers and seg.center:
+                ax.plot(
+                    seg.center[0],
+                    seg.center[1],
+                    color=arc_color,
+                    marker="x",
+                    markersize=5,
+                )
+                # Draw dashed lines from center to start/end
+                ax.plot(
+                    [seg.center[0], pts[0, 0]],
+                    [seg.center[1], pts[0, 1]],
+                    color=arc_color,
+                    linestyle="--",
+                    alpha=0.3,
+                )
+                ax.plot(
+                    [seg.center[0], pts[-1, 0]],
+                    [seg.center[1], pts[-1, 1]],
+                    color=arc_color,
+                    linestyle="--",
+                    alpha=0.3,
+                )
+        else:
+            ax.plot(pts[:, 0], pts[:, 1], color=line_color, label="line", **kwargs)
+
+    ax.set_aspect("equal")
+    return ax
+
+
 def plot2D(
     mesh,
     physicals=None,
