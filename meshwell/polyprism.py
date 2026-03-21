@@ -55,6 +55,7 @@ class PolyPrism(GeometryEntity):
             ] = self._get_buffered_polygons(polygons, buffers)
 
         # Store other attributes
+        self.buffers = buffers
         self.mesh_order = mesh_order
         self.additive = additive
         self.dimension = 3
