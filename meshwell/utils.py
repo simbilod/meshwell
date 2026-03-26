@@ -1,9 +1,9 @@
 """Mesh comparison utilities."""
 from __future__ import annotations
 
-from typing import Any
 from difflib import unified_diff
 from pathlib import Path
+from typing import Any
 
 from meshwell.config import PATH
 

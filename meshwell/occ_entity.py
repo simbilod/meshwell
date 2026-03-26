@@ -78,7 +78,9 @@ class OCC_entity:
         }
 
     @classmethod
-    def from_dict(cls, data: dict, registry: dict[str, callable] | None = None) -> "OCC_entity":
+    def from_dict(
+        cls, data: dict, registry: dict[str, callable] | None = None
+    ) -> "OCC_entity":
         """Reconstruct entity from dictionary representation.
 
         Args:

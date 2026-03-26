@@ -177,14 +177,17 @@ class PolyLine(GeometryEntity):
 
         if isinstance(self.linestrings, MultiLineString):
             linestrings_wkt = [
-                shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings.geoms
+                shapely.wkt.dumps(ls, rounding_precision=12)
+                for ls in self.linestrings.geoms
             ]
         elif isinstance(self.linestrings, list):
             linestrings_wkt = [
                 shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings
             ]
         else:
-            linestrings_wkt = [shapely.wkt.dumps(self.linestrings, rounding_precision=12)]
+            linestrings_wkt = [
+                shapely.wkt.dumps(self.linestrings, rounding_precision=12)
+            ]
 
         return {
             "type": "PolyLine",

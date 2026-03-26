@@ -139,8 +139,9 @@ class GMSH_entity:
         Returns:
             GMSH_entity instance
         """
-        import gmsh
         from functools import partial
+
+        import gmsh
 
         func_name = data["function_name"]
         # Support both snake_case and camelCase by checking gmsh.model.occ

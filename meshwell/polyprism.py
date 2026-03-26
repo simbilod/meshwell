@@ -599,9 +599,13 @@ class PolyPrism(GeometryEntity):
         from shapely.geometry import MultiPolygon
 
         if isinstance(self.polygons, MultiPolygon):
-            polygons_wkt = [shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms]
+            polygons_wkt = [
+                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
+            ]
         elif isinstance(self.polygons, list):
-            polygons_wkt = [shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons]
+            polygons_wkt = [
+                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons
+            ]
         else:
             polygons_wkt = [shapely.wkt.dumps(self.polygons, rounding_precision=12)]
 
@@ -634,10 +638,7 @@ class PolyPrism(GeometryEntity):
         from shapely.geometry import MultiPolygon
 
         polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
-        if len(polygons) > 1:
-            polygons = MultiPolygon(polygons)
-        else:
-            polygons = polygons[0]
+        polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
 
         buffers = {float(k): v for k, v in data["buffers"].items()}
         subdivision = tuple(data["subdivision"]) if data["subdivision"] else None
