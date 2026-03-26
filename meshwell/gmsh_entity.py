@@ -110,3 +110,49 @@ class GMSH_entity:
         entity_output = [(self.dimension, entity_output)]
         cad_model.model_manager.occ.synchronize()
         return entity_output
+
+    def to_dict(self) -> dict:
+        """Convert entity to dictionary representation.
+
+        Returns:
+            Dictionary containing serializable entity data
+        """
+        return {
+            "type": "GMSH_entity",
+            "function_name": self.gmsh_partial_function.func.__name__,
+            "args": self.gmsh_partial_function.args,
+            "keywords": self.gmsh_partial_function.keywords,
+            "physical_name": self.physical_name,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "additive": self.additive,
+            "dimension": self.dimension,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GMSH_entity":
+        """Reconstruct entity from dictionary representation.
+
+        Args:
+            data: Dictionary containing entity data
+
+        Returns:
+            GMSH_entity instance
+        """
+        from functools import partial
+
+        import gmsh
+
+        func_name = data["function_name"]
+        # Support both snake_case and camelCase by checking gmsh.model.occ
+        func = getattr(gmsh.model.occ, func_name)
+        p_func = partial(func, *data["args"], **data["keywords"])
+
+        return cls(
+            gmsh_partial_function=p_func,
+            physical_name=data["physical_name"],
+            mesh_order=data["mesh_order"],
+            mesh_bool=data["mesh_bool"],
+            additive=data["additive"],
+            dimension=data["dimension"],
+        )

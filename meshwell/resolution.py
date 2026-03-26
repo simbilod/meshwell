@@ -22,6 +22,19 @@ class ResolutionSpec(BaseModel):
     not_sharing: list[str] | None = None
     restrict_to: list[str] | None = None
 
+    def to_dict(self) -> dict:
+        """Convert resolution spec to dictionary representation."""
+        import numpy as np
+
+        d = self.model_dump()
+        # Handle inf for JSON
+        for k, v in d.items():
+            if v == np.inf:
+                d[k] = "inf"
+        d["type"] = "ResolutionSpec"
+        d["resolution_type"] = self.__class__.__name__
+        return d
+
     @property
     def entity_str(self):
         """Convenience wrapper."""

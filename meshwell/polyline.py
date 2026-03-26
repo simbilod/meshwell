@@ -166,6 +166,73 @@ class PolyLine(GeometryEntity):
 
         return result
 
+    def to_dict(self) -> dict:
+        """Convert entity to dictionary representation.
+
+        Returns:
+            Dictionary containing serializable entity data
+        """
+        import shapely.wkt
+        from shapely.geometry import MultiLineString
+
+        if isinstance(self.linestrings, MultiLineString):
+            linestrings_wkt = [
+                shapely.wkt.dumps(ls, rounding_precision=12)
+                for ls in self.linestrings.geoms
+            ]
+        elif isinstance(self.linestrings, list):
+            linestrings_wkt = [
+                shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings
+            ]
+        else:
+            linestrings_wkt = [
+                shapely.wkt.dumps(self.linestrings, rounding_precision=12)
+            ]
+
+        return {
+            "type": "PolyLine",
+            "linestrings_wkt": linestrings_wkt,
+            "physical_name": self.physical_name,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "additive": self.additive,
+            "point_tolerance": self.point_tolerance,
+            "identify_arcs": self.identify_arcs,
+            "min_arc_points": self.min_arc_points,
+            "arc_tolerance": self.arc_tolerance,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PolyLine":
+        """Reconstruct entity from dictionary representation.
+
+        Args:
+            data: Dictionary containing entity data
+
+        Returns:
+            PolyLine instance
+        """
+        import shapely.wkt
+        from shapely.geometry import MultiLineString
+
+        linestrings = [shapely.wkt.loads(wkt) for wkt in data["linestrings_wkt"]]
+        if len(linestrings) > 1:
+            linestrings = MultiLineString(linestrings)
+        else:
+            linestrings = linestrings[0]
+
+        return cls(
+            linestrings=linestrings,
+            physical_name=data["physical_name"],
+            mesh_order=data["mesh_order"],
+            mesh_bool=data["mesh_bool"],
+            additive=data["additive"],
+            point_tolerance=data["point_tolerance"],
+            identify_arcs=data["identify_arcs"],
+            min_arc_points=data["min_arc_points"],
+            arc_tolerance=data["arc_tolerance"],
+        )
+
     def plot_decomposition(
         self,
         ax=None,

@@ -44,9 +44,9 @@ class PolyPrism(GeometryEntity):
         super().__init__(point_tolerance=point_tolerance)
 
         # Parse buffers or prepare extrusion
+        self.polygons = polygons
         if all(buffer == 0 for buffer in buffers.values()):
             self.extrude = True
-            self.polygons = polygons
             self.zmin, self.zmax = min(buffers.keys()), max(buffers.keys())
         else:
             self.extrude = False
@@ -55,6 +55,7 @@ class PolyPrism(GeometryEntity):
             ] = self._get_buffered_polygons(polygons, buffers)
 
         # Store other attributes
+        self.buffers = buffers
         self.mesh_order = mesh_order
         self.additive = additive
         self.dimension = 3
@@ -587,6 +588,74 @@ class PolyPrism(GeometryEntity):
             result = fuse_api.Shape()
 
         return result
+
+    def to_dict(self) -> dict:
+        """Convert entity to dictionary representation.
+
+        Returns:
+            Dictionary containing serializable entity data
+        """
+        import shapely.wkt
+        from shapely.geometry import MultiPolygon
+
+        if isinstance(self.polygons, MultiPolygon):
+            polygons_wkt = [
+                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
+            ]
+        elif isinstance(self.polygons, list):
+            polygons_wkt = [
+                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons
+            ]
+        else:
+            polygons_wkt = [shapely.wkt.dumps(self.polygons, rounding_precision=12)]
+
+        return {
+            "type": "PolyPrism",
+            "polygons_wkt": polygons_wkt,
+            "buffers": {str(k): v for k, v in self.buffers.items()},
+            "physical_name": self.physical_name,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "additive": self.additive,
+            "point_tolerance": self.point_tolerance,
+            "identify_arcs": self.identify_arcs,
+            "min_arc_points": self.min_arc_points,
+            "arc_tolerance": self.arc_tolerance,
+            "subdivision": list(self.subdivision) if self.subdivision else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PolyPrism":
+        """Reconstruct entity from dictionary representation.
+
+        Args:
+            data: Dictionary containing entity data
+
+        Returns:
+            PolyPrism instance
+        """
+        import shapely.wkt
+        from shapely.geometry import MultiPolygon
+
+        polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
+        polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
+
+        buffers = {float(k): v for k, v in data["buffers"].items()}
+        subdivision = tuple(data["subdivision"]) if data["subdivision"] else None
+
+        return cls(
+            polygons=polygons,
+            buffers=buffers,
+            physical_name=data["physical_name"],
+            mesh_order=data["mesh_order"],
+            mesh_bool=data["mesh_bool"],
+            additive=data["additive"],
+            point_tolerance=data["point_tolerance"],
+            identify_arcs=data["identify_arcs"],
+            min_arc_points=data["min_arc_points"],
+            arc_tolerance=data["arc_tolerance"],
+            subdivision=subdivision,
+        )
 
     def _validate_polygon_buffers(self) -> bool:
         """Check if any buffering operation changes the topology of the polygon."""

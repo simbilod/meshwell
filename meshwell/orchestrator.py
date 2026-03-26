@@ -8,6 +8,7 @@ from meshwell.backend_gmsh import GmshBackend
 from meshwell.backend_occ import OccBackend
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
+from meshwell.utils import deserialize
 
 
 def generate_mesh(
@@ -16,21 +17,26 @@ def generate_mesh(
     output_mesh: Path | str | None = None,
     backend: str = "occ",
     checkpoint_cad: Path | str | None = None,
+    registry: dict[str, callable] | None = None,
     **mesh_kwargs,
 ) -> Any:
     """Unified API for generating a mesh from a list of entities.
 
     Args:
-        entities: List of meshwell entities (PolySurface, PolyPrism, etc.)
+        entities: List of meshwell entities or their dictionary representations.
         dim: Dimension of the mesh to generate
         output_mesh: Optional path to save the generated mesh (.msh)
         backend: CAD backend to use ("occ" or "gmsh")
         checkpoint_cad: Optional path to save the CAD state (.xao)
+        registry: Optional registry for OCC_entity function resolution
         **mesh_kwargs: Additional arguments for the mesh() function
 
     Returns:
         meshio.Mesh: The generated mesh object
     """
+    # Deserialize entities if they are dictionaries
+    entities = deserialize(entities, registry=registry)
+
     # Extract common backend arguments from mesh_kwargs
     backend_kwargs = {}
     if "n_threads" in mesh_kwargs:
