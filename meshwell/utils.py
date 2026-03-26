@@ -1,4 +1,7 @@
 """Mesh comparison utilities."""
+from __future__ import annotations
+
+from typing import Any
 from difflib import unified_diff
 from pathlib import Path
 
@@ -67,3 +70,44 @@ def compare_mesh_headers(meshfile: Path, other_meshfile: Path | None = None) -> 
     diff = list(unified_diff(expected_lines, actual_lines))
     if diff != []:
         raise ValueError(f"Mesh headers in {meshfile!s} differ from reference!")
+
+
+def deserialize(data: dict | list, registry: dict[str, callable] | None = None) -> Any:
+    """Reconstruct meshwell entities from dictionary representation.
+
+    Args:
+        data: Dictionary or list of dictionaries containing entity data
+        registry: Optional registry for OCC_entity function resolution
+
+    Returns:
+        Reconstructed entity or list of entities
+    """
+    if isinstance(data, list):
+        return [deserialize(item, registry=registry) for item in data]
+
+    if not isinstance(data, dict) or "type" not in data:
+        return data
+
+    t = data["type"]
+    if t == "GMSH_entity":
+        from meshwell.gmsh_entity import GMSH_entity
+
+        return GMSH_entity.from_dict(data)
+    if t == "OCC_entity":
+        from meshwell.occ_entity import OCC_entity
+
+        return OCC_entity.from_dict(data, registry=registry)
+    if t == "PolyLine":
+        from meshwell.polyline import PolyLine
+
+        return PolyLine.from_dict(data)
+    if t == "PolySurface":
+        from meshwell.polysurface import PolySurface
+
+        return PolySurface.from_dict(data)
+    if t == "PolyPrism":
+        from meshwell.polyprism import PolyPrism
+
+        return PolyPrism.from_dict(data)
+
+    return data

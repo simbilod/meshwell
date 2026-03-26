@@ -181,6 +181,66 @@ class PolySurface(GeometryEntity):
 
         return result
 
+    def to_dict(self) -> dict:
+        """Convert entity to dictionary representation.
+
+        Returns:
+            Dictionary containing serializable entity data
+        """
+        import shapely.wkt
+        from shapely.geometry import MultiPolygon
+
+        if isinstance(self.polygons, MultiPolygon):
+            polygons_wkt = [shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms]
+        elif isinstance(self.polygons, list):
+            polygons_wkt = [shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons]
+        else:
+            polygons_wkt = [shapely.wkt.dumps(self.polygons, rounding_precision=12)]
+
+        return {
+            "type": "PolySurface",
+            "polygons_wkt": polygons_wkt,
+            "physical_name": self.physical_name,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "additive": self.additive,
+            "point_tolerance": self.point_tolerance,
+            "identify_arcs": self.identify_arcs,
+            "min_arc_points": self.min_arc_points,
+            "arc_tolerance": self.arc_tolerance,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PolySurface":
+        """Reconstruct entity from dictionary representation.
+
+        Args:
+            data: Dictionary containing entity data
+
+        Returns:
+            PolySurface instance
+        """
+        import shapely.wkt
+        from shapely.geometry import MultiPolygon
+
+        polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
+        if len(polygons) > 1:
+            polygons = MultiPolygon(polygons)
+        else:
+            polygons = polygons[0]
+
+        return cls(
+            polygons=polygons,
+            physical_name=data["physical_name"],
+            mesh_order=data["mesh_order"],
+            mesh_bool=data["mesh_bool"],
+            additive=data["additive"],
+            point_tolerance=data["point_tolerance"],
+            identify_arcs=data["identify_arcs"],
+            min_arc_points=data["min_arc_points"],
+            arc_tolerance=data["arc_tolerance"],
+        )
+
     def plot_decomposition(
         self,
         ax=None,
