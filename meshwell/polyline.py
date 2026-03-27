@@ -37,9 +37,19 @@ class PolyLine(GeometryEntity):
         identify_arcs: bool = False,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
+        translation: tuple[float, float, float] | None = None,
+        rotation_axis: tuple[float, float, float] | None = None,
+        rotation_point: tuple[float, float, float] | None = None,
+        rotation_angle: float = 0.0,
     ):
-        # Initialize parent class with point tracking
-        super().__init__(point_tolerance=point_tolerance)
+        # Initialize parent class with point tracking and transformation parameters
+        super().__init__(
+            point_tolerance=point_tolerance,
+            translation=translation,
+            rotation_axis=rotation_axis,
+            rotation_point=rotation_point,
+            rotation_angle=rotation_angle,
+        )
 
         # Parse (multi)linestrings
         if isinstance(linestrings, list):
@@ -136,8 +146,11 @@ class PolyLine(GeometryEntity):
             wire_id = self._create_wire_from_linestring(linestring)
             wires.append(wire_id)
 
+        dimtags = [(1, wire) for wire in wires]
+        rotation_point = self._get_rotation_point(self.linestrings)
+        dimtags = self._apply_transformation_gmsh(dimtags, rotation_point)
         gmsh.model.occ.synchronize()
-        return [(1, wire) for wire in wires]
+        return dimtags
 
     def instanciate_occ(self) -> TopoDS_Shape:
         """Create OCC wires directly using OCP."""
@@ -164,7 +177,8 @@ class PolyLine(GeometryEntity):
             fuse_api.Build()
             result = fuse_api.Shape()
 
-        return result
+        rotation_point = self._get_rotation_point(self.linestrings)
+        return self._apply_transformation_occ(result, rotation_point)
 
     def to_dict(self) -> dict:
         """Convert entity to dictionary representation.
@@ -200,6 +214,10 @@ class PolyLine(GeometryEntity):
             "identify_arcs": self.identify_arcs,
             "min_arc_points": self.min_arc_points,
             "arc_tolerance": self.arc_tolerance,
+            "translation": self.translation,
+            "rotation_axis": self.rotation_axis,
+            "rotation_point": self.rotation_point,
+            "rotation_angle": self.rotation_angle,
         }
 
     @classmethod
@@ -231,6 +249,10 @@ class PolyLine(GeometryEntity):
             identify_arcs=data["identify_arcs"],
             min_arc_points=data["min_arc_points"],
             arc_tolerance=data["arc_tolerance"],
+            translation=data.get("translation"),
+            rotation_axis=data.get("rotation_axis"),
+            rotation_point=data.get("rotation_point"),
+            rotation_angle=data.get("rotation_angle", 0.0),
         )
 
     def plot_decomposition(

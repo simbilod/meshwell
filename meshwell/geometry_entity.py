@@ -63,9 +63,20 @@ class GeometryEntity:
     to ensure consistent geometry creation across PolyLine, PolySurface, and PolyPrism.
     """
 
-    def __init__(self, point_tolerance: float = 1e-3):
-        """Initialize geometry entity with point tracking."""
+    def __init__(
+        self,
+        point_tolerance: float = 1e-3,
+        translation: tuple[float, float, float] | None = None,
+        rotation_axis: tuple[float, float, float] | None = None,
+        rotation_point: tuple[float, float, float] | None = None,
+        rotation_angle: float = 0.0,
+    ):
+        """Initialize geometry entity with point tracking and transformation parameters."""
         self.point_tolerance = point_tolerance
+        self.translation = translation
+        self.rotation_axis = rotation_axis or (0, 0, 1)
+        self.rotation_point = rotation_point
+        self.rotation_angle = rotation_angle
         # Track created points to avoid duplicates (strictly instance-local)
         self._points: dict[tuple[float, float, float], int] = {}
         # Track created lines to avoid duplicates and ensure proper edge sharing (strictly instance-local)
@@ -408,3 +419,56 @@ class GeometryEntity:
 
         """
         raise NotImplementedError("Subclasses must implement instanciate_occ method")
+
+    def _get_rotation_point(self, geometries) -> tuple[float, float, float]:
+        """Calculate centroid if rotation_point is None."""
+        if self.rotation_point is not None:
+            return self.rotation_point
+
+        from shapely.ops import unary_union
+
+        combined = unary_union(geometries)
+        centroid = combined.centroid
+        return (centroid.x, centroid.y, 0.0)  # Assume 2D plane for pivot
+
+    def _apply_transformation_gmsh(
+        self, dimtags: list[tuple[int, int]], rotation_point: tuple[float, float, float]
+    ) -> list[tuple[int, int]]:
+        """Apply rotation and translation to GMSH entities."""
+        if not dimtags:
+            return dimtags
+        import numpy as np
+
+        if self.rotation_angle != 0:
+            gmsh.model.occ.rotate(
+                dimtags,
+                *rotation_point,
+                *self.rotation_axis,
+                np.radians(self.rotation_angle),
+            )
+        if self.translation:
+            gmsh.model.occ.translate(dimtags, *self.translation)
+        return dimtags
+
+    def _apply_transformation_occ(
+        self, shape: TopoDS_Shape, rotation_point: tuple[float, float, float]
+    ) -> TopoDS_Shape:
+        """Apply rotation and translation to OCC shape."""
+        if shape is None:
+            return None
+        import numpy as np
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+        from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+
+        trsf = gp_Trsf()
+        if self.rotation_angle != 0:
+            axis = gp_Ax1(gp_Pnt(*rotation_point), gp_Dir(*self.rotation_axis))
+            trsf.SetRotation(axis, np.radians(self.rotation_angle))
+
+        if self.translation:
+            trsf_trans = gp_Trsf()
+            trsf_trans.SetTranslation(gp_Vec(*self.translation))
+            trsf = trsf_trans * trsf  # Rotate then Translate
+
+        transform_api = BRepBuilderAPI_Transform(shape, trsf)
+        return transform_api.Shape()

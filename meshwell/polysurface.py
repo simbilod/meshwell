@@ -35,9 +35,19 @@ class PolySurface(GeometryEntity):
         identify_arcs: bool = False,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
+        translation: tuple[float, float, float] | None = None,
+        rotation_axis: tuple[float, float, float] | None = None,
+        rotation_point: tuple[float, float, float] | None = None,
+        rotation_angle: float = 0.0,
     ):
-        # Initialize parent class with point tracking
-        super().__init__(point_tolerance=point_tolerance)
+        # Initialize parent class with point tracking and transformation parameters
+        super().__init__(
+            point_tolerance=point_tolerance,
+            translation=translation,
+            rotation_axis=rotation_axis,
+            rotation_point=rotation_point,
+            rotation_angle=rotation_angle,
+        )
 
         # Parse (multi)polygons
         if isinstance(polygons, (Polygon, MultiPolygon)):
@@ -119,19 +129,21 @@ class PolySurface(GeometryEntity):
 
         # Fuse multiple surfaces if needed
         if len(surfaces) <= 1:
-            gmsh.model.occ.synchronize()
-            return [(2, surfaces[0])] if surfaces else []
+            dimtags = [(2, surfaces[0])] if surfaces else []
+        else:
+            # Fuse all surfaces together
+            dimtags = gmsh.model.occ.fuse(
+                [(2, surfaces[0])],
+                [(2, tag) for tag in surfaces[1:]],
+                removeObject=True,
+                removeTool=True,
+            )[0]
+            # Clear caches after boolean operations that may invalidate geometry IDs
+            self._clear_caches()
 
-        # Fuse all surfaces together
-        dimtags = gmsh.model.occ.fuse(
-            [(2, surfaces[0])],
-            [(2, tag) for tag in surfaces[1:]],
-            removeObject=True,
-            removeTool=True,
-        )[0]
+        rotation_point = self._get_rotation_point(self.polygons)
+        dimtags = self._apply_transformation_gmsh(dimtags, rotation_point)
         gmsh.model.occ.synchronize()
-        # Clear caches after boolean operations that may invalidate geometry IDs
-        self._clear_caches()
         return dimtags
 
     def instanciate_occ(self) -> TopoDS_Shape:
@@ -179,7 +191,8 @@ class PolySurface(GeometryEntity):
             fuse_api.Build()
             result = fuse_api.Shape()
 
-        return result
+        rotation_point = self._get_rotation_point(self.polygons)
+        return self._apply_transformation_occ(result, rotation_point)
 
     def to_dict(self) -> dict:
         """Convert entity to dictionary representation.
@@ -212,6 +225,10 @@ class PolySurface(GeometryEntity):
             "identify_arcs": self.identify_arcs,
             "min_arc_points": self.min_arc_points,
             "arc_tolerance": self.arc_tolerance,
+            "translation": self.translation,
+            "rotation_axis": self.rotation_axis,
+            "rotation_point": self.rotation_point,
+            "rotation_angle": self.rotation_angle,
         }
 
     @classmethod
@@ -240,6 +257,10 @@ class PolySurface(GeometryEntity):
             identify_arcs=data["identify_arcs"],
             min_arc_points=data["min_arc_points"],
             arc_tolerance=data["arc_tolerance"],
+            translation=data.get("translation"),
+            rotation_axis=data.get("rotation_axis"),
+            rotation_point=data.get("rotation_point"),
+            rotation_angle=data.get("rotation_angle", 0.0),
         )
 
     def plot_decomposition(
