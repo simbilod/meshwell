@@ -1,7 +1,10 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## Unreleased
+## 2.3.0
 
+- Raw OCC backend for CAD
+- fit arcs to polygons
+- serialization
 - fix mmg physicals [#PR150](https://github.com/simbilod/meshwell/pull/150)
 
 ## 2.2.0s
