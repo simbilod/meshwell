@@ -98,19 +98,20 @@ class GeometryEntity:
             GMSH point ID
 
         """
+        x, y, z = float(x), float(y), float(z)
         key = (x, y, z)
 
         if key in self._points:
             # Verify that the cached point still exists
             point_tag = self._points[key]
             # Check existence first to avoid GMSH error logging
-            if (0, point_tag) in gmsh.model.getEntities(0):
+            if (0, point_tag) in gmsh.model.occ.getEntities(0):
                 return point_tag
 
-        # Create new point if not in cache or if cached point is stale/invalid
-        tag = gmsh.model.occ.addPoint(x, y, z)
-        self._points[key] = tag
-        return tag
+        # If not in cache or doesn't exist anymore, create it
+        point_tag = gmsh.model.occ.addPoint(x, y, z)
+        self._points[key] = point_tag
+        return point_tag
 
     def _add_line_with_cache(self, point1_id: int, point2_id: int) -> int:
         """Add a line to the model, or reuse a previously-defined line between the same points.
@@ -201,9 +202,35 @@ class GeometryEntity:
         for seg in segments:
             if seg.is_arc:
                 start_pt = self._add_point_with_tolerance(*seg.points[0])
-                center_pt = self._add_point_with_tolerance(*seg.center)
+                mid_idx = len(seg.points) // 2
+                mid_pt = self._add_point_with_tolerance(*seg.points[mid_idx])
                 end_pt = self._add_point_with_tolerance(*seg.points[-1])
-                arc_id = gmsh.model.occ.addCircleArc(start_pt, center_pt, end_pt)
+
+                if start_pt == end_pt:
+                    # Full circle: split into two 180-degree arcs
+                    # For a full circle, we need two points on the circle to split it
+                    quarter_idx = len(seg.points) // 4
+                    three_quarter_idx = (len(seg.points) * 3) // 4
+                    p1 = self._add_point_with_tolerance(*seg.points[quarter_idx])
+                    p3 = self._add_point_with_tolerance(*seg.points[three_quarter_idx])
+                    try:
+                        arc1 = gmsh.model.occ.addCircleArc(
+                            start_pt, p1, mid_pt, center=False
+                        )
+                        arc2 = gmsh.model.occ.addCircleArc(
+                            mid_pt, p3, end_pt, center=False
+                        )
+                        entities.append(arc1)
+                        entities.append(arc2)
+                    except Exception as e:
+                        raise RuntimeError(f"Failed to split full circle: {e}") from e
+                    continue
+                try:
+                    arc_id = gmsh.model.occ.addCircleArc(
+                        start_pt, mid_pt, end_pt, center=False
+                    )
+                except Exception as e:
+                    raise RuntimeError(f"addCircleArc failed: {e}") from e
                 if arc_id != 0:
                     entities.append(arc_id)
             else:
@@ -272,13 +299,27 @@ class GeometryEntity:
                     center, radius, residual = fit_circle_2d(pts[:, :2])
 
                     if residual <= arc_tolerance and radius < 1e6:
-                        # Update best arc candidate for this start point
-                        best_arc = DecompositionSegment(
-                            points=vertices[i:j],
-                            is_arc=True,
-                            center=(center[0], center[1], vertices[i][2]),
-                            radius=radius,
-                        )
+                        # Ensure it's not a polygon with sharp corners (like a rectangle)
+                        valid_arc = True
+                        for k in range(1, len(pts) - 1):
+                            v1 = pts[k][:2] - pts[k - 1][:2]
+                            v2 = pts[k + 1][:2] - pts[k][:2]
+                            n1 = np.linalg.norm(v1)
+                            n2 = np.linalg.norm(v2)
+                            if n1 > 1e-6 and n2 > 1e-6:
+                                cos_angle = np.dot(v1, v2) / (n1 * n2)
+                                if cos_angle < 0.5:  # Turn angle > 60 degrees
+                                    valid_arc = False
+                                    break
+
+                        if valid_arc:
+                            # Update best arc candidate for this start point
+                            best_arc = DecompositionSegment(
+                                points=vertices[i:j],
+                                is_arc=True,
+                                center=(center[0], center[1], vertices[i][2]),
+                                radius=radius,
+                            )
                     else:
                         # Stop expanding if fit fails
                         break
@@ -340,10 +381,26 @@ class GeometryEntity:
         for seg in segments:
             if seg.is_arc:
                 p_start = gp_Pnt(*seg.points[0])
+                mid_idx = len(seg.points) // 2
+                p_mid = gp_Pnt(*seg.points[mid_idx])
                 p_end = gp_Pnt(*seg.points[-1])
-                p_center = gp_Pnt(*seg.center)
-                arc_geom = GC_MakeArcOfCircle(p_center, p_start, p_end).Value()
-                edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
+
+                if seg.points[0] == seg.points[-1]:
+                    # Full circle: split into two 180-degree arcs
+                    quarter_idx = len(seg.points) // 4
+                    three_quarter_idx = (len(seg.points) * 3) // 4
+                    p1 = gp_Pnt(*seg.points[quarter_idx])
+                    p3 = gp_Pnt(*seg.points[three_quarter_idx])
+
+                    arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
+                    edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
+                    wire_builder.Add(edge1)
+
+                    arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
+                    edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
+                else:
+                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                    edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
                 p1 = gp_Pnt(*seg.points[0])
                 p2 = gp_Pnt(*seg.points[1])

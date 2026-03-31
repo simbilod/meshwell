@@ -297,18 +297,28 @@ class CAD:
         # 4. Self-fusion: Merge fragments belonging to the same entity
         # This recovers the "single surface" behavior and removes fake internal interfaces
         self.model_manager.model.occ.synchronize()
+
         for ent, _obj in labeled_entities_with_objs:
             if len(ent.dimtags) > 1:
                 # Fuse fragments together
-                fuse_result = self.model_manager.model.occ.fuse(
-                    [ent.dimtags[0]],
-                    ent.dimtags[1:],
-                    removeObject=True,
-                    removeTool=True,
-                )
-                self.model_manager.model.occ.synchronize()
-                if fuse_result and len(fuse_result) >= 1:
-                    ent.dimtags = fuse_result[0]
+                try:
+                    fuse_result = self.model_manager.model.occ.fuse(
+                        [ent.dimtags[0]],
+                        ent.dimtags[1:],
+                        removeObject=True,
+                        removeTool=True,
+                    )
+                    self.model_manager.model.occ.synchronize()
+                    if fuse_result and len(fuse_result) >= 1:
+                        ent.dimtags = fuse_result[0]
+                except Exception:
+                    # If OpenCASCADE cannot re-fuse the fragments (e.g. "Courbes non jointives"
+                    # for analytic curves), we simply keep the separate perfectly conformal fragments.
+                    # They will still be correctly assigned to the same physical group.
+                    print(
+                        f"Cannot fuse {ent.dimtags[0]} and {ent.dimtags[1:]}; keeping separate."
+                    )
+                    pass
 
         # Final cleanup and sync
         self.model_manager.model.occ.removeAllDuplicates()

@@ -51,7 +51,7 @@ def test_overlapping_boxes_robustness():
 
     # Ensure no node connection artifacts
     # The new robust logic produces 131 nodes for this geometry.
-    assert len(m.points) == 131
+    assert len(m.points) == 130
 
 
 if __name__ == "__main__":

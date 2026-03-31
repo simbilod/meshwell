@@ -4,8 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from meshwell.backend_gmsh import GmshBackend
-from meshwell.backend_occ import OccBackend
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
 from meshwell.utils import deserialize
@@ -45,8 +43,12 @@ def generate_mesh(
         backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
 
     if backend == "occ":
+        from meshwell.backend_occ import OccBackend
+
         backend_obj = OccBackend(**backend_kwargs)
     elif backend == "gmsh":
+        from meshwell.backend_gmsh import GmshBackend
+
         backend_obj = GmshBackend(**backend_kwargs)
     else:
         raise ValueError(f"Unknown backend: {backend}. Use 'occ' or 'gmsh'.")
