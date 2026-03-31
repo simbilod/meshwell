@@ -1,6 +1,6 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## 2.3.2
+## 2.3.3
 
 - Fix issues with curvilinear rendering
 
