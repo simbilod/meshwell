@@ -1,5 +1,9 @@
 # [Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## 2.3.2
+
+- Fix issues with curvilinear rendering
+
 ## 2.3.1
 
 - 1D and 2D entities in 3D
