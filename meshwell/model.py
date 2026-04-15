@@ -20,7 +20,7 @@ class ModelManager:
         self,
         n_threads: int = cpu_count(),
         filename: str = "temp",
-        point_tolerance: float | None = None,
+        point_tolerance: float | None = 1e-3,
     ):
         """Initialize Model with common settings.
 
@@ -80,6 +80,7 @@ class ModelManager:
         # Configure OCC tolerance if provided
         if self.point_tolerance is not None:
             gmsh.option.setNumber("Geometry.Tolerance", self.point_tolerance)
+            gmsh.option.setNumber("Geometry.ToleranceBoolean", self.point_tolerance)
 
         self._is_initialized = True
 

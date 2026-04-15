@@ -99,7 +99,8 @@ class GeometryEntity:
 
         """
         x, y, z = float(x), float(y), float(z)
-        key = (x, y, z)
+        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
+        key = (round(x, ndigits), round(y, ndigits), round(z, ndigits))
 
         if key in self._points:
             # Verify that the cached point still exists
@@ -287,6 +288,7 @@ class GeometryEntity:
         segments = []
         i = 0
         n = len(vertices)
+        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
 
         while i < n - 1:
             # Try to find an arc starting at i
@@ -313,12 +315,17 @@ class GeometryEntity:
                                     break
 
                         if valid_arc:
+                            # Round center and radius to consistent decimal places based on tolerance
+                            cx = round(center[0], ndigits)
+                            cy = round(center[1], ndigits)
+                            r = round(radius, ndigits)
+
                             # Update best arc candidate for this start point
                             best_arc = DecompositionSegment(
                                 points=vertices[i:j],
                                 is_arc=True,
-                                center=(center[0], center[1], vertices[i][2]),
-                                radius=radius,
+                                center=(cx, cy, vertices[i][2]),
+                                radius=r,
                             )
                     else:
                         # Stop expanding if fit fails
@@ -378,19 +385,31 @@ class GeometryEntity:
         )
 
         wire_builder = BRepBuilderAPI_MakeWire()
+        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
+
         for seg in segments:
             if seg.is_arc:
-                p_start = gp_Pnt(*seg.points[0])
+                # Round points to consistent decimal places based on tolerance
+                # to ensure exact geometrical match between adjacent polygons
+                p0 = [round(c, ndigits) for c in seg.points[0]]
+                p_start = gp_Pnt(*p0)
+
                 mid_idx = len(seg.points) // 2
-                p_mid = gp_Pnt(*seg.points[mid_idx])
-                p_end = gp_Pnt(*seg.points[-1])
+                pmid = [round(c, ndigits) for c in seg.points[mid_idx]]
+                p_mid = gp_Pnt(*pmid)
+
+                pend = [round(c, ndigits) for c in seg.points[-1]]
+                p_end = gp_Pnt(*pend)
 
                 if seg.points[0] == seg.points[-1]:
                     # Full circle: split into two 180-degree arcs
                     quarter_idx = len(seg.points) // 4
                     three_quarter_idx = (len(seg.points) * 3) // 4
-                    p1 = gp_Pnt(*seg.points[quarter_idx])
-                    p3 = gp_Pnt(*seg.points[three_quarter_idx])
+                    pq1 = [round(c, ndigits) for c in seg.points[quarter_idx]]
+                    p1 = gp_Pnt(*pq1)
+
+                    pq3 = [round(c, ndigits) for c in seg.points[three_quarter_idx]]
+                    p3 = gp_Pnt(*pq3)
 
                     arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
                     edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
@@ -399,11 +418,36 @@ class GeometryEntity:
                     arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
                     edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
                 else:
-                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
-                    edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
+                    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+                    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
+
+                    try:
+                        center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
+                        axis = gp_Ax2(center, gp_Dir(0, 0, 1))
+                        circle = gp_Circ(axis, seg.radius)
+
+                        # Try to make arc with positive sense
+                        arc_geom_pos = GC_MakeArcOfCircle(
+                            circle, p_start, p_end, True
+                        ).Value()
+                        # Check if p_mid is on the positive arc
+                        proj = GeomAPI_ProjectPointOnCurve(p_mid, arc_geom_pos)
+                        if proj.NbPoints() > 0 and proj.LowerDistance() < 1e-2:
+                            arc_geom = arc_geom_pos
+                        else:
+                            arc_geom = GC_MakeArcOfCircle(
+                                circle, p_start, p_end, False
+                            ).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
+                    except Exception:
+                        arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
-                p1 = gp_Pnt(*seg.points[0])
-                p2 = gp_Pnt(*seg.points[1])
+                p1_rounded = [round(c, ndigits) for c in seg.points[0]]
+                p1 = gp_Pnt(*p1_rounded)
+
+                p2_rounded = [round(c, ndigits) for c in seg.points[1]]
+                p2 = gp_Pnt(*p2_rounded)
                 edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
             wire_builder.Add(edge)
         return wire_builder.Wire()

@@ -230,9 +230,6 @@ class CAD_OCC:
         Returns:
             list[OCCLabeledEntity]: Processed entities ready for meshing or export
         """
-        # Separate structural entities
-        structural_entities = [e for e in entities_list if not e.additive]
-
         # Group by dimension and sort by mesh_order
         dimension_groups: dict[int, list[Any]] = {0: [], 1: [], 2: [], 3: []}
         max_dim = 0
@@ -242,11 +239,11 @@ class CAD_OCC:
             labeled_entities = list(
                 executor.map(
                     lambda x: self._instantiate_entity_occ(x[0], x[1]),
-                    enumerate(structural_entities),
+                    enumerate(entities_list),
                 )
             )
 
-        for ent_obj, labeled_ent in zip(structural_entities, labeled_entities):
+        for ent_obj, labeled_ent in zip(entities_list, labeled_entities):
             # Use dimension from entity if available, otherwise from shape
             dim = getattr(ent_obj, "dimension", None)
             if dim is None:

@@ -15,7 +15,7 @@ from meshwell.validation import (
 
 
 def _validate_dimtags_exist(dimtags):
-    """Validate that dimtags exist in the model."""
+    """Validate that dimtags exist in the model. Returns only valid ones."""
     if not dimtags:
         return []
 
@@ -23,9 +23,8 @@ def _validate_dimtags_exist(dimtags):
     for dim, tag in dimtags:
         all_entities = gmsh.model.getEntities(dim)
         existing_tags = {entity_tag for _, entity_tag in all_entities}
-        if tag not in existing_tags:
-            raise ValueError(f"Entity ({dim}, {tag}) does not exist in the model")
-        valid_dimtags.append((dim, tag))
+        if tag in existing_tags:
+            valid_dimtags.append((dim, tag))
 
     return valid_dimtags
 
@@ -88,13 +87,10 @@ class CAD:
         entities_list: list,
         progress_bars: bool,
     ) -> tuple[list, int]:
-        """Process structura entities."""
-        # Separate and order entities
-        structural_entities = [e for e in entities_list if not e.additive]
-
-        # Process structural entities
+        """Process entities."""
+        # Process all entities (additive or not)
         structural_entity_list, max_dim = self._process_multidimensional_entities(
-            structural_entities, progress_bars
+            entities_list, progress_bars
         )
 
         return structural_entity_list, max_dim
@@ -178,8 +174,8 @@ class CAD:
             print("Processing fragment integration for dimension group")
 
         # Validate all dimtags exist before fragment
-        _validate_dimtags_exist(object_dimtags)
-        _validate_dimtags_exist(tool_dimtags)
+        object_dimtags = _validate_dimtags_exist(object_dimtags)
+        tool_dimtags = _validate_dimtags_exist(tool_dimtags)
 
         # Perform single fragment operation for all entities
         fragment_result = self.model_manager.model.occ.fragment(
@@ -298,30 +294,28 @@ class CAD:
         # This recovers the "single surface" behavior and removes fake internal interfaces
         self.model_manager.model.occ.synchronize()
 
-        for ent, _obj in labeled_entities_with_objs:
-            if len(ent.dimtags) > 1:
-                # Fuse fragments together
-                try:
-                    fuse_result = self.model_manager.model.occ.fuse(
-                        [ent.dimtags[0]],
-                        ent.dimtags[1:],
-                        removeObject=True,
-                        removeTool=True,
-                    )
-                    self.model_manager.model.occ.synchronize()
-                    if fuse_result and len(fuse_result) >= 1:
-                        ent.dimtags = fuse_result[0]
-                except Exception:
-                    # If OpenCASCADE cannot re-fuse the fragments (e.g. "Courbes non jointives"
-                    # for analytic curves), we simply keep the separate perfectly conformal fragments.
-                    # They will still be correctly assigned to the same physical group.
-                    print(
-                        f"Cannot fuse {ent.dimtags[0]} and {ent.dimtags[1:]}; keeping separate."
-                    )
-                    pass
+        # DISABLED self-fusion.
+        # OpenCASCADE fuse drops disjoint elements when fusing a list of non-touching elements.
+        # Keeping separate conformal fragments is safe and preserves all elements.
+        # for ent, _obj in labeled_entities_with_objs:
+        #     if len(ent.dimtags) > 1:
+        #         try:
+        #             fuse_result = self.model_manager.model.occ.fuse(
+        #                 [ent.dimtags[0]],
+        #                 ent.dimtags[1:],
+        #                 removeObject=True,
+        #                 removeTool=True,
+        #             )
+        #             self.model_manager.model.occ.synchronize()
+        #             if fuse_result and len(fuse_result) >= 1:
+        #                 ent.dimtags = fuse_result[0]
+        #         except Exception:
+        #             print(
+        #                 f"Cannot fuse {ent.dimtags[0]} and {ent.dimtags[1:]}; keeping separate."
+        #             )
+        #             pass
 
         # Final cleanup and sync
-        self.model_manager.model.occ.removeAllDuplicates()
         self.model_manager.sync_model()
 
         return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]

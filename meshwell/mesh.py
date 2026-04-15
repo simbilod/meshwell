@@ -22,6 +22,7 @@ class Mesh:
         n_threads: int = cpu_count(),
         filename: str = "temp",
         model: ModelManager | None = None,
+        point_tolerance: float | None = None,
     ):
         """Initialize mesh generator.
 
@@ -29,6 +30,7 @@ class Mesh:
             n_threads: Number of threads for processing
             filename: Base filename for the model
             model: Optional Model instance to use (creates new if None)
+            point_tolerance: Optional point tolerance for the model
 
         """
         # Use provided model or create new one
@@ -36,6 +38,7 @@ class Mesh:
             self.model_manager = ModelManager(
                 n_threads=n_threads,
                 filename=filename,
+                point_tolerance=point_tolerance,
             )
             self._owns_model = True
         else:
@@ -296,6 +299,7 @@ class Mesh:
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O)."""
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
+        gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 1e-5)
 
         if global_3D_algorithm == 1 and verbosity:
             gmsh.logger.start()
@@ -440,6 +444,7 @@ def mesh(
     n_threads: int = cpu_count(),
     filename: str = "temp",
     model: ModelManager | None = None,
+    point_tolerance: float | None = None,
     gmsh_version: float | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
@@ -463,6 +468,7 @@ def mesh(
         filename: Temporary filename for GMSH model
         model: Optional Model instance to use (creates new if None)
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
+        point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -472,6 +478,7 @@ def mesh(
         n_threads=n_threads,
         filename=filename,
         model=model,
+        point_tolerance=point_tolerance,
     )
 
     if resolution_specs is None:
