@@ -7,7 +7,7 @@ source .venv/bin/activate
 # Install reference version of the package
 sudo apt-get install libglu1-mesa
 export PYTHONPATH=""
-uv pip install git+https://github.com/simbilod/meshwell.git@0a4f7b59825a91bdabf35ad6de258dbbbc4ea3d68[dev]
+uv pip install git+https://github.com/simbilod/meshwell.git@9f8d8e7f748a8457b5525f57e935e5c2dd0c0ba8[dev]
 
 # Execute all Python files in the current directory
 python generate_references.py --references-path ./references/

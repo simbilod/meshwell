@@ -4,7 +4,7 @@ from typing import Any
 
 import gmsh
 
-from meshwell.resolution import ResolutionSpec
+from meshwell.resolution import CURVE_SUBTYPE_MAP, ResolutionSpec
 
 
 class LabeledEntities:
@@ -229,7 +229,11 @@ class LabeledEntities:
         return tags
 
     def filter_by_mass(
-        self, target_dimension: int, min_mass: float, max_mass: float
+        self,
+        target_dimension: int,
+        min_mass: float,
+        max_mass: float,
+        entity_type_filter: str | None = None,
     ) -> dict[int, float | None]:
         """Filter entities by mass within specified bounds.
 
@@ -237,6 +241,8 @@ class LabeledEntities:
             target_dimension: The geometric dimension to filter
             min_mass: Minimum mass threshold (exclusive)
             max_mass: Maximum mass threshold (exclusive)
+            entity_type_filter: Optional gmsh entity type string (e.g. "Line",
+                "Circle") to further filter dim-1 entities by their OCC type.
 
         Returns:
             Dictionary mapping entity tags to their masses (or None for points)
@@ -276,7 +282,17 @@ class LabeledEntities:
             points_dimtags = [x for xs in points_boundaries_dimtags for x in xs]
             return {p[1]: None for p in points_dimtags}
 
-        return filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
+        result = filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
+
+        # Apply entity type filtering for curve subtypes (e.g. "Line", "Circle")
+        if entity_type_filter is not None and target_dimension == 1:
+            result = {
+                tag: mass
+                for tag, mass in result.items()
+                if gmsh.model.getEntityType(1, tag) == entity_type_filter
+            }
+
+        return result
 
     def add_refinement_fields_to_model(
         self,
@@ -300,6 +316,7 @@ class LabeledEntities:
                     target_dimension=target_dim,
                     min_mass=resolutionspec.min_mass,
                     max_mass=resolutionspec.max_mass,
+                    entity_type_filter=CURVE_SUBTYPE_MAP.get(resolutionspec.apply_to),
                 )
 
                 # Filter by shared or not shared as well; include boundary
