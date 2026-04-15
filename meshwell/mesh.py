@@ -156,11 +156,30 @@ class Mesh:
         """
         return self.model_manager.get_physical_dimtags(physical_name)
 
-    def _recover_labels_from_cad(self, resolution_specs: dict) -> tuple[list, dict]:
+    def _restore_structured_sweeps(self, blueprint: dict) -> None:
+        """Analyze structured sweeps."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        top_names = self.get_top_physical_names()
+        for p_name in top_names:
+            if p_name in blueprint and blueprint[p_name].get("mesh_structured", False):
+                logger.warning(
+                    f"Physical group '{p_name}' requested mesh_structured=True. "
+                    "Note: Native OpenCASCADE structured sweeping via 'removeAllDuplicates' "
+                    "cannot guarantee conformality in hybrid Gmsh meshes without stripping ExtrudeParams. "
+                    "Proceeding with unstructured or recombined fallback."
+                )
+
+    def _recover_labels_from_cad(
+        self, resolution_specs: dict, blueprint: dict | None = None
+    ) -> tuple[list, dict]:
         """Recover labeled entities from loaded CAD model.
 
         Args:
             resolution_specs: Dictionary mapping physical names to resolution specifications
+            blueprint: mapping between entity and extrusion type
 
         Returns:
             Tuple of (final_entity_list, final_entity_dict)
@@ -184,6 +203,12 @@ class Mesh:
                 dimtags=self.get_physical_dimtags(physical_name=physical_name),
                 resolutions=resolutions,
             )
+            if blueprint and physical_name in blueprint:
+                b_info = blueprint[physical_name]
+                if b_info.get("mesh_structured"):
+                    entities.mesh_structured = True
+                    # Recombine might be set there too
+
             entities.update_boundaries()
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities
@@ -375,6 +400,7 @@ class Mesh:
         boundary_delimiter: str = "None",
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
+        blueprint: dict | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -392,12 +418,17 @@ class Mesh:
             boundary_delimiter: Delimiter for boundary names
             resolution_specs: Mesh resolution specifications
             gmsh_version: GMSH version
+            blueprint: mapping between entity and extrusion type
 
         Returns:
             meshio.Mesh: Generated mesh object
 
         """
         self._initialize_model()
+
+        # Restore sweeps before labels are recovered to avoid tag mutations breaking labels
+        if blueprint:
+            self._restore_structured_sweeps(blueprint)
 
         # Initialize mesh settings
         self._initialize_mesh_settings(
@@ -446,6 +477,7 @@ def mesh(
     model: ModelManager | None = None,
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
+    blueprint: dict | Path | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -469,6 +501,7 @@ def mesh(
         model: Optional Model instance to use (creates new if None)
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
+        blueprint: mapping between entity and extrusion type
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -488,6 +521,21 @@ def mesh(
     if input_file is not None:
         mesh_generator.load_xao_file(input_file)
 
+        # Auto-load blueprint if not provided
+        if blueprint is None:
+            import json
+
+            blueprint_path = input_file.with_suffix(".json")
+            if blueprint_path.exists():
+                with Path.open(blueprint_path, "r") as f:
+                    blueprint = json.load(f)
+
+    if isinstance(blueprint, (Path, str)):
+        import json
+
+        with Path.open(blueprint, "r") as f:
+            blueprint = json.load(f)
+
     # Process geometry into mesh
     mesh_obj = mesh_generator.process_geometry(
         dim=dim,
@@ -503,6 +551,7 @@ def mesh(
         boundary_delimiter=boundary_delimiter,
         resolution_specs=resolution_specs,
         gmsh_version=gmsh_version,
+        blueprint=blueprint,
     )
 
     # Save to file if output file provided

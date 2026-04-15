@@ -112,3 +112,63 @@ def consolidate_entities_by_physical_name(entities):
             physical_name_dict[entity.physical_name] = combined_entity
 
     return list(physical_name_dict.values())
+
+
+def validate_sweep_topology(entities: list):
+    """Validate that structured extrusions have higher priority than unstructured entities.
+
+    If an entity is marked as `mesh_structured=True`, it must never be cut or mutated
+    by an unstructured entity during 3D Boolean operations, otherwise its mathematically
+    sweepable topology will be destroyed. This means structured entities must have a
+    strictly lower `mesh_order` value (higher resolving priority) than unstructured ones.
+
+    Args:
+        entities: List of CAD entities.
+
+    Raises:
+        ValueError: If an unstructured entity has a higher or equal priority than a structured entity.
+    """
+    structured_entities = [e for e in entities if getattr(e, "mesh_structured", False)]
+    unstructured_entities = [
+        e for e in entities if not getattr(e, "mesh_structured", False)
+    ]
+
+    if not structured_entities or not unstructured_entities:
+        return
+
+    # Treat None mesh_order as float("inf")
+    def get_order(e):
+        mo = getattr(e, "mesh_order", None)
+        return float("inf") if mo is None else mo
+
+    # Find the weakest structured priority (maximum mesh_order value)
+    structured_orders = [get_order(e) for e in structured_entities]
+    max_structured_order = max(structured_orders)
+
+    # Find the strongest unstructured priority (minimum mesh_order value)
+    unstructured_orders = [get_order(e) for e in unstructured_entities]
+    min_unstructured_order = min(unstructured_orders)
+
+    if max_structured_order >= min_unstructured_order:
+        # Find exactly which ones are offending to give a good error message
+        offending_structured = [
+            e for e in structured_entities if get_order(e) == max_structured_order
+        ]
+        offending_unstructured = [
+            e for e in unstructured_entities if get_order(e) == min_unstructured_order
+        ]
+
+        struct_names = [
+            getattr(e, "physical_name", "Unknown") for e in offending_structured
+        ]
+        unstruct_names = [
+            getattr(e, "physical_name", "Unknown") for e in offending_unstructured
+        ]
+
+        raise ValueError(
+            f"Topological violation: Structured extruded prisms must have higher priority "
+            f"(lower mesh_order value) than unstructured entities to preserve their "
+            f"sweepability during Boolean intersections.\n"
+            f"Structured entities {struct_names} have mesh_order {max_structured_order}, but "
+            f"unstructured entities {unstruct_names} have mesh_order {min_unstructured_order}."
+        )

@@ -230,6 +230,11 @@ class CAD_OCC:
         Returns:
             list[OCCLabeledEntity]: Processed entities ready for meshing or export
         """
+        # Separate structural entities
+        structural_entities = [e for e in entities_list if not e.additive]
+        from meshwell.validation import validate_sweep_topology
+        validate_sweep_topology(structural_entities)
+
         # Group by dimension and sort by mesh_order
         dimension_groups: dict[int, list[Any]] = {0: [], 1: [], 2: [], 3: []}
         max_dim = 0
@@ -297,7 +302,33 @@ def cad_occ(
     entities_list: list[Any],
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
-) -> list[OCCLabeledEntity]:
+) -> dict:
     """Utility function for OCC-based CAD processing."""
     processor = CAD_OCC(point_tolerance=point_tolerance, n_threads=n_threads)
-    return processor.process_entities(entities_list)
+    processor.process_entities(entities_list)
+
+    blueprint = {}
+    for entity in entities_list:
+        p_name = getattr(entity, "physical_name", None)
+        if p_name:
+            p_name_keys = p_name if isinstance(p_name, tuple) else [p_name]
+
+            for k in p_name_keys:
+                blueprint[k] = {
+                    "dim": getattr(entity, "dimension", None),
+                    "mesh_structured": getattr(entity, "mesh_structured", False),
+                    "extrusion_layers": getattr(entity, "extrusion_layers", None),
+                    "recombine": getattr(entity, "recombine", False),
+                }
+
+                if hasattr(entity, "buffers"):
+                    zs = list(entity.buffers.keys())
+                    if len(zs) >= 2:
+                        z_min, z_max = min(zs), max(zs)
+                        blueprint[k]["extrusion_vector"] = [
+                            0.0,
+                            0.0,
+                            float(z_max - z_min),
+                        ]
+
+    return blueprint

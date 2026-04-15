@@ -89,6 +89,11 @@ class CAD:
     ) -> tuple[list, int]:
         """Process entities."""
         # Process all entities (additive or not)
+        from meshwell.validation import validate_sweep_topology
+
+        validate_sweep_topology(structural_entities)
+
+        # Process structural entities
         structural_entity_list, max_dim = self._process_multidimensional_entities(
             entities_list, progress_bars
         )
@@ -417,7 +422,7 @@ def cad(
     boundary_delimiter: str = "None",
     progress_bars: bool = False,
     model: ModelManager | None = None,
-) -> None:
+) -> dict:
     """Utility function that wraps the CAD class for easier usage.
 
     Args:
@@ -446,9 +451,46 @@ def cad(
         progress_bars=progress_bars,
     )
 
+    # Create blueprint
+    import json
+
+    blueprint = {}
+    for entity in entities_list:
+        p_name = getattr(entity, "physical_name", None)
+        if p_name:
+            p_name_keys = p_name if isinstance(p_name, tuple) else [p_name]
+
+            for k in p_name_keys:
+                blueprint[k] = {
+                    "dim": getattr(entity, "dimension", None),
+                    "mesh_structured": getattr(entity, "mesh_structured", False),
+                    "extrusion_layers": getattr(entity, "extrusion_layers", None),
+                    "recombine": getattr(entity, "recombine", False),
+                }
+
+                # Check for z bounds or buffers if it's a PolyPrism
+                if hasattr(entity, "buffers"):
+                    # the first z and last z
+                    zs = list(entity.buffers.keys())
+                    if len(zs) >= 2:
+                        z_min, z_max = min(zs), max(zs)
+                        blueprint[k]["extrusion_vector"] = [
+                            0.0,
+                            0.0,
+                            float(z_max - z_min),
+                        ]
+
+    if output_file:
+        output_file = Path(output_file)
+        blueprint_file = output_file.with_suffix(".json")
+        with blueprint_file.open("w") as f:
+            json.dump(blueprint, f, indent=2)
+
     # Save to file
     cad_processor.to_xao(output_file)
 
     # Finalize if we created the model
     if model is None:
         cad_processor.model_manager.finalize()
+
+    return blueprint

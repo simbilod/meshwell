@@ -43,6 +43,9 @@ class PolyPrism(GeometryEntity):
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
+        mesh_structured: bool = False,
+        extrusion_layers: list[int] | int | None = None,
+        recombine: bool = False,
     ):
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
@@ -73,6 +76,12 @@ class PolyPrism(GeometryEntity):
         self.identify_arcs = identify_arcs
         self.min_arc_points = min_arc_points
         self.arc_tolerance = arc_tolerance
+        self.mesh_structured = mesh_structured
+
+        if self.mesh_structured and not self.extrude:
+            raise ValueError(
+                f"Topological violation: PolyPrism '{physical_name}' cannot be marked as 'mesh_structured=True' because it has varying buffered elevations. Structured meshes currently require strict pure geometric extrusion."
+            )
 
         if self.identify_arcs and not self.extrude:
             raise NotImplementedError(
@@ -83,6 +92,12 @@ class PolyPrism(GeometryEntity):
         self.physical_name = format_physical_name(physical_name)
         self.mesh_bool = mesh_bool
         self.additive = additive
+        self.extrusion_layers = (
+            [extrusion_layers]
+            if isinstance(extrusion_layers, int)
+            else extrusion_layers
+        )
+        self.recombine = recombine
 
     def _create_volumes_directly(self) -> list[int]:
         """Create GMSH volumes directly without using CAD class methods."""
@@ -640,6 +655,9 @@ class PolyPrism(GeometryEntity):
             "rotation_axis": self.rotation_axis,
             "rotation_point": self.rotation_point,
             "rotation_angle": self.rotation_angle,
+            "mesh_structured": self.mesh_structured,
+            "extrusion_layers": self.extrusion_layers,
+            "recombine": self.recombine,
         }
 
     @classmethod
@@ -666,17 +684,20 @@ class PolyPrism(GeometryEntity):
             buffers=buffers,
             physical_name=data["physical_name"],
             mesh_order=data["mesh_order"],
-            mesh_bool=data["mesh_bool"],
-            additive=data["additive"],
-            point_tolerance=data["point_tolerance"],
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
+            mesh_bool=data.get("mesh_bool", True),
+            additive=data.get("additive", False),
+            point_tolerance=data.get("point_tolerance", 1e-3),
+            identify_arcs=data.get("identify_arcs", False),
+            min_arc_points=data.get("min_arc_points", 4),
+            arc_tolerance=data.get("arc_tolerance", 1e-3),
             subdivision=subdivision,
             translation=data.get("translation"),
             rotation_axis=data.get("rotation_axis"),
             rotation_point=data.get("rotation_point"),
             rotation_angle=data.get("rotation_angle", 0.0),
+            mesh_structured=data.get("mesh_structured", False),
+            extrusion_layers=data.get("extrusion_layers"),
+            recombine=data.get("recombine", False),
         )
 
     def _validate_polygon_buffers(self) -> bool:
