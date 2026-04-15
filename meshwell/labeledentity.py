@@ -336,8 +336,13 @@ class LabeledEntities:
                 # Use tag_to_entity_names for O(N) lookup instead of O(N^2)
                 if tag_to_entity_names:
                     # Filter entities_mass_dict using the reverse index
-                    self_names = set(self.physical_name)
+                    if isinstance(self.physical_name, str):
+                        self_names = {self.physical_name}
+                    else:
+                        self_names = set(self.physical_name)
+
                     boundary_tags = set()
+
                     if not include_boundary:
                         boundary_tags = set(
                             self.filter_mesh_boundary_tags_by_target_dimension(
@@ -380,7 +385,7 @@ class LabeledEntities:
                                             break
                                         is_shared_boundary = True
 
-                                if is_shared_boundary:
+                                if not is_shared_boundary:
                                     continue
 
                             entities_mass_dict_sharing[tag] = mass

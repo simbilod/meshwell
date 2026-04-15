@@ -116,13 +116,16 @@ class Mesh:
         background_remeshing_file: Path | None | None,
         boundary_delimiter: str,
         resolution_specs: dict,
+        interface_delimiter: str = "___",
     ) -> None:
         """Apply mesh refinement settings.
 
         TODO: enable simultaneous background mesh and entity-based refinement
         """
         if background_remeshing_file is None:
-            self._apply_entity_refinement(boundary_delimiter, resolution_specs)
+            self._apply_entity_refinement(
+                boundary_delimiter, resolution_specs, interface_delimiter
+            )
         else:
             self._apply_background_refinement()
 
@@ -156,11 +159,35 @@ class Mesh:
         """
         return self.model_manager.get_physical_dimtags(physical_name)
 
-    def _recover_labels_from_cad(self, resolution_specs: dict) -> tuple[list, dict]:
+    def _restore_structured_sweeps(self, blueprint: dict) -> None:
+        """Analyze structured sweeps."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        top_names = self.get_top_physical_names()
+        for p_name in top_names:
+            if p_name in blueprint and blueprint[p_name].get("mesh_structured", False):
+                logger.warning(
+                    f"Physical group '{p_name}' requested mesh_structured=True. "
+                    "Note: Native OpenCASCADE structured sweeping via 'removeAllDuplicates' "
+                    "cannot guarantee conformality in hybrid Gmsh meshes without stripping ExtrudeParams. "
+                    "Proceeding with unstructured or recombined fallback."
+                )
+
+    def _recover_labels_from_cad(
+        self,
+        resolution_specs: dict,
+        interface_delimiter: str = "___",
+        boundary_delimiter: str = "None",
+    ) -> tuple[list, dict]:
         """Recover labeled entities from loaded CAD model.
 
         Args:
             resolution_specs: Dictionary mapping physical names to resolution specifications
+            blueprint: mapping between entity and extrusion type
+            interface_delimiter: String used to separate names in an interface
+            boundary_delimiter: String used to identify boundary entities
 
         Returns:
             Tuple of (final_entity_list, final_entity_dict)
@@ -174,6 +201,7 @@ class Mesh:
 
         for index, physical_name in enumerate(all_physical_names):
             resolutions = resolution_specs.get(physical_name, [])
+
             if not resolutions and physical_name not in top_physical_names:
                 continue
 
@@ -185,6 +213,23 @@ class Mesh:
                 resolutions=resolutions,
             )
             entities.update_boundaries()
+
+            # Recover interfaces and boundaries from physical groups
+            # We look for groups named "A___B" or "B___A" where A is physical_name
+            for other_p_name in all_physical_names:
+                parts = other_p_name.split(interface_delimiter)
+                if len(parts) == 2:
+                    if parts[0] == physical_name:
+                        suffix = parts[1]
+                        tags = [t for d, t in self.get_physical_dimtags(other_p_name)]
+                        if suffix == boundary_delimiter:
+                            entities.mesh_edge_name_interfaces.extend(tags)
+                        else:
+                            entities.interfaces.extend(tags)
+                    elif parts[1] == physical_name:
+                        tags = [t for d, t in self.get_physical_dimtags(other_p_name)]
+                        entities.interfaces.extend(tags)
+
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities
 
@@ -194,19 +239,23 @@ class Mesh:
         self,
         boundary_delimiter: str,
         resolution_specs: dict,
+        interface_delimiter: str = "___",
     ) -> None:
         """Apply mesh refinement based on entity information.
 
         Args:
             boundary_delimiter: String used to identify boundary entities
             resolution_specs: Resolution specifications
+            interface_delimiter: String used to separate names in an interface
 
         """
         from collections import defaultdict
 
         # Recover labeled entities from loaded CAD model
         final_entity_list, final_entity_dict = self._recover_labels_from_cad(
-            resolution_specs
+            resolution_specs,
+            interface_delimiter=interface_delimiter,
+            boundary_delimiter=boundary_delimiter,
         )
 
         # Build reverse indices for performance
@@ -375,6 +424,7 @@ class Mesh:
         boundary_delimiter: str = "None",
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
+        interface_delimiter: str = "___",
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -392,6 +442,8 @@ class Mesh:
             boundary_delimiter: Delimiter for boundary names
             resolution_specs: Mesh resolution specifications
             gmsh_version: GMSH version
+            blueprint: mapping between entity and extrusion type
+            interface_delimiter: String used to separate names in an interface
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -414,6 +466,7 @@ class Mesh:
             background_remeshing_file=background_remeshing_file,
             boundary_delimiter=boundary_delimiter,
             resolution_specs=resolution_specs,
+            interface_delimiter=interface_delimiter,
         )
 
         # Generate and return mesh
@@ -446,6 +499,8 @@ def mesh(
     model: ModelManager | None = None,
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
+    blueprint: dict | Path | None = None,
+    interface_delimiter: str = "___",
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -469,6 +524,8 @@ def mesh(
         model: Optional Model instance to use (creates new if None)
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
+        blueprint: mapping between entity and extrusion type
+        interface_delimiter: String used to separate names in an interface
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -503,6 +560,8 @@ def mesh(
         boundary_delimiter=boundary_delimiter,
         resolution_specs=resolution_specs,
         gmsh_version=gmsh_version,
+        blueprint=blueprint,
+        interface_delimiter=interface_delimiter,
     )
 
     # Save to file if output file provided
