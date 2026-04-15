@@ -6,6 +6,14 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import BaseModel
 
+# Mapping from apply_to sub-types to gmsh entity type strings.
+# To add more curve subtypes in the future, simply add entries here
+# and extend the Literal type below.
+CURVE_SUBTYPE_MAP: dict[str, str] = {
+    "lines": "Line",
+    "circles": "Circle",
+}
+
 
 class ResolutionSpec(BaseModel):
     """A ResolutionSpec is attached to a pre-CAD entity.
@@ -15,7 +23,7 @@ class ResolutionSpec(BaseModel):
     The volumes, surfaces, curves can be filtered based on their mass (volume, area, length). Points can be filtered based on the length of the curve they belong to.
     """
 
-    apply_to: Literal["volumes", "surfaces", "curves", "points"]
+    apply_to: Literal["volumes", "surfaces", "curves", "lines", "circles", "points"]
     min_mass: float = 0
     max_mass: float = np.inf
     sharing: list[str] | None = None
@@ -44,6 +52,8 @@ class ResolutionSpec(BaseModel):
             return "SurfacesList"
         if self.apply_to == "curves":
             return "CurvesList"
+        if self.apply_to in CURVE_SUBTYPE_MAP:
+            return "CurvesList"
         if self.apply_to == "points":
             return "PointsList"
         return None
@@ -56,6 +66,8 @@ class ResolutionSpec(BaseModel):
         if self.apply_to == "surfaces":
             return 2
         if self.apply_to == "curves":
+            return 1
+        if self.apply_to in CURVE_SUBTYPE_MAP:
             return 1
         if self.apply_to == "points":
             return 0
@@ -395,7 +407,9 @@ class DirectSizeSpecification(ResolutionSpec):
     max_size: float | None = None
 
     # Apply to all dimensions by default
-    apply_to: Literal["volumes", "surfaces", "curves", "points"] | None = None
+    apply_to: Literal[
+        "volumes", "surfaces", "curves", "lines", "circles", "points"
+    ] | None = None
 
     class Config:
         """Pydantic config."""
