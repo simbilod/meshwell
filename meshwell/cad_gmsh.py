@@ -88,12 +88,15 @@ class CAD:
         progress_bars: bool,
     ) -> tuple[list, int]:
         """Process entities."""
-        # Process all entities (additive or not)
         from meshwell.validation import validate_sweep_topology
 
+        # Validate structured sweep topology before processing
+        structural_entities = [
+            e for e in entities_list if not getattr(e, "additive", False)
+        ]
         validate_sweep_topology(structural_entities)
 
-        # Process structural entities
+        # Process all entities
         structural_entity_list, max_dim = self._process_multidimensional_entities(
             entities_list, progress_bars
         )

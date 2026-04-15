@@ -525,7 +525,7 @@ def mesh(
         if blueprint is None:
             import json
 
-            blueprint_path = input_file.with_suffix(".json")
+            blueprint_path = Path(input_file).with_suffix(".json")
             if blueprint_path.exists():
                 with Path.open(blueprint_path, "r") as f:
                     blueprint = json.load(f)
