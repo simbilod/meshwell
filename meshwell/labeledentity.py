@@ -44,6 +44,7 @@ class LabeledEntities:
         self.boundaries = boundaries or []
         self.interfaces = interfaces or []
         self.mesh_edge_name_interfaces = mesh_edge_name_interfaces or []
+        self._explicit_dim = None
 
     def to_dict(self) -> dict:
         """Convert entity to dictionary representation.
@@ -148,8 +149,12 @@ class LabeledEntities:
             The geometric dimension (0=point, 1=curve, 2=surface, 3=volume)
             or -1 if no entities are present
         """
+        if self._explicit_dim is not None:
+            return self._explicit_dim
+
         if not self.dimtags:
             return -1  # Invalid dimension for empty entities
+
         return next(dim for dim, tag in self.dimtags)
 
     def boundaries(self) -> list[int]:

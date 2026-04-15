@@ -199,7 +199,17 @@ class Mesh:
         top_physical_names = self.get_top_physical_names()
         all_physical_names = self.get_all_physical_names()
 
-        for index, physical_name in enumerate(all_physical_names):
+        # Collect all base names from interfaces to handle removed entities (voids)
+        base_names = set(all_physical_names)
+        for other_p_name in all_physical_names:
+            parts = other_p_name.split(interface_delimiter)
+            if len(parts) == 2:
+                if parts[0]:
+                    base_names.add(parts[0])
+                if parts[1] and parts[1] != boundary_delimiter:
+                    base_names.add(parts[1])
+
+        for index, physical_name in enumerate(sorted(base_names)):
             resolutions = resolution_specs.get(physical_name, [])
 
             if not resolutions and physical_name not in top_physical_names:
@@ -221,14 +231,33 @@ class Mesh:
                 if len(parts) == 2:
                     if parts[0] == physical_name:
                         suffix = parts[1]
-                        tags = [t for d, t in self.get_physical_dimtags(other_p_name)]
-                        if suffix == boundary_delimiter:
-                            entities.mesh_edge_name_interfaces.extend(tags)
-                        else:
-                            entities.interfaces.extend(tags)
+                        dimtags = self.get_physical_dimtags(other_p_name)
+                        if dimtags:
+                            i_dim = dimtags[0][0]
+                            entities._explicit_dim = max(
+                                entities.dim, i_dim + 1
+                            )
+                            tags = [t for d, t in dimtags]
+                            if suffix == boundary_delimiter:
+                                entities.mesh_edge_name_interfaces.extend(tags)
+                            else:
+                                entities.interfaces.extend(tags)
+
+                            # Always treat interfaces as boundaries for refinement
+                            entities.boundaries.extend(tags)
+
                     elif parts[1] == physical_name:
-                        tags = [t for d, t in self.get_physical_dimtags(other_p_name)]
-                        entities.interfaces.extend(tags)
+                        dimtags = self.get_physical_dimtags(other_p_name)
+                        if dimtags:
+                            i_dim = dimtags[0][0]
+                            entities._explicit_dim = max(
+                                entities.dim, i_dim + 1
+                            )
+                            tags = [t for d, t in dimtags]
+                            entities.interfaces.extend(tags)
+
+                            # Always treat interfaces as boundaries for refinement
+                            entities.boundaries.extend(tags)
 
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities
