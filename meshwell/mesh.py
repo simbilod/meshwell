@@ -499,7 +499,6 @@ def mesh(
     model: ModelManager | None = None,
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
-    blueprint: dict | Path | None = None,
     interface_delimiter: str = "___",
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
@@ -524,7 +523,6 @@ def mesh(
         model: Optional Model instance to use (creates new if None)
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
-        blueprint: mapping between entity and extrusion type
         interface_delimiter: String used to separate names in an interface
 
     Returns:
@@ -560,7 +558,6 @@ def mesh(
         boundary_delimiter=boundary_delimiter,
         resolution_specs=resolution_specs,
         gmsh_version=gmsh_version,
-        blueprint=blueprint,
         interface_delimiter=interface_delimiter,
     )
 
