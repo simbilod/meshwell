@@ -98,7 +98,7 @@ def inject_occ_entities_into_gmsh(
     # Finally, remove entities that were NOT marked as keep=True
     for entity in final_entity_list:
         if not entity.keep and entity.dimtags:
-            gmsh_model.occ.remove(entity.dimtags, recursive=True)
+            gmsh_model.occ.remove(entity.dimtags, recursive=False)
             gmsh_model.occ.synchronize()
 
     if owns_model:

@@ -393,7 +393,7 @@ class CAD:
         # Delete entities that are not marked to keep
         for entity in final_entity_list:
             if not entity.keep and entity.dimtags:
-                self.model_manager.model.occ.remove(entity.dimtags, recursive=True)
+                self.model_manager.model.occ.remove(entity.dimtags, recursive=False)
                 self.model_manager.model.occ.synchronize()
 
         return final_entity_list
