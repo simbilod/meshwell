@@ -396,6 +396,28 @@ class CAD:
                 self.model_manager.model.occ.remove(entity.dimtags, recursive=False)
                 self.model_manager.model.occ.synchronize()
 
+        # Clean up any leftover boundary entities that do not bound any higher-dimensional entities
+        if max_dim == 3:
+            dangling_surfaces = []
+            for dim, tag in self.model_manager.model.getEntities(2):
+                upward_adj, _ = self.model_manager.model.getAdjacencies(dim, tag)
+                if len(upward_adj) == 0:
+                    dangling_surfaces.append((dim, tag))
+
+            if dangling_surfaces:
+                self.model_manager.model.occ.remove(dangling_surfaces, recursive=True)
+                self.model_manager.model.occ.synchronize()
+        elif max_dim == 2:
+            dangling_curves = []
+            for dim, tag in self.model_manager.model.getEntities(1):
+                upward_adj, _ = self.model_manager.model.getAdjacencies(dim, tag)
+                if len(upward_adj) == 0:
+                    dangling_curves.append((dim, tag))
+
+            if dangling_curves:
+                self.model_manager.model.occ.remove(dangling_curves, recursive=True)
+                self.model_manager.model.occ.synchronize()
+
         return final_entity_list
 
     def to_xao(self, output_file: Path) -> None:

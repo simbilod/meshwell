@@ -233,31 +233,35 @@ class Mesh:
                         suffix = parts[1]
                         dimtags = self.get_physical_dimtags(other_p_name)
                         if dimtags:
-                            i_dim = dimtags[0][0]
-                            entities._explicit_dim = max(
-                                entities.dim, i_dim + 1
-                            )
-                            tags = [t for d, t in dimtags]
-                            if suffix == boundary_delimiter:
-                                entities.mesh_edge_name_interfaces.extend(tags)
-                            else:
-                                entities.interfaces.extend(tags)
+                            for i_dim, i_tag in dimtags:
+                                if i_dim < entities.dim or entities.dim == -1:
+                                    if entities.dim == -1:
+                                        entities._explicit_dim = max(
+                                            entities._explicit_dim or 0, i_dim + 1
+                                        )
 
-                            # Always treat interfaces as boundaries for refinement
-                            entities.boundaries.extend(tags)
+                                    if suffix == boundary_delimiter:
+                                        entities.mesh_edge_name_interfaces.append(i_tag)
+                                    else:
+                                        entities.interfaces.append(i_tag)
+
+                                    # Always treat interfaces as boundaries for refinement
+                                    entities.boundaries.append(i_tag)
 
                     elif parts[1] == physical_name:
                         dimtags = self.get_physical_dimtags(other_p_name)
                         if dimtags:
-                            i_dim = dimtags[0][0]
-                            entities._explicit_dim = max(
-                                entities.dim, i_dim + 1
-                            )
-                            tags = [t for d, t in dimtags]
-                            entities.interfaces.extend(tags)
+                            for i_dim, i_tag in dimtags:
+                                if i_dim < entities.dim or entities.dim == -1:
+                                    if entities.dim == -1:
+                                        entities._explicit_dim = max(
+                                            entities.dim, i_dim + 1
+                                        )
 
-                            # Always treat interfaces as boundaries for refinement
-                            entities.boundaries.extend(tags)
+                                    entities.interfaces.append(i_tag)
+
+                                    # Always treat interfaces as boundaries for refinement
+                                    entities.boundaries.append(i_tag)
 
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities

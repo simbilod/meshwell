@@ -101,6 +101,28 @@ def inject_occ_entities_into_gmsh(
             gmsh_model.occ.remove(entity.dimtags, recursive=False)
             gmsh_model.occ.synchronize()
 
+    # Clean up any leftover boundary entities that do not bound any higher-dimensional entities
+    if max_dim == 3:
+        dangling_surfaces = []
+        for dim, tag in gmsh_model.getEntities(2):
+            upward_adj, _ = gmsh_model.getAdjacencies(dim, tag)
+            if len(upward_adj) == 0:
+                dangling_surfaces.append((dim, tag))
+
+        if dangling_surfaces:
+            gmsh_model.occ.remove(dangling_surfaces, recursive=True)
+            gmsh_model.occ.synchronize()
+    elif max_dim == 2:
+        dangling_curves = []
+        for dim, tag in gmsh_model.getEntities(1):
+            upward_adj, _ = gmsh_model.getAdjacencies(dim, tag)
+            if len(upward_adj) == 0:
+                dangling_curves.append((dim, tag))
+
+        if dangling_curves:
+            gmsh_model.occ.remove(dangling_curves, recursive=True)
+            gmsh_model.occ.synchronize()
+
     if owns_model:
         model_manager.finalize()
 

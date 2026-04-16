@@ -186,12 +186,19 @@ class LabeledEntities:
                 if self.dim == 2:
                     tags = self.boundaries  # boundaries are curves already
                 else:
-                    tags = [
-                        c
-                        for b in self.boundaries
-                        for cs in self.model.occ.getCurveLoops(b)[1]
-                        for c in cs
-                    ]
+                    tags = []
+                    for b in self.boundaries:
+                        try:
+                            for cs in self.model.occ.getCurveLoops(b)[1]:
+                                tags.extend(cs)
+                        except Exception as e:
+                            # Entity might not be a surface or not known to OCC;
+                            # if we are targeting curves, it might already be a curve
+                            import logging
+
+                            logging.getLogger(__name__).debug(
+                                f"Failed to get curve loops for {b}: {e}"
+                            )
             case -1:
                 warnings.warn(
                     "Target dimension requested is 3, but entity is 2D; "
@@ -222,12 +229,17 @@ class LabeledEntities:
             case 1:
                 tags = self.mesh_edge_name_interfaces
             case 2 | 3:
-                tags = [
-                    c
-                    for b in self.mesh_edge_name_interfaces
-                    for cs in self.model.occ.getCurveLoops(b)[1]
-                    for c in cs
-                ]
+                tags = []
+                for b in self.mesh_edge_name_interfaces:
+                    try:
+                        for cs in self.model.occ.getCurveLoops(b)[1]:
+                            tags.extend(cs)
+                    except Exception as e:
+                        import logging
+
+                        logging.getLogger(__name__).debug(
+                            f"Failed to get curve loops for {b}: {e}"
+                        )
             case -1:
                 raise ValueError("Not a boundary!")
 
@@ -366,14 +378,7 @@ class LabeledEntities:
                                 and target_dim == 1
                                 and tag in boundary_tags
                             ):
-                                # Still might share if another owner is in superset and it's NOT a boundary of self?
-                                # Actually the existing logic says if NOT include_boundary, and it IS a boundary of self,
-                                # then it must also NOT be a boundary of the other entity.
-                                # Wait, the old logic was more complex:
-                                # set(other_tags) - (set(other_boundary) & set(self_boundary))
-                                # This means if it's a boundary of self AND a boundary of other, it's removed.
-
-                                # If tag is a boundary of self
+                                # Handle tag being boundary of self
                                 is_shared_boundary = False
                                 other_owners = tag_owners - self_names
                                 for owner_name in other_owners:
@@ -383,12 +388,8 @@ class LabeledEntities:
                                             target_dim
                                         )
                                         if tag not in other_boundary_tags:
-                                            is_shared_boundary = (
-                                                False  # Not a shared boundary?
-                                            )
-                                            # Wait, if it's NOT a boundary of other, it's kept.
+                                            is_shared_boundary = True
                                             break
-                                        is_shared_boundary = True
 
                                 if not is_shared_boundary:
                                     continue

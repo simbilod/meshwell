@@ -31,11 +31,7 @@ def tag_interfaces(entity_list: list, max_dim: int, boundary_delimiter: str, mod
         2: {},
     }
     for entity1, entity2 in combinations(entity_list, 2):
-        if (
-            entity1.physical_name == entity2.physical_name
-            or entity1.dim != entity2.dim
-            or entity1.dim != max_dim
-        ):
+        if entity1.dim != entity2.dim or entity1.dim != max_dim:
             continue
         dim = entity1.dim - 1
         common_interfaces = list(
@@ -45,6 +41,10 @@ def tag_interfaces(entity_list: list, max_dim: int, boundary_delimiter: str, mod
             # Update entity interface logs
             entity1.interfaces.extend(common_interfaces)
             entity2.interfaces.extend(common_interfaces)
+
+            if entity1.physical_name == entity2.physical_name:
+                continue
+
             # Prepare physical tags
             for entity1_physical_name, entity2_physical_name in product(
                 entity1.physical_name, entity2.physical_name
@@ -74,7 +74,16 @@ def tag_boundaries(
         if entity.dim != max_dim:  # ignore lower-dimensional entities
             continue
         dim = entity.dim - 1
-        boundaries = list(set(entity.boundaries) - set(entity.interfaces))
+
+        # Collect all lower-dimensional tags that are kept in the model
+        lower_dim_tags = set()
+        for other_entity in entity_list:
+            if other_entity.dim < max_dim:
+                lower_dim_tags.update(other_entity.tags)
+
+        boundaries = list(
+            set(entity.boundaries) - set(entity.interfaces) - lower_dim_tags
+        )
         entity.mesh_edge_name_interfaces.extend(boundaries)
         for entity_physical_name in entity.physical_name:
             boundary_name = (
