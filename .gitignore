@@ -160,6 +160,8 @@ cython_debug/
 .superpowers/
 .worktrees/
 
-# Ref repos
-# gmsh/
-# OCCT/
+# Reference source checkouts kept alongside for reading but never
+# committed. Individual clones, not git submodules.
+gmsh/
+OCCT/
+uv.lock

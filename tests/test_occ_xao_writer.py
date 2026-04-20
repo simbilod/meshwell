@@ -95,9 +95,13 @@ def test_inject_full_mixed_scene():
     occ_ents = cad_occ([cut, prism_A, prism_B, wire])
     mm = ModelManager(filename="test_xao_mixed")
     try:
-        labeled = inject_occ_entities_into_gmsh(occ_ents, mm)
-        names = {le.physical_name[0] for le in labeled}
-        assert {"A", "B", "cut", "wire"} <= names
+        inject_occ_entities_into_gmsh(occ_ents, mm)
+        all_names = {
+            gmsh.model.getPhysicalName(d, t)
+            for dim in (0, 1, 2, 3)
+            for d, t in gmsh.model.getPhysicalGroups(dim)
+        }
+        assert {"A", "B", "cut", "wire"} <= all_names
 
         # Volume totals per entity match hand-computed values.
         vol_by_name: dict[str, float] = {}
@@ -195,10 +199,12 @@ def test_keep_false_entity_removed_but_interface_named():
     occ_ents = cad_occ([kept, helper])
     mm = ModelManager(filename="test_xao_keep_false")
     try:
-        labeled = inject_occ_entities_into_gmsh(occ_ents, mm)
-        names = {le.physical_name[0] for le in labeled}
-        # Only the kept entity survives in LabeledEntities.
-        assert names == {"kept"}
+        inject_occ_entities_into_gmsh(occ_ents, mm)
+        vol_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        # Only the kept entity is tagged as a 3D physical group.
+        assert vol_names == {"kept"}
         # gmsh has only one volume now.
         assert len(gmsh.model.getEntities(3)) == 1
         # The kept___helper interface (or helper___kept) still exists as a

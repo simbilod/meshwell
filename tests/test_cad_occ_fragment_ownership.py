@@ -182,9 +182,11 @@ def test_inject_two_overlapping_boxes_produces_shared_interface():
 
     mm = ModelManager(filename="test_shared_interface")
     try:
-        labeled = inject_occ_entities_into_gmsh(occ_ents, mm)
-        by_name = {le.physical_name[0]: le for le in labeled}
-        assert set(by_name) == {"a", "b"}
+        inject_occ_entities_into_gmsh(occ_ents, mm)
+        vol_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        assert vol_names == {"a", "b"}
 
         # Two 3D volumes (one per box); the shared face is 2D.
         assert len(gmsh.model.getEntities(3)) == 2
@@ -273,11 +275,11 @@ def test_inject_with_remove_all_duplicates_preserves_physical_tags():
 
     mm = ModelManager(filename="test_remove_all_duplicates")
     try:
-        labeled = inject_occ_entities_into_gmsh(
-            occ_ents, mm, remove_all_duplicates=True
-        )
-        by_name = {le.physical_name[0]: le for le in labeled}
-        assert set(by_name) == {"a", "b"}
+        inject_occ_entities_into_gmsh(occ_ents, mm, remove_all_duplicates=True)
+        vol_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        assert vol_names == {"a", "b"}
 
         # Two 3D volumes, each with the right physical tag.
         vol_groups = gmsh.model.getPhysicalGroups(3)

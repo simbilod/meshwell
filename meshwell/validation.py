@@ -1,8 +1,6 @@
 """Mesh validation routines."""
 import math
 
-from meshwell.labeledentity import LabeledEntities
-
 
 def validate_dimtags(dimtags):
     """Validate that all dimension-tag pairs have the same dimension.
@@ -89,26 +87,3 @@ def order_entities(entities):
         start_index=start_index,
     )
     return ordered_defined_entities + ordered_undefined_entities
-
-
-def consolidate_entities_by_physical_name(entities):
-    """Returns a new list of LabeledEntities, with a single entity per physical_name."""
-    physical_name_dict = {}
-
-    for entity in entities:
-        if entity.physical_name not in physical_name_dict:
-            physical_name_dict[entity.physical_name] = entity
-        else:
-            existing_entity = physical_name_dict[entity.physical_name]
-            combined_dimtags = existing_entity.dimtags + entity.dimtags
-            combined_entity = LabeledEntities(
-                index=existing_entity.index,
-                dimtags=combined_dimtags,
-                physical_name=existing_entity.physical_name,
-                resolutions=existing_entity.resolutions,
-                keep=existing_entity.keep,
-                model=existing_entity.model,
-            )
-            physical_name_dict[entity.physical_name] = combined_entity
-
-    return list(physical_name_dict.values())

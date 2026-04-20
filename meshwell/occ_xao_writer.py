@@ -15,13 +15,12 @@ Pipeline
             v  write_xao: OCP tagging + BREP (kept only) + groups
     .xao (self-contained, CDATA-inline BREP)
             |
-            v  gmsh.open
-    gmsh model with physical groups already applied
-            |
-            v  inject_occ_entities_into_gmsh: build LabeledEntities by
-               physical-name lookup, optional remove_all_duplicates
-               safety net
-    list[LabeledEntities]  (ready for resolution / meshing)
+            v  gmsh.open  (done inside inject_occ_entities_into_gmsh)
+    gmsh model with every physical group applied
+
+The resolution / refinement engine in :mod:`meshwell.mesh` then recovers
+per-entity state from those physical groups when meshing runs -- the
+bridge does not need to hand back any Python-side per-entity objects.
 
 Design notes
 ------------
@@ -38,12 +37,6 @@ Design notes
   A, and the ``A___B`` interface group references it by topology index.
   Nothing is imported for B, so nothing needs to be removed after load;
   "keep=False" means literally "not in the final model".
-
-- **Per-entity dimtag recovery** after load is by physical-name lookup:
-  each kept entity's ``physical_name[0]`` resolves to its dimtags via
-  ``getEntitiesForPhysicalGroup``. Two entities sharing a
-  ``physical_name`` collapse to one ``LabeledEntities`` -- that is the
-  meshwell convention (shared name = shared logical group).
 """
 
 from __future__ import annotations
@@ -60,9 +53,6 @@ from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_IndexedMapOfShape, TopTools_ShapeMapHasher
-from tqdm.auto import tqdm
-
-from meshwell.labeledentity import LabeledEntities
 
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
@@ -433,12 +423,14 @@ def inject_occ_entities_into_gmsh(
     boundary_delimiter: str = "None",
     progress_bars: bool = False,
     remove_all_duplicates: bool = False,
-) -> list[LabeledEntities]:
-    """Inject OCC entities into a gmsh model and return ``LabeledEntities``.
+) -> None:
+    """Inject OCC entities into a gmsh model (full tagging + optional safety net).
 
-    Pipeline: write fully-tagged XAO -> ``gmsh.open`` -> strip keep=False
-    shapes -> optional fragment safety net -> build per-entity
-    ``LabeledEntities`` -> dangling cleanup.
+    Pipeline: write fully-tagged XAO -> ``gmsh.open`` -> optional fragment
+    safety net -> dangling cleanup. All physical groups (entities,
+    interfaces, exteriors) come from the XAO; the resolution / refinement
+    engine in :mod:`meshwell.mesh` recovers per-entity state from those
+    groups when meshing runs.
 
     Args:
         occ_entities: list of ``OCCLabeledEntity`` objects from
@@ -449,11 +441,11 @@ def inject_occ_entities_into_gmsh(
             and exterior-boundary group names.
         boundary_delimiter: marker appended after ``interface_delimiter`` for
             exterior boundaries (e.g. ``A___None``).
-        progress_bars: emit tqdm/status output during the bridge.
+        progress_bars: emit status lines during the bridge.
         remove_all_duplicates: run a gmsh-level fragment safety net across
             all imported dimtags after loading. Complements the OCP-side
-            canonicalization for rare cases where BREP round-trip
-            fragments residuals.
+            canonicalization for rare cases where BREP round-trip fragments
+            residuals.
     """
     from meshwell.model import ModelManager as _ModelManager
 
@@ -488,46 +480,16 @@ def inject_occ_entities_into_gmsh(
         _gmsh.open(str(xao_path))
         gmsh_model.occ.synchronize()
 
-    # keep=False shapes were never serialized into the BREP, so there's
-    # nothing to remove here. Shared sub-faces with kept neighbours came
-    # through as boundaries of the kept entity's solid.
-    entity_dimtags = _resolve_entity_dimtags(occ_entities, gmsh_model)
-
     if remove_all_duplicates:
         if progress_bars:
             print("Fragment safety net across imported dimtags…", flush=True)
-        entity_dimtags = _run_remove_all_duplicates_safety_net(
-            gmsh_model, entity_dimtags
-        )
-
-    final_entity_list: list[LabeledEntities] = []
-    for ent, dimtags in zip(occ_entities, entity_dimtags):
-        if not ent.keep or not dimtags:
-            continue
-        final_entity_list.append(
-            LabeledEntities(
-                index=ent.index,
-                dimtags=dimtags,
-                physical_name=ent.physical_name,
-                keep=ent.keep,
-                model=gmsh_model,
-            )
-        )
-
-    for entity in tqdm(
-        final_entity_list,
-        desc="Updating boundaries",
-        disable=not progress_bars,
-        leave=False,
-    ):
-        entity.update_boundaries()
+        entity_dimtags = _resolve_entity_dimtags(occ_entities, gmsh_model)
+        _run_remove_all_duplicates_safety_net(gmsh_model, entity_dimtags)
 
     _strip_dangling_sub_entities(gmsh_model, max_dim)
 
     if owns_model:
         model_manager.finalize()
-
-    return final_entity_list
 
 
 def occ_to_xao(

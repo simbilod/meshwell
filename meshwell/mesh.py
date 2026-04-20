@@ -11,7 +11,7 @@ import meshio
 import numpy as np
 
 import gmsh
-from meshwell.labeledentity import LabeledEntities
+from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
 
 
@@ -243,7 +243,7 @@ class Mesh:
             if not resolutions and physical_name not in top_physical_names:
                 continue
 
-            entities = LabeledEntities(
+            entities = _MeshEntity(
                 index=index,
                 physical_name=physical_name,
                 model=self.model_manager.model,
