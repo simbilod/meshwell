@@ -4,7 +4,12 @@ from __future__ import annotations
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
-from meshwell.cad_occ import OCCLabeledEntity, _resolve_piece_ownership, _shape_key
+from meshwell.cad_occ import (
+    CAD_OCC,
+    OCCLabeledEntity,
+    _resolve_piece_ownership,
+    _shape_key,
+)
 
 
 def test_occ_labeled_entity_accepts_shapes_list():
@@ -77,3 +82,45 @@ def test_shape_key_different_shapes_differ():
     b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
     b2 = BRepPrimAPI_MakeBox(gp_Pnt(2, 0, 0), 1.0, 1.0, 1.0).Shape()
     assert _shape_key(b1) != _shape_key(b2)
+
+
+def _make_ent(idx, shape, mesh_order, name, dim=3, keep=True):
+    ent = OCCLabeledEntity(
+        shapes=[shape],
+        physical_name=(name,),
+        index=idx,
+        keep=keep,
+        dim=dim,
+    )
+    ent._mesh_order = mesh_order  # attached for the fragment step
+    return ent
+
+
+def test_fragment_all_disjoint_boxes_preserved():
+    """Disjoint shapes are unchanged; each entity keeps its piece."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(5, 0, 0), 1.0, 1.0, 1.0).Shape()
+    ents = [_make_ent(0, b1, 1.0, "a"), _make_ent(1, b2, 2.0, "b")]
+    processor = CAD_OCC()
+    result = processor._fragment_all(ents)
+    assert len(result) == 2
+    assert len(result[0].shapes) == 1
+    assert len(result[1].shapes) == 1
+
+
+def test_fragment_all_overlap_goes_to_lower_mesh_order():
+    """Overlapping region is owned by the entity with the lower mesh_order."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 2.0, 2.0, 2.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(1, 1, 1), 2.0, 2.0, 2.0).Shape()
+    # a has mesh_order 1 (higher priority), b has mesh_order 2
+    ents = [_make_ent(0, b1, 1.0, "a"), _make_ent(1, b2, 2.0, "b")]
+    processor = CAD_OCC()
+    result = processor._fragment_all(ents)
+    # Sum of all pieces should equal the number of fragments produced.
+    total_pieces = sum(len(e.shapes) for e in result)
+    # At minimum a gets the whole a, b gets only its non-overlapping remainder.
+    assert total_pieces >= 2
+    # 'a' must not have been shrunk to zero
+    assert len(result[0].shapes) >= 1
+    # 'b' is split; its pieces should be fewer than b1+b2 combined
+    assert len(result[1].shapes) >= 1

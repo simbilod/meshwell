@@ -127,6 +127,65 @@ class CAD_OCC:
             dim=dim,
         )
 
+    def _fragment_all(self, entities: list[OCCLabeledEntity]) -> list[OCCLabeledEntity]:
+        """Fragment all entities together; assign pieces by mesh_order priority.
+
+        Each input entity carries a ``_mesh_order`` attribute (float or None).
+        After this call, each entity's ``shapes`` list contains only the
+        fragment pieces it owns. Ownership rule: lowest mesh_order wins.
+        Pieces that come from only one entity are unambiguously owned by it.
+        """
+        if not entities:
+            return []
+
+        # Single-entity shortcut — nothing to fragment against.
+        if len(entities) == 1:
+            return entities
+
+        builder = BOPAlgo_Builder()
+        builder.SetRunParallel(self.n_threads > 1)
+        builder.SetFuzzyValue(self.point_tolerance)
+        builder.SetNonDestructive(False)
+
+        originals_per_entity: list[list[TopoDS_Shape]] = []
+        for ent in entities:
+            originals_per_entity.append(list(ent.shapes))
+            for s in ent.shapes:
+                builder.AddArgument(s)
+
+        builder.Perform()
+
+        # piece_candidates: shape_key -> list of (entity_index, mesh_order).
+        # piece_shapes: shape_key -> the TopoDS_Shape handle.
+        piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = {}
+        piece_shapes: dict[tuple[int, int], TopoDS_Shape] = {}
+
+        for ent_idx, ent in enumerate(entities):
+            mo = getattr(ent, "_mesh_order", None)
+            if mo is None:
+                mo = float("inf")
+            for original in originals_per_entity[ent_idx]:
+                modified = builder.Modified(original)
+                if modified.IsEmpty() and not builder.IsDeleted(original):
+                    # Shape survived untouched.
+                    pieces = [original]
+                else:
+                    pieces = list(modified)
+                for piece in pieces:
+                    k = _shape_key(piece)
+                    piece_shapes.setdefault(k, piece)
+                    piece_candidates.setdefault(k, []).append((ent_idx, mo))
+
+        owners = _resolve_piece_ownership(piece_candidates)
+
+        # Reset each entity's shapes and reassign by owner.
+        for ent in entities:
+            ent.shapes = []
+        for key, ent_idx in owners.items():
+            entities[ent_idx].shapes.append(piece_shapes[key])
+
+        return entities
+
     def _process_dimension_group_cuts_occ(
         self, entities: list[OCCLabeledEntity], ent_objs: list[Any]
     ) -> list[OCCLabeledEntity]:
