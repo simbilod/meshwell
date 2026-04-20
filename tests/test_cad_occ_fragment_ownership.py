@@ -4,7 +4,7 @@ from __future__ import annotations
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
-from meshwell.cad_occ import OCCLabeledEntity, _resolve_piece_ownership
+from meshwell.cad_occ import OCCLabeledEntity, _resolve_piece_ownership, _shape_key
 
 
 def test_occ_labeled_entity_accepts_shapes_list():
@@ -61,3 +61,19 @@ def test_resolve_piece_ownership_inf_mesh_order():
     }
     owners = _resolve_piece_ownership(piece_candidates)
     assert owners == {"p": 1}
+
+
+def test_shape_key_same_shape_equal():
+    """Two handles to the same underlying shape must compare equal."""
+    box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    k1 = _shape_key(box)
+    k2 = _shape_key(box)
+    assert k1 == k2
+    assert hash(k1) == hash(k2)
+
+
+def test_shape_key_different_shapes_differ():
+    """Distinct shape constructions produce distinct keys."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(2, 0, 0), 1.0, 1.0, 1.0).Shape()
+    assert _shape_key(b1) != _shape_key(b2)

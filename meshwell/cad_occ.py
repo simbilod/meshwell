@@ -10,6 +10,7 @@ from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
+from OCP.TopTools import TopTools_ShapeMapHasher
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -27,6 +28,24 @@ class OCCLabeledEntity:
     index: int
     keep: bool
     dim: int
+
+
+_SHAPE_HASHER = TopTools_ShapeMapHasher()
+
+
+def _shape_key(shape: TopoDS_Shape) -> tuple[int, int]:
+    """Return a hashable identity key for a TopoDS_Shape.
+
+    Uses the TShape pointer plus orientation so that reversed shapes
+    (e.g. a face and its reversed twin used to glue solids) compare distinct
+    when BOPAlgo differentiates them, and equal when it does not.
+
+    Note: OCP returns a fresh Python wrapper each time ``TopoDS_Shape.TShape()``
+    is called, so ``id()``/default ``__hash__`` is not stable. We instead use
+    OCC's own ``TopTools_ShapeMapHasher``, which hashes on the underlying
+    ``TShape*`` pointer and is the idiomatic key used throughout OCC.
+    """
+    return (_SHAPE_HASHER(shape), int(shape.Orientation()))
 
 
 def _resolve_piece_ownership(
