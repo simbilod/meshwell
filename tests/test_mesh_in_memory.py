@@ -2,27 +2,24 @@ from pathlib import Path
 
 import shapely
 
-from meshwell.cad_gmsh import CAD
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
+from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh
 from meshwell.polysurface import PolySurface
 
 
 def test_mesh_in_memory():
-    """Test meshing directly from an in-memory ModelManager."""
-    # 1. Create entities
+    """Mesh directly from an in-memory ModelManager populated by the OCC bridge."""
     poly = shapely.box(0.0, 0.0, 1.0, 1.0)
     surf = PolySurface(polygons=poly, physical_name="surf")
 
-    # 2. Instantiate in GMSH directly (GMSH backend)
+    # OCC fragment, then inject into a shared ModelManager
+    occ_entities = cad_occ([surf])
     mm = ModelManager()
-    cad_proc = CAD(model=mm)
-    cad_proc.process_entities([surf])
+    inject_occ_entities_into_gmsh(occ_entities, model_manager=mm)
 
-    # 3. Mesh from MM
     output_msh = Path("test_in_memory.msh")
-
-    # This should fail if mesh() requires input_file
     try:
         mesh_obj = mesh(
             dim=2,
