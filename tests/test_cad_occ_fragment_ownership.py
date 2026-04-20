@@ -179,12 +179,22 @@ def test_inject_two_overlapping_boxes_produces_shared_interface():
     mm = ModelManager(filename="test_shared_interface")
     try:
         labeled = inject_occ_entities_into_gmsh(occ_ents, mm)
-        # Each entity present with at least one volume tag.
         by_name = {le.physical_name[0]: le for le in labeled}
         assert set(by_name) == {"a", "b"}
-        # Interface physical group must exist (either a___b or b___a).
+
+        # Two 3D volumes (one per box); the shared face is 2D.
+        assert len(gmsh.model.getEntities(3)) == 2
+
         groups = gmsh.model.getPhysicalGroups(2)
         names = [gmsh.model.getPhysicalName(dim, tag) for dim, tag in groups]
-        assert any("a___b" in n or "b___a" in n for n in names), names
+        match = next((n for n in names if n in {"a___b", "b___a"}), None)
+        assert match is not None, names
+
+        interface_tag = next(
+            tag for dim, tag in groups if gmsh.model.getPhysicalName(dim, tag) == match
+        )
+        # BREP sharing means exactly one surface carries the interface tag.
+        interface_surfaces = gmsh.model.getEntitiesForPhysicalGroup(2, interface_tag)
+        assert len(interface_surfaces) == 1, interface_surfaces
     finally:
         mm.finalize()

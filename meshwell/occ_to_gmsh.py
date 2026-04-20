@@ -75,7 +75,9 @@ def inject_occ_entities_into_gmsh(
         brep_file = Path(tmpdir) / "all_entities.brep"
         BRepTools.Write_s(compound, str(brep_file))
 
-        imported_dimtags = gmsh_model.occ.importShapes(str(brep_file))
+        imported_dimtags = gmsh_model.occ.importShapes(
+            str(brep_file), highestDimOnly=False
+        )
         gmsh_model.occ.synchronize()
 
     # importShapes preserves top-level iteration order of the compound, so
@@ -84,6 +86,12 @@ def inject_occ_entities_into_gmsh(
     for ent, count in zip(occ_entities, piece_counts):
         dimtags = imported_dimtags[cursor : cursor + count]
         cursor += count
+        # Entity was fully absorbed by a higher-priority overlap. It has no
+        # GMSH topology to tag; drop it here rather than letting an empty
+        # LabeledEntities reach tag_entities (which keys on .dim and crashes
+        # on dim=-1).
+        if count == 0:
+            continue
         final_entity_list.append(
             LabeledEntities(
                 index=ent.index,
