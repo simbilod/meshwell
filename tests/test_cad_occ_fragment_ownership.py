@@ -4,6 +4,7 @@ from __future__ import annotations
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
+import gmsh
 from meshwell.cad_occ import (
     CAD_OCC,
     OCCLabeledEntity,
@@ -11,7 +12,9 @@ from meshwell.cad_occ import (
     _shape_key,
     cad_occ,
 )
+from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity
+from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh
 
 
 def test_occ_labeled_entity_accepts_shapes_list():
@@ -151,3 +154,37 @@ def test_process_entities_overlapping_boxes_end_to_end():
     assert all(len(ent.shapes) >= 1 for ent in result)
     names = {ent.physical_name[0] for ent in result}
     assert names == {"a", "b"}
+
+
+def test_inject_two_overlapping_boxes_produces_shared_interface():
+    """After injection, the shared face between two touching boxes exists once."""
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    occ_ents = cad_occ([a, b])
+
+    mm = ModelManager(filename="test_shared_interface")
+    try:
+        labeled = inject_occ_entities_into_gmsh(occ_ents, mm)
+        # Each entity present with at least one volume tag.
+        by_name = {le.physical_name[0]: le for le in labeled}
+        assert set(by_name) == {"a", "b"}
+        # Interface physical group must exist (either a___b or b___a).
+        groups = gmsh.model.getPhysicalGroups(2)
+        names = [gmsh.model.getPhysicalName(dim, tag) for dim, tag in groups]
+        assert any("a___b" in n or "b___a" in n for n in names), names
+    finally:
+        mm.finalize()

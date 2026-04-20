@@ -23,15 +23,25 @@ def inject_occ_entities_into_gmsh(
 ) -> list[LabeledEntities]:
     """Inject OCC shapes into gmsh and tag them.
 
+    All entity shapes are packed into one TopoDS_Compound (entity-ordered),
+    written to a single BREP file, and imported in one importShapes call.
+    BREP serialization preserves sub-shape sharing, so coincident faces
+    stay coincident in GMSH — this is what lets tag_interfaces find the
+    shared boundaries between entities.
+
     Args:
-        occ_entities: List of OCCLabeledEntity objects
-        model_manager: ModelManager instance
-        interface_delimiter: Delimiter for interface names
-        boundary_delimiter: Delimiter for boundary names
+        occ_entities: list of OCCLabeledEntity objects. Each may carry
+            multiple fragment pieces in ``shapes``.
+        model_manager: ModelManager instance. A fresh one is created if None.
+        interface_delimiter: delimiter for interface physical names.
+        boundary_delimiter: delimiter for exterior boundary physical names.
 
     Returns:
-        list[LabeledEntities]: List of GMSH-tagged entities
+        list of LabeledEntities aligned 1:1 with the input entity order.
     """
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
     from meshwell.model import ModelManager
 
     owns_model = False
@@ -42,43 +52,51 @@ def inject_occ_entities_into_gmsh(
     model_manager.ensure_initialized(str(model_manager.filename))
     gmsh_model = model_manager.model
 
-    final_entity_list = []
-
-    # Store max dimension seen
     max_dim = 0
     for ent in occ_entities:
-        max_dim = max(max_dim, ent.dim)
+        if ent.shapes:
+            max_dim = max(max_dim, ent.dim)
 
-    # Inject each entity into gmsh
+    # Build one compound. Record how many top-level children each entity
+    # contributes so we can slice the returned dimtag list afterwards.
+    comp_builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    comp_builder.MakeCompound(compound)
+
+    piece_counts: list[int] = []
+    for ent in occ_entities:
+        piece_counts.append(len(ent.shapes))
+        for s in ent.shapes:
+            comp_builder.Add(compound, s)
+
+    final_entity_list: list[LabeledEntities] = []
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        for i, occ_ent in enumerate(occ_entities):
-            # 1. Serialize to BREP
-            brep_file = Path(tmpdir) / f"entity_{i}.brep"
-            BRepTools.Write_s(occ_ent.shape, str(brep_file))
+        brep_file = Path(tmpdir) / "all_entities.brep"
+        BRepTools.Write_s(compound, str(brep_file))
 
-            # 2. Import into gmsh
-            # importShapes returns a list of (dim, tag)
-            new_dimtags = gmsh_model.occ.importShapes(str(brep_file))
-            gmsh_model.occ.synchronize()
+        imported_dimtags = gmsh_model.occ.importShapes(str(brep_file))
+        gmsh_model.occ.synchronize()
 
-            # 3. Create LabeledEntities object
-            labeled_ent = LabeledEntities(
-                index=occ_ent.index,
-                dimtags=new_dimtags,
-                physical_name=occ_ent.physical_name,
-                keep=occ_ent.keep,
+    # importShapes preserves top-level iteration order of the compound, so
+    # slicing by piece_counts yields each entity's dimtags.
+    cursor = 0
+    for ent, count in zip(occ_entities, piece_counts):
+        dimtags = imported_dimtags[cursor : cursor + count]
+        cursor += count
+        final_entity_list.append(
+            LabeledEntities(
+                index=ent.index,
+                dimtags=list(dimtags),
+                physical_name=ent.physical_name,
+                keep=ent.keep,
                 model=gmsh_model,
             )
-            final_entity_list.append(labeled_ent)
+        )
 
-    # Filter out non-kept entities early if needed
-    # (Actually we want to tag them all first for interface calculation)
-
-    # Update boundaries for all injected entities
     for entity in final_entity_list:
         entity.update_boundaries()
 
-    # Tag everything using existing tag.py logic
     if final_entity_list:
         tag_entities(final_entity_list, gmsh_model)
         tag_interfaces(
@@ -95,32 +113,30 @@ def inject_occ_entities_into_gmsh(
             gmsh_model,
         )
 
-    # Finally, remove entities that were NOT marked as keep=True
+    # Remove entities marked keep=False (e.g. helpers used only to cut).
     for entity in final_entity_list:
         if not entity.keep and entity.dimtags:
             gmsh_model.occ.remove(entity.dimtags, recursive=False)
             gmsh_model.occ.synchronize()
 
-    # Clean up any leftover boundary entities that do not bound any higher-dimensional entities
+    # Strip boundary/curve entities left over without a higher-dim parent.
     if max_dim == 3:
-        dangling_surfaces = []
-        for dim, tag in gmsh_model.getEntities(2):
-            upward_adj, _ = gmsh_model.getAdjacencies(dim, tag)
-            if len(upward_adj) == 0:
-                dangling_surfaces.append((dim, tag))
-
-        if dangling_surfaces:
-            gmsh_model.occ.remove(dangling_surfaces, recursive=True)
+        dangling = [
+            (dim, tag)
+            for dim, tag in gmsh_model.getEntities(2)
+            if len(gmsh_model.getAdjacencies(dim, tag)[0]) == 0
+        ]
+        if dangling:
+            gmsh_model.occ.remove(dangling, recursive=True)
             gmsh_model.occ.synchronize()
     elif max_dim == 2:
-        dangling_curves = []
-        for dim, tag in gmsh_model.getEntities(1):
-            upward_adj, _ = gmsh_model.getAdjacencies(dim, tag)
-            if len(upward_adj) == 0:
-                dangling_curves.append((dim, tag))
-
-        if dangling_curves:
-            gmsh_model.occ.remove(dangling_curves, recursive=True)
+        dangling = [
+            (dim, tag)
+            for dim, tag in gmsh_model.getEntities(1)
+            if len(gmsh_model.getAdjacencies(dim, tag)[0]) == 0
+        ]
+        if dangling:
+            gmsh_model.occ.remove(dangling, recursive=True)
             gmsh_model.occ.synchronize()
 
     if owns_model:
