@@ -9,7 +9,9 @@ from meshwell.cad_occ import (
     OCCLabeledEntity,
     _resolve_piece_ownership,
     _shape_key,
+    cad_occ,
 )
+from meshwell.occ_entity import OCC_entity
 
 
 def test_occ_labeled_entity_accepts_shapes_list():
@@ -85,15 +87,14 @@ def test_shape_key_different_shapes_differ():
 
 
 def _make_ent(idx, shape, mesh_order, name, dim=3, keep=True):
-    ent = OCCLabeledEntity(
+    return OCCLabeledEntity(
         shapes=[shape],
         physical_name=(name,),
         index=idx,
         keep=keep,
         dim=dim,
+        mesh_order=mesh_order,
     )
-    ent._mesh_order = mesh_order  # attached for the fragment step
-    return ent
 
 
 def test_fragment_all_disjoint_boxes_preserved():
@@ -124,3 +125,29 @@ def test_fragment_all_overlap_goes_to_lower_mesh_order():
     assert len(result[0].shapes) >= 1
     # 'b' is split; its pieces should be fewer than b1+b2 combined
     assert len(result[1].shapes) >= 1
+
+
+def test_process_entities_overlapping_boxes_end_to_end():
+    """Higher-priority box keeps its full volume; lower-priority box loses overlap."""
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 2.0, 2.0, 2.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 1, 1), 2.0, 2.0, 2.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    result = cad_occ([a, b])
+    assert len(result) == 2
+    # Both entities should still have pieces.
+    assert all(len(ent.shapes) >= 1 for ent in result)
+    names = {ent.physical_name[0] for ent in result}
+    assert names == {"a", "b"}
