@@ -1,7 +1,6 @@
 """OCC CAD processor using OCP (OpenCASCADE Python) bindings."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
@@ -10,6 +9,8 @@ from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
+
+from meshwell.occ_geometry_cache import OCCGeometryCache
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -114,9 +115,14 @@ class CAD_OCC:
 
         return -1
 
-    def _instantiate_entity_occ(self, index: int, entity_obj: Any) -> OCCLabeledEntity:
+    def _instantiate_entity_occ(
+        self,
+        index: int,
+        entity_obj: Any,
+        occ_cache: OCCGeometryCache,
+    ) -> OCCLabeledEntity:
         """Instantiate a single entity into an OCC shape."""
-        shape = entity_obj.instanciate_occ()
+        shape = entity_obj.instanciate_occ(occ_cache=occ_cache)
         dim = getattr(entity_obj, "dimension", None)
         if dim is None:
             dim = self._get_shape_dimension(shape)
@@ -199,17 +205,20 @@ class CAD_OCC:
         Fragment pieces are assigned to the entity with the lowest mesh_order.
         Lower-dim entities embedded in higher-dim ones end up sharing topology
         (coincident sub-faces) because BOPAlgo preserves sub-shape sharing.
+
+        Instantiation is serialized so a single ``OCCGeometryCache`` can back
+        every entity; coincident sub-geometry across entities then carries
+        the same TopoDS TShape identity, which is what lets ``BOPAlgo_Builder``
+        merge shared boundaries rather than treating them as overlapping slivers.
         """
         if not entities_list:
             return []
 
-        with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
-            labeled_entities = list(
-                executor.map(
-                    lambda x: self._instantiate_entity_occ(x[0], x[1]),
-                    enumerate(entities_list),
-                )
-            )
+        occ_cache = OCCGeometryCache(point_tolerance=self.point_tolerance)
+        labeled_entities = [
+            self._instantiate_entity_occ(i, ent, occ_cache)
+            for i, ent in enumerate(entities_list)
+        ]
 
         return self._fragment_all(labeled_entities)
 
