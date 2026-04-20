@@ -1,4 +1,5 @@
 """Unified CAD/mesh pipeline orchestrator (OCC backend only)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -42,9 +43,6 @@ def generate_mesh(
               :func:`meshwell.occ_canonicalize.canonicalize_topology`).
             - ``remove_all_duplicates`` (bool): gmsh-level fragment safety
               net across imported dimtags.
-            - ``use_xao`` (bool): import OCC shapes via an inline XAO file
-              with per-entity marker physical groups (TShape-exact
-              identity, no mass/centroid heuristic).
 
     Returns:
         meshio.Mesh: The generated mesh object.
@@ -73,7 +71,6 @@ def generate_mesh(
     backend_kwargs["remove_all_duplicates"] = mesh_kwargs.pop(
         "remove_all_duplicates", False
     )
-    backend_kwargs["use_xao"] = mesh_kwargs.pop("use_xao", False)
 
     from meshwell.backend_occ import OccBackend
 

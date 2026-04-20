@@ -27,7 +27,7 @@ The geometry is processed by OCC via `cad_occ()` and written to a `.xao` file us
 import shapely
 
 from meshwell.cad_occ import cad_occ
-from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.occ_xao_writer import occ_to_xao
 from meshwell.polysurface import PolySurface
 
 polygon = shapely.Polygon([[-5, -5], [5, -5], [5, 5], [-5, 5]])

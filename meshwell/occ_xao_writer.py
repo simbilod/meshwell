@@ -1,24 +1,56 @@
-"""XAO writer for OCC → gmsh handoff.
+"""OCC -> gmsh bridge via XAO.
 
-Writing XAO lets us piggyback on gmsh's built-in XAO reader (see
-``gmsh/src/geo/GModelIO_OCC.cpp:6623``) which maps named physical groups
-to gmsh entities via ``TopExp::MapShapes`` references — exact TShape
-identity, no mass/centroid heuristic. We assign each entity a unique
-*marker* physical-group name so the caller can recover per-entity
-dimtags via ``getEntitiesForPhysicalGroup`` after load, then drops the
-markers so the real physical-tagging (``tag_entities``) runs as usual.
+This module is the sole path from ``OCCLabeledEntity`` to a tagged gmsh
+model. The tagging (entities, inter-entity interfaces, exterior
+boundaries) is computed entirely at OCP level using ``TopoDS_Shape``
+TShape identity and emitted directly into the XAO file. gmsh loads the
+file and every physical group is already in place -- no post-import
+tagging pipeline.
 
-The BREP blob is embedded inline in CDATA — single self-contained file,
-matching gmsh's own ``_writeXAO`` convention. BREP is required by XAO:
-it is the only shape format gmsh's XAO reader accepts, and the
-topology ``reference`` integers are indices into
-``TopExp::MapShapes(mainShape)`` — an OCC enumeration that depends on
-a bit-identical shape on both sides of the round-trip.
+Pipeline
+--------
+
+    OCCLabeledEntity(s)  (from meshwell.cad_occ)
+            |
+            v  write_xao: OCP tagging + BREP + topology refs + groups
+    .xao (self-contained, CDATA-inline BREP)
+            |
+            v  gmsh.open
+    gmsh model with physical groups already applied
+            |
+            v  inject_occ_entities_into_gmsh: strip keep=False shapes,
+               build LabeledEntities by physical-name lookup,
+               optional remove_all_duplicates safety net
+    list[LabeledEntities]  (ready for resolution / meshing)
+
+Design notes
+------------
+
+- **BREP is required**: XAO is a metadata wrapper, not its own geometry
+  format. Its ``<shape format="BREP">`` element and the
+  ``TopExp::MapShapes`` reference indices need a bit-identical shape
+  on both sides. Embedded inline in CDATA (single self-contained file).
+
+- **keep=False entities**: their shapes are serialized into BREP so
+  BOPAlgo-shared boundaries still resolve to the same TShape on load
+  (needed to name ``A___B`` interfaces where B is keep=False). Their
+  own physical-name groups and exterior boundaries are *not* emitted --
+  those entities won't exist in the final mesh. A single
+  ``_meshwell_keep_false`` marker group carries their top-level
+  dimtags so the injector can ``occ.remove`` them after load.
+
+- **Per-entity dimtag recovery** after load is by physical-name lookup:
+  each kept entity's ``physical_name[0]`` resolves to its dimtags via
+  ``getEntitiesForPhysicalGroup``. Two entities sharing a
+  ``physical_name`` collapse to one ``LabeledEntities`` -- that is the
+  meshwell convention (shared name = shared logical group).
 """
+
 from __future__ import annotations
 
 import tempfile
 import xml.etree.ElementTree as ET
+from itertools import combinations, product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,9 +60,13 @@ from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_IndexedMapOfShape, TopTools_ShapeMapHasher
+from tqdm.auto import tqdm
+
+from meshwell.labeledentity import LabeledEntities
 
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
+    from meshwell.model import ModelManager
 
 
 _HASHER = TopTools_ShapeMapHasher()
@@ -44,18 +80,20 @@ _DIM_TO_TOPABS = {
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 
+_KEEP_FALSE_MARKER = "_meshwell_keep_false"
 
-def _marker_name(entity_index: int) -> str:
-    """Unique-per-entity XAO group name used to reverse-lookup dimtags."""
-    return f"_meshwell_xao_marker_{entity_index}"
+
+# ---------------------------------------------------------------------------
+# OCP-level helpers
+# ---------------------------------------------------------------------------
 
 
 def _leaf_subshapes(shape, dim):
-    """Yield all sub-shapes of `shape` at the TopAbs class matching `dim`.
+    """Yield ``(sub_shape, tshape_id)`` pairs at the TopAbs class for ``dim``.
 
     Mirrors the leaf-enumeration gmsh's ``_multiBind`` does when binding
     imported OCC shapes (one gmsh entity per leaf TopAbs). Dedupe by
-    TShape identity via :class:`TopTools_ShapeMapHasher`.
+    TShape identity.
     """
     topabs = _DIM_TO_TOPABS[dim]
     seen: set[int] = set()
@@ -69,34 +107,124 @@ def _leaf_subshapes(shape, dim):
         exp.Next()
 
 
+def _compute_physical_groups(
+    entities: list[OCCLabeledEntity],
+    interface_delimiter: str,
+    boundary_delimiter: str,
+) -> dict[tuple[int, str], list]:
+    """OCP reconstruction of ``tag_entities``/``tag_interfaces``/``tag_boundaries``.
+
+    Returns ``{(dim, physical_name): [TopoDS_Shape, ...]}``. Interfaces are
+    named by TShape identity of shared sub-shapes. keep=False entities
+    participate in interface tagging (so kept neighbours can name shared
+    boundaries) but do not get their own entity or exterior groups --
+    they will be removed from gmsh after load.
+    """
+    if not entities:
+        return {}
+
+    max_dim = max((e.dim for e in entities if e.shapes), default=0)
+
+    # entity_leaves[i]  : TopoDS_Shape list at ent.dim (entity's own tags).
+    # entity_boundary[i]: {tshape_id: TopoDS_Shape} at ent.dim - 1, populated
+    #                     only for top-dim entities (lower-dim entities can't
+    #                     have gmsh "boundaries" in meshwell's sense).
+    entity_leaves: list[list] = []
+    entity_boundary: list[dict[int, object]] = []
+    for ent in entities:
+        leaves = [leaf for s in ent.shapes for leaf, _ in _leaf_subshapes(s, ent.dim)]
+        boundaries: dict[int, object] = {}
+        if ent.dim == max_dim and ent.dim > 0:
+            for s in ent.shapes:
+                for sub, sid in _leaf_subshapes(s, ent.dim - 1):
+                    boundaries.setdefault(sid, sub)
+        entity_leaves.append(leaves)
+        entity_boundary.append(boundaries)
+
+    groups: dict[tuple[int, str], list] = {}
+
+    # 1. tag_entities: skip keep=False.
+    for ent, leaves in zip(entities, entity_leaves):
+        if not ent.keep:
+            continue
+        for name in ent.physical_name:
+            groups.setdefault((ent.dim, name), []).extend(leaves)
+
+    # 2. tag_interfaces: include every pair regardless of keep so that kept
+    #    neighbours can name boundaries shared with helper (keep=False)
+    #    entities.
+    entity_interface_ids: list[set[int]] = [set() for _ in entities]
+    for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
+        if ent1.dim != ent2.dim or ent1.dim != max_dim:
+            continue
+        bid1 = set(entity_boundary[i1].keys())
+        bid2 = set(entity_boundary[i2].keys())
+        common = bid1 & bid2
+        if not common:
+            continue
+        entity_interface_ids[i1].update(common)
+        entity_interface_ids[i2].update(common)
+        if ent1.physical_name == ent2.physical_name:
+            continue
+        interface_dim = ent1.dim - 1
+        common_shapes = [entity_boundary[i1][bid] for bid in common]
+        for n1, n2 in product(ent1.physical_name, ent2.physical_name):
+            name = f"{n1}{interface_delimiter}{n2}"
+            groups.setdefault((interface_dim, name), []).extend(common_shapes)
+
+    # 3. tag_boundaries: exterior only for keep=True entities. Helpers
+    #    (keep=False) get removed post-load, so their "exterior" would
+    #    dangle.
+    lower_dim_ids: set[int] = set()
+    for ent, leaves in zip(entities, entity_leaves):
+        if ent.dim < max_dim:
+            for leaf in leaves:
+                lower_dim_ids.add(_HASHER(leaf))
+
+    for i, ent in enumerate(entities):
+        if ent.dim != max_dim or not ent.keep:
+            continue
+        boundary_dim = ent.dim - 1
+        bids = set(entity_boundary[i].keys())
+        exterior = bids - entity_interface_ids[i] - lower_dim_ids
+        exterior_shapes = [entity_boundary[i][bid] for bid in exterior]
+        if not exterior_shapes:
+            continue
+        for name in ent.physical_name:
+            full_name = f"{name}{interface_delimiter}{boundary_delimiter}"
+            groups.setdefault((boundary_dim, full_name), []).extend(exterior_shapes)
+
+    # 4. Single keep=False marker group so the injector can ``occ.remove``
+    #    helper shapes post-load. Entries are top-level leaves at the
+    #    entity's own dim.
+    for ent, leaves in zip(entities, entity_leaves):
+        if ent.keep or not leaves:
+            continue
+        groups.setdefault((ent.dim, _KEEP_FALSE_MARKER), []).extend(leaves)
+
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# XAO writer
+# ---------------------------------------------------------------------------
+
+
 def write_xao(
     entities: list[OCCLabeledEntity],
     xao_path: Path,
     model_name: str = "meshwell",
-) -> dict[int, str]:
-    """Serialize ``entities`` into a single self-contained XAO for gmsh.
+    interface_delimiter: str = "___",
+    boundary_delimiter: str = "None",
+) -> None:
+    """Serialize ``entities`` into a self-contained, fully-tagged XAO file.
 
-    The XAO writes:
-    - ``<shape format="BREP">`` with the BREP blob inline in CDATA.
-    - A ``<topology>`` section with a ``<solid/face/edge/vertex>`` entry for
-      every leaf sub-shape referenced by any entity, keyed by a dim-local
-      ``index`` (entry order within its class) and a global ``reference``
-      (index in ``TopExp::MapShapes`` over the compound — what the reader
-      round-trips back into a ``TopoDS_Shape``).
-    - A ``<groups>`` section with one group per entity, using a unique
-      marker name so the caller can recover per-entity dimtags via
-      ``gmsh.model.getEntitiesForPhysicalGroup``.
-
-    Args:
-        entities: OCCLabeledEntity list (same input order preserved).
-        xao_path: where to write the XAO file.
-        model_name: written as ``<geometry name="...">``; cosmetic.
-
-    Returns:
-        Map ``{entity.index: marker_name}``. After gmsh loads the XAO,
-        ``marker_name`` is a physical-group name whose members are this
-        entity's dimtags. Caller typically strips these markers after
-        using them to populate LabeledEntities.
+    The XAO contains every physical group the meshwell tagging pipeline
+    would produce (entities, interfaces, exterior boundaries), computed at
+    OCP level from TShape identity. keep=False entities contribute their
+    shapes to the BREP and participate in interface naming but do not
+    get entity-own or exterior groups; a single ``_meshwell_keep_false``
+    marker group carries their dimtags for caller-side removal.
     """
     # Build compound of all shapes (original entity order).
     cb = BRep_Builder()
@@ -116,85 +244,347 @@ def write_xao(
     finally:
         tf_path.unlink(missing_ok=True)
 
-    # Defensive: BREP is plain ASCII but if some locale/encoding ever emits
-    # a literal ``]]>`` we'd break the CDATA. Raise instead of corrupting.
     if "]]>" in brep_text:
         raise ValueError("BREP text contains ']]>' sequence, cannot embed in XAO CDATA")
 
-    # Global index: TopoDS_Shape -> integer. Reader uses mainMap.FindKey(K).
     main_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(compound, main_map)
 
-    # Per-dim tables:
-    #   topology_index[dim][_shape_id] = local index within dim class (0..N-1)
-    #   topology_entries[dim] = list of (local_index, reference) in write order.
+    physical_groups = _compute_physical_groups(
+        entities, interface_delimiter, boundary_delimiter
+    )
+
+    # Build per-dim topology index covering every shape any group references.
     topology_index: dict[int, dict[int, int]] = {0: {}, 1: {}, 2: {}, 3: {}}
-    topology_entries: dict[int, list[tuple[int, int]]] = {0: [], 1: [], 2: [], 3: []}
-    # Cache leaf-enumeration results so we don't redo TopExp_Explorer per-entity.
-    leaves_per_entity: list[list[tuple[int, int]]] = []  # [(dim, local_index), ...]
+    topology_entries: dict[int, list[tuple[int, int]]] = {
+        0: [],
+        1: [],
+        2: [],
+        3: [],
+    }
+    for (dim, _), shapes in physical_groups.items():
+        for shape in shapes:
+            sid = _HASHER(shape)
+            if sid not in topology_index[dim]:
+                local = len(topology_entries[dim])
+                topology_index[dim][sid] = local
+                topology_entries[dim].append((local, main_map.FindIndex(shape)))
 
-    for ent in entities:
-        entity_leaves: list[tuple[int, int]] = []
-        for s in ent.shapes:
-            for leaf, leaf_id in _leaf_subshapes(s, ent.dim):
-                t_idx = topology_index[ent.dim]
-                if leaf_id not in t_idx:
-                    local = len(topology_entries[ent.dim])
-                    t_idx[leaf_id] = local
-                    reference = main_map.FindIndex(leaf)
-                    topology_entries[ent.dim].append((local, reference))
-                entity_leaves.append((ent.dim, t_idx[leaf_id]))
-        leaves_per_entity.append(entity_leaves)
-
-    # Build the XML tree.
     root = ET.Element("XAO", version="1.0", author="meshwell")
     geom = ET.SubElement(root, "geometry", name=model_name)
     shape_el = ET.SubElement(geom, "shape", format="BREP")
-    # ElementTree has no CDATA primitive; insert the raw marker and post-process.
     shape_el.text = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
     topology = ET.SubElement(geom, "topology")
     for dim in (0, 1, 2, 3):
-        group_tag = _DIM_TO_XAO_GROUP[dim]
-        elem_tag = _DIM_TO_XAO_ELEM[dim]
         parent = ET.SubElement(
-            topology, group_tag, count=str(len(topology_entries[dim]))
+            topology,
+            _DIM_TO_XAO_GROUP[dim],
+            count=str(len(topology_entries[dim])),
         )
         for local, reference in topology_entries[dim]:
             ET.SubElement(
                 parent,
-                elem_tag,
+                _DIM_TO_XAO_ELEM[dim],
                 index=str(local),
                 reference=str(reference),
             )
 
-    markers: dict[int, str] = {}
-    groups = ET.SubElement(root, "groups", count=str(len(entities)))
-    for ent, entity_leaves in zip(entities, leaves_per_entity):
-        if not entity_leaves:
-            continue
-        name = _marker_name(ent.index)
-        markers[ent.index] = name
-        # All leaves of one entity share the same dim by construction.
-        dim = entity_leaves[0][0]
+    # Skip empty groups: some entities (e.g. a fully-absorbed coincident
+    # solid) emit a (dim, name) with zero shapes. Writing them as
+    # ``<group count="0"/>`` self-closing tags interferes with gmsh's
+    # XAO reader -- elements of the next sibling group get misattributed.
+    non_empty: list[tuple[tuple[int, str], list[int]]] = []
+    for (dim, name), shapes in physical_groups.items():
+        seen_ids: set[int] = set()
+        local_indices: list[int] = []
+        for shape in shapes:
+            sid = _HASHER(shape)
+            if sid in seen_ids:
+                continue
+            seen_ids.add(sid)
+            local_indices.append(topology_index[dim][sid])
+        if local_indices:
+            non_empty.append(((dim, name), local_indices))
+
+    groups_el = ET.SubElement(root, "groups", count=str(len(non_empty)))
+    for (dim, name), local_indices in non_empty:
         g = ET.SubElement(
-            groups,
+            groups_el,
             "group",
             name=name,
             dimension=_DIM_TO_XAO_ELEM[dim],
-            count=str(len(entity_leaves)),
+            count=str(len(local_indices)),
         )
-        for _, local in entity_leaves:
+        for local in local_indices:
             ET.SubElement(g, "element", index=str(local))
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ")
 
-    # Serialize to string so we can swap the placeholder for a real CDATA
-    # block. ElementTree's built-in writer escapes '<' and '>' in text.
     xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     xml_text = xml_bytes.decode("utf-8")
     placeholder = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
     xml_text = xml_text.replace(placeholder, f"<![CDATA[{brep_text}]]>")
     xao_path.write_text(xml_text, encoding="utf-8")
 
-    return markers
+
+# ---------------------------------------------------------------------------
+# Injection (XAO -> gmsh, with keep=False removal + safety net)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_entity_dimtags(
+    occ_entities: list[OCCLabeledEntity],
+    gmsh_model,
+) -> list[list[tuple[int, int]]]:
+    """Look up each entity's gmsh dimtags by its first physical_name.
+
+    Two entities with the same physical_name collapse to the same
+    dimtag list -- meshwell's convention: a shared name means a shared
+    logical group.
+    """
+    # Build (dim, name) -> list of tags, one query per physical group.
+    by_name: dict[tuple[int, str], list[int]] = {}
+    for dim in (0, 1, 2, 3):
+        for d, ptag in gmsh_model.getPhysicalGroups(dim):
+            name = gmsh_model.getPhysicalName(d, ptag)
+            by_name[(d, name)] = [
+                int(t) for t in gmsh_model.getEntitiesForPhysicalGroup(d, ptag)
+            ]
+
+    entity_dimtags: list[list[tuple[int, int]]] = []
+    for ent in occ_entities:
+        if not ent.physical_name:
+            entity_dimtags.append([])
+            continue
+        name = ent.physical_name[0]
+        tags = by_name.get((ent.dim, name), [])
+        entity_dimtags.append([(ent.dim, t) for t in tags])
+    return entity_dimtags
+
+
+def _remove_keep_false_shapes(gmsh_model) -> None:
+    """Strip the ``_meshwell_keep_false`` group and ``occ.remove`` its dimtags.
+
+    ``recursive=False``: only remove the top-level shapes. Shared sub-faces
+    that a kept neighbour still references must survive (they were tagged
+    as ``A___B`` interfaces).
+    """
+    targets: list[tuple[int, int]] = []
+    marker_groups: list[tuple[int, int]] = []
+    for dim in (0, 1, 2, 3):
+        for d, ptag in gmsh_model.getPhysicalGroups(dim):
+            if gmsh_model.getPhysicalName(d, ptag) != _KEEP_FALSE_MARKER:
+                continue
+            marker_groups.append((d, ptag))
+            targets.extend(
+                (d, int(tag)) for tag in gmsh_model.getEntitiesForPhysicalGroup(d, ptag)
+            )
+
+    if marker_groups:
+        gmsh_model.removePhysicalGroups(marker_groups)
+    if targets:
+        gmsh_model.occ.remove(targets, recursive=False)
+        gmsh_model.occ.synchronize()
+
+
+def _run_remove_all_duplicates_safety_net(
+    gmsh_model,
+    entity_dimtags: list[list[tuple[int, int]]],
+) -> list[list[tuple[int, int]]]:
+    """Post-import gmsh-level fragment safety net preserving per-entity dimtags.
+
+    Mirrors ``occ.removeAllDuplicates()`` (which calls
+    ``booleanFragments(-1, allDimTags, ...)`` internally) but keeps the
+    ``outDimTagsMap`` so we can forward each entity's dimtags to the new
+    post-fragment tags.
+    """
+    if not any(entity_dimtags):
+        return entity_dimtags
+
+    unique_dimtags: list[tuple[int, int]] = []
+    dimtag_to_input_idx: dict[tuple[int, int], int] = {}
+    input_idx_per_entity: list[list[int]] = []
+    for dimtags in entity_dimtags:
+        idxs: list[int] = []
+        for dt in dimtags:
+            if dt not in dimtag_to_input_idx:
+                dimtag_to_input_idx[dt] = len(unique_dimtags)
+                unique_dimtags.append(dt)
+            idxs.append(dimtag_to_input_idx[dt])
+        input_idx_per_entity.append(idxs)
+
+    _, out_map = gmsh_model.occ.fragment(
+        unique_dimtags,
+        [],
+        removeObject=True,
+        removeTool=True,
+    )
+    gmsh_model.occ.synchronize()
+
+    new_entity_dimtags: list[list[tuple[int, int]]] = []
+    for idxs in input_idx_per_entity:
+        collected: list[tuple[int, int]] = []
+        seen_local: set[tuple[int, int]] = set()
+        for i in idxs:
+            for dt in out_map[i]:
+                if dt not in seen_local:
+                    seen_local.add(dt)
+                    collected.append(dt)
+        new_entity_dimtags.append(collected)
+    return new_entity_dimtags
+
+
+def _strip_dangling_sub_entities(gmsh_model, max_dim: int) -> None:
+    """Remove dim-1 gmsh entities with no parent after keep=False removal."""
+    if max_dim not in (2, 3):
+        return
+    below = max_dim - 1
+    dangling = [
+        (dim, tag)
+        for dim, tag in gmsh_model.getEntities(below)
+        if len(gmsh_model.getAdjacencies(dim, tag)[0]) == 0
+    ]
+    if dangling:
+        gmsh_model.occ.remove(dangling, recursive=True)
+        gmsh_model.occ.synchronize()
+
+
+def inject_occ_entities_into_gmsh(
+    occ_entities: list[OCCLabeledEntity],
+    model_manager: ModelManager | None = None,
+    interface_delimiter: str = "___",
+    boundary_delimiter: str = "None",
+    progress_bars: bool = False,
+    remove_all_duplicates: bool = False,
+) -> list[LabeledEntities]:
+    """Inject OCC entities into a gmsh model and return ``LabeledEntities``.
+
+    Pipeline: write fully-tagged XAO -> ``gmsh.open`` -> strip keep=False
+    shapes -> optional fragment safety net -> build per-entity
+    ``LabeledEntities`` -> dangling cleanup.
+
+    Args:
+        occ_entities: list of ``OCCLabeledEntity`` objects from
+            :mod:`meshwell.cad_occ`.
+        model_manager: ``ModelManager`` to load into. A fresh one is created
+            if ``None``.
+        interface_delimiter: separator between physical names in interface
+            and exterior-boundary group names.
+        boundary_delimiter: marker appended after ``interface_delimiter`` for
+            exterior boundaries (e.g. ``A___None``).
+        progress_bars: emit tqdm/status output during the bridge.
+        remove_all_duplicates: run a gmsh-level fragment safety net across
+            all imported dimtags after loading. Complements the OCP-side
+            canonicalization for rare cases where BREP round-trip
+            fragments residuals.
+    """
+    from meshwell.model import ModelManager as _ModelManager
+
+    owns_model = False
+    if model_manager is None:
+        model_manager = _ModelManager()
+        owns_model = True
+
+    model_manager.ensure_initialized(str(model_manager.filename))
+    gmsh_model = model_manager.model
+
+    # More accurate bbox queries from STL tessellation (tag-safe).
+    import gmsh as _gmsh
+
+    _gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
+
+    max_dim = max((e.dim for e in occ_entities if e.shapes), default=0)
+
+    if progress_bars:
+        print(
+            f"Writing XAO for {len(occ_entities)} entities and importing into gmsh…",
+            flush=True,
+        )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xao_path = Path(tmpdir) / "all_entities.xao"
+        write_xao(
+            occ_entities,
+            xao_path,
+            interface_delimiter=interface_delimiter,
+            boundary_delimiter=boundary_delimiter,
+        )
+        _gmsh.open(str(xao_path))
+        gmsh_model.occ.synchronize()
+
+    # Drop keep=False shapes before anything else touches dimtags.
+    _remove_keep_false_shapes(gmsh_model)
+
+    entity_dimtags = _resolve_entity_dimtags(occ_entities, gmsh_model)
+
+    if remove_all_duplicates:
+        if progress_bars:
+            print("Fragment safety net across imported dimtags…", flush=True)
+        entity_dimtags = _run_remove_all_duplicates_safety_net(
+            gmsh_model, entity_dimtags
+        )
+
+    final_entity_list: list[LabeledEntities] = []
+    for ent, dimtags in zip(occ_entities, entity_dimtags):
+        if not ent.keep or not dimtags:
+            continue
+        final_entity_list.append(
+            LabeledEntities(
+                index=ent.index,
+                dimtags=dimtags,
+                physical_name=ent.physical_name,
+                keep=ent.keep,
+                model=gmsh_model,
+            )
+        )
+
+    for entity in tqdm(
+        final_entity_list,
+        desc="Updating boundaries",
+        disable=not progress_bars,
+        leave=False,
+    ):
+        entity.update_boundaries()
+
+    _strip_dangling_sub_entities(gmsh_model, max_dim)
+
+    if owns_model:
+        model_manager.finalize()
+
+    return final_entity_list
+
+
+def occ_to_xao(
+    occ_entities: list[OCCLabeledEntity],
+    output_file: Path,
+    model_manager: ModelManager | None = None,
+    interface_delimiter: str = "___",
+    boundary_delimiter: str = "None",
+    progress_bars: bool = False,
+    remove_all_duplicates: bool = False,
+) -> None:
+    """Inject the entities into a gmsh model and save it to ``output_file``.
+
+    Convenience wrapper: calls :func:`inject_occ_entities_into_gmsh` then
+    ``model_manager.save_to_xao`` so the saved file carries the full
+    tagged state gmsh built.
+    """
+    from meshwell.model import ModelManager as _ModelManager
+
+    owns_model = False
+    if model_manager is None:
+        model_manager = _ModelManager()
+        owns_model = True
+
+    inject_occ_entities_into_gmsh(
+        occ_entities=occ_entities,
+        model_manager=model_manager,
+        interface_delimiter=interface_delimiter,
+        boundary_delimiter=boundary_delimiter,
+        progress_bars=progress_bars,
+        remove_all_duplicates=remove_all_duplicates,
+    )
+    model_manager.save_to_xao(output_file)
+
+    if owns_model:
+        model_manager.finalize()
