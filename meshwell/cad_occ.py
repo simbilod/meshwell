@@ -17,9 +17,12 @@ if TYPE_CHECKING:
 
 @dataclass
 class OCCLabeledEntity:
-    """Dataclass to store an OCC shape and its associated metadata."""
+    """Dataclass to store OCC shape(s) and associated metadata.
 
-    shape: TopoDS_Shape
+    shapes holds the fragment pieces this entity owns after the all-fragment pass.
+    """
+
+    shapes: list[TopoDS_Shape]
     physical_name: tuple[str, ...]
     index: int
     keep: bool
@@ -69,13 +72,11 @@ class CAD_OCC:
 
     def _instantiate_entity_occ(self, index: int, entity_obj: Any) -> OCCLabeledEntity:
         """Instantiate a single entity into an OCC shape."""
-        # Instantiate entity using OCC method
         shape = entity_obj.instanciate_occ()
-
         dim = self._get_shape_dimension(shape)
 
         return OCCLabeledEntity(
-            shape=shape,
+            shapes=[shape],
             physical_name=entity_obj.physical_name,
             index=index,
             keep=entity_obj.mesh_bool,
