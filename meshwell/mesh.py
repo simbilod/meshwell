@@ -3,15 +3,37 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
+from collections.abc import Sequence
 from os import cpu_count
 from pathlib import Path
 
-import gmsh
 import meshio
 import numpy as np
 
+import gmsh
 from meshwell.labeledentity import LabeledEntities
 from meshwell.model import ModelManager
+
+
+def _normalize_algo(alg: int | Sequence[int]) -> tuple[int, ...]:
+    """Coerce a single algorithm id or a sequence of fallbacks into a tuple."""
+    if isinstance(alg, Sequence) and not isinstance(alg, (str, bytes)):
+        seq = tuple(alg)
+        if not seq:
+            raise ValueError("algorithm sequence must not be empty")
+        return seq
+    return (int(alg),)
+
+
+def _pair_algos(
+    algos_2d: tuple[int, ...], algos_3d: tuple[int, ...]
+) -> list[tuple[int, int]]:
+    """Pair 2D/3D fallback sequences position-wise, padding with the last value."""
+    n = max(len(algos_2d), len(algos_3d))
+    return [
+        (algos_2d[min(i, len(algos_2d) - 1)], algos_3d[min(i, len(algos_3d) - 1)])
+        for i in range(n)
+    ]
 
 
 class Mesh:
@@ -59,18 +81,24 @@ class Mesh:
         self,
         verbosity: int,
         default_characteristic_length: float,
-        global_2D_algorithm: int,
-        global_3D_algorithm: int,
+        global_2D_algorithm: int | Sequence[int],
+        global_3D_algorithm: int | Sequence[int],
         gmsh_version: float | None,
         mesh_element_order: int = 1,
     ) -> None:
-        """Initialize basic mesh settings."""
+        """Initialize basic mesh settings.
+
+        If either algorithm argument is a sequence, the first value is applied
+        here and process_mesh handles fallback to later ones.
+        """
         gmsh.option.setNumber("General.Terminal", verbosity)
         gmsh.option.setNumber(
             "Mesh.CharacteristicLengthMax", default_characteristic_length
         )
-        gmsh.option.setNumber("Mesh.Algorithm", global_2D_algorithm)
-        gmsh.option.setNumber("Mesh.Algorithm3D", global_3D_algorithm)
+        gmsh.option.setNumber("Mesh.Algorithm", _normalize_algo(global_2D_algorithm)[0])
+        gmsh.option.setNumber(
+            "Mesh.Algorithm3D", _normalize_algo(global_3D_algorithm)[0]
+        )
         gmsh.option.setNumber("Mesh.ElementOrder", mesh_element_order)
         if gmsh_version is not None:
             gmsh.option.setNumber("Mesh.MshFileVersion", gmsh_version)
@@ -379,7 +407,14 @@ class Mesh:
         verbosity: int,
         optimization_flags: tuple[tuple[str, int]] | None,
     ) -> meshio.Mesh:
-        """Generate mesh and return meshio object (no file I/O)."""
+        """Generate mesh and return meshio object (no file I/O).
+
+        The caller is expected to have already set Mesh.Algorithm /
+        Mesh.Algorithm3D on the gmsh option state (see ``_initialize_mesh_settings``).
+        Retry-on-failure logic lives in ``process_geometry`` because a raised
+        ``mesh.generate()`` leaves the gmsh runtime in a "busy" state that only
+        a full finalize+reinit will clear.
+        """
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
         gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 1e-5)
 
@@ -448,8 +483,8 @@ class Mesh:
         default_characteristic_length: float,
         background_remeshing_file: Path | None = None,
         global_scaling: float = 1.0,
-        global_2D_algorithm: int = 6,
-        global_3D_algorithm: int = 1,
+        global_2D_algorithm: int | Sequence[int] = 6,
+        global_3D_algorithm: int | Sequence[int] = 1,
         mesh_element_order: int = 1,
         verbosity: int | None = 0,
         periodic_entities: list[tuple[str, str]] | None = None,  # noqa: ARG002
@@ -466,8 +501,10 @@ class Mesh:
             default_characteristic_length: Default mesh size
             background_remeshing_file: Optional background mesh file for refinement
             global_scaling: Global scaling factor
-            global_2D_algorithm: GMSH 2D meshing algorithm
-            global_3D_algorithm: GMSH 3D meshing algorithm
+            global_2D_algorithm: GMSH 2D meshing algorithm, or a sequence of
+                algorithms to try in order if earlier attempts fail.
+            global_3D_algorithm: GMSH 3D meshing algorithm, or a sequence of
+                algorithms to try in order if earlier attempts fail.
             mesh_element_order: Element order
             verbosity: GMSH verbosity level
             periodic_entities: List of periodic boundary pairs
@@ -484,32 +521,62 @@ class Mesh:
         """
         self._initialize_model()
 
-        # Initialize mesh settings
-        self._initialize_mesh_settings(
-            verbosity=verbosity,
-            default_characteristic_length=default_characteristic_length,
-            global_2D_algorithm=global_2D_algorithm,
-            global_3D_algorithm=global_3D_algorithm,
-            gmsh_version=gmsh_version,
-            mesh_element_order=mesh_element_order,
+        attempts = _pair_algos(
+            _normalize_algo(global_2D_algorithm),
+            _normalize_algo(global_3D_algorithm),
         )
 
-        # Apply mesh refinement
-        self._apply_mesh_refinement(
-            background_remeshing_file=background_remeshing_file,
-            boundary_delimiter=boundary_delimiter,
-            resolution_specs=resolution_specs,
-            interface_delimiter=interface_delimiter,
-        )
+        def _run_once(algo2d: int, algo3d: int) -> meshio.Mesh:
+            self._initialize_mesh_settings(
+                verbosity=verbosity,
+                default_characteristic_length=default_characteristic_length,
+                global_2D_algorithm=algo2d,
+                global_3D_algorithm=algo3d,
+                gmsh_version=gmsh_version,
+                mesh_element_order=mesh_element_order,
+            )
+            self._apply_mesh_refinement(
+                background_remeshing_file=background_remeshing_file,
+                boundary_delimiter=boundary_delimiter,
+                resolution_specs=resolution_specs,
+                interface_delimiter=interface_delimiter,
+            )
+            return self.process_mesh(
+                dim=dim,
+                global_3D_algorithm=algo3d,
+                global_scaling=global_scaling,
+                verbosity=verbosity,
+                optimization_flags=optimization_flags,
+            )
 
-        # Generate and return mesh
-        return self.process_mesh(
-            dim=dim,
-            global_3D_algorithm=global_3D_algorithm,
-            global_scaling=global_scaling,
-            verbosity=verbosity,
-            optimization_flags=optimization_flags,
-        )
+        if len(attempts) == 1:
+            algo2d, algo3d = attempts[0]
+            return _run_once(algo2d, algo3d)
+
+        # Multi-attempt: persist CAD before the first try so we can restore
+        # after a failed generate() leaves gmsh in an unrecoverable "busy"
+        # state (neither mesh.clear() nor re-setting options releases it).
+        with tempfile.TemporaryDirectory() as tmp:
+            cad_checkpoint = Path(tmp) / "cad_checkpoint.xao"
+            self.model_manager.save_to_xao(cad_checkpoint)
+
+            for attempt_idx, (algo2d, algo3d) in enumerate(attempts):
+                try:
+                    return _run_once(algo2d, algo3d)
+                except Exception as exc:
+                    if attempt_idx == len(attempts) - 1:
+                        raise
+                    print(
+                        f"mesh attempt {attempt_idx + 1}/{len(attempts)} "
+                        f"(2D={algo2d}, 3D={algo3d}) failed: {exc}. "
+                        f"Retrying with next algorithm.",
+                        flush=True,
+                    )
+                    # Full gmsh reset: finalize + reinit + reload CAD.
+                    self.model_manager.finalize()
+                    self.model_manager.load_from_xao(cad_checkpoint)
+
+        raise RuntimeError("unreachable: retry loop exited without returning")
 
 
 def mesh(
@@ -520,8 +587,8 @@ def mesh(
     resolution_specs: dict | None = None,
     background_remeshing_file: Path | None = None,
     global_scaling: float = 1.0,
-    global_2D_algorithm: int = 6,
-    global_3D_algorithm: int = 1,
+    global_2D_algorithm: int | Sequence[int] = 6,
+    global_3D_algorithm: int | Sequence[int] = 1,
     mesh_element_order: int = 1,
     verbosity: int | None = 0,
     periodic_entities: list[tuple[str, str]] | None = None,
@@ -544,8 +611,10 @@ def mesh(
         resolution_specs: Mesh resolution specifications
         background_remeshing_file: Optional background mesh file for refinement
         global_scaling: Global scaling factor
-        global_2D_algorithm: GMSH 2D meshing algorithm
-        global_3D_algorithm: GMSH 3D meshing algorithm
+        global_2D_algorithm: GMSH 2D meshing algorithm, or a sequence of
+            algorithms tried in order with fallback on failure.
+        global_3D_algorithm: GMSH 3D meshing algorithm, or a sequence of
+            algorithms tried in order with fallback on failure.
         mesh_element_order: Element order
         verbosity: GMSH verbosity level
         periodic_entities: List of periodic boundary pairs
