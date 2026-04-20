@@ -5,7 +5,7 @@ import shapely
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
-from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh
+from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh
 from meshwell.polysurface import PolySurface
 
 

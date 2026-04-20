@@ -4,7 +4,7 @@ from shapely.geometry import Point, Polygon
 
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh as mesh_fn
-from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.occ_xao_writer import occ_to_xao
 from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface

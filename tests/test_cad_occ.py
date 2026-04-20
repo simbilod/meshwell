@@ -9,7 +9,7 @@ import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh, occ_to_xao
+from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh, occ_to_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 

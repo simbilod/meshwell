@@ -7,7 +7,7 @@ from OCP.BRepBndLib import BRepBndLib
 
 from meshwell.cad_occ import cad_occ
 from meshwell.occ_geometry_cache import OCCGeometryCache
-from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.occ_xao_writer import occ_to_xao
 from meshwell.polyprism import PolyPrism
 
 

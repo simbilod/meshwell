@@ -34,7 +34,7 @@ def cad(
         progress_bars: forwarded to both stages.
         **kwargs: forwarded to :func:`cad_occ`.
     """
-    from meshwell.occ_to_gmsh import occ_to_xao
+    from meshwell.occ_xao_writer import occ_to_xao
 
     occ_entities = cad_occ(entities_list, progress_bars=progress_bars, **kwargs)
     if output_file is not None:

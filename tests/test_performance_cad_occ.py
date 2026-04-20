@@ -8,7 +8,7 @@ import shapely
 
 from meshwell.cad_occ import CAD_OCC
 from meshwell.model import ModelManager
-from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh
+from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh
 from meshwell.polyprism import PolyPrism
 
 

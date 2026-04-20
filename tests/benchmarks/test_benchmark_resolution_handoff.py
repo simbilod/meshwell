@@ -5,7 +5,7 @@ import shapely
 
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import Mesh
-from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.occ_xao_writer import occ_to_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField
 

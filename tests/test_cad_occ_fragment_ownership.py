@@ -15,7 +15,7 @@ from meshwell.cad_occ import (
 )
 from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh
+from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface

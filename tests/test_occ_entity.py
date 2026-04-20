@@ -11,7 +11,7 @@ from OCP.gp import gp_Pnt
 
 from meshwell.cad_occ import cad_occ
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.occ_xao_writer import occ_to_xao
 from tests.test_occ_helpers import _occ_box
 
 
