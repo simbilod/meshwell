@@ -15,12 +15,14 @@ class OccBackend:
         self,
         progress_bars: bool = False,
         remove_all_duplicates: bool = False,
+        use_xao: bool = False,
         **kwargs,
     ):
         self.processor = CAD_OCC(**kwargs)
         self.results = []
         self.progress_bars = progress_bars
         self.remove_all_duplicates = remove_all_duplicates
+        self.use_xao = use_xao
 
     def process_entities(self, entities: list[Any], **kwargs) -> list[Any]:
         """Process entities using OCC backend."""
@@ -35,6 +37,7 @@ class OccBackend:
             path,
             progress_bars=self.progress_bars,
             remove_all_duplicates=self.remove_all_duplicates,
+            use_xao=self.use_xao,
         )
 
     def to_gmsh_model(self, model_manager: Any) -> None:
@@ -44,4 +47,5 @@ class OccBackend:
             model_manager,
             progress_bars=self.progress_bars,
             remove_all_duplicates=self.remove_all_duplicates,
+            use_xao=self.use_xao,
         )

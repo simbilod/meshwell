@@ -1,6 +1,7 @@
 """Unit tests for the all-fragment OCC pipeline."""
 from __future__ import annotations
 
+import shapely
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
@@ -15,6 +16,9 @@ from meshwell.cad_occ import (
 from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity
 from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh
+from meshwell.polyline import PolyLine
+from meshwell.polyprism import PolyPrism
+from meshwell.polysurface import PolySurface
 
 
 def test_occ_labeled_entity_accepts_shapes_list():
@@ -353,5 +357,139 @@ def test_embedded_surface_splits_volume_and_shares_face():
         surf_groups = gmsh.model.getPhysicalGroups(2)
         surf_names = [gmsh.model.getPhysicalName(d, t) for d, t in surf_groups]
         assert "cut" in surf_names
+    finally:
+        mm.finalize()
+
+
+def _aggregate_physical(
+    dim: int, name: str
+) -> tuple[float, tuple[float, float, float]]:
+    """Return (total mass, mass-weighted centroid) for a named physical group.
+
+    Mass is volume (dim=3), area (dim=2), or length (dim=1) per OCC convention.
+    """
+    groups = gmsh.model.getPhysicalGroups(dim)
+    tag = next(
+        (t for d, t in groups if gmsh.model.getPhysicalName(d, t) == name),
+        None,
+    )
+    assert tag is not None, f"physical group {name!r} of dim {dim} not found"
+    total_mass = 0.0
+    sx = sy = sz = 0.0
+    for ent_tag in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+        m = gmsh.model.occ.getMass(dim, ent_tag)
+        cx, cy, cz = gmsh.model.occ.getCenterOfMass(dim, ent_tag)
+        total_mass += m
+        sx += cx * m
+        sy += cy * m
+        sz += cz * m
+    assert total_mass > 0
+    return total_mass, (sx / total_mass, sy / total_mass, sz / total_mass)
+
+
+def test_multi_entity_physical_assignment_by_location_and_mass():
+    """Validate per-entity tagging against known input masses and centroids.
+
+    Scene (chosen so every mass and centroid is computable by hand):
+
+    - Prism A: unit square [0,1] x [0,1], z in [0,2] -> vol=2, centroid=(0.5,0.5,1).
+    - Prism B: unit square [1,2] x [0,1], z in [0,2] -> vol=2, centroid=(1.5,0.5,1).
+      A and B share the face x=1 (area 1 x 2=2), so ``A___B`` must exist.
+    - Prism C: unit square [4,5] x [0,1], z in [0,1] -> vol=1, centroid=(4.5,0.5,0.5).
+      Disjoint from A and B.
+    - Surface cut: horizontal square [0,1] x [0,1] at z=1, embedded in A.
+      After fragmentation it is the z=1 internal face of A (area=1, centroid
+      (0.5,0.5,1)). It also propagates through A's x=1 face, splitting the
+      ``A___B`` interface into two pieces (total area still 2).
+    - Line wire: segment from (6,0,0) to (7,0,0), length=1, centroid (6.5,0,0).
+
+    The mesh_order ladder (cut<A<B<C<wire) resolves any piece-ownership ties
+    deterministically, though by construction the prisms don't overlap.
+    """
+    # 3D prisms
+    square_A = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    square_B = shapely.Polygon([(1, 0), (2, 0), (2, 1), (1, 1), (1, 0)])
+    square_C = shapely.Polygon([(4, 0), (5, 0), (5, 1), (4, 1), (4, 0)])
+
+    prism_A = PolyPrism(
+        polygons=square_A,
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="A",
+        mesh_order=2,
+    )
+    prism_B = PolyPrism(
+        polygons=square_B,
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="B",
+        mesh_order=3,
+    )
+    prism_C = PolyPrism(
+        polygons=square_C,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="C",
+        mesh_order=4,
+    )
+
+    # 2D embedded cut at z=1 spanning A's footprint. The PolySurface lives at
+    # z=0 by default; we lift it with translation to z=1.
+    cut = PolySurface(
+        polygons=square_A,
+        physical_name="cut",
+        mesh_order=1,
+        translation=(0.0, 0.0, 1.0),
+    )
+
+    # 1D wire, disjoint segment.
+    wire = PolyLine(
+        linestrings=shapely.LineString([(6, 0), (7, 0)]),
+        physical_name="wire",
+        mesh_order=5,
+    )
+
+    entities = [cut, prism_A, prism_B, prism_C, wire]
+    occ_ents = cad_occ(entities)
+
+    mm = ModelManager(filename="test_multi_entity_mass_location")
+    try:
+        inject_occ_entities_into_gmsh(occ_ents, mm, remove_all_duplicates=True)
+
+        # Volume checks.
+        for name, expected_mass, expected_c in [
+            ("A", 2.0, (0.5, 0.5, 1.0)),
+            ("B", 2.0, (1.5, 0.5, 1.0)),
+            ("C", 1.0, (4.5, 0.5, 0.5)),
+        ]:
+            mass, centroid = _aggregate_physical(3, name)
+            assert abs(mass - expected_mass) < 1e-6, (name, mass, expected_mass)
+            for got, exp in zip(centroid, expected_c):
+                assert abs(got - exp) < 1e-4, (name, centroid, expected_c)
+
+        # Embedded cut surface: area=1, at z=1 on A's footprint.
+        mass, centroid = _aggregate_physical(2, "cut")
+        assert abs(mass - 1.0) < 1e-6, mass
+        for got, exp in zip(centroid, (0.5, 0.5, 1.0)):
+            assert abs(got - exp) < 1e-4, (centroid, exp)
+
+        # Shared A___B interface (or B___A depending on name order).
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        interface_name = next(
+            (
+                gmsh.model.getPhysicalName(d, t)
+                for d, t in surf_groups
+                if gmsh.model.getPhysicalName(d, t) in {"A___B", "B___A"}
+            ),
+            None,
+        )
+        assert interface_name is not None
+        mass, centroid = _aggregate_physical(2, interface_name)
+        assert abs(mass - 2.0) < 1e-6, mass  # 1 wide x 2 tall
+        for got, exp in zip(centroid, (1.0, 0.5, 1.0)):
+            assert abs(got - exp) < 1e-4, (centroid, exp)
+
+        # 1D wire.
+        mass, centroid = _aggregate_physical(1, "wire")
+        assert abs(mass - 1.0) < 1e-6, mass
+        for got, exp in zip(centroid, (6.5, 0.0, 0.0)):
+            assert abs(got - exp) < 1e-4, (centroid, exp)
     finally:
         mm.finalize()

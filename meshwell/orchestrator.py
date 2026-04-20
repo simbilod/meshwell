@@ -52,11 +52,17 @@ def generate_mesh(
         backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
     if "fuzzy_value" in mesh_kwargs:
         backend_kwargs["fuzzy_value"] = mesh_kwargs.pop("fuzzy_value")
+    if "canonicalize_topology" in mesh_kwargs:
+        backend_kwargs["canonicalize_topology"] = mesh_kwargs.pop(
+            "canonicalize_topology"
+        )
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
+    use_xao = mesh_kwargs.pop("use_xao", False)
     if backend == "occ":
         backend_kwargs["progress_bars"] = progress_bars
         backend_kwargs["remove_all_duplicates"] = remove_all_duplicates
+        backend_kwargs["use_xao"] = use_xao
 
     if backend == "occ":
         from meshwell.backend_occ import OccBackend
