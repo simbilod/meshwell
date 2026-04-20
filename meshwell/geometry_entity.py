@@ -4,12 +4,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import gmsh
 import numpy as np
+
+import gmsh
 
 if TYPE_CHECKING:
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
+
+    from meshwell.occ_geometry_cache import OCCGeometryCache
 
 from meshwell.cad import CAD
 
@@ -360,6 +363,7 @@ class GeometryEntity:
         identify_arcs: bool = False,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
+        occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Wire:
         """Create an OCC wire from vertex coordinates with optional arc identification."""
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
@@ -369,7 +373,10 @@ class GeometryEntity:
             points = self._make_occ_points(vertices)
             wire_builder = BRepBuilderAPI_MakeWire()
             for i in range(len(points) - 1):
-                edge = BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
+                if occ_cache is not None:
+                    edge = occ_cache.get_line_edge(points[i], points[i + 1])
+                else:
+                    edge = BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
                 wire_builder.Add(edge)
             return wire_builder.Wire()
 
@@ -387,42 +394,46 @@ class GeometryEntity:
         wire_builder = BRepBuilderAPI_MakeWire()
         ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
 
+        def _rounded_pnt(coords):
+            rc = [round(c, ndigits) for c in coords]
+            return gp_Pnt(*rc)
+
         for seg in segments:
             if seg.is_arc:
-                # Round points to consistent decimal places based on tolerance
-                # to ensure exact geometrical match between adjacent polygons
-                p0 = [round(c, ndigits) for c in seg.points[0]]
-                p_start = gp_Pnt(*p0)
-
+                p_start = _rounded_pnt(seg.points[0])
                 mid_idx = len(seg.points) // 2
-                pmid = [round(c, ndigits) for c in seg.points[mid_idx]]
-                p_mid = gp_Pnt(*pmid)
-
-                pend = [round(c, ndigits) for c in seg.points[-1]]
-                p_end = gp_Pnt(*pend)
+                p_mid = _rounded_pnt(seg.points[mid_idx])
+                p_end = _rounded_pnt(seg.points[-1])
+                center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
 
                 if seg.points[0] == seg.points[-1]:
-                    # Full circle: split into two 180-degree arcs
+                    # Full circle: split into two 180-degree arcs.
                     quarter_idx = len(seg.points) // 4
                     three_quarter_idx = (len(seg.points) * 3) // 4
-                    pq1 = [round(c, ndigits) for c in seg.points[quarter_idx]]
-                    p1 = gp_Pnt(*pq1)
-
-                    pq3 = [round(c, ndigits) for c in seg.points[three_quarter_idx]]
-                    p3 = gp_Pnt(*pq3)
-
-                    arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
-                    edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
+                    p1 = _rounded_pnt(seg.points[quarter_idx])
+                    p3 = _rounded_pnt(seg.points[three_quarter_idx])
+                    if occ_cache is not None:
+                        edge1 = occ_cache.get_arc_edge(
+                            p_start, p1, p_mid, center, seg.radius
+                        )
+                        edge = occ_cache.get_arc_edge(
+                            p_mid, p3, p_end, center, seg.radius
+                        )
+                    else:
+                        arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
+                        edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
+                        arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
                     wire_builder.Add(edge1)
-
-                    arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
-                    edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
+                elif occ_cache is not None:
+                    edge = occ_cache.get_arc_edge(
+                        p_start, p_mid, p_end, center, seg.radius
+                    )
                 else:
                     from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
                     from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
 
                     try:
-                        center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
                         axis = gp_Ax2(center, gp_Dir(0, 0, 1))
                         circle = gp_Circ(axis, seg.radius)
 
@@ -443,12 +454,12 @@ class GeometryEntity:
                         arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
                         edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
-                p1_rounded = [round(c, ndigits) for c in seg.points[0]]
-                p1 = gp_Pnt(*p1_rounded)
-
-                p2_rounded = [round(c, ndigits) for c in seg.points[1]]
-                p2 = gp_Pnt(*p2_rounded)
-                edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+                p1 = _rounded_pnt(seg.points[0])
+                p2 = _rounded_pnt(seg.points[1])
+                if occ_cache is not None:
+                    edge = occ_cache.get_line_edge(p1, p2)
+                else:
+                    edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
             wire_builder.Add(edge)
         return wire_builder.Wire()
 
@@ -458,6 +469,7 @@ class GeometryEntity:
         identify_arcs: bool = False,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
+        occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Face:
         """Create an OCC face from vertex coordinates with optional arc identification."""
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
@@ -467,6 +479,7 @@ class GeometryEntity:
             identify_arcs=identify_arcs,
             min_arc_points=min_arc_points,
             arc_tolerance=arc_tolerance,
+            occ_cache=occ_cache,
         )
         return BRepBuilderAPI_MakeFace(wire).Face()
 
@@ -512,8 +525,15 @@ class GeometryEntity:
         """
         raise NotImplementedError("Subclasses must implement instanciate method")
 
-    def instanciate_occ(self) -> TopoDS_Shape:
+    def instanciate_occ(
+        self, occ_cache: OCCGeometryCache | None = None
+    ) -> TopoDS_Shape:
         """Create OCC geometry. To be implemented by subclasses.
+
+        Args:
+            occ_cache: Optional shared geometry cache. When provided, edge
+                and vertex construction goes through the cache so coincident
+                sub-geometry is TShape-identical across entities.
 
         Returns:
             TopoDS_Shape: Created OCC shape
