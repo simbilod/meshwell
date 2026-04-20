@@ -83,6 +83,7 @@ class CAD_OCC:
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
         fuzzy_value: float | None = None,
+        canonicalize_topology: bool = False,
     ):
         """Initialize OCC CAD processor.
 
@@ -99,10 +100,19 @@ class CAD_OCC:
                 can fuse coincident interfaces that drifted more than a
                 cache-safe tolerance would allow. Defaults to
                 ``point_tolerance`` when ``None``.
+            canonicalize_topology: if True, run
+                :func:`meshwell.occ_canonicalize.canonicalize_topology` after
+                the all-fragment pass. Forces TShape sharing across entities
+                for coincident sub-vertices/edges/faces whose drift is below
+                ``point_tolerance`` but above ``fuzzy_value``. Removes
+                residual duplicates that would otherwise reach tetgen as
+                "overlapping facets" — an OCC-side substitute for the
+                gmsh-level ``remove_all_duplicates`` safety net.
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
         self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
+        self.canonicalize_topology = canonicalize_topology
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from TopoDS_Shape type."""
@@ -257,7 +267,26 @@ class CAD_OCC:
             )
         ]
 
-        return self._fragment_all(labeled_entities, progress_bars=progress_bars)
+        labeled_entities = self._fragment_all(
+            labeled_entities, progress_bars=progress_bars
+        )
+
+        if self.canonicalize_topology:
+            from meshwell.occ_canonicalize import canonicalize_topology
+
+            stats = canonicalize_topology(
+                labeled_entities, point_tolerance=self.point_tolerance
+            )
+            if progress_bars and any(stats.values()):
+                print(
+                    f"Canonicalized TShapes: "
+                    f"{stats['vertices']} vertices, "
+                    f"{stats['edges']} edges, "
+                    f"{stats['faces']} faces.",
+                    flush=True,
+                )
+
+        return labeled_entities
 
 
 def cad_occ(
@@ -266,11 +295,13 @@ def cad_occ(
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
     fuzzy_value: float | None = None,
+    canonicalize_topology: bool = False,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing."""
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
         fuzzy_value=fuzzy_value,
+        canonicalize_topology=canonicalize_topology,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)
