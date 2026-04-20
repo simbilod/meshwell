@@ -29,7 +29,10 @@ def generate_mesh(
         registry: Optional registry for OCC_entity function resolution
         **mesh_kwargs: Additional arguments for the mesh() function.
             Includes ``progress_bars`` (bool): if True, show tqdm progress bars
-            for CAD and OCC→gmsh steps.
+            for CAD and OCC→gmsh steps. ``remove_all_duplicates`` (bool, OCC
+            backend only): if True, run a gmsh-level fragment safety net
+            across all imported pieces after importShapes (tag-preserving
+            equivalent of ``occ.removeAllDuplicates``).
 
     Returns:
         meshio.Mesh: The generated mesh object
@@ -44,8 +47,10 @@ def generate_mesh(
     if "point_tolerance" in mesh_kwargs:
         backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
     progress_bars = mesh_kwargs.pop("progress_bars", False)
+    remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
     if backend == "occ":
         backend_kwargs["progress_bars"] = progress_bars
+        backend_kwargs["remove_all_duplicates"] = remove_all_duplicates
 
     if backend == "occ":
         from meshwell.backend_occ import OccBackend

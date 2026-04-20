@@ -22,6 +22,7 @@ def inject_occ_entities_into_gmsh(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     progress_bars: bool = False,
+    remove_all_duplicates: bool = False,
 ) -> list[LabeledEntities]:
     """Inject OCC shapes into gmsh and tag them.
 
@@ -38,9 +39,11 @@ def inject_occ_entities_into_gmsh(
         interface_delimiter: delimiter for interface physical names.
         boundary_delimiter: delimiter for exterior boundary physical names.
         progress_bars: if True, show tqdm progress bars for per-entity steps.
-
-    Returns:
-        list of LabeledEntities aligned 1:1 with the input entity order.
+        remove_all_duplicates: if True, run a gmsh-level fragment safety net
+            across all imported dimtags after importShapes. Equivalent to
+            ``gmsh.model.occ.removeAllDuplicates()`` but preserves per-entity
+            physical tagging by remapping dimtags through the fragment map
+            (``removeAllDuplicates`` issues fresh tags and drops the mapping).
     """
     from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
@@ -54,6 +57,13 @@ def inject_occ_entities_into_gmsh(
 
     model_manager.ensure_initialized(str(model_manager.filename))
     gmsh_model = model_manager.model
+
+    # More accurate bounding boxes from STL tessellation. Tag-safe (bbox-only).
+    # Helps bbox-based queries (e.g. getEntitiesInBoundingBox) and some internal
+    # coincidence checks during boundary recovery.
+    import gmsh as _gmsh
+
+    _gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
 
     max_dim = 0
     for ent in occ_entities:
@@ -92,6 +102,42 @@ def inject_occ_entities_into_gmsh(
             str(brep_file), highestDimOnly=False
         )
         gmsh_model.occ.synchronize()
+
+    # Optional gmsh-level duplicate safety net. Mirrors occ.removeAllDuplicates
+    # (which calls booleanFragments(-1, allDimTags, ...) internally) but keeps
+    # the ``outDimTagsMap`` so we can forward each entity's dimtags to the new
+    # post-fragment tags. Plain removeAllDuplicates would drop that mapping and
+    # leave our per-entity dimtag slice pointing at deleted shapes.
+    if remove_all_duplicates and imported_dimtags:
+        if progress_bars:
+            print(
+                f"Fragment safety net across {len(imported_dimtags)} imported pieces…",
+                flush=True,
+            )
+        _, out_map = gmsh_model.occ.fragment(
+            list(imported_dimtags),
+            [],
+            removeObject=True,
+            removeTool=True,
+        )
+        gmsh_model.occ.synchronize()
+        # out_map[i] holds the new dimtags for imported_dimtags[i]. Rewrite
+        # imported_dimtags in place so the slice-by-piece_counts loop below
+        # still works, but may yield a different count per entity (absorbed
+        # duplicates collapse to the same dimtag in multiple slots — downstream
+        # tag_interfaces treats shared surfaces correctly).
+        remapped: list[tuple[int, int]] = []
+        new_counts: list[int] = []
+        cursor = 0
+        for count in piece_counts:
+            entity_new: list[tuple[int, int]] = []
+            for i in range(cursor, cursor + count):
+                entity_new.extend(out_map[i])
+            cursor += count
+            new_counts.append(len(entity_new))
+            remapped.extend(entity_new)
+        imported_dimtags = remapped
+        piece_counts = new_counts
 
     # importShapes preserves top-level iteration order of the compound, so
     # slicing by piece_counts yields each entity's dimtags.
@@ -183,6 +229,7 @@ def occ_to_xao(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     progress_bars: bool = False,
+    remove_all_duplicates: bool = False,
 ) -> None:
     """Convenience function to inject and save to .xao.
 
@@ -193,6 +240,9 @@ def occ_to_xao(
         interface_delimiter: Delimiter for interface names
         boundary_delimiter: Delimiter for boundary names
         progress_bars: if True, show tqdm progress bars for per-entity steps.
+        remove_all_duplicates: if True, run a gmsh-level fragment safety net
+            across all imported pieces after importShapes. See
+            :func:`inject_occ_entities_into_gmsh`.
     """
     from meshwell.model import ModelManager
 
@@ -207,6 +257,7 @@ def occ_to_xao(
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
         progress_bars=progress_bars,
+        remove_all_duplicates=remove_all_duplicates,
     )
     model_manager.save_to_xao(output_file)
 

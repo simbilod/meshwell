@@ -200,6 +200,62 @@ def test_inject_two_overlapping_boxes_produces_shared_interface():
         mm.finalize()
 
 
+def test_inject_with_remove_all_duplicates_preserves_physical_tags():
+    """`remove_all_duplicates=True` must not invalidate per-entity physical tags.
+
+    The gmsh-level fragment safety net issues fresh dimtags for every imported
+    shape. We rely on the returned ``outDimTagsMap`` to remap per-entity
+    dimtags; if that remap breaks, each physical group either becomes empty or
+    points at the wrong volumes.
+    """
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    occ_ents = cad_occ([a, b])
+
+    mm = ModelManager(filename="test_remove_all_duplicates")
+    try:
+        labeled = inject_occ_entities_into_gmsh(
+            occ_ents, mm, remove_all_duplicates=True
+        )
+        by_name = {le.physical_name[0]: le for le in labeled}
+        assert set(by_name) == {"a", "b"}
+
+        # Two 3D volumes, each with the right physical tag.
+        vol_groups = gmsh.model.getPhysicalGroups(3)
+        names_to_vols = {
+            gmsh.model.getPhysicalName(d, t): set(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in vol_groups
+        }
+        assert set(names_to_vols) == {"a", "b"}
+        assert len(names_to_vols["a"]) == 1
+        assert len(names_to_vols["b"]) == 1
+        # No volume appears in both groups.
+        assert names_to_vols["a"].isdisjoint(names_to_vols["b"])
+
+        # Shared interface still resolved.
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        surf_names = {gmsh.model.getPhysicalName(d, t) for d, t in surf_groups}
+        assert surf_names & {"a___b", "b___a"}
+    finally:
+        mm.finalize()
+
+
 def test_embedded_surface_splits_volume_and_shares_face():
     """A 2D surface inside a 3D box must appear as a shared face of the box sub-solids."""
     from OCP.BRepBuilderAPI import (
