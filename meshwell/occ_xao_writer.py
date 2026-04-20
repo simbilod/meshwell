@@ -12,15 +12,15 @@ Pipeline
 
     OCCLabeledEntity(s)  (from meshwell.cad_occ)
             |
-            v  write_xao: OCP tagging + BREP + topology refs + groups
+            v  write_xao: OCP tagging + BREP (kept only) + groups
     .xao (self-contained, CDATA-inline BREP)
             |
             v  gmsh.open
     gmsh model with physical groups already applied
             |
-            v  inject_occ_entities_into_gmsh: strip keep=False shapes,
-               build LabeledEntities by physical-name lookup,
-               optional remove_all_duplicates safety net
+            v  inject_occ_entities_into_gmsh: build LabeledEntities by
+               physical-name lookup, optional remove_all_duplicates
+               safety net
     list[LabeledEntities]  (ready for resolution / meshing)
 
 Design notes
@@ -31,13 +31,13 @@ Design notes
   ``TopExp::MapShapes`` reference indices need a bit-identical shape
   on both sides. Embedded inline in CDATA (single self-contained file).
 
-- **keep=False entities**: their shapes are serialized into BREP so
-  BOPAlgo-shared boundaries still resolve to the same TShape on load
-  (needed to name ``A___B`` interfaces where B is keep=False). Their
-  own physical-name groups and exterior boundaries are *not* emitted --
-  those entities won't exist in the final mesh. A single
-  ``_meshwell_keep_false`` marker group carries their top-level
-  dimtags so the injector can ``occ.remove`` them after load.
+- **keep=False entities** are *not* serialized into the BREP. Their
+  shape memory is still used for interface computation -- a face F
+  shared between kept A and helper B (via BOPAlgo TShape identity) is
+  already a sub-face of A's solid, so F travels into the BREP through
+  A, and the ``A___B`` interface group references it by topology index.
+  Nothing is imported for B, so nothing needs to be removed after load;
+  "keep=False" means literally "not in the final model".
 
 - **Per-entity dimtag recovery** after load is by physical-name lookup:
   each kept entity's ``physical_name[0]`` resolves to its dimtags via
@@ -79,9 +79,6 @@ _DIM_TO_TOPABS = {
 }
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
-
-_KEEP_FALSE_MARKER = "_meshwell_keep_false"
-
 
 # ---------------------------------------------------------------------------
 # OCP-level helpers
@@ -150,9 +147,10 @@ def _compute_physical_groups(
         for name in ent.physical_name:
             groups.setdefault((ent.dim, name), []).extend(leaves)
 
-    # 2. tag_interfaces: include every pair regardless of keep so that kept
-    #    neighbours can name boundaries shared with helper (keep=False)
-    #    entities.
+    # 2. tag_interfaces: include pairs where at least one side is keep=True,
+    #    so kept neighbours can name boundaries shared with helper
+    #    (keep=False) entities. Pairs where both sides are keep=False have
+    #    no shape in the emitted BREP and would reference phantom topology.
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
     for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
         if ent1.dim != ent2.dim or ent1.dim != max_dim:
@@ -164,6 +162,8 @@ def _compute_physical_groups(
             continue
         entity_interface_ids[i1].update(common)
         entity_interface_ids[i2].update(common)
+        if not (ent1.keep or ent2.keep):
+            continue
         if ent1.physical_name == ent2.physical_name:
             continue
         interface_dim = ent1.dim - 1
@@ -194,14 +194,6 @@ def _compute_physical_groups(
             full_name = f"{name}{interface_delimiter}{boundary_delimiter}"
             groups.setdefault((boundary_dim, full_name), []).extend(exterior_shapes)
 
-    # 4. Single keep=False marker group so the injector can ``occ.remove``
-    #    helper shapes post-load. Entries are top-level leaves at the
-    #    entity's own dim.
-    for ent, leaves in zip(entities, entity_leaves):
-        if ent.keep or not leaves:
-            continue
-        groups.setdefault((ent.dim, _KEEP_FALSE_MARKER), []).extend(leaves)
-
     return groups
 
 
@@ -221,16 +213,25 @@ def write_xao(
 
     The XAO contains every physical group the meshwell tagging pipeline
     would produce (entities, interfaces, exterior boundaries), computed at
-    OCP level from TShape identity. keep=False entities contribute their
-    shapes to the BREP and participate in interface naming but do not
-    get entity-own or exterior groups; a single ``_meshwell_keep_false``
-    marker group carries their dimtags for caller-side removal.
+    OCP level from TShape identity.
+
+    keep=False entities are **not** serialized into the BREP -- only
+    their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
+    with a kept entity survive, as boundary sub-shapes of the kept
+    entity's solid. That lets ``tag_interfaces`` still name ``A___helper``
+    without putting helper's solid in the mesh. Interface/boundary
+    computation still walks every entity's ``shapes`` list in Python
+    memory; only the BREP serialization excludes keep=False.
     """
-    # Build compound of all shapes (original entity order).
+    # Build compound of keep=True shapes only. Sub-boundaries shared with
+    # keep=False helpers come along for free because BOPAlgo made them
+    # share TShape with the kept entity's solid.
     cb = BRep_Builder()
     compound = TopoDS_Compound()
     cb.MakeCompound(compound)
     for ent in entities:
+        if not ent.keep:
+            continue
         for s in ent.shapes:
             cb.Add(compound, s)
 
@@ -363,31 +364,6 @@ def _resolve_entity_dimtags(
     return entity_dimtags
 
 
-def _remove_keep_false_shapes(gmsh_model) -> None:
-    """Strip the ``_meshwell_keep_false`` group and ``occ.remove`` its dimtags.
-
-    ``recursive=False``: only remove the top-level shapes. Shared sub-faces
-    that a kept neighbour still references must survive (they were tagged
-    as ``A___B`` interfaces).
-    """
-    targets: list[tuple[int, int]] = []
-    marker_groups: list[tuple[int, int]] = []
-    for dim in (0, 1, 2, 3):
-        for d, ptag in gmsh_model.getPhysicalGroups(dim):
-            if gmsh_model.getPhysicalName(d, ptag) != _KEEP_FALSE_MARKER:
-                continue
-            marker_groups.append((d, ptag))
-            targets.extend(
-                (d, int(tag)) for tag in gmsh_model.getEntitiesForPhysicalGroup(d, ptag)
-            )
-
-    if marker_groups:
-        gmsh_model.removePhysicalGroups(marker_groups)
-    if targets:
-        gmsh_model.occ.remove(targets, recursive=False)
-        gmsh_model.occ.synchronize()
-
-
 def _run_remove_all_duplicates_safety_net(
     gmsh_model,
     entity_dimtags: list[list[tuple[int, int]]],
@@ -512,9 +488,9 @@ def inject_occ_entities_into_gmsh(
         _gmsh.open(str(xao_path))
         gmsh_model.occ.synchronize()
 
-    # Drop keep=False shapes before anything else touches dimtags.
-    _remove_keep_false_shapes(gmsh_model)
-
+    # keep=False shapes were never serialized into the BREP, so there's
+    # nothing to remove here. Shared sub-faces with kept neighbours came
+    # through as boundaries of the kept entity's solid.
     entity_dimtags = _resolve_entity_dimtags(occ_entities, gmsh_model)
 
     if remove_all_duplicates:
