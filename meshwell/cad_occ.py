@@ -9,6 +9,7 @@ from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
+from tqdm.auto import tqdm
 
 from meshwell.occ_geometry_cache import OCCGeometryCache
 
@@ -136,7 +137,11 @@ class CAD_OCC:
             mesh_order=entity_obj.mesh_order,
         )
 
-    def _fragment_all(self, entities: list[OCCLabeledEntity]) -> list[OCCLabeledEntity]:
+    def _fragment_all(
+        self,
+        entities: list[OCCLabeledEntity],
+        progress_bars: bool = False,
+    ) -> list[OCCLabeledEntity]:
         """Fragment all entities together; assign pieces by mesh_order priority.
 
         Each input entity carries a ``mesh_order`` attribute (float or None).
@@ -157,11 +162,18 @@ class CAD_OCC:
         builder.SetNonDestructive(False)
 
         originals_per_entity: list[list[TopoDS_Shape]] = []
-        for ent in entities:
+        for ent in tqdm(
+            entities,
+            desc="BOPAlgo add arguments",
+            disable=not progress_bars,
+            leave=False,
+        ):
             originals_per_entity.append(list(ent.shapes))
             for s in ent.shapes:
                 builder.AddArgument(s)
 
+        if progress_bars:
+            print(f"BOPAlgo_Builder.Perform() on {len(entities)} entities…", flush=True)
         builder.Perform()
 
         # piece_candidates: shape_key -> list of (entity_index, mesh_order).
@@ -169,7 +181,14 @@ class CAD_OCC:
         piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = {}
         piece_shapes: dict[tuple[int, int], TopoDS_Shape] = {}
 
-        for ent_idx, ent in enumerate(entities):
+        for ent_idx, ent in enumerate(
+            tqdm(
+                entities,
+                desc="Collecting fragment pieces",
+                disable=not progress_bars,
+                leave=False,
+            )
+        ):
             mo = ent.mesh_order
             if mo is None:
                 mo = float("inf")
@@ -198,7 +217,7 @@ class CAD_OCC:
     def process_entities(
         self,
         entities_list: list[Any],
-        _progress_bars: bool = False,
+        progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
         """Instantiate entities then do one BOPAlgo_Builder pass across all of them.
 
@@ -217,17 +236,24 @@ class CAD_OCC:
         occ_cache = OCCGeometryCache(point_tolerance=self.point_tolerance)
         labeled_entities = [
             self._instantiate_entity_occ(i, ent, occ_cache)
-            for i, ent in enumerate(entities_list)
+            for i, ent in enumerate(
+                tqdm(
+                    entities_list,
+                    desc="Instantiating OCC entities",
+                    disable=not progress_bars,
+                )
+            )
         ]
 
-        return self._fragment_all(labeled_entities)
+        return self._fragment_all(labeled_entities, progress_bars=progress_bars)
 
 
 def cad_occ(
     entities_list: list[Any],
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
+    progress_bars: bool = False,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing."""
     processor = CAD_OCC(point_tolerance=point_tolerance, n_threads=n_threads)
-    return processor.process_entities(entities_list)
+    return processor.process_entities(entities_list, progress_bars=progress_bars)

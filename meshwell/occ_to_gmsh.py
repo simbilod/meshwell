@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from OCP.BRepTools import BRepTools
+from tqdm.auto import tqdm
 
 from meshwell.labeledentity import LabeledEntities
 from meshwell.tag import tag_boundaries, tag_entities, tag_interfaces
@@ -20,6 +21,7 @@ def inject_occ_entities_into_gmsh(
     model_manager: ModelManager | None = None,
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
+    progress_bars: bool = False,
 ) -> list[LabeledEntities]:
     """Inject OCC shapes into gmsh and tag them.
 
@@ -35,6 +37,7 @@ def inject_occ_entities_into_gmsh(
         model_manager: ModelManager instance. A fresh one is created if None.
         interface_delimiter: delimiter for interface physical names.
         boundary_delimiter: delimiter for exterior boundary physical names.
+        progress_bars: if True, show tqdm progress bars for per-entity steps.
 
     Returns:
         list of LabeledEntities aligned 1:1 with the input entity order.
@@ -64,13 +67,23 @@ def inject_occ_entities_into_gmsh(
     comp_builder.MakeCompound(compound)
 
     piece_counts: list[int] = []
-    for ent in occ_entities:
+    for ent in tqdm(
+        occ_entities,
+        desc="Packing OCC compound",
+        disable=not progress_bars,
+        leave=False,
+    ):
         piece_counts.append(len(ent.shapes))
         for s in ent.shapes:
             comp_builder.Add(compound, s)
 
     final_entity_list: list[LabeledEntities] = []
 
+    if progress_bars:
+        print(
+            f"Writing BREP compound and importing into gmsh ({sum(piece_counts)} pieces)…",
+            flush=True,
+        )
     with tempfile.TemporaryDirectory() as tmpdir:
         brep_file = Path(tmpdir) / "all_entities.brep"
         BRepTools.Write_s(compound, str(brep_file))
@@ -102,10 +115,20 @@ def inject_occ_entities_into_gmsh(
             )
         )
 
-    for entity in final_entity_list:
+    for entity in tqdm(
+        final_entity_list,
+        desc="Updating boundaries",
+        disable=not progress_bars,
+        leave=False,
+    ):
         entity.update_boundaries()
 
     if final_entity_list:
+        if progress_bars:
+            print(
+                f"Tagging {len(final_entity_list)} entities, interfaces, boundaries…",
+                flush=True,
+            )
         tag_entities(final_entity_list, gmsh_model)
         tag_interfaces(
             final_entity_list,
@@ -159,6 +182,7 @@ def occ_to_xao(
     model_manager: ModelManager | None = None,
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
+    progress_bars: bool = False,
 ) -> None:
     """Convenience function to inject and save to .xao.
 
@@ -168,6 +192,7 @@ def occ_to_xao(
         model_manager: ModelManager instance
         interface_delimiter: Delimiter for interface names
         boundary_delimiter: Delimiter for boundary names
+        progress_bars: if True, show tqdm progress bars for per-entity steps.
     """
     from meshwell.model import ModelManager
 
@@ -181,6 +206,7 @@ def occ_to_xao(
         model_manager=model_manager,
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
+        progress_bars=progress_bars,
     )
     model_manager.save_to_xao(output_file)
 

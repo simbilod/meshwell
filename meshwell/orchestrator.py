@@ -27,7 +27,9 @@ def generate_mesh(
         backend: CAD backend to use ("occ" or "gmsh")
         checkpoint_cad: Optional path to save the CAD state (.xao)
         registry: Optional registry for OCC_entity function resolution
-        **mesh_kwargs: Additional arguments for the mesh() function
+        **mesh_kwargs: Additional arguments for the mesh() function.
+            Includes ``progress_bars`` (bool): if True, show tqdm progress bars
+            for CAD and OCC→gmsh steps.
 
     Returns:
         meshio.Mesh: The generated mesh object
@@ -41,6 +43,9 @@ def generate_mesh(
         backend_kwargs["n_threads"] = mesh_kwargs["n_threads"]
     if "point_tolerance" in mesh_kwargs:
         backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
+    progress_bars = mesh_kwargs.pop("progress_bars", False)
+    if backend == "occ":
+        backend_kwargs["progress_bars"] = progress_bars
 
     if backend == "occ":
         from meshwell.backend_occ import OccBackend
@@ -54,7 +59,10 @@ def generate_mesh(
         raise ValueError(f"Unknown backend: {backend}. Use 'occ' or 'gmsh'.")
 
     # 1. Process CAD
-    backend_obj.process_entities(entities)
+    if backend == "gmsh":
+        backend_obj.process_entities(entities, progress_bars=progress_bars)
+    else:
+        backend_obj.process_entities(entities)
 
     # 2. Save checkpoint if requested
     if checkpoint_cad:
