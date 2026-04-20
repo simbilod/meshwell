@@ -198,3 +198,63 @@ def test_inject_two_overlapping_boxes_produces_shared_interface():
         assert len(interface_surfaces) == 1, interface_surfaces
     finally:
         mm.finalize()
+
+
+def test_embedded_surface_splits_volume_and_shares_face():
+    """A 2D surface inside a 3D box must appear as a shared face of the box sub-solids."""
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+    )
+
+    def rect(x, y, z, dx, dy):
+        p1 = gp_Pnt(x, y, z)
+        p2 = gp_Pnt(x + dx, y, z)
+        p3 = gp_Pnt(x + dx, y + dy, z)
+        p4 = gp_Pnt(x, y + dy, z)
+        w = BRepBuilderAPI_MakeWire(
+            BRepBuilderAPI_MakeEdge(p1, p2).Edge(),
+            BRepBuilderAPI_MakeEdge(p2, p3).Edge(),
+            BRepBuilderAPI_MakeEdge(p3, p4).Edge(),
+            BRepBuilderAPI_MakeEdge(p4, p1).Edge(),
+        ).Wire()
+        return BRepBuilderAPI_MakeFace(w).Face()
+
+    box = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 2.0, 2.0, 2.0
+        ).Shape(),
+        physical_name="box",
+        mesh_order=1,
+        dimension=3,
+    )
+    # A surface cutting the box in half at z=1.
+    cut_surface = OCC_entity(
+        occ_function=lambda: rect(0.0, 0.0, 1.0, 2.0, 2.0),
+        physical_name="cut",
+        mesh_order=2,
+        dimension=2,
+    )
+
+    occ_ents = cad_occ([box, cut_surface])
+    mm = ModelManager(filename="test_embedded_surface")
+    try:
+        inject_occ_entities_into_gmsh(occ_ents, mm)
+        # Box should be split into two volumes.
+        vols = gmsh.model.getEntitiesForPhysicalGroup(
+            3,
+            next(
+                tag
+                for dim, tag in gmsh.model.getPhysicalGroups(3)
+                if gmsh.model.getPhysicalName(dim, tag) == "box"
+            ),
+        )
+        assert len(vols) == 2
+
+        # The "cut" physical group must exist in 2D.
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        surf_names = [gmsh.model.getPhysicalName(d, t) for d, t in surf_groups]
+        assert "cut" in surf_names
+    finally:
+        mm.finalize()
