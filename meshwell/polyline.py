@@ -1,12 +1,11 @@
 """Gmsh wire definitions."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shapely.geometry import LineString, MultiLineString
 
 import gmsh
-from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
@@ -150,7 +149,7 @@ class PolyLine(GeometryEntity):
 
     def instanciate(
         self,
-        cad_model: CAD | None = None,  # noqa: ARG002
+        cad_model: Any | None = None,  # noqa: ARG002
     ) -> list[tuple[int, int]]:
         """Create GMSH wires directly without using CAD class methods."""
         wires = []

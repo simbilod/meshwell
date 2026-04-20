@@ -16,7 +16,7 @@ from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot2D
 
@@ -89,7 +89,7 @@ rectangle = OCC_entity(
 
 entities_list = [poly2D, s, disk_entity, rectangle]
 
-occ_to_xao(cad_occ(entities_list), "complicated.xao")
+write_xao(cad_occ(entities_list), "complicated.xao")
 
 output_mesh = mesh(
     dim=2,
@@ -135,7 +135,7 @@ rectangle = OCC_entity(
 
 entities_list = [poly2D, s, disk_entity, rectangle]
 
-occ_to_xao(cad_occ(entities_list), "model.xao")
+write_xao(cad_occ(entities_list), "model.xao")
 
 output_mesh = mesh(
     dim=2,
@@ -184,7 +184,7 @@ rectangle = OCC_entity(
 
 entities_list = [poly2D, s, disk_entity, rectangle]
 
-occ_to_xao(cad_occ(entities_list), "model.xao")
+write_xao(cad_occ(entities_list), "model.xao")
 
 output_mesh = mesh(
     dim=2,

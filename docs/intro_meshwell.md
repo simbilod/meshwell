@@ -21,19 +21,19 @@ Key concepts:
 - **`physical_name`**: A label for the entity, used for the GMSH physical group
 - **`mesh_order`**: Controls how overlapping entities of the same dimension interact (lower order takes precedence)
 
-The geometry is processed by OCC via `cad_occ()` and written to a `.xao` file using `occ_to_xao()`.
+The geometry is processed by OCC via `cad_occ()` and written to a `.xao` file using `write_xao()`.
 
 ```python
 import shapely
 
 from meshwell.cad_occ import cad_occ
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 
 polygon = shapely.Polygon([[-5, -5], [5, -5], [5, 5], [-5, 5]])
 entity = PolySurface(polygons=polygon, physical_name="my_surface", mesh_order=1)
 
-occ_to_xao(cad_occ([entity]), "geometry.xao")
+write_xao(cad_occ([entity]), "geometry.xao")
 ```
 
 For more details on the CAD options, see:

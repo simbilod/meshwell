@@ -15,7 +15,6 @@ from meshwell.cad_occ import (
 )
 from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -182,7 +181,7 @@ def test_inject_two_overlapping_boxes_produces_shared_interface():
 
     mm = ModelManager(filename="test_shared_interface")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm)
+        mm.load_occ_entities(occ_ents)
         vol_names = {
             gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
         }
@@ -275,7 +274,7 @@ def test_inject_with_remove_all_duplicates_preserves_physical_tags():
 
     mm = ModelManager(filename="test_remove_all_duplicates")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm, remove_all_duplicates=True)
+        mm.load_occ_entities(occ_ents, remove_all_duplicates=True)
         vol_names = {
             gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
         }
@@ -343,7 +342,7 @@ def test_embedded_surface_splits_volume_and_shares_face():
     occ_ents = cad_occ([box, cut_surface])
     mm = ModelManager(filename="test_embedded_surface")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm)
+        mm.load_occ_entities(occ_ents)
         # Box should be split into two volumes.
         vols = gmsh.model.getEntitiesForPhysicalGroup(
             3,
@@ -453,7 +452,7 @@ def test_multi_entity_physical_assignment_by_location_and_mass():
 
     mm = ModelManager(filename="test_multi_entity_mass_location")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm, remove_all_duplicates=True)
+        mm.load_occ_entities(occ_ents, remove_all_duplicates=True)
 
         # Volume checks.
         for name, expected_mass, expected_c in [

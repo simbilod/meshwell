@@ -5,7 +5,7 @@ import shapely
 
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import Mesh
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField
 
@@ -30,7 +30,7 @@ def test_benchmark_resolution_handoff():
 
     # 1. Generate CAD (to get XAO) via the OCC pipeline.
     cad_file = Path("benchmark_handoff.xao")
-    occ_to_xao(cad_occ(entities), cad_file)
+    write_xao(cad_occ(entities), cad_file)
 
     # 2. Measure Mesh refinement.
     m = Mesh()

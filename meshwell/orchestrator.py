@@ -1,12 +1,16 @@
-"""Unified CAD/mesh pipeline orchestrator (OCC backend only)."""
+"""Unified CAD -> XAO -> mesh pipeline."""
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
+import gmsh
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
+from meshwell.occ_xao_writer import write_xao
 from meshwell.utils import deserialize
 
 
@@ -19,7 +23,10 @@ def generate_mesh(
     backend: str | None = None,  # deprecated
     **mesh_kwargs,
 ) -> Any:
-    """Generate a mesh from a list of entities via the OCC CAD pipeline.
+    """Generate a mesh from a list of entities.
+
+    Three-stage pipeline: ``cad_occ`` fragments, :func:`write_xao`
+    serializes to a tagged XAO, and :func:`mesh` runs gmsh.
 
     Args:
         entities: List of meshwell entities or their dictionary representations.
@@ -27,25 +34,24 @@ def generate_mesh(
         output_mesh: Optional path to save the generated mesh (.msh).
         checkpoint_cad: Optional path to save the CAD state (.xao).
         registry: Optional registry for ``OCC_entity`` function resolution.
-        backend: Deprecated. Only ``"occ"`` (or ``None``) is accepted; any
-            other value raises ``ValueError``.
-        **mesh_kwargs: Additional arguments forwarded to the ``mesh()``
-            function. Also consumes a few OCC-backend kwargs:
+        backend: Deprecated; only ``"occ"`` or ``None`` is accepted.
+        **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
+            plus a few CAD-side kwargs consumed here:
 
-            - ``progress_bars`` (bool): tqdm progress bars for CAD and
-              OCC→gmsh steps.
+            - ``progress_bars`` (bool): status output during the bridge.
             - ``fuzzy_value`` (float): BOPAlgo fuzzy value for the
-              all-fragment pass; independent of ``point_tolerance`` (which
-              drives the geometry cache quantizer) so you can raise
-              boolean slop without collapsing small features.
-            - ``canonicalize_topology`` (bool): post-fragmentation TShape
-              canonicalization across entities (see
-              :func:`meshwell.occ_canonicalize.canonicalize_topology`).
-            - ``remove_all_duplicates`` (bool): gmsh-level fragment safety
-              net across imported dimtags.
+              all-fragment pass.
+            - ``canonicalize_topology`` (bool): run the OCP post-fragment
+              TShape canonicalization pass.
+            - ``remove_all_duplicates`` (bool): gmsh-level fragment
+              safety net after XAO load.
+            - ``interface_delimiter``, ``boundary_delimiter``: XAO group
+              name delimiters.
 
     Returns:
-        meshio.Mesh: The generated mesh object.
+        meshio.Mesh: The generated mesh object (or ``None`` if
+        ``output_mesh`` is provided and the mesh pipeline does not
+        return in-memory).
     """
     if backend is not None and backend != "occ":
         raise ValueError(
@@ -55,37 +61,71 @@ def generate_mesh(
 
     entities = deserialize(entities, registry=registry)
 
-    # Extract OCC-backend kwargs from mesh_kwargs.
-    backend_kwargs: dict[str, Any] = {}
+    # --- Stage 1: OCC fragmentation (cad_occ kwargs). -------------------
+    cad_kwargs: dict[str, Any] = {}
     if "n_threads" in mesh_kwargs:
-        backend_kwargs["n_threads"] = mesh_kwargs["n_threads"]
+        cad_kwargs["n_threads"] = mesh_kwargs["n_threads"]
     if "point_tolerance" in mesh_kwargs:
-        backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
+        cad_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
     if "fuzzy_value" in mesh_kwargs:
-        backend_kwargs["fuzzy_value"] = mesh_kwargs.pop("fuzzy_value")
+        cad_kwargs["fuzzy_value"] = mesh_kwargs.pop("fuzzy_value")
     if "canonicalize_topology" in mesh_kwargs:
-        backend_kwargs["canonicalize_topology"] = mesh_kwargs.pop(
-            "canonicalize_topology"
-        )
-    backend_kwargs["progress_bars"] = mesh_kwargs.pop("progress_bars", False)
-    backend_kwargs["remove_all_duplicates"] = mesh_kwargs.pop(
-        "remove_all_duplicates", False
-    )
+        cad_kwargs["canonicalize_topology"] = mesh_kwargs.pop("canonicalize_topology")
+    progress_bars = mesh_kwargs.pop("progress_bars", False)
+    cad_kwargs["progress_bars"] = progress_bars
 
-    from meshwell.backend_occ import OccBackend
+    occ_entities = cad_occ(entities, **cad_kwargs)
 
-    backend_obj = OccBackend(**backend_kwargs)
-    backend_obj.process_entities(entities)
-
-    if checkpoint_cad:
-        backend_obj.save_checkpoint(Path(checkpoint_cad))
+    # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
+    interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
+    boundary_delimiter = mesh_kwargs.pop("boundary_delimiter", "None")
+    remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
 
     mm = ModelManager()
-    backend_obj.to_gmsh_model(mm)
+    mm.ensure_initialized(str(mm.filename))
+    gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
 
+    with tempfile.TemporaryDirectory() as tmpdir:
+        xao_path = Path(tmpdir) / "pipeline.xao"
+        write_xao(
+            occ_entities,
+            xao_path,
+            interface_delimiter=interface_delimiter,
+            boundary_delimiter=boundary_delimiter,
+        )
+        gmsh.open(str(xao_path))
+        mm.model.occ.synchronize()
+
+    if checkpoint_cad:
+        mm.save_to_xao(Path(checkpoint_cad))
+
+    if remove_all_duplicates:
+        _run_remove_all_duplicates(mm.model)
+
+    # --- Stage 3: mesh. -------------------------------------------------
     return mesh(
         dim=dim,
         model=mm,
         output_file=Path(output_mesh) if output_mesh else None,
         **mesh_kwargs,
     )
+
+
+def _run_remove_all_duplicates(gmsh_model) -> None:
+    """Gmsh-level fragment safety net across all imported dimtags.
+
+    Mirrors ``occ.removeAllDuplicates()`` but survives without a per-entity
+    dimtag map: the refinement engine (``mesh.py``) rebuilds its state
+    from physical groups post-fragment, so we don't need to track dimtags
+    across the call.
+    """
+    all_dimtags = [(d, t) for d in (0, 1, 2, 3) for _, t in gmsh_model.getEntities(d)]
+    if not all_dimtags:
+        return
+    gmsh_model.occ.fragment(
+        all_dimtags,
+        [],
+        removeObject=True,
+        removeTool=True,
+    )
+    gmsh_model.occ.synchronize()

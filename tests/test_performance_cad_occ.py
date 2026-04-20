@@ -8,7 +8,6 @@ import shapely
 
 from meshwell.cad_occ import CAD_OCC
 from meshwell.model import ModelManager
-from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh
 from meshwell.polyprism import PolyPrism
 
 
@@ -42,7 +41,7 @@ def test_performance_occ():
     mm = ModelManager()
     mm.ensure_initialized("perf_bridge.xao")
     t2 = time.perf_counter()
-    inject_occ_entities_into_gmsh(occ_entities, mm)
+    mm.load_occ_entities(occ_entities)
     t3 = time.perf_counter()
     print(f"OCC->GMSH bridge time: {t3 - t2:.4f}s")
     print(f"Total: {(t1 - t0) + (t3 - t2):.4f}s")

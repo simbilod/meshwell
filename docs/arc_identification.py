@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyline import PolyLine
 from meshwell.polysurface import PolySurface
 
@@ -65,7 +66,7 @@ plt.show()
 # Generate the mesh. Notice how the arcs are preserved in the underlying CAD.
 
 # %%
-cad(entities_list=[ps], output_file="arc_example.xao")
+write_xao(cad_occ([ps]), "arc_example.xao")
 output_mesh = mesh(
     dim=2,
     input_file="arc_example.xao",

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 
 
@@ -34,9 +35,11 @@ def test_multiple_physicals():
     )
     entities_list = [big_prism, medium_prism, small_prism]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_multiple_physicals.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_multiple_physicals.xao",
     )
 
     mesh_obj = mesh(

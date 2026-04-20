@@ -1,12 +1,11 @@
 """PolySurface definitions."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shapely.geometry import MultiPolygon, Polygon
 
 import gmsh
-from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
@@ -131,7 +130,7 @@ class PolySurface(GeometryEntity):
 
     def instanciate(
         self,
-        cad_model: CAD | None = None,  # noqa: ARG002
+        cad_model: Any | None = None,  # noqa: ARG002
     ) -> list[tuple[int, int]]:
         """Create GMSH surfaces directly without using CAD class methods."""
         surfaces = []

@@ -4,7 +4,7 @@ from shapely.geometry import Point, Polygon
 
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh as mesh_fn
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -168,7 +168,7 @@ def test_mesh_algorithm_fallback_on_crescent_cusp(tmp_path):
     occ = cad_occ(entities_list=entities)
     xao = tmp_path / "fallback.xao"
     msh = tmp_path / "fallback.msh"
-    occ_to_xao(occ, xao, model_manager=None)
+    write_xao(occ, xao)
 
     m = mesh_fn(
         input_file=xao,

@@ -1,12 +1,11 @@
 """Gmsh polyprism definitions."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shapely.geometry import MultiPolygon, Polygon
 
 import gmsh
-from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.validation import format_physical_name
 
@@ -354,7 +353,7 @@ class PolyPrism(GeometryEntity):
         model.occ.remove(list(prisms_dimtags))
         return subdivided_prisms
 
-    def instanciate(self, cad_model: CAD) -> list[tuple[int, int]]:
+    def instanciate(self, cad_model: Any) -> list[tuple[int, int]]:
         """Create GMSH volumes directly without using CAD class methods."""
         prisms = self._create_volumes_directly()
         if self.subdivision is not None:

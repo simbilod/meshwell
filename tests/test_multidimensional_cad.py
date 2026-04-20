@@ -12,7 +12,7 @@ import pytest
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.resolution import ConstantInField
 from tests.test_occ_helpers import (
     _occ_box,
@@ -40,7 +40,7 @@ def test_volume_with_internal_surface():
     )
 
     entities = [box_obj, surface_obj]
-    occ_to_xao(cad_occ(entities, progress_bars=True), "test_volume_with_surface.xao")
+    write_xao(cad_occ(entities, progress_bars=True), "test_volume_with_surface.xao")
     mesh(
         dim=3,
         input_file="test_volume_with_surface.xao",
@@ -73,7 +73,7 @@ def test_lower_dim_with_multiple_higher_entities():
     )
 
     entities = [box1_obj, box2_obj, spanning_surface]
-    occ_to_xao(
+    write_xao(
         cad_occ(entities, progress_bars=True),
         "test_lower_dim_multiple_higher.xao",
     )
@@ -105,7 +105,7 @@ def test_surface_boundary_overlap():
     )
 
     entities = [box_obj, boundary_surface]
-    occ_to_xao(cad_occ(entities, progress_bars=True), "test_boundary_overlap.xao")
+    write_xao(cad_occ(entities, progress_bars=True), "test_boundary_overlap.xao")
     mesh(
         dim=3,
         input_file="test_boundary_overlap.xao",
@@ -146,7 +146,7 @@ def test_point_in_multiple_entities():
     )
 
     entities = [box_obj, sphere_obj, surface_obj, point_obj]
-    occ_to_xao(
+    write_xao(
         cad_occ(entities, progress_bars=True),
         "test_point_multiple_entities.xao",
     )
@@ -203,7 +203,7 @@ def test_sequential_fragmentation_complex():
     )
 
     entities = [base_volume, surface1, surface2, curve, point1, point2]
-    occ_to_xao(cad_occ(entities, progress_bars=True), "test_sequential_complex.xao")
+    write_xao(cad_occ(entities, progress_bars=True), "test_sequential_complex.xao")
     mesh(
         dim=3,
         input_file="test_sequential_complex.xao",

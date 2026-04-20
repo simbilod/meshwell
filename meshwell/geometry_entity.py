@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
 
     from meshwell.occ_geometry_cache import OCCGeometryCache
-
-from meshwell.cad import CAD
 
 
 @dataclass
@@ -609,11 +607,11 @@ class GeometryEntity:
             **kwargs,
         )
 
-    def instanciate(self, cad_model: CAD | None = None) -> list[tuple[int, int]]:
+    def instanciate(self, cad_model: Any | None = None) -> list[tuple[int, int]]:
         """Create GMSH geometry. To be implemented by subclasses.
 
         Args:
-            cad_model: CAD model (kept for interface compatibility)
+            cad_model: Any model (kept for interface compatibility)
 
         Returns:
             List of (dimension, tag) tuples representing created entities

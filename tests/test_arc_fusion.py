@@ -2,7 +2,7 @@ import numpy as np
 from shapely.geometry import Polygon
 
 from meshwell.cad_occ import cad_occ
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 
 
@@ -82,7 +82,7 @@ def test_arc_cad_fusion():
 
     # Process entities with OCC fragmenter, then serialize to XAO via gmsh
     occ_entities = cad_occ([prism_trace, prism_gnd_in, prism_gnd_out, prism_straight])
-    occ_to_xao(occ_entities, "output.xao")
+    write_xao(occ_entities, "output.xao")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh, write_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -95,7 +95,7 @@ def test_inject_full_mixed_scene():
     occ_ents = cad_occ([cut, prism_A, prism_B, wire])
     mm = ModelManager(filename="test_xao_mixed")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm)
+        mm.load_occ_entities(occ_ents)
         all_names = {
             gmsh.model.getPhysicalName(d, t)
             for dim in (0, 1, 2, 3)
@@ -162,7 +162,7 @@ def test_inject_two_touching_boxes_disjoint_volumes():
 
     mm = ModelManager(filename="test_xao_volumes")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm)
+        mm.load_occ_entities(occ_ents)
         names_to_vols = {
             gmsh.model.getPhysicalName(d, t): set(
                 gmsh.model.getEntitiesForPhysicalGroup(d, t)
@@ -199,7 +199,7 @@ def test_keep_false_entity_removed_but_interface_named():
     occ_ents = cad_occ([kept, helper])
     mm = ModelManager(filename="test_xao_keep_false")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm)
+        mm.load_occ_entities(occ_ents)
         vol_names = {
             gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
         }

@@ -11,7 +11,7 @@ from OCP.gp import gp_Pnt
 
 from meshwell.cad_occ import cad_occ
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from tests.test_occ_helpers import _occ_box
 
 
@@ -23,7 +23,7 @@ def test_occ_entity_box():
         mesh_order=1,
         dimension=3,
     )
-    occ_to_xao(cad_occ([entity]), "test_occ_entity.xao")
+    write_xao(cad_occ([entity]), "test_occ_entity.xao")
 
 
 def test_occ_entity_custom_callable():
@@ -50,7 +50,7 @@ def test_occ_entity_custom_callable():
         mesh_order=1,
         dimension=2,
     )
-    occ_to_xao(cad_occ([entity]), "custom_occ_entity.xao")
+    write_xao(cad_occ([entity]), "custom_occ_entity.xao")
 
 
 def test_deserialize_no_longer_knows_gmsh_entity():

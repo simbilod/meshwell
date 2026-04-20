@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField, ExponentialField, ThresholdField
@@ -44,9 +45,11 @@ def test_2D_resolution():
 
     entities_list = [poly_obj1, poly_obj2]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_2D_resolution",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_2D_resolution.xao",
     )
 
     mesh(
@@ -91,9 +94,11 @@ def test_3D_resolution():
 
     entities_list = [prism_obj1, prism_obj2]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_3D_resolution.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_3D_resolution.xao",
     )
 
     mesh(
@@ -144,9 +149,11 @@ def test_exponential_field():
 
     entities_list = [poly_obj1, poly_obj2]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_exponential_field.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_exponential_field.xao",
     )
 
     mesh(
@@ -211,9 +218,11 @@ def test_refine(field, label):
         physical_name="inner",
     )
 
-    cad(
-        entities_list=[poly_obj2],
-        output_file=f"test_refine_{label}.xao",
+    write_xao(
+        cad_occ(
+            [poly_obj2],
+        ),
+        f"test_refine_{label}.xao",
     )
 
     points = []
@@ -299,9 +308,11 @@ def test_filter(apply_to, min_mass, max_mass):
 
     entities_list = [prism1, prism2]
 
-    cad(
-        entities_list=entities_list,
-        output_file=f"test_filter_{label}.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        f"test_filter_{label}.xao",
     )
 
     mesh(
@@ -381,9 +392,11 @@ def test_restrict(restrict_to):
     )
     entities_list = [poly_outer, poly_left, poly_right]
 
-    cad(
-        entities_list=entities_list,
-        output_file=f"test_restrict_{restrict_to}.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        f"test_restrict_{restrict_to}.xao",
     )
 
     mesh(
@@ -432,9 +445,11 @@ def test_interface_thresholds():
 
     entities_list = [poly_outer, poly_inner]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_interface_thresholds.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_interface_thresholds.xao",
     )
 
     mesh(

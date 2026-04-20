@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 import shapely
 import shapely.geometry as sg
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.import_gds import read_gds_layers
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.visualization import colors, plot2D
 
@@ -391,10 +392,7 @@ layer3_surface = PolySurface(
     mesh_order=3,
 )
 
-cad(
-    entities_list=[layer1_surface, layer2_surface, layer3_surface],
-    output_file="2d_mesh.xao",
-)
+write_xao(cad_occ([layer1_surface, layer2_surface, layer3_surface]), "2d_mesh.xao")
 
 output_mesh = mesh(
     dim=2,

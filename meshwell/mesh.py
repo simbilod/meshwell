@@ -69,10 +69,8 @@ class Mesh:
 
     def _initialize_model(self, input_file: Path | None = None) -> None:
         """Initialize GMSH model and optionally load .xao file."""
-        # Initialize the model instance
         self.model_manager.ensure_initialized("temp")
 
-        # Load CAD model if input file provided
         if input_file is not None:
             input_file = Path(input_file)
             gmsh.merge(str(input_file.with_suffix(".xao")))

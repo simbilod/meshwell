@@ -26,7 +26,7 @@ from OCP.gp import gp_Pnt
 
 from meshwell.cad_occ import cad_occ
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 
 
 # %%
@@ -41,7 +41,7 @@ box_entity = OCC_entity(
     dimension=3,
 )
 
-occ_to_xao(cad_occ([box_entity]), "box.xao")
+write_xao(cad_occ([box_entity]), "box.xao")
 
 # %% [markdown]
 # You can wrap *any* zero-argument callable that returns a ``TopoDS_Shape``:
@@ -63,7 +63,7 @@ custom_entity = OCC_entity(
     dimension=3,
 )
 
-occ_to_xao(cad_occ([custom_entity]), "cyl.xao")
+write_xao(cad_occ([custom_entity]), "cyl.xao")
 
 # %% [markdown]
 # Use ``OCC_entity`` when you need:

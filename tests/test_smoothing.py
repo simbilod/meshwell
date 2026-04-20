@@ -5,7 +5,7 @@ import shapely
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import ConstantInField
 from tests.test_occ_helpers import _occ_sphere
@@ -33,7 +33,7 @@ def test_smoothing():
         dimension=3,
     )
 
-    occ_to_xao(cad_occ([poly3D, sphere_entity]), "mesh3D_smoothing.xao")
+    write_xao(cad_occ([poly3D, sphere_entity]), "mesh3D_smoothing.xao")
     mesh(
         dim=3,
         input_file="mesh3D_smoothing.xao",

@@ -4,7 +4,7 @@ import shapely
 
 from meshwell.cad_occ import cad_occ
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from tests.test_occ_helpers import _occ_box, _occ_rectangle, _occ_sphere
 
@@ -43,7 +43,7 @@ def test_composite_cad_3D():
     )
 
     entities = [prism_obj, sphere_obj, box_obj, separate_box]
-    occ_to_xao(
+    write_xao(
         cad_occ(entities, progress_bars=True),
         "test_composite_3D.xao",
     )
@@ -68,7 +68,7 @@ def test_composite_cad_mixed():
     )
 
     entities = [prism_obj, plane_obj]
-    occ_to_xao(
+    write_xao(
         cad_occ(entities, progress_bars=True),
         "test_composite_mixed.xao",
     )

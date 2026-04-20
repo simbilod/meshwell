@@ -9,7 +9,7 @@ import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_xao_writer import inject_occ_entities_into_gmsh, occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 
@@ -30,11 +30,9 @@ def test_occ_polysurface():
     assert len(occ_entities) == 1
     assert occ_entities[0].dim == 2
 
-    # 2. Bridge to GMSH and save XAO
+    # 2. Serialize to XAO
     output_xao = Path("test_polysurface_occ.xao")
-    occ_to_xao(
-        occ_entities, output_xao, model_manager=None
-    )  # Uses default model manager
+    write_xao(occ_entities, output_xao)
 
     assert output_xao.exists()
 
@@ -93,7 +91,7 @@ def test_occ_composite_3D():
     from meshwell.model import ModelManager
 
     mm = ModelManager()
-    inject_occ_entities_into_gmsh(occ_entities, mm)
+    mm.load_occ_entities(occ_entities)
 
     # Verify physical names in gmsh model
     groups = gmsh.model.getPhysicalGroups()
@@ -119,7 +117,7 @@ def test_occ_buffered_prism():
     assert occ_entities[0].dim == 3
 
     output_xao = Path("test_buffered_prism_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
     assert output_xao.exists()
 
 
@@ -247,7 +245,7 @@ def test_occ_many_polyprism_stress_with_arcs_and_coincidences():
 
     mm = ModelManager(filename="test_occ_stress")
     try:
-        inject_occ_entities_into_gmsh(occ_entities, mm)
+        mm.load_occ_entities(occ_entities)
 
         groups = gmsh.model.getPhysicalGroups()
         group_names = {gmsh.model.getPhysicalName(dim, tag) for dim, tag in groups}
@@ -352,7 +350,7 @@ def test_occ_rounded_rect_inside_rect_with_cutout_shares_arcs():
 
     mm = ModelManager(filename="test_rounded_rect_in_cutout")
     try:
-        inject_occ_entities_into_gmsh(occ_entities, mm)
+        mm.load_occ_entities(occ_entities)
 
         groups = gmsh.model.getPhysicalGroups()
         by_name = {gmsh.model.getPhysicalName(d, t): (d, t) for d, t in groups}
@@ -445,7 +443,7 @@ def test_occ_shapely_difference_rounded_rect_shares_all_arcs():
 
     mm = ModelManager(filename="test_shapely_diff_sharing")
     try:
-        inject_occ_entities_into_gmsh(occ_ents, mm)
+        mm.load_occ_entities(occ_ents)
         groups = gmsh.model.getPhysicalGroups(2)
         named = {gmsh.model.getPhysicalName(d, t): t for d, t in groups}
         interface_name = next(
