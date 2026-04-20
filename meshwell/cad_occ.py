@@ -82,15 +82,27 @@ class CAD_OCC:
         self,
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
+        fuzzy_value: float | None = None,
     ):
         """Initialize OCC CAD processor.
 
         Args:
-            point_tolerance: Tolerance for boolean operations (Fuzzy value)
-            n_threads: Number of threads for parallel processing
+            point_tolerance: Quantization tolerance for the OCCGeometryCache.
+                Must be smaller than the smallest real feature in the input
+                geometry — vertices within this distance get snapped to a
+                single TopoDS_Vertex, and two snapped-identical vertices fed
+                to ``BRepBuilderAPI_MakeEdge`` raise
+                ``StdFail_NotDone: BRep_API: command not done``.
+            n_threads: Number of threads for parallel processing.
+            fuzzy_value: BOPAlgo_Builder fuzzy value used during the
+                all-fragment pass. Independent of ``point_tolerance`` so you
+                can fuse coincident interfaces that drifted more than a
+                cache-safe tolerance would allow. Defaults to
+                ``point_tolerance`` when ``None``.
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
+        self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from TopoDS_Shape type."""
@@ -158,7 +170,7 @@ class CAD_OCC:
 
         builder = BOPAlgo_Builder()
         builder.SetRunParallel(self.n_threads > 1)
-        builder.SetFuzzyValue(self.point_tolerance)
+        builder.SetFuzzyValue(self.fuzzy_value)
         builder.SetNonDestructive(False)
 
         originals_per_entity: list[list[TopoDS_Shape]] = []
@@ -253,7 +265,12 @@ def cad_occ(
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
+    fuzzy_value: float | None = None,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing."""
-    processor = CAD_OCC(point_tolerance=point_tolerance, n_threads=n_threads)
+    processor = CAD_OCC(
+        point_tolerance=point_tolerance,
+        n_threads=n_threads,
+        fuzzy_value=fuzzy_value,
+    )
     return processor.process_entities(entities_list, progress_bars=progress_bars)

@@ -32,7 +32,11 @@ def generate_mesh(
             for CAD and OCC→gmsh steps. ``remove_all_duplicates`` (bool, OCC
             backend only): if True, run a gmsh-level fragment safety net
             across all imported pieces after importShapes (tag-preserving
-            equivalent of ``occ.removeAllDuplicates``).
+            equivalent of ``occ.removeAllDuplicates``). ``fuzzy_value`` (float,
+            OCC backend only): BOPAlgo fuzzy value for the all-fragment pass;
+            independent of ``point_tolerance`` (which drives the geometry
+            cache quantizer) so you can raise boolean slop without collapsing
+            small features.
 
     Returns:
         meshio.Mesh: The generated mesh object
@@ -46,6 +50,8 @@ def generate_mesh(
         backend_kwargs["n_threads"] = mesh_kwargs["n_threads"]
     if "point_tolerance" in mesh_kwargs:
         backend_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
+    if "fuzzy_value" in mesh_kwargs:
+        backend_kwargs["fuzzy_value"] = mesh_kwargs.pop("fuzzy_value")
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
     if backend == "occ":
