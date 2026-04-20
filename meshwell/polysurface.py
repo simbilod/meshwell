@@ -3,14 +3,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import gmsh
 from shapely.geometry import MultiPolygon, Polygon
 
+import gmsh
 from meshwell.cad import CAD
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
+
+    from meshwell.occ_geometry_cache import OCCGeometryCache
 
 
 class PolySurface(GeometryEntity):
@@ -146,7 +148,9 @@ class PolySurface(GeometryEntity):
         gmsh.model.occ.synchronize()
         return dimtags
 
-    def instanciate_occ(self) -> TopoDS_Shape:
+    def instanciate_occ(
+        self, occ_cache: OCCGeometryCache | None = None
+    ) -> TopoDS_Shape:
         """Create OCC surfaces directly using OCP."""
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 
@@ -161,6 +165,7 @@ class PolySurface(GeometryEntity):
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
+                occ_cache=occ_cache,
             )
 
             # Create interior surfaces (holes) and cut them
@@ -173,6 +178,7 @@ class PolySurface(GeometryEntity):
                     identify_arcs=self.identify_arcs,
                     min_arc_points=self.min_arc_points,
                     arc_tolerance=self.arc_tolerance,
+                    occ_cache=occ_cache,
                 )
 
                 cut_api = BRepAlgoAPI_Cut(exterior_face, interior_face)
