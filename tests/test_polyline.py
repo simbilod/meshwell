@@ -4,8 +4,9 @@ from pathlib import Path
 
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyline import PolyLine
 from meshwell.polysurface import PolySurface
 from meshwell.utils import compare_gmsh_files
@@ -17,7 +18,7 @@ def test_polyline_basic():
     line1 = shapely.LineString([(0, 0), (1, 1), (2, 0)])
     polyline1 = PolyLine(linestrings=line1, physical_name="line1")
 
-    cad(entities_list=[polyline1], output_file="test_polyline_single")
+    write_xao(cad_occ([polyline1]), "test_polyline_single.xao")
     mesh(
         input_file="test_polyline_single.xao",
         output_file="test_polyline_single.msh",
@@ -33,7 +34,7 @@ def test_polyline_basic():
         linestrings=[line1, line2, line3], physical_name="multi_lines"
     )
 
-    cad(entities_list=[polyline_multi], output_file="test_polyline_multi")
+    write_xao(cad_occ([polyline_multi]), "test_polyline_multi.xao")
     mesh(
         input_file="test_polyline_multi.xao",
         output_file="test_polyline_multi.msh",
@@ -59,7 +60,7 @@ def test_polyline_embedded_in_polysurface():
     )
 
     # Create CAD with both surface and embedded lines
-    cad(entities_list=[polysurface, polyline], output_file="test_polyline_embedded")
+    write_xao(cad_occ([polysurface, polyline]), "test_polyline_embedded.xao")
     mesh(
         input_file="test_polyline_embedded.xao",
         output_file="test_polyline_embedded.msh",
@@ -80,7 +81,7 @@ def test_polyline_intersecting():
     polyline2 = PolyLine(linestrings=line2, physical_name="diagonal2", mesh_order=2)
 
     # Create CAD with intersecting lines
-    cad(entities_list=[polyline1, polyline2], output_file="test_polyline_intersecting")
+    write_xao(cad_occ([polyline1, polyline2]), "test_polyline_intersecting.xao")
     mesh(
         input_file="test_polyline_intersecting.xao",
         output_file="test_polyline_intersecting.msh",
@@ -104,7 +105,7 @@ def test_polyline_mixed_dimensional():
     polyline = PolyLine(linestrings=simple_line, physical_name="embedded_line")
 
     # Create CAD with mixed dimensions - test separately first
-    cad(entities_list=[polysurface], output_file="test_surface_only")
+    write_xao(cad_occ([polysurface]), "test_surface_only.xao")
     mesh(
         input_file="test_surface_only.xao",
         output_file="test_surface_only.msh",
@@ -113,7 +114,7 @@ def test_polyline_mixed_dimensional():
         n_threads=1,
     )
 
-    cad(entities_list=[polyline], output_file="test_line_only")
+    write_xao(cad_occ([polyline]), "test_line_only.xao")
     mesh(
         input_file="test_line_only.xao",
         output_file="test_line_only.msh",
@@ -134,7 +135,7 @@ def test_polyline_multilinestring():
 
     polyline = PolyLine(linestrings=multi_line, physical_name="multi_linestring")
 
-    cad(entities_list=[polyline], output_file="test_polyline_multilinestring")
+    write_xao(cad_occ([polyline]), "test_polyline_multilinestring.xao")
     mesh(
         input_file="test_polyline_multilinestring.xao",
         output_file="test_polyline_multilinestring.msh",

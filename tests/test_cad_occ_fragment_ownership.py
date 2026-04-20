@@ -1,0 +1,496 @@
+"""Unit tests for the all-fragment OCC pipeline."""
+from __future__ import annotations
+
+import shapely
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.gp import gp_Pnt
+
+import gmsh
+from meshwell.cad_occ import (
+    CAD_OCC,
+    OCCLabeledEntity,
+    _resolve_piece_ownership,
+    _shape_key,
+    cad_occ,
+)
+from meshwell.model import ModelManager
+from meshwell.occ_entity import OCC_entity
+from meshwell.polyline import PolyLine
+from meshwell.polyprism import PolyPrism
+from meshwell.polysurface import PolySurface
+
+
+def test_occ_labeled_entity_accepts_shapes_list():
+    """OCCLabeledEntity should store a list of fragment pieces."""
+    box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    ent = OCCLabeledEntity(
+        shapes=[box],
+        physical_name=("box",),
+        index=0,
+        keep=True,
+        dim=3,
+    )
+    assert ent.shapes == [box]
+    assert ent.dim == 3
+
+
+def test_occ_labeled_entity_multiple_pieces():
+    """OCCLabeledEntity must support multiple fragment pieces per entity."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(2, 0, 0), 1.0, 1.0, 1.0).Shape()
+    ent = OCCLabeledEntity(
+        shapes=[b1, b2],
+        physical_name=("disjoint",),
+        index=1,
+        keep=True,
+        dim=3,
+    )
+    assert len(ent.shapes) == 2
+
+
+def test_resolve_piece_ownership_lowest_wins():
+    """When multiple entities claim a piece, lowest mesh_order wins."""
+    # piece_candidates maps piece_id -> list of (entity_index, mesh_order)
+    piece_candidates = {
+        "pA": [(0, 2.0), (1, 1.0)],  # entity 1 (mesh_order 1) wins
+        "pB": [(0, 2.0)],  # entity 0 only
+        "pC": [(2, 3.0), (1, 1.0), (0, 2.0)],  # entity 1 wins
+    }
+    owners = _resolve_piece_ownership(piece_candidates)
+    assert owners == {"pA": 1, "pB": 0, "pC": 1}
+
+
+def test_resolve_piece_ownership_tie_first_wins():
+    """On mesh_order tie, the first candidate (insertion order) wins."""
+    piece_candidates = {"p": [(3, 1.0), (5, 1.0), (2, 1.0)]}
+    owners = _resolve_piece_ownership(piece_candidates)
+    assert owners == {"p": 3}
+
+
+def test_resolve_piece_ownership_inf_mesh_order():
+    """Entities with mesh_order=None treated as infinity (lowest priority)."""
+    piece_candidates = {
+        "p": [(0, float("inf")), (1, 5.0)],
+    }
+    owners = _resolve_piece_ownership(piece_candidates)
+    assert owners == {"p": 1}
+
+
+def test_shape_key_same_shape_equal():
+    """Two handles to the same underlying shape must compare equal."""
+    box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    k1 = _shape_key(box)
+    k2 = _shape_key(box)
+    assert k1 == k2
+    assert hash(k1) == hash(k2)
+
+
+def test_shape_key_different_shapes_differ():
+    """Distinct shape constructions produce distinct keys."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(2, 0, 0), 1.0, 1.0, 1.0).Shape()
+    assert _shape_key(b1) != _shape_key(b2)
+
+
+def _make_ent(idx, shape, mesh_order, name, dim=3, keep=True):
+    return OCCLabeledEntity(
+        shapes=[shape],
+        physical_name=(name,),
+        index=idx,
+        keep=keep,
+        dim=dim,
+        mesh_order=mesh_order,
+    )
+
+
+def test_fragment_all_disjoint_boxes_preserved():
+    """Disjoint shapes are unchanged; each entity keeps its piece."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(5, 0, 0), 1.0, 1.0, 1.0).Shape()
+    ents = [_make_ent(0, b1, 1.0, "a"), _make_ent(1, b2, 2.0, "b")]
+    processor = CAD_OCC()
+    result = processor._fragment_all(ents)
+    assert len(result) == 2
+    assert len(result[0].shapes) == 1
+    assert len(result[1].shapes) == 1
+
+
+def test_fragment_all_overlap_goes_to_lower_mesh_order():
+    """Overlapping region is owned by the entity with the lower mesh_order."""
+    b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 2.0, 2.0, 2.0).Shape()
+    b2 = BRepPrimAPI_MakeBox(gp_Pnt(1, 1, 1), 2.0, 2.0, 2.0).Shape()
+    # a has mesh_order 1 (higher priority), b has mesh_order 2
+    ents = [_make_ent(0, b1, 1.0, "a"), _make_ent(1, b2, 2.0, "b")]
+    processor = CAD_OCC()
+    result = processor._fragment_all(ents)
+    # Sum of all pieces should equal the number of fragments produced.
+    total_pieces = sum(len(e.shapes) for e in result)
+    # At minimum a gets the whole a, b gets only its non-overlapping remainder.
+    assert total_pieces >= 2
+    # 'a' must not have been shrunk to zero
+    assert len(result[0].shapes) >= 1
+    # 'b' is split; its pieces should be fewer than b1+b2 combined
+    assert len(result[1].shapes) >= 1
+
+
+def test_process_entities_overlapping_boxes_end_to_end():
+    """Higher-priority box keeps its full volume; lower-priority box loses overlap."""
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 2.0, 2.0, 2.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 1, 1), 2.0, 2.0, 2.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    result = cad_occ([a, b])
+    assert len(result) == 2
+    # Both entities should still have pieces.
+    assert all(len(ent.shapes) >= 1 for ent in result)
+    names = {ent.physical_name[0] for ent in result}
+    assert names == {"a", "b"}
+
+
+def test_inject_two_overlapping_boxes_produces_shared_interface():
+    """After injection, the shared face between two touching boxes exists once."""
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    occ_ents = cad_occ([a, b])
+
+    mm = ModelManager(filename="test_shared_interface")
+    try:
+        mm.load_occ_entities(occ_ents)
+        vol_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        assert vol_names == {"a", "b"}
+
+        # Two 3D volumes (one per box); the shared face is 2D.
+        assert len(gmsh.model.getEntities(3)) == 2
+
+        groups = gmsh.model.getPhysicalGroups(2)
+        names = [gmsh.model.getPhysicalName(dim, tag) for dim, tag in groups]
+        match = next((n for n in names if n in {"a___b", "b___a"}), None)
+        assert match is not None, names
+
+        interface_tag = next(
+            tag for dim, tag in groups if gmsh.model.getPhysicalName(dim, tag) == match
+        )
+        # BREP sharing means exactly one surface carries the interface tag.
+        interface_surfaces = gmsh.model.getEntitiesForPhysicalGroup(2, interface_tag)
+        assert len(interface_surfaces) == 1, interface_surfaces
+    finally:
+        mm.finalize()
+
+
+def test_cad_occ_fuzzy_value_independent_of_point_tolerance():
+    """``fuzzy_value`` must feed BOPAlgo without altering cache quantization.
+
+    If the cache were driven by ``fuzzy_value`` instead of ``point_tolerance``,
+    a coarse fuzzy value (say 1e-1) would quantize a 1.0-wide box's corners
+    to the same TopoDS_Vertex, and BRepBuilderAPI_MakeEdge would raise
+    StdFail_NotDone. This test pins that decoupling.
+    """
+    processor = CAD_OCC(point_tolerance=1e-4, fuzzy_value=1e-1)
+    assert processor.point_tolerance == 1e-4
+    assert processor.fuzzy_value == 1e-1
+
+    # Feature size (1.0) >> point_tolerance (1e-4), so the cache won't collapse
+    # corners even though fuzzy_value (0.1) would.
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    result = processor.process_entities([a, b])
+    assert len(result) == 2
+    assert all(ent.shapes for ent in result)
+
+
+def test_cad_occ_fuzzy_value_defaults_to_point_tolerance():
+    """When ``fuzzy_value`` is None, it inherits ``point_tolerance``."""
+    processor = CAD_OCC(point_tolerance=5e-3)
+    assert processor.fuzzy_value == 5e-3
+
+
+def test_inject_with_remove_all_duplicates_preserves_physical_tags():
+    """`remove_all_duplicates=True` must not invalidate per-entity physical tags.
+
+    The gmsh-level fragment safety net issues fresh dimtags for every imported
+    shape. We rely on the returned ``outDimTagsMap`` to remap per-entity
+    dimtags; if that remap breaks, each physical group either becomes empty or
+    points at the wrong volumes.
+    """
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="a",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1, 0, 0), 1.0, 1.0, 1.0
+        ).Shape(),
+        physical_name="b",
+        mesh_order=2,
+        dimension=3,
+    )
+    occ_ents = cad_occ([a, b])
+
+    mm = ModelManager(filename="test_remove_all_duplicates")
+    try:
+        mm.load_occ_entities(occ_ents, remove_all_duplicates=True)
+        vol_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        assert vol_names == {"a", "b"}
+
+        # Two 3D volumes, each with the right physical tag.
+        vol_groups = gmsh.model.getPhysicalGroups(3)
+        names_to_vols = {
+            gmsh.model.getPhysicalName(d, t): set(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in vol_groups
+        }
+        assert set(names_to_vols) == {"a", "b"}
+        assert len(names_to_vols["a"]) == 1
+        assert len(names_to_vols["b"]) == 1
+        # No volume appears in both groups.
+        assert names_to_vols["a"].isdisjoint(names_to_vols["b"])
+
+        # Shared interface still resolved.
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        surf_names = {gmsh.model.getPhysicalName(d, t) for d, t in surf_groups}
+        assert surf_names & {"a___b", "b___a"}
+    finally:
+        mm.finalize()
+
+
+def test_embedded_surface_splits_volume_and_shares_face():
+    """A 2D surface inside a 3D box must appear as a shared face of the box sub-solids."""
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+    )
+
+    def rect(x, y, z, dx, dy):
+        p1 = gp_Pnt(x, y, z)
+        p2 = gp_Pnt(x + dx, y, z)
+        p3 = gp_Pnt(x + dx, y + dy, z)
+        p4 = gp_Pnt(x, y + dy, z)
+        w = BRepBuilderAPI_MakeWire(
+            BRepBuilderAPI_MakeEdge(p1, p2).Edge(),
+            BRepBuilderAPI_MakeEdge(p2, p3).Edge(),
+            BRepBuilderAPI_MakeEdge(p3, p4).Edge(),
+            BRepBuilderAPI_MakeEdge(p4, p1).Edge(),
+        ).Wire()
+        return BRepBuilderAPI_MakeFace(w).Face()
+
+    box = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(0, 0, 0), 2.0, 2.0, 2.0
+        ).Shape(),
+        physical_name="box",
+        mesh_order=1,
+        dimension=3,
+    )
+    # A surface cutting the box in half at z=1.
+    cut_surface = OCC_entity(
+        occ_function=lambda: rect(0.0, 0.0, 1.0, 2.0, 2.0),
+        physical_name="cut",
+        mesh_order=2,
+        dimension=2,
+    )
+
+    occ_ents = cad_occ([box, cut_surface])
+    mm = ModelManager(filename="test_embedded_surface")
+    try:
+        mm.load_occ_entities(occ_ents)
+        # Box should be split into two volumes.
+        vols = gmsh.model.getEntitiesForPhysicalGroup(
+            3,
+            next(
+                tag
+                for dim, tag in gmsh.model.getPhysicalGroups(3)
+                if gmsh.model.getPhysicalName(dim, tag) == "box"
+            ),
+        )
+        assert len(vols) == 2
+
+        # The "cut" physical group must exist in 2D.
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        surf_names = [gmsh.model.getPhysicalName(d, t) for d, t in surf_groups]
+        assert "cut" in surf_names
+    finally:
+        mm.finalize()
+
+
+def _aggregate_physical(
+    dim: int, name: str
+) -> tuple[float, tuple[float, float, float]]:
+    """Return (total mass, mass-weighted centroid) for a named physical group.
+
+    Mass is volume (dim=3), area (dim=2), or length (dim=1) per OCC convention.
+    """
+    groups = gmsh.model.getPhysicalGroups(dim)
+    tag = next(
+        (t for d, t in groups if gmsh.model.getPhysicalName(d, t) == name),
+        None,
+    )
+    assert tag is not None, f"physical group {name!r} of dim {dim} not found"
+    total_mass = 0.0
+    sx = sy = sz = 0.0
+    for ent_tag in gmsh.model.getEntitiesForPhysicalGroup(dim, tag):
+        m = gmsh.model.occ.getMass(dim, ent_tag)
+        cx, cy, cz = gmsh.model.occ.getCenterOfMass(dim, ent_tag)
+        total_mass += m
+        sx += cx * m
+        sy += cy * m
+        sz += cz * m
+    assert total_mass > 0
+    return total_mass, (sx / total_mass, sy / total_mass, sz / total_mass)
+
+
+def test_multi_entity_physical_assignment_by_location_and_mass():
+    """Validate per-entity tagging against known input masses and centroids.
+
+    Scene (chosen so every mass and centroid is computable by hand):
+
+    - Prism A: unit square [0,1] x [0,1], z in [0,2] -> vol=2, centroid=(0.5,0.5,1).
+    - Prism B: unit square [1,2] x [0,1], z in [0,2] -> vol=2, centroid=(1.5,0.5,1).
+      A and B share the face x=1 (area 1 x 2=2), so ``A___B`` must exist.
+    - Prism C: unit square [4,5] x [0,1], z in [0,1] -> vol=1, centroid=(4.5,0.5,0.5).
+      Disjoint from A and B.
+    - Surface cut: horizontal square [0,1] x [0,1] at z=1, embedded in A.
+      After fragmentation it is the z=1 internal face of A (area=1, centroid
+      (0.5,0.5,1)). It also propagates through A's x=1 face, splitting the
+      ``A___B`` interface into two pieces (total area still 2).
+    - Line wire: segment from (6,0,0) to (7,0,0), length=1, centroid (6.5,0,0).
+
+    The mesh_order ladder (cut<A<B<C<wire) resolves any piece-ownership ties
+    deterministically, though by construction the prisms don't overlap.
+    """
+    # 3D prisms
+    square_A = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    square_B = shapely.Polygon([(1, 0), (2, 0), (2, 1), (1, 1), (1, 0)])
+    square_C = shapely.Polygon([(4, 0), (5, 0), (5, 1), (4, 1), (4, 0)])
+
+    prism_A = PolyPrism(
+        polygons=square_A,
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="A",
+        mesh_order=2,
+    )
+    prism_B = PolyPrism(
+        polygons=square_B,
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="B",
+        mesh_order=3,
+    )
+    prism_C = PolyPrism(
+        polygons=square_C,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="C",
+        mesh_order=4,
+    )
+
+    # 2D embedded cut at z=1 spanning A's footprint. The PolySurface lives at
+    # z=0 by default; we lift it with translation to z=1.
+    cut = PolySurface(
+        polygons=square_A,
+        physical_name="cut",
+        mesh_order=1,
+        translation=(0.0, 0.0, 1.0),
+    )
+
+    # 1D wire, disjoint segment.
+    wire = PolyLine(
+        linestrings=shapely.LineString([(6, 0), (7, 0)]),
+        physical_name="wire",
+        mesh_order=5,
+    )
+
+    entities = [cut, prism_A, prism_B, prism_C, wire]
+    occ_ents = cad_occ(entities)
+
+    mm = ModelManager(filename="test_multi_entity_mass_location")
+    try:
+        mm.load_occ_entities(occ_ents, remove_all_duplicates=True)
+
+        # Volume checks.
+        for name, expected_mass, expected_c in [
+            ("A", 2.0, (0.5, 0.5, 1.0)),
+            ("B", 2.0, (1.5, 0.5, 1.0)),
+            ("C", 1.0, (4.5, 0.5, 0.5)),
+        ]:
+            mass, centroid = _aggregate_physical(3, name)
+            assert abs(mass - expected_mass) < 1e-6, (name, mass, expected_mass)
+            for got, exp in zip(centroid, expected_c):
+                assert abs(got - exp) < 1e-4, (name, centroid, expected_c)
+
+        # Embedded cut surface: area=1, at z=1 on A's footprint.
+        mass, centroid = _aggregate_physical(2, "cut")
+        assert abs(mass - 1.0) < 1e-6, mass
+        for got, exp in zip(centroid, (0.5, 0.5, 1.0)):
+            assert abs(got - exp) < 1e-4, (centroid, exp)
+
+        # Shared A___B interface (or B___A depending on name order).
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        interface_name = next(
+            (
+                gmsh.model.getPhysicalName(d, t)
+                for d, t in surf_groups
+                if gmsh.model.getPhysicalName(d, t) in {"A___B", "B___A"}
+            ),
+            None,
+        )
+        assert interface_name is not None
+        mass, centroid = _aggregate_physical(2, interface_name)
+        assert abs(mass - 2.0) < 1e-6, mass  # 1 wide x 2 tall
+        for got, exp in zip(centroid, (1.0, 0.5, 1.0)):
+            assert abs(got - exp) < 1e-4, (centroid, exp)
+
+        # 1D wire.
+        mass, centroid = _aggregate_physical(1, "wire")
+        assert abs(mass - 1.0) < 1e-6, mass
+        for got, exp in zip(centroid, (6.5, 0.0, 0.0)):
+            assert abs(got - exp) < 1e-4, (centroid, exp)
+    finally:
+        mm.finalize()

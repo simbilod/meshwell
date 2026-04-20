@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import gmsh
 import numpy as np
 import shapely
+from OCP.Bnd import Bnd_Box
+from OCP.BRepBndLib import BRepBndLib
 
-from meshwell.cad import CAD, cad
+from meshwell.cad_occ import cad_occ
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 
 
@@ -20,7 +22,7 @@ def test_prism():
 
     prism_obj = PolyPrism(polygons=polygon, buffers=buffers, physical_name="prism")
     assert prism_obj.extrude is False
-    cad(entities_list=[prism_obj], output_file="test_prism")
+    write_xao(cad_occ([prism_obj]), "test_prism.xao")
 
 
 def test_prism_extruded():
@@ -37,16 +39,18 @@ def test_prism_extruded():
         polygons=polygon, buffers=buffers, physical_name="prism_extruded"
     )
 
-    cad_processor = CAD()
-    cad_processor.model_manager.ensure_initialized()
-    entity_dimtags = prism_obj.instanciate(cad_processor)
+    # Extrude path: instantiate once and check its z-extent before
+    # feeding through the full fragment/meshing pipeline.
+    shape = prism_obj.instanciate_occ()
     assert prism_obj.extrude is True
-    dim = entity_dimtags[0][0]
-    tag = entity_dimtags[0][1]
-    _, _, zmin, _, _, zmax = gmsh.model.getBoundingBox(dim, tag)
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    _, _, zmin, _, _, zmax = box.Get()
     assert np.isclose(zmin, min(buffers.keys()))
     assert np.isclose(zmax, max(buffers.keys()))
-    cad(entities_list=[prism_obj], output_file="test_prism_extruded")
+
+    write_xao(cad_occ([prism_obj]), "test_prism_extruded.xao")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,42 @@
-"""OCC CAD processor using OCP (OpenCASCADE Python) bindings."""
+"""OCC CAD processor: fragment + mesh_order ownership via OCP.
+
+Mirrors :mod:`meshwell.cad_gmsh` but drives OCCT directly through OCP
+instead of the gmsh API. The two backends are intentionally kept
+structurally identical so users can compare outputs head-to-head:
+
+1. Initialize per-session geometry cache (vertex / edge sharing is the
+   OCP-side equivalent of ``gmsh.model.occ``'s built-in TShape reuse).
+2. Call each entity's ``instanciate_occ`` to produce ``TopoDS_Shape``
+   instances.
+3. ``BOPAlgo_Builder`` all-fragment over every input shape; per-input
+   ``Modified()`` tells us which fragment piece descends from which
+   input, which we invert to build the per-piece candidate list.
+4. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
+   wins on tie).
+
+``keep=False`` handling differs from the gmsh backend: here the helper's
+shapes are preserved through fragmentation and the XAO writer
+(:mod:`meshwell.occ_xao_writer`) skips their bodies at serialization
+time while still using the shared TShapes to name
+``neighbour___helper`` interfaces. The gmsh backend calls
+``occ.remove(..., recursive=True)`` at model level for the same
+user-visible result.
+
+Ownership semantics match :func:`meshwell.cad_gmsh._resolve_piece_ownership`
+exactly; tests that pin one pin the other.
+"""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
 
 from OCP.BOPAlgo import BOPAlgo_Builder
-from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
+from OCP.TopTools import TopTools_ShapeMapHasher
+from tqdm.auto import tqdm
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -17,287 +44,240 @@ if TYPE_CHECKING:
 
 @dataclass
 class OCCLabeledEntity:
-    """Dataclass to store an OCC shape and its associated metadata."""
+    """Per-entity record produced by :func:`cad_occ`.
 
-    shape: TopoDS_Shape
+    ``shapes`` holds the fragment pieces this entity owns after the
+    all-fragment pass.
+    """
+
+    shapes: list[TopoDS_Shape]
     physical_name: tuple[str, ...]
     index: int
     keep: bool
     dim: int
+    mesh_order: float | None = None
+
+
+_SHAPE_HASHER = TopTools_ShapeMapHasher()
+
+
+def _shape_key(shape: TopoDS_Shape) -> tuple[int, int]:
+    """Return a hashable identity key for a TopoDS_Shape.
+
+    Uses the TShape pointer plus orientation so reversed shapes compare
+    distinct when BOPAlgo differentiates them and equal when it does not.
+    OCP returns a fresh Python wrapper each time ``TShape()`` is called,
+    so ``id()``/default ``__hash__`` isn't stable -- ``TopTools_ShapeMapHasher``
+    hashes on the underlying ``TShape*`` pointer instead.
+    """
+    return (_SHAPE_HASHER(shape), int(shape.Orientation()))
+
+
+def _resolve_piece_ownership(
+    piece_candidates: dict[Any, list[tuple[int, float]]],
+) -> dict[Any, int]:
+    """Pick the owning entity index for each fragment piece.
+
+    Rule: lowest ``mesh_order`` wins; first candidate in insertion order
+    wins on tie. Matches :func:`meshwell.cad_gmsh._resolve_piece_ownership`.
+    """
+    owners: dict[Any, int] = {}
+    for piece, candidates in piece_candidates.items():
+        best_idx = candidates[0][0]
+        best_mo = candidates[0][1]
+        for idx, mo in candidates[1:]:
+            if mo < best_mo:
+                best_idx = idx
+                best_mo = mo
+        owners[piece] = best_idx
+    return owners
 
 
 class CAD_OCC:
-    """CAD class for generating geometry using OpenCASCADE (via OCP)."""
+    """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
     def __init__(
         self,
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
+        fuzzy_value: float | None = None,
     ):
         """Initialize OCC CAD processor.
 
         Args:
-            point_tolerance: Tolerance for boolean operations (Fuzzy value)
-            n_threads: Number of threads for parallel processing
+            point_tolerance: Coordinate quantization applied inside entity
+                ``instanciate_occ`` hooks (e.g. PolySurface's
+                ``shapely.set_precision`` pass). Vertices closer than this
+                get snapped before the TopoDS graph is built.
+            n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
+            fuzzy_value: BOPAlgo fuzzy value used during the all-fragment
+                pass (gmsh's ``Geometry.ToleranceBoolean`` equivalent).
+                Decoupled from ``point_tolerance`` so near-coincident
+                interfaces can be fused without widening the vertex snap.
+                Defaults to ``point_tolerance`` when ``None``.
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
+        self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
-        """Infer dimension from TopoDS_Shape type."""
-        # Check for Solids (3D)
-        explorer = TopExp_Explorer(shape, TopAbs_SOLID)
-        if explorer.More():
-            return 3
-
-        # Check for Faces (2D)
-        explorer = TopExp_Explorer(shape, TopAbs_FACE)
-        if explorer.More():
-            return 2
-
-        # Check for Edges (1D)
-        explorer = TopExp_Explorer(shape, TopAbs_EDGE)
-        if explorer.More():
-            return 1
-
-        # Check for Vertices (0D)
-        explorer = TopExp_Explorer(shape, TopAbs_VERTEX)
-        if explorer.More():
-            return 0
-
+        """Infer dimension from the first non-empty TopAbs class."""
+        for kind, dim in (
+            (TopAbs_SOLID, 3),
+            (TopAbs_FACE, 2),
+            (TopAbs_EDGE, 1),
+            (TopAbs_VERTEX, 0),
+        ):
+            if TopExp_Explorer(shape, kind).More():
+                return dim
         return -1
 
-    def _instantiate_entity_occ(self, index: int, entity_obj: Any) -> OCCLabeledEntity:
+    def _instantiate_entity_occ(
+        self,
+        index: int,
+        entity_obj: Any,
+    ) -> OCCLabeledEntity:
         """Instantiate a single entity into an OCC shape."""
-        # Instantiate entity using OCC method
         shape = entity_obj.instanciate_occ()
-
-        dim = self._get_shape_dimension(shape)
-
+        dim = getattr(entity_obj, "dimension", None)
+        if dim is None:
+            dim = self._get_shape_dimension(shape)
+        physical_name = entity_obj.physical_name
+        if isinstance(physical_name, str):
+            physical_name = (physical_name,)
         return OCCLabeledEntity(
-            shape=shape,
-            physical_name=entity_obj.physical_name,
+            shapes=[shape],
+            physical_name=physical_name,
             index=index,
-            keep=entity_obj.mesh_bool,
+            keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
+            mesh_order=getattr(entity_obj, "mesh_order", None),
         )
 
-    def _process_dimension_group_cuts_occ(
-        self, entities: list[OCCLabeledEntity], ent_objs: list[Any]
+    def _fragment_all(
+        self,
+        entities: list[OCCLabeledEntity],
+        progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
-        """Process entities of same dimension using cuts based on mesh_order.
+        """Fragment all entity shapes; assign pieces by mesh_order priority.
 
-        This implementation groups by mesh_order to leverage batch parallelization
-        offered by BOPAlgo_Builder.
+        Each entity's ``shapes`` list is replaced with the fragment
+        pieces it owns. Matches ``gmsh.model.occ.fragment`` + mesh_order
+        post-processing semantically.
         """
         if not entities:
             return []
-
-        # Group entities by mesh_order
-        from collections import defaultdict
-
-        groups = defaultdict(list)
-        for ent, obj in zip(entities, ent_objs):
-            mo = obj.mesh_order if obj.mesh_order is not None else float("inf")
-            groups[mo].append(ent)
-
-        sorted_orders = sorted(groups.keys())
-
-        all_processed_entities = []
-        accumulated_shapes = []  # Shapes that will cut future groups
-
-        for mo in sorted_orders:
-            current_group = groups[mo]
-
-            # 1. Resolve overlaps within the group using BOPAlgo_Builder (Parallel)
-            if len(current_group) > 1:
-                builder = BOPAlgo_Builder()
-                builder.SetRunParallel(self.n_threads > 1)
-                builder.SetFuzzyValue(self.point_tolerance)
-                builder.SetNonDestructive(False)
-
-                for ent in current_group:
-                    builder.AddArgument(ent.shape)
-
-                builder.Perform()
-
-                # Update each entity shape from builder results
-                for ent in current_group:
-                    modified = builder.Modified(ent.shape)
-                    if not modified.IsEmpty():
-                        from OCP.BRep import BRep_Builder
-                        from OCP.TopoDS import TopoDS_Compound
-
-                        comp_builder = BRep_Builder()
-                        new_comp = TopoDS_Compound()
-                        comp_builder.MakeCompound(new_comp)
-                        for s in modified:
-                            comp_builder.Add(new_comp, s)
-                        ent.shape = new_comp
-                    elif builder.IsDeleted(ent.shape):
-                        # Shape was completely swallowed by another in the same group
-                        # (Possible if shapes are identical or one contains another)
-                        pass
-
-            # 2. Cut current group against ALL previous shapes (Parallel)
-            if accumulated_shapes:
-                from OCP.BRep import BRep_Builder
-                from OCP.TopoDS import TopoDS_Compound
-
-                comp_builder = BRep_Builder()
-                compound_tool = TopoDS_Compound()
-                comp_builder.MakeCompound(compound_tool)
-                for s in accumulated_shapes:
-                    comp_builder.Add(compound_tool, s)
-
-                for ent in current_group:
-                    cut_api = BRepAlgoAPI_Cut(ent.shape, compound_tool)
-                    cut_api.SetRunParallel(self.n_threads > 1)
-                    cut_api.SetFuzzyValue(self.point_tolerance)
-                    cut_api.SetNonDestructive(False)
-                    cut_api.Build()
-                    ent.shape = cut_api.Shape()
-
-            # 3. Add to processed and accumulated
-            all_processed_entities.extend(current_group)
-            accumulated_shapes.extend([ent.shape for ent in current_group])
-
-        return all_processed_entities
-
-    def _process_dimension_group_fragments_occ(
-        self,
-        entity_group: list[OCCLabeledEntity],
-        higher_dim_entities: list[OCCLabeledEntity],
-    ) -> list[OCCLabeledEntity]:
-        """Fragment processing for entities against higher dimensional entities."""
-        if not higher_dim_entities or not entity_group:
-            return entity_group
+        if len(entities) == 1:
+            return entities
 
         builder = BOPAlgo_Builder()
         builder.SetRunParallel(self.n_threads > 1)
-        builder.SetFuzzyValue(self.point_tolerance)
+        builder.SetFuzzyValue(self.fuzzy_value)
         builder.SetNonDestructive(False)
 
-        # Add all shapes to the builder
-        all_entities = entity_group + higher_dim_entities
-        shape_to_entity_map = {}
+        originals_per_entity: list[list[TopoDS_Shape]] = []
+        for ent in tqdm(
+            entities,
+            desc="BOPAlgo add arguments",
+            disable=not progress_bars,
+            leave=False,
+        ):
+            originals_per_entity.append(list(ent.shapes))
+            for s in ent.shapes:
+                builder.AddArgument(s)
 
-        for ent in all_entities:
-            builder.AddArgument(ent.shape)
-            # Store the original shape to map back later
-            # Note: We use the hash of the shape if possible, or just the identity
-            shape_to_entity_map[ent.shape] = ent
-
+        if progress_bars:
+            print(
+                f"BOPAlgo_Builder.Perform() on {len(entities)} entities…",
+                flush=True,
+            )
         builder.Perform()
 
-        # Update each entity with its modified counterparts
-        for ent in all_entities:
-            modified_shapes = builder.Modified(ent.shape)
-            if not modified_shapes.IsEmpty():
-                # If modified, the new shape is a compound of the modified parts
-                # or we just need the new resulting shapes.
-                # In OCC, builder.Modified() returns a list of shapes.
-                # We need to collect them.
-                from OCP.BRep import BRep_Builder
-                from OCP.TopoDS import TopoDS_Compound
+        piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = defaultdict(
+            list
+        )
+        piece_shapes: dict[tuple[int, int], TopoDS_Shape] = {}
 
-                comp_builder = BRep_Builder()
-                new_compound = TopoDS_Compound()
-                comp_builder.MakeCompound(new_compound)
+        for ent_idx, ent in enumerate(
+            tqdm(
+                entities,
+                desc="Collecting fragment pieces",
+                disable=not progress_bars,
+                leave=False,
+            )
+        ):
+            mo = ent.mesh_order
+            if mo is None:
+                mo = float("inf")
+            for original in originals_per_entity[ent_idx]:
+                modified = builder.Modified(original)
+                if modified.IsEmpty() and not builder.IsDeleted(original):
+                    pieces = [original]
+                else:
+                    pieces = list(modified)
+                for piece in pieces:
+                    k = _shape_key(piece)
+                    piece_shapes.setdefault(k, piece)
+                    piece_candidates[k].append((ent_idx, mo))
 
-                for modified_shape in modified_shapes:
-                    comp_builder.Add(new_compound, modified_shape)
-                ent.shape = new_compound
-            elif builder.IsDeleted(ent.shape):
-                # If deleted, we should probably mark it or handle it
-                # For now just keep existing shape if NOT deleted,
-                # but if deleted it might mean it's been swallowed or failed.
-                pass
+        owners = _resolve_piece_ownership(piece_candidates)
 
-        return entity_group
+        for ent in entities:
+            ent.shapes = []
+        for key, ent_idx in owners.items():
+            entities[ent_idx].shapes.append(piece_shapes[key])
+
+        return entities
 
     def process_entities(
         self,
         entities_list: list[Any],
-        _progress_bars: bool = False,  # Included for interface compatibility
+        progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
-        """Process entities and return list of OCCLabeledEntity objects.
+        """Instantiate entities and fragment them.
 
-        Args:
-            entities_list: List of entity objects (PolyPrism, PolySurface, etc.)
-            progress_bars: Ignored, for interface compatibility
-
-        Returns:
-            list[OCCLabeledEntity]: Processed entities ready for meshing or export
+        Every entity builds its geometry with fresh TShapes; BOPAlgo's
+        fragment pass with ``fuzzy_value`` is the sole mechanism for
+        reconciling coincident sub-geometry -- mirroring how gmsh's own
+        OCC kernel handles shared boundaries between entities.
+        ``keep=False`` helpers keep their shapes for the XAO writer's
+        interface-naming pass; the writer itself excludes their bodies
+        from the emitted BREP.
         """
-        # Group by dimension and sort by mesh_order
-        dimension_groups: dict[int, list[Any]] = {0: [], 1: [], 2: [], 3: []}
-        max_dim = 0
+        if not entities_list:
+            return []
 
-        # Instantiate and infer dimension early in parallel
-        with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
-            labeled_entities = list(
-                executor.map(
-                    lambda x: self._instantiate_entity_occ(x[0], x[1]),
-                    enumerate(entities_list),
+        labeled_entities = [
+            self._instantiate_entity_occ(i, ent)
+            for i, ent in enumerate(
+                tqdm(
+                    entities_list,
+                    desc="Instantiating OCC entities",
+                    disable=not progress_bars,
                 )
             )
+        ]
 
-        for ent_obj, labeled_ent in zip(entities_list, labeled_entities):
-            # Use dimension from entity if available, otherwise from shape
-            dim = getattr(ent_obj, "dimension", None)
-            if dim is None:
-                dim = labeled_ent.dim
-
-            # Ensure dim is an integer and not None for max()
-            if dim is None:
-                dim = -1
-
-            max_dim = max(max_dim, dim)
-
-            # Ensure dimension group exists
-            if dim not in dimension_groups:
-                dimension_groups[dim] = []
-
-            dimension_groups[dim].append((ent_obj, labeled_ent))
-
-        # Sort each group by mesh_order
-        for d in range(4):
-            dimension_groups[d].sort(
-                key=lambda x: x[0].mesh_order
-                if x[0].mesh_order is not None
-                else float("inf")
-            )
-
-        all_processed_entities: list[OCCLabeledEntity] = []
-
-        # Process from highest dimension down
-        for d in range(max_dim, -1, -1):
-            if not dimension_groups[d]:
-                continue
-
-            # Entities of current dimension
-            inc_labeled_entities = [x[1] for x in dimension_groups[d]]
-            current_dim_entities = self._process_dimension_group_cuts_occ(
-                inc_labeled_entities, [x[0] for x in dimension_groups[d]]
-            )
-
-            # 2. Fragment against higher dimensional entities
-            if all_processed_entities:
-                current_dim_entities = self._process_dimension_group_fragments_occ(
-                    current_dim_entities, all_processed_entities
-                )
-
-            all_processed_entities.extend(current_dim_entities)
-
-        return all_processed_entities
+        return self._fragment_all(labeled_entities, progress_bars=progress_bars)
 
 
 def cad_occ(
     entities_list: list[Any],
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
+    progress_bars: bool = False,
+    fuzzy_value: float | None = None,
 ) -> list[OCCLabeledEntity]:
-    """Utility function for OCC-based CAD processing."""
-    processor = CAD_OCC(point_tolerance=point_tolerance, n_threads=n_threads)
-    return processor.process_entities(entities_list)
+    """Utility function for OCC-based CAD processing.
+
+    Mirrors :func:`meshwell.cad_gmsh.cad_gmsh`'s signature (minus the
+    gmsh-specific ``model`` / ``filename`` / tagging kwargs); the result
+    feeds :func:`meshwell.occ_xao_writer.write_xao` to produce a tagged
+    XAO gmsh can load.
+    """
+    processor = CAD_OCC(
+        point_tolerance=point_tolerance,
+        n_threads=n_threads,
+        fuzzy_value=fuzzy_value,
+    )
+    return processor.process_entities(entities_list, progress_bars=progress_bars)

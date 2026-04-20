@@ -7,7 +7,8 @@ Meshwell provides two main approaches for CAD geometry generation and meshing:
 Hermetic functions with clear inputs and outputs that handle everything automatically, including file I/O:
 
 ```python
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
+from meshwell.occ_xao_writer import write_xao
 from meshwell.mesh import mesh
 from meshwell.polysurface import PolySurface
 import shapely
@@ -26,7 +27,7 @@ box2 = PolySurface(
 )
 
 # Generate CAD → automatically saves to file
-cad(entities_list=[box1, box2], output_file="geometry.xao")
+write_xao(cad_occ([box1, box2]), "geometry.xao")
 
 # Generate mesh → automatically loads and saves files
 mesh_obj = mesh(

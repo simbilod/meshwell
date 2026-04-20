@@ -6,8 +6,9 @@
 import matplotlib.pyplot as plt
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.visualization import plot3D
 
@@ -48,10 +49,7 @@ poly3D = PolyPrism(
 
 entities_list = [poly3D]
 
-cad(
-    entities_list=entities_list,
-    output_file="prism.xao",
-)
+write_xao(cad_occ(entities_list), "prism.xao")
 
 output_mesh = mesh(
     dim=3,

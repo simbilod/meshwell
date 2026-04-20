@@ -1,12 +1,11 @@
 """Gmsh wire definitions."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import gmsh
 from shapely.geometry import LineString, MultiLineString
 
-from meshwell.cad import CAD
+import gmsh
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
@@ -64,6 +63,16 @@ class PolyLine(GeometryEntity):
             self.linestrings = list(linestrings.geoms)
         else:  # Single LineString
             self.linestrings = [linestrings]
+
+        # Snap to the tolerance grid. Pointwise mode preserves coordinate
+        # order; duplicate stripping is handled downstream.
+        if point_tolerance > 0:
+            import shapely
+
+            self.linestrings = [
+                shapely.set_precision(ls, grid_size=point_tolerance, mode="pointwise")
+                for ls in self.linestrings
+            ]
 
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):
@@ -138,7 +147,7 @@ class PolyLine(GeometryEntity):
 
     def instanciate(
         self,
-        cad_model: CAD | None = None,  # noqa: ARG002
+        cad_model: Any | None = None,  # noqa: ARG002
     ) -> list[tuple[int, int]]:
         """Create GMSH wires directly without using CAD class methods."""
         wires = []

@@ -11,8 +11,9 @@ import meshio
 import numpy as np
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.remesh import (
     BinaryScalingStrategy,
@@ -66,10 +67,7 @@ poly_obj2 = PolySurface(
 entities_list = [poly_obj1, poly_obj2]
 
 # Generate CAD
-cad(
-    entities_list=entities_list,
-    output_file="remesh_example.xao",
-)
+write_xao(cad_occ(entities_list), "remesh_example.xao")
 
 # %% [markdown]
 # ## Initial Mesh

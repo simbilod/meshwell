@@ -1,99 +1,74 @@
 from __future__ import annotations
 
-from functools import partial
-
-import gmsh
 import shapely
 
-from meshwell.cad import cad
-from meshwell.gmsh_entity import GMSH_entity
+from meshwell.cad_occ import cad_occ
+from meshwell.occ_entity import OCC_entity
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
+from tests.test_occ_helpers import _occ_box, _occ_rectangle, _occ_sphere
 
 
 def test_composite_cad_3D():
-    # Create a prism
+    # Prism from a shapely polygon, extruded z=[0,1]
     polygon = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]])
-    buffers = {0.0: 0.0, 1.0: 0.0}  # Extrude from z=0 to z=1
     prism_obj = PolyPrism(
-        polygons=polygon, buffers=buffers, physical_name="prism", mesh_order=1
+        polygons=polygon,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="prism",
+        mesh_order=1,
     )
 
-    # Create a box that intersects with the prism (additive)
-    box_obj = GMSH_entity(
-        gmsh_partial_function=partial(
-            gmsh.model.occ.add_box,
-            x=1,
-            y=1,
-            z=0.5,  # Positioned to intersect the prism
-            dx=2,
-            dy=2,
-            dz=1,
-        ),
+    box_obj = OCC_entity(
+        occ_function=_occ_box(x=1, y=1, z=0.5, dx=2, dy=2, dz=1),
         physical_name="box",
         mesh_order=2,
-        additive=False,  # Make this an additive entity
+        additive=False,
+        dimension=3,
     )
 
-    # Create a sphere that intersects with the prism (non-additive)
-    sphere_obj = GMSH_entity(
-        gmsh_partial_function=partial(
-            gmsh.model.occ.add_sphere,
-            xc=0,
-            yc=0,
-            zc=0.5,  # Center at edge of prism
-            radius=0.75,
-        ),
+    sphere_obj = OCC_entity(
+        occ_function=_occ_sphere(xc=0, yc=0, zc=0.5, radius=0.75),
         physical_name="sphere",
         mesh_order=2,
-        additive=False,  # This will cut into the prism
+        additive=False,
+        dimension=3,
     )
 
-    # Create another box that's separate
-    separate_box = GMSH_entity(
-        gmsh_partial_function=partial(
-            gmsh.model.occ.add_box, x=4, y=4, z=0, dx=1, dy=1, dz=1
-        ),
+    separate_box = OCC_entity(
+        occ_function=_occ_box(x=4, y=4, z=0, dx=1, dy=1, dz=1),
         physical_name="separate_box",
         mesh_order=3,
+        dimension=3,
     )
 
-    # Process all entities
     entities = [prism_obj, sphere_obj, box_obj, separate_box]
-    cad(
-        entities_list=entities,
-        output_file="test_composite_3D",
-        progress_bars=True,
+    write_xao(
+        cad_occ(entities, progress_bars=True),
+        "test_composite_3D.xao",
     )
 
 
 def test_composite_cad_mixed():
-    """Test mixed-dimensional CAD processing with multi-dimensional capability."""
-    # Create a prism
+    """Mixed-dimensional CAD: 3D prism with an embedded 2D rectangle."""
     polygon = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]])
-    buffers = {0.0: 0.0, 1.0: 0.0}  # Extrude from z=0 to z=1
     prism_obj = PolyPrism(
-        polygons=polygon, buffers=buffers, physical_name="prism", mesh_order=2
+        polygons=polygon,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="prism",
+        mesh_order=2,
     )
 
-    # Create a plane
-    # Create a plane at z=0.5
-    plane_obj = GMSH_entity(
-        gmsh_partial_function=partial(
-            gmsh.model.occ.add_rectangle,
-            x=0.5,
-            y=0.5,
-            z=0.5,  # Center the plane inside the prism
-            dx=1,
-            dy=1,
-        ),
+    plane_obj = OCC_entity(
+        occ_function=_occ_rectangle(x=0.5, y=0.5, z=0.5, dx=1, dy=1),
         physical_name="plane",
         mesh_order=1,
         additive=False,
+        dimension=2,
     )
 
     entities = [prism_obj, plane_obj]
-    cad(
-        entities_list=entities,
-        output_file="test_composite_mixed",
-        progress_bars=True,
+    write_xao(
+        cad_occ(entities, progress_bars=True),
+        "test_composite_mixed.xao",
     )

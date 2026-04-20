@@ -4,8 +4,9 @@ from pathlib import Path
 
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.utils import compare_gmsh_files
 
@@ -19,7 +20,7 @@ def test_polysurface():
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
     polysurface_obj = PolySurface(polygons=polygon, physical_name="polysurface")
-    cad(entities_list=[polysurface_obj], output_file="test_polysurface")
+    write_xao(cad_occ([polysurface_obj]), "test_polysurface.xao")
     mesh(
         input_file="test_polysurface.xao",
         output_file="test_polysurface.msh",
@@ -48,10 +49,12 @@ def test_coinciding_polysurface():
 
     entities = [core_surface, cladding_surface, buried_oxide_surface]
 
-    cad(
-        entities_list=entities,
-        output_file="test_polysurface_coinciding.xao",
-        n_threads=1,
+    write_xao(
+        cad_occ(
+            entities,
+            n_threads=1,
+        ),
+        "test_polysurface_coinciding.xao",
     )
     mesh(
         input_file="test_polysurface_coinciding.xao",

@@ -42,7 +42,6 @@ class ModelManager:
         self._is_initialized = False
 
         # CAD and Mesh instances (created lazily)
-        self._cad = None
         self._mesh = None
 
     def _initialize(self, model_name: str | None = None) -> None:
@@ -94,16 +93,77 @@ class ModelManager:
         output_file = Path(output_file)
         gmsh.write(str(output_file))
 
-    def load_from_xao(self, input_file: Path) -> None:
+    def load_from_xao(
+        self,
+        input_file: Path,
+        remove_all_duplicates: bool = False,
+    ) -> None:
         """Load CAD geometry from .xao file.
 
         Args:
             input_file: Input .xao file path
+            remove_all_duplicates: opt-in gmsh-level ``occ.fragment`` pass
+                over every loaded dimtag. Only catches OCC-identical
+                coincident TShapes -- it does not fix geometric-but-not-
+                topological duplicates, slivers, or sub-fuzzy features,
+                which are the usual root cause of ``dihedral 0`` and PLC
+                errors. For those, prefer ``canonicalize_topology=True``
+                and/or raising ``fuzzy_value`` at the ``cad_occ`` stage.
 
         """
         self.ensure_initialized("temp")
         input_file = Path(input_file)
-        gmsh.merge(str(input_file.with_suffix(".xao")))
+        gmsh.open(str(input_file.with_suffix(".xao")))
+        self.model.occ.synchronize()
+        if remove_all_duplicates:
+            self._fragment_all_loaded_dimtags()
+
+    def load_occ_entities(
+        self,
+        entities: list,
+        remove_all_duplicates: bool = False,
+        **write_xao_kwargs,
+    ) -> None:
+        """Serialize ``entities`` to a transient XAO and load it into gmsh.
+
+        Convenience wrapper around :func:`meshwell.occ_xao_writer.write_xao`
+        + :meth:`load_from_xao`. Every physical group the OCP tagging pass
+        produced is applied to the current gmsh model.
+
+        Args:
+            entities: list of ``OCCLabeledEntity`` from ``cad_occ``.
+            remove_all_duplicates: forwarded to :meth:`load_from_xao`.
+                See its docstring for the tradeoff.
+            **write_xao_kwargs: forwarded to
+                :func:`meshwell.occ_xao_writer.write_xao`
+                (``interface_delimiter``, ``boundary_delimiter``,
+                ``model_name``).
+        """
+        import tempfile
+
+        from meshwell.occ_xao_writer import write_xao
+
+        self.ensure_initialized("temp")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            xao_path = Path(tmpdir) / "cad.xao"
+            write_xao(entities, xao_path, **write_xao_kwargs)
+            self.load_from_xao(xao_path, remove_all_duplicates=remove_all_duplicates)
+
+    def _fragment_all_loaded_dimtags(self) -> None:
+        """Run ``occ.fragment`` over every loaded dimtag.
+
+        Equivalent to gmsh's own ``removeAllDuplicates`` but survives
+        without a per-entity dimtag map: the refinement engine
+        (``mesh.py``) rebuilds its state from physical groups
+        post-fragment, so dimtag identity need not be preserved.
+        """
+        all_dimtags = [
+            (d, t) for d in (0, 1, 2, 3) for _, t in self.model.getEntities(d)
+        ]
+        if not all_dimtags:
+            return
+        self.model.occ.fragment(all_dimtags, [], removeObject=True, removeTool=True)
+        self.model.occ.synchronize()
 
     def save_to_xao(self, output_file: Path) -> None:
         """Save current model to .xao file.
@@ -221,7 +281,6 @@ class ModelManager:
         self.model = None
         self.occ = None
         # Clean up lazy instances
-        self._cad = None
         self._mesh = None
 
     def is_initialized(self) -> bool:
@@ -237,29 +296,6 @@ class ModelManager:
         """
         if not self._is_initialized:
             self._initialize(model_name)
-
-    @property
-    def cad(self):
-        """Get CAD instance for this model (created lazily).
-
-        Returns:
-            CAD instance configured to use this ModelManager
-
-        Example:
-            model = ModelManager(filename="my_project")
-            model.cad.process_entities(entities_list)
-            model.save_to_xao("output.xao")
-
-        """
-        if self._cad is None:
-            # Import here to avoid circular imports
-            from meshwell.cad import CAD
-
-            self._cad = CAD(
-                model=self,
-                point_tolerance=self.point_tolerance or 1e-3,
-            )
-        return self._cad
 
     @property
     def mesh(self):

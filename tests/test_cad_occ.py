@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import gmsh
 import pytest
 import shapely
 
+import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_to_gmsh import inject_occ_entities_into_gmsh, occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 
@@ -30,11 +30,9 @@ def test_occ_polysurface():
     assert len(occ_entities) == 1
     assert occ_entities[0].dim == 2
 
-    # 2. Bridge to GMSH and save XAO
+    # 2. Serialize to XAO
     output_xao = Path("test_polysurface_occ.xao")
-    occ_to_xao(
-        occ_entities, output_xao, model_manager=None
-    )  # Uses default model manager
+    write_xao(occ_entities, output_xao)
 
     assert output_xao.exists()
 
@@ -93,7 +91,7 @@ def test_occ_composite_3D():
     from meshwell.model import ModelManager
 
     mm = ModelManager()
-    inject_occ_entities_into_gmsh(occ_entities, mm)
+    mm.load_occ_entities(occ_entities)
 
     # Verify physical names in gmsh model
     groups = gmsh.model.getPhysicalGroups()
@@ -119,8 +117,167 @@ def test_occ_buffered_prism():
     assert occ_entities[0].dim == 3
 
     output_xao = Path("test_buffered_prism_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
     assert output_xao.exists()
+
+
+def test_occ_many_polyprism_stress_with_arcs_and_coincidences():
+    """Stress the OCC all-fragment pipeline with many PolyPrism entities.
+
+    Exercises:
+      - arc fitting (circles via shapely buffer with identify_arcs=True),
+      - arc-on-arc overlaps (two circles intersecting each other),
+      - arc-on-polygon overlaps (square carving into a disk),
+      - exactly coinciding shapes (same polygon, different mesh_order — the
+        lower-priority instance must be fully absorbed and produce no tags),
+      - buffered (non-extrude) prism interleaved with extruded ones,
+      - annulus (polygon with a hole) with arcs,
+      - varied z-ranges so interfaces emerge in all dimensions.
+    """
+    import numpy as np
+    from shapely.geometry import Point, Polygon
+
+    from meshwell.model import ModelManager
+
+    def circle(cx, cy, r, segs=48):
+        return Point(cx, cy).buffer(r, quad_segs=segs)
+
+    def reg_polygon(cx, cy, r, n):
+        ang = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        return Polygon([(cx + r * np.cos(a), cy + r * np.sin(a)) for a in ang])
+
+    # Polygon reused by two coinciding prisms.
+    coincident_poly = circle(3, 0, 1.0)
+
+    entities = [
+        # Background slab (lowest priority).
+        PolyPrism(
+            polygons=Polygon([(-5, -5), (5, -5), (5, 5), (-5, 5)]),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="slab",
+            mesh_order=20,
+        ),
+        # Two arc-fitted disks with an arc-on-arc overlap.
+        PolyPrism(
+            polygons=circle(-2.0, 0.0, 1.5),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="disk_a",
+            mesh_order=5,
+            identify_arcs=True,
+        ),
+        PolyPrism(
+            polygons=circle(-0.5, 0.0, 1.5),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="disk_b",
+            mesh_order=6,
+            identify_arcs=True,
+        ),
+        # Exactly coinciding pair: hi wins everywhere, lo is fully absorbed.
+        PolyPrism(
+            polygons=coincident_poly,
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="coincident_hi",
+            mesh_order=1,
+            identify_arcs=True,
+        ),
+        PolyPrism(
+            polygons=coincident_poly,
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="coincident_lo",
+            mesh_order=10,
+            identify_arcs=True,
+        ),
+        # Square cutting into disk_b — arc-on-polygon interface.
+        PolyPrism(
+            polygons=Polygon([(-1.0, 1.0), (2.0, 1.0), (2.0, 3.0), (-1.0, 3.0)]),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="square_over_disk",
+            mesh_order=3,
+        ),
+        # Annulus (polygon with hole), taller than the slab.
+        PolyPrism(
+            polygons=circle(1.0, -2.0, 1.2).difference(circle(1.0, -2.0, 0.6)),
+            buffers={0.0: 0.0, 2.0: 0.0},
+            physical_name="ring",
+            mesh_order=4,
+            identify_arcs=True,
+        ),
+        # Buffered (non-extrude) tapered prism.
+        PolyPrism(
+            polygons=Polygon([(3.0, 3.0), (4.5, 3.0), (4.5, 4.5), (3.0, 4.5)]),
+            buffers={0.0: 0.0, 0.5: 0.2, 1.0: 0.0},
+            physical_name="pyramid",
+            mesh_order=7,
+        ),
+        # Thin tall column poking above everything.
+        PolyPrism(
+            polygons=Polygon([(-4.0, 3.0), (-3.5, 3.0), (-3.5, 3.5), (-4.0, 3.5)]),
+            buffers={0.0: 0.0, 3.0: 0.0},
+            physical_name="column",
+            mesh_order=2,
+        ),
+        # Hexagon.
+        PolyPrism(
+            polygons=reg_polygon(-3.0, -3.0, 0.8, 6),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="hex",
+            mesh_order=8,
+        ),
+        # Triangle.
+        PolyPrism(
+            polygons=Polygon([(2.0, -4.0), (4.0, -4.0), (3.0, -2.0)]),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="triangle",
+            mesh_order=11,
+        ),
+        # 24-sided polygon sitting inside disk_a — carves an arc-bounded
+        # inset because disk_a's curved boundary is preserved by arc fitting.
+        PolyPrism(
+            polygons=reg_polygon(-2.0, 0.0, 0.6, 24),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="inset",
+            mesh_order=1,
+        ),
+    ]
+
+    occ_entities = cad_occ(entities_list=entities)
+    assert len(occ_entities) == len(entities)
+
+    mm = ModelManager(filename="test_occ_stress")
+    try:
+        mm.load_occ_entities(occ_entities)
+
+        groups = gmsh.model.getPhysicalGroups()
+        group_names = {gmsh.model.getPhysicalName(dim, tag) for dim, tag in groups}
+
+        expected = {
+            "slab",
+            "disk_a",
+            "disk_b",
+            "coincident_hi",
+            "square_over_disk",
+            "ring",
+            "pyramid",
+            "column",
+            "hex",
+            "triangle",
+            "inset",
+        }
+        missing = expected - group_names
+        assert not missing, f"missing physical groups: {missing}"
+
+        # Exactly-coincident absorbed entity must have no surviving tags.
+        assert "coincident_lo" not in group_names
+
+        # Fragmentation should populate the model at every topological dim.
+        for d in (0, 1, 2, 3):
+            assert len(gmsh.model.getEntities(d)) > 0, f"no entities at dim {d}"
+
+        # At least one interface group at dim 2 (volumes share faces).
+        dim2_names = [gmsh.model.getPhysicalName(d, t) for d, t in groups if d == 2]
+        assert any("___" in n for n in dim2_names), dim2_names
+    finally:
+        mm.finalize()
 
 
 if __name__ == "__main__":

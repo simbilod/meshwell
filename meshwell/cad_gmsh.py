@@ -1,36 +1,82 @@
-"""CAD processor."""
+"""GMSH CAD processor: fragment + mesh_order ownership via the gmsh API.
+
+Mirrors :mod:`meshwell.cad_occ`, but builds and fragments geometry
+directly inside a gmsh model rather than via the standalone OCP OpenCASCADE
+bindings. After ``cad_gmsh(...)`` the gmsh model has every owning entity
+tagged as a physical group, plus derived ``A___B`` interfaces and
+``A___None`` domain boundaries. Downstream, :func:`meshwell.mesh.mesh`
+with ``model=`` can mesh in place without an XAO round-trip.
+
+Pipeline:
+
+1. Initialize the gmsh model (via :class:`ModelManager`).
+2. Call each entity's ``instanciate`` to produce its gmsh dimtags.
+3. ``gmsh.model.occ.fragment`` over every input dimtag; use the
+   returned correspondence map to know which fragment piece originated
+   from which entity.
+4. Resolve multi-claim pieces by lowest ``mesh_order`` (first wins on tie).
+5. Assign physical groups for entities, pair-wise interfaces, and
+   exterior domain boundaries.
+
+Ownership semantics match :mod:`meshwell.cad_occ` exactly -- the same
+``mesh_order`` ladder and tie-break rules apply, so tests that pin the
+OCC ownership model also pin this one.
+"""
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass
 from os import cpu_count
-from pathlib import Path
+from typing import Any
+
+from tqdm.auto import tqdm
 
 import gmsh
-
-from meshwell.labeledentity import LabeledEntities
 from meshwell.model import ModelManager
-from meshwell.tag import tag_boundaries, tag_entities, tag_interfaces
-from meshwell.validation import (
-    unpack_dimtags,
-)
+from meshwell.validation import unpack_dimtags
 
 
-def _validate_dimtags_exist(dimtags):
-    """Validate that dimtags exist in the model. Returns only valid ones."""
-    if not dimtags:
-        return []
+@dataclass
+class GMSHLabeledEntity:
+    """Per-entity gmsh-dimtag record produced by :func:`cad_gmsh`.
 
-    valid_dimtags = []
-    for dim, tag in dimtags:
-        all_entities = gmsh.model.getEntities(dim)
-        existing_tags = {entity_tag for _, entity_tag in all_entities}
-        if tag in existing_tags:
-            valid_dimtags.append((dim, tag))
+    ``dimtags`` holds the fragment pieces this entity owns after the
+    all-fragment pass. Every dimtag here lives in the gmsh model the
+    processor was driven against; the physical groups are already
+    written by the time :func:`cad_gmsh` returns.
+    """
 
-    return valid_dimtags
+    dimtags: list[tuple[int, int]]
+    physical_name: tuple[str, ...]
+    index: int
+    keep: bool
+    dim: int
+    mesh_order: float | None = None
 
 
-class CAD:
-    """CAD class for generating geometry and saving to .xao format."""
+def _resolve_piece_ownership(
+    piece_candidates: dict[Any, list[tuple[int, float]]],
+) -> dict[Any, int]:
+    """Pick the owning entity index for each fragment piece.
+
+    Rule: lowest ``mesh_order`` wins. On tie, first candidate in
+    insertion order wins. Matches :func:`cad_occ._resolve_piece_ownership`
+    exactly so the two backends give identical ownership outcomes.
+    """
+    owners: dict[Any, int] = {}
+    for piece, candidates in piece_candidates.items():
+        best_idx = candidates[0][0]
+        best_mo = candidates[0][1]
+        for idx, mo in candidates[1:]:
+            if mo < best_mo:
+                best_idx = idx
+                best_mo = mo
+        owners[piece] = best_idx
+    return owners
+
+
+class CAD_GMSH:
+    """CAD processor driving geometry construction + fragmentation via gmsh."""
 
     def __init__(
         self,
@@ -39,15 +85,19 @@ class CAD:
         filename: str = "temp",
         model: ModelManager | None = None,
     ):
-        """Initialize CAD processor.
+        """Initialize gmsh CAD processor.
 
         Args:
-            point_tolerance: Tolerance for point merging
-            n_threads: Number of threads for processing
-            filename: Base filename for the model
-            model: Optional Model instance to use (creates new if None)
+            point_tolerance: Tolerance used for gmsh's ``Geometry.Tolerance``
+                and ``Geometry.ToleranceBoolean`` when the processor owns
+                the model.
+            n_threads: Thread count for gmsh meshing / boolean parallelism.
+            filename: Base filename for the model (used when ``model`` is
+                not provided).
+            model: Optional :class:`ModelManager` to reuse. When provided
+                the processor does not finalize gmsh on exit -- the caller
+                owns the lifecycle.
         """
-        # Use provided model or create new one
         if model is None:
             self.model_manager = ModelManager(
                 n_threads=n_threads,
@@ -58,419 +108,313 @@ class CAD:
         else:
             self.model_manager = model
             self._owns_model = False
-
-        # Store parameters for backward compatibility
         self.point_tolerance = point_tolerance
+        self.n_threads = n_threads
 
-    def _instantiate_entity(
-        self, index: int, entity_obj, progress_bars: bool
-    ) -> LabeledEntities:
-        """Common logic for instantiating entities."""
+    # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
+    # compatibility alias so entity ``instanciate(cad_model)`` calls that
+    # expect a ``cad_model.model_manager.model`` attribute still work.
+
+    def _instantiate_entity(self, index: int, entity_obj: Any) -> GMSHLabeledEntity:
+        """Call the entity's ``instanciate`` hook and wrap the result."""
         physical_name = entity_obj.physical_name
-        if progress_bars and physical_name:
-            print(f"Processing {physical_name} - instantiation")
+        if isinstance(physical_name, str):
+            physical_name = (physical_name,)
 
-        # Instantiate entity
         dimtags_out = entity_obj.instanciate(self)
         dimtags = unpack_dimtags(dimtags_out)
 
-        return LabeledEntities(
-            index=index,
+        # Some entities report their dimension on the instance; fall back
+        # to the first dimtag when they don't.
+        dim = getattr(entity_obj, "dimension", None)
+        if dim is None:
+            dim = dimtags[0][0] if dimtags else -1
+
+        return GMSHLabeledEntity(
             dimtags=dimtags,
             physical_name=physical_name,
-            keep=entity_obj.mesh_bool,
-            model=self.model_manager.model,
+            index=index,
+            keep=getattr(entity_obj, "mesh_bool", True),
+            dim=dim,
+            mesh_order=getattr(entity_obj, "mesh_order", None),
         )
 
-    def _process_entities(
+    def _fragment_all(
         self,
-        entities_list: list,
-        progress_bars: bool,
-    ) -> tuple[list, int]:
-        """Process entities."""
-        # Process all entities (additive or not)
-        structural_entity_list, max_dim = self._process_multidimensional_entities(
-            entities_list, progress_bars
-        )
+        entities: list[GMSHLabeledEntity],
+        progress_bars: bool = False,
+    ) -> list[GMSHLabeledEntity]:
+        """Fragment all entity dimtags; assign pieces by mesh_order priority.
 
-        return structural_entity_list, max_dim
+        Uses ``gmsh.model.occ.fragment`` with the first input dimtag as the
+        object and the remainder as tools. ``outDimTagsMap`` tells us
+        which fragment piece descends from each input dimtag, which we
+        invert to build the per-piece candidate ownership list.
+        """
+        if not entities:
+            return []
+        if len(entities) == 1:
+            return entities
 
-    def _process_multidimensional_entities(
-        self, structural_entities: list, progress_bars: bool
-    ) -> tuple[list, int]:
-        """Process entities with mixed dimensions using hierarchical approach."""
-        entity_dimensions = []
-        max_dim = 0
-        for index, entity_obj in enumerate(structural_entities):
-            dim = entity_obj.dimension
-            max_dim = max(dim, max_dim)
-            entity_dimensions.append((dim, index, entity_obj))
+        # Flatten input dimtags with entity-index provenance.
+        input_dimtags: list[tuple[int, int]] = []
+        provenance: list[int] = []
+        for ent_idx, ent in enumerate(entities):
+            for dt in ent.dimtags:
+                input_dimtags.append(dt)
+                provenance.append(ent_idx)
 
-        # Group entities by dimension and sort by mesh_order within each dimension
-        dimension_groups = {0: [], 1: [], 2: [], 3: []}
-        for dim, index, entity_obj in entity_dimensions:
-            dimension_groups[dim].append((index, entity_obj))
-
-        # Sort each dimension group by mesh_order
-        for dim in dimension_groups:
-            dimension_groups[dim].sort(
-                key=lambda x: x[1].mesh_order
-                if x[1].mesh_order is not None
-                else float("inf")
-            )
-
-        # Process entities by dimension (highest first)
-        all_processed_entities = []
-        dim = max_dim
-
-        while dim >= 0:
-            if dimension_groups[dim]:
-                # Process entities of same dimension in mesh_order sequence
-                current_dimension_entities = self._process_dimension_group_cuts(
-                    dimension_groups[dim], progress_bars
-                )
-
-                # Second pass: Fragment against higher dimensional entities
-                if all_processed_entities:
-                    current_dimension_entities = (
-                        self._process_dimension_group_fragments(
-                            current_dimension_entities,
-                            progress_bars,
-                            all_processed_entities,
-                        )
-                    )
-
-                all_processed_entities.extend(current_dimension_entities)
-            dim -= 1
-
-        return all_processed_entities, max_dim
-
-    def _process_dimension_group_fragments(
-        self,
-        entity_group: list[LabeledEntities],
-        progress_bars: bool,
-        higher_dim_entities: list[LabeledEntities],
-    ) -> list[LabeledEntities]:
-        """Fragment processing for entities against higher dimensional entities."""
-        if not higher_dim_entities or not entity_group:
-            return entity_group
-
-        # Collect all dimtags for group fragment operation
-        object_dimtags = []
-        tool_dimtags = []
-
-        for entity in entity_group:
-            if entity.dimtags:
-                object_dimtags.extend(entity.dimtags)
-
-        for entity in higher_dim_entities:
-            if entity.dimtags:
-                tool_dimtags.extend(entity.dimtags)
-
-        if not object_dimtags or not tool_dimtags:
-            return entity_group
+        if not input_dimtags:
+            return entities
+        if len(input_dimtags) == 1:
+            return entities
 
         if progress_bars:
-            print("Processing fragment integration for dimension group")
+            print(
+                f"gmsh.occ.fragment on {len(input_dimtags)} dimtags "
+                f"(across {len(entities)} entities)…",
+                flush=True,
+            )
 
-        # Validate all dimtags exist before fragment
-        object_dimtags = _validate_dimtags_exist(object_dimtags)
-        tool_dimtags = _validate_dimtags_exist(tool_dimtags)
-
-        # Perform single fragment operation for all entities
-        fragment_result = self.model_manager.model.occ.fragment(
+        object_dimtags = [input_dimtags[0]]
+        tool_dimtags = input_dimtags[1:]
+        _, out_map = gmsh.model.occ.fragment(
             object_dimtags,
             tool_dimtags,
             removeObject=True,
             removeTool=True,
         )
-        self.model_manager.model.occ.synchronize()
-
-        if not fragment_result or len(fragment_result) < 2:
-            raise ValueError("Fragment operation failed or returned invalid result")
-
-        mapping = fragment_result[1]
-
-        if not mapping or len(mapping) != (len(object_dimtags) + len(tool_dimtags)):
-            raise ValueError(
-                f"Fragment mapping incomplete: expected {len(object_dimtags) + len(tool_dimtags)} entries, got {len(mapping) if mapping else 0}"
-            )
-
-        # Update entity dimtags based on mapping
-        object_idx = 0
-        for entity in entity_group:
-            if entity.dimtags:
-                new_dimtags = []
-                for _ in entity.dimtags:
-                    if object_idx < len(mapping) and mapping[object_idx]:
-                        if isinstance(mapping[object_idx], list):
-                            new_dimtags.extend(mapping[object_idx])
-                        else:
-                            new_dimtags.append(mapping[object_idx])
-                    object_idx += 1
-
-                entity.dimtags = list(set(new_dimtags))
-
-        # Update higher dimension entities
-        tool_idx = len(object_dimtags)
-        for entity in higher_dim_entities:
-            if entity.dimtags:
-                new_dimtags = []
-                for _ in entity.dimtags:
-                    if tool_idx < len(mapping) and mapping[tool_idx]:
-                        if isinstance(mapping[tool_idx], list):
-                            new_dimtags.extend(mapping[tool_idx])
-                        else:
-                            new_dimtags.append(mapping[tool_idx])
-                    tool_idx += 1
-
-                entity.dimtags = list(set(new_dimtags))
-
-        self.model_manager.model.occ.synchronize()
-
-        # Return entities that still have valid dimtags
-        return [entity for entity in entity_group if entity.dimtags]
-
-    def _process_dimension_group_cuts(
-        self, entity_group: list, progress_bars: bool
-    ) -> list[LabeledEntities]:
-        """Process entities of same dimension using unified fragment and mesh_order selection."""
-        if not entity_group:
-            return []
-
-        # 1. Instantiate all entities independently
-        labeled_entities_with_objs = []
-        for index, entity_obj in entity_group:
-            ent = self._instantiate_entity(index, entity_obj, progress_bars)
-            labeled_entities_with_objs.append((ent, entity_obj))
-
-        all_dimtags = []
-        for ent, _ in labeled_entities_with_objs:
-            all_dimtags.extend(ent.dimtags)
-
-        if not all_dimtags:
-            return []
-
-        # If only one entity, no need to fragment
-        if len(all_dimtags) == 1:
-            self.model_manager.sync_model()
-            return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
-
-        # 2. Single fragment operation to resolve all overlaps
-        # We use an empty tool list to fragment everything against everything
-        fragment_result = self.model_manager.model.occ.fragment(
-            all_dimtags, [], removeObject=True, removeTool=True
-        )
-        self.model_manager.model.occ.synchronize()
-
-        if not fragment_result or len(fragment_result) < 2:
-            return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
-
-        mapping = fragment_result[1]
-
-        # 3. Assign each fragment to the entity with the lowest mesh_order
-        piece_to_owners = {}  # (dim, tag) -> list of (ent, mesh_order)
-        dimtag_idx = 0
-        for ent, obj in labeled_entities_with_objs:
-            mo = obj.mesh_order if obj.mesh_order is not None else float("inf")
-            for _ in ent.dimtags:
-                for piece in mapping[dimtag_idx]:
-                    if piece not in piece_to_owners:
-                        piece_to_owners[piece] = []
-                    piece_to_owners[piece].append((ent, mo))
-                dimtag_idx += 1
-
-        # Reset entity tags and reassign
-        for ent, _ in labeled_entities_with_objs:
-            ent.dimtags = []
-
-        for piece, owners in piece_to_owners.items():
-            # Find owner with minimum mesh_order
-            # In case of tie, first in list (original order) wins
-            best_ent = min(owners, key=lambda x: x[1])[0]
-            best_ent.dimtags.append(piece)
-
-        # 4. Self-fusion: Merge fragments belonging to the same entity
-        # This recovers the "single surface" behavior and removes fake internal interfaces
-        self.model_manager.model.occ.synchronize()
-
-        # DISABLED self-fusion.
-        # OpenCASCADE fuse drops disjoint elements when fusing a list of non-touching elements.
-        # Keeping separate conformal fragments is safe and preserves all elements.
-        # for ent, _obj in labeled_entities_with_objs:
-        #     if len(ent.dimtags) > 1:
-        #         try:
-        #             fuse_result = self.model_manager.model.occ.fuse(
-        #                 [ent.dimtags[0]],
-        #                 ent.dimtags[1:],
-        #                 removeObject=True,
-        #                 removeTool=True,
-        #             )
-        #             self.model_manager.model.occ.synchronize()
-        #             if fuse_result and len(fuse_result) >= 1:
-        #                 ent.dimtags = fuse_result[0]
-        #         except Exception:
-        #             print(
-        #                 f"Cannot fuse {ent.dimtags[0]} and {ent.dimtags[1:]}; keeping separate."
-        #             )
-        #             pass
-
-        # Final cleanup and sync
         self.model_manager.sync_model()
 
-        return [ent for ent, _ in labeled_entities_with_objs if ent.dimtags]
+        # ``out_map[i]`` is the list of fragment pieces that came from
+        # ``input_dimtags[i]``. Build piece -> [(ent_idx, mesh_order)].
+        piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = defaultdict(
+            list
+        )
+        for i, pieces in enumerate(
+            tqdm(
+                out_map,
+                desc="Collecting fragment pieces",
+                disable=not progress_bars,
+                leave=False,
+            )
+        ):
+            ent_idx = provenance[i]
+            mo = entities[ent_idx].mesh_order
+            if mo is None:
+                mo = float("inf")
+            for piece in pieces:
+                # gmsh returns pieces as (dim, tag) tuples. Force to a
+                # hashable tuple so dict keys are deterministic.
+                key = (int(piece[0]), int(piece[1]))
+                piece_candidates[key].append((ent_idx, mo))
 
-    def _tag_mesh_components(
+        owners = _resolve_piece_ownership(piece_candidates)
+
+        # Reset and reassign.
+        for ent in entities:
+            ent.dimtags = []
+        for piece, ent_idx in owners.items():
+            entities[ent_idx].dimtags.append(piece)
+
+        return entities
+
+    def _tag_entities(
         self,
-        final_entity_list: list,
-        max_dim: int,
+        entities: list[GMSHLabeledEntity],
         interface_delimiter: str,
         boundary_delimiter: str,
     ) -> None:
-        """Tag entities, interfaces, and boundaries."""
-        # Update entity boundaries
-        for entity in final_entity_list:
-            entity.update_boundaries()
+        """Write physical groups for entities, interfaces, and boundaries.
 
-        # Filter out entities that became invalid after boundary update
-        valid_final_entities = [
-            entity for entity in final_entity_list if entity.dimtags and entity.dim >= 0
-        ]
+        ``keep=False`` semantics mirror the OCC / XAO writer:
 
-        # Tag entities
-        if valid_final_entities:
-            tag_entities(valid_final_entities, self.model_manager.model)
-            # Tag highest-dimension model interfaces, model boundaries
-            valid_final_entities = tag_interfaces(
-                valid_final_entities,
-                max_dim,
-                interface_delimiter,
-                self.model_manager.model,
+        * Top-dim ``keep=False`` helpers: do NOT get a physical group of
+          their own (their body will be removed from the model after
+          tagging), but DO still appear in ``A___B`` interface names --
+          so a neighbour kept entity can still name a shared boundary
+          with a helper.
+        * Lower-dim ``keep=False`` helpers: always tagged (the embedded
+          cut surface / curve is the useful artefact).
+        * Both-keep=False interface pairs are skipped: neither side
+          survives to be meshed so the named boundary would dangle.
+        * Exterior ``___None`` boundaries are only emitted for kept
+          top-dim entities.
+        """
+        max_dim = max((e.dim for e in entities if e.dimtags), default=-1)
+
+        name_dimtags: dict[str, set[tuple[int, int]]] = defaultdict(set)
+        top_dim_entities: list[GMSHLabeledEntity] = []
+
+        for ent in entities:
+            if not ent.dimtags:
+                continue
+            if ent.dim == max_dim:
+                top_dim_entities.append(ent)
+                if not ent.keep:
+                    # Skip tagging the helper body; its interface with
+                    # kept neighbours is still recovered below.
+                    continue
+            for name in ent.physical_name:
+                for dt in ent.dimtags:
+                    name_dimtags[name].add(dt)
+
+        for name, dts in name_dimtags.items():
+            _add_physical_group(name, dts)
+
+        # Pair-wise interfaces: one dim below the top-dim entities.
+        boundary_of: dict[int, set[tuple[int, int]]] = {}
+        for ent in top_dim_entities:
+            boundary_of[ent.index] = set(
+                gmsh.model.getBoundary(
+                    ent.dimtags,
+                    combined=False,
+                    oriented=False,
+                    recursive=False,
+                )
             )
-            # Tag model boundaries
-            tag_boundaries(
-                valid_final_entities,
-                max_dim,
-                interface_delimiter,
-                boundary_delimiter,
-                self.model_manager.model,
-            )
+
+        pair_dimtags: dict[tuple[str, str], set[tuple[int, int]]] = defaultdict(set)
+        for i, ei in enumerate(top_dim_entities):
+            for j, ej in enumerate(top_dim_entities):
+                if j <= i:
+                    continue
+                if not (ei.keep or ej.keep):
+                    # Both helpers: their shared face is unnamed and
+                    # will dangle after both removals.
+                    continue
+                shared = boundary_of[ei.index] & boundary_of[ej.index]
+                if not shared:
+                    continue
+                for ni in ei.physical_name:
+                    for nj in ej.physical_name:
+                        if ni == nj:
+                            continue
+                        key = tuple(sorted((ni, nj)))
+                        pair_dimtags[key].update(shared)
+
+        for (ni, nj), dts in pair_dimtags.items():
+            _add_physical_group(f"{ni}{interface_delimiter}{nj}", dts)
+
+        # Exterior domain boundaries.
+        for ent in top_dim_entities:
+            if not ent.keep:
+                continue
+            my_bnd = boundary_of[ent.index]
+            others: set[tuple[int, int]] = set()
+            for other in top_dim_entities:
+                if other.index == ent.index:
+                    continue
+                others |= boundary_of[other.index]
+            exterior = my_bnd - others
+            if not exterior:
+                continue
+            for name in ent.physical_name:
+                _add_physical_group(
+                    f"{name}{interface_delimiter}{boundary_delimiter}",
+                    exterior,
+                )
+
+    def _remove_keep_false_top_dim(self, entities: list[GMSHLabeledEntity]) -> None:
+        """Remove geometry of top-dim ``keep=False`` entities from the model.
+
+        Uses ``occ.remove(..., recursive=True)`` so sub-shapes that are
+        *not* shared with any kept entity are cleaned up too. Shared
+        interface faces survive the removal because gmsh's recursive
+        removal leaves sub-shapes with remaining parents in place.
+        """
+        max_dim = max((e.dim for e in entities if e.dimtags), default=-1)
+        dead: list[tuple[int, int]] = []
+        for ent in entities:
+            if ent.dim != max_dim or ent.keep or not ent.dimtags:
+                continue
+            dead.extend(ent.dimtags)
+            ent.dimtags = []
+        if not dead:
+            return
+        gmsh.model.occ.remove(dead, recursive=True)
+        self.model_manager.sync_model()
 
     def process_entities(
         self,
-        entities_list: list,
+        entities_list: list[Any],
+        progress_bars: bool = False,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
-        progress_bars: bool = False,
-    ) -> list:
-        """Process entities and return final entity list (no file I/O).
+    ) -> list[GMSHLabeledEntity]:
+        """Instantiate, fragment, and tag ``entities_list`` in gmsh.
 
-        Args:
-            entities_list: List of entities to process
-            interface_delimiter: Delimiter for interface names
-            boundary_delimiter: Delimiter for boundary names
-            progress_bars: Show progress bars during processing
-
-        Returns:
-            List of processed LabeledEntities
+        The gmsh model is populated with physicals by the time this
+        returns; the returned :class:`GMSHLabeledEntity` list is provided
+        for introspection (ownership checks, tests, plotting).
         """
+        if not entities_list:
+            return []
+
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
-        # Process entities and get max dimension
-        final_entity_list, max_dim = self._process_entities(
-            entities_list=entities_list,
-            progress_bars=progress_bars,
-        )
+        labeled = [
+            self._instantiate_entity(i, ent)
+            for i, ent in enumerate(
+                tqdm(
+                    entities_list,
+                    desc="Instantiating gmsh entities",
+                    disable=not progress_bars,
+                )
+            )
+        ]
 
-        # Tag entities and boundaries (filtering happens inside _tag_mesh_components)
-        self._tag_mesh_components(
-            final_entity_list=final_entity_list,
-            max_dim=max_dim,
-            interface_delimiter=interface_delimiter,
-            boundary_delimiter=boundary_delimiter,
-        )
-
-        # Delete entities that are not marked to keep
-        for entity in final_entity_list:
-            if not entity.keep and entity.dimtags:
-                self.model_manager.model.occ.remove(entity.dimtags, recursive=False)
-                self.model_manager.model.occ.synchronize()
-
-        # Clean up any leftover boundary entities that do not bound any higher-dimensional entities
-        if max_dim == 3:
-            dangling_surfaces = []
-            for dim, tag in self.model_manager.model.getEntities(2):
-                upward_adj, _ = self.model_manager.model.getAdjacencies(dim, tag)
-                if len(upward_adj) == 0:
-                    dangling_surfaces.append((dim, tag))
-
-            if dangling_surfaces:
-                self.model_manager.model.occ.remove(dangling_surfaces, recursive=True)
-                self.model_manager.model.occ.synchronize()
-        elif max_dim == 2:
-            dangling_curves = []
-            for dim, tag in self.model_manager.model.getEntities(1):
-                upward_adj, _ = self.model_manager.model.getAdjacencies(dim, tag)
-                if len(upward_adj) == 0:
-                    dangling_curves.append((dim, tag))
-
-            if dangling_curves:
-                self.model_manager.model.occ.remove(dangling_curves, recursive=True)
-                self.model_manager.model.occ.synchronize()
-
-        return final_entity_list
-
-    def to_xao(self, output_file: Path) -> None:
-        """Save current model state to .xao file.
-
-        Args:
-            output_file: Output file path (will be suffixed with .xao)
-        """
-        self.model_manager.save_to_xao(output_file)
+        labeled = self._fragment_all(labeled, progress_bars=progress_bars)
+        self._tag_entities(labeled, interface_delimiter, boundary_delimiter)
+        self._remove_keep_false_top_dim(labeled)
+        self.model_manager.sync_model()
+        return labeled
 
 
-def cad(
-    entities_list: list,
-    output_file: Path,
+def _add_physical_group(name: str, dimtags) -> None:
+    """Add a physical group with the given dimtags; no-op if empty.
+
+    All dimtags in the group must share a dimension -- gmsh enforces that
+    at the API layer, so the caller is responsible for not mixing
+    dimensions into a single physical name.
+    """
+    dimtags = list(dimtags)
+    if not dimtags:
+        return
+    dim = dimtags[0][0]
+    tags = [t for (d, t) in dimtags if d == dim]
+    if not tags:
+        return
+    pg = gmsh.model.addPhysicalGroup(dim, tags)
+    gmsh.model.setPhysicalName(dim, pg, name)
+
+
+def cad_gmsh(
+    entities_list: list[Any],
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
+    progress_bars: bool = False,
     filename: str = "temp",
+    model: ModelManager | None = None,
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
-    progress_bars: bool = False,
-    model: ModelManager | None = None,
-) -> None:
-    """Utility function that wraps the CAD class for easier usage.
+) -> tuple[list[GMSHLabeledEntity], ModelManager]:
+    """Build + fragment + tag ``entities_list`` in a gmsh model.
 
-    Args:
-        entities_list: List of entities to process
-        output_file: Output file path
-        point_tolerance: Tolerance for point merging
-        n_threads: Number of threads to use for processing
-        filename: Temporary filename for GMSH model
-        interface_delimiter: Delimiter for interface names
-        boundary_delimiter: Delimiter for boundary names
-        progress_bars: Show progress bars during processing
-        model: Optional Model instance to use (creates new if None)
+    Returns ``(labeled_entities, model_manager)``. Pass
+    ``model_manager`` on to :func:`meshwell.mesh.mesh` (with
+    ``model=model_manager``) to mesh without round-tripping through XAO.
     """
-    cad_processor = CAD(
+    processor = CAD_GMSH(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
         filename=filename,
         model=model,
     )
-
-    # Process entities
-    cad_processor.process_entities(
-        entities_list=entities_list,
+    labeled = processor.process_entities(
+        entities_list,
+        progress_bars=progress_bars,
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
-        progress_bars=progress_bars,
     )
-
-    # Save to file
-    cad_processor.to_xao(output_file)
-
-    # Finalize if we created the model
-    if model is None:
-        cad_processor.model_manager.finalize()
+    return labeled, processor.model_manager
