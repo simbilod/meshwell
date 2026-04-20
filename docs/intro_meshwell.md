@@ -11,7 +11,7 @@ flowchart LR
 
 ## 1. Polygons (and more) --> CAD
 
-The first step is to define your geometry using built-in GMSH or meshwell entity classes. Meshwell entities are built from polygons (using [Shapely](https://shapely.readthedocs.io/)) and can be:
+The first step is to define your geometry using built-in meshwell entity classes or arbitrary OCC shapes. Meshwell entities are built from polygons (using [Shapely](https://shapely.readthedocs.io/)) and can be:
 
 - **PolyLine**: 1D lines defined by LineStrings
 - **PolySurface**: 2D surfaces defined by polygons
@@ -21,21 +21,23 @@ Key concepts:
 - **`physical_name`**: A label for the entity, used for the GMSH physical group
 - **`mesh_order`**: Controls how overlapping entities of the same dimension interact (lower order takes precedence)
 
-The geometry is exported using the `cad()` function, which writes a `.xao` file containing the complete geometric definition.
+The geometry is processed by OCC via `cad_occ()` and written to a `.xao` file using `occ_to_xao()`.
 
 ```python
-from meshwell.cad import cad
-from meshwell.polysurface import PolySurface
 import shapely
+
+from meshwell.cad_occ import cad_occ
+from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.polysurface import PolySurface
 
 polygon = shapely.Polygon([[-5, -5], [5, -5], [5, 5], [-5, 5]])
 entity = PolySurface(polygons=polygon, physical_name="my_surface", mesh_order=1)
 
-cad(entities_list=[entity], output_file="geometry.xao")
+occ_to_xao(cad_occ([entity]), "geometry.xao")
 ```
 
 For more details on the CAD options, see:
-- [GMSH entities](cad), which can be arbitrarily complex
+- [OCC entities](occ_entity), which can be arbitrarily complex
 - [Polysurfaces](polysurfaces)
 - [Prisms](prisms)
 - [Models](models)

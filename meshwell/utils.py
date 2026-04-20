@@ -88,10 +88,6 @@ def deserialize(data: Any, registry: dict[str, callable] | None = None) -> Any:
     if isinstance(data, dict):
         if "type" in data:
             t = data["type"]
-            if t == "GMSH_entity":
-                from meshwell.gmsh_entity import GMSH_entity
-
-                return GMSH_entity.from_dict(data)
             if t == "OCC_entity":
                 from meshwell.occ_entity import OCC_entity
 
@@ -124,6 +120,8 @@ def deserialize(data: Any, registry: dict[str, callable] | None = None) -> Any:
 
                 res_class = getattr(resolution, res_type)
                 return res_class.model_validate(params)
+
+            raise ValueError(f"Unknown entity type: {t!r}")
 
         # If it's a normal dict (like resolutions dict), recurse into values
         return {k: deserialize(v, registry=registry) for k, v in data.items()}

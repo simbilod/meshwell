@@ -268,14 +268,24 @@ Expected: FAIL with `ImportError: cannot import name '_shape_key'`.
 Add to `meshwell/cad_occ.py` near `_resolve_piece_ownership`:
 
 ```python
+from OCP.TopTools import TopTools_ShapeMapHasher
+
+_SHAPE_HASHER = TopTools_ShapeMapHasher()
+
+
 def _shape_key(shape: TopoDS_Shape) -> tuple[int, int]:
     """Return a hashable identity key for a TopoDS_Shape.
 
     Uses the TShape pointer plus orientation so that reversed shapes
     (e.g. a face and its reversed twin used to glue solids) compare distinct
     when BOPAlgo differentiates them, and equal when it does not.
+
+    Note: OCP returns a fresh Python wrapper on each call to
+    ``TopoDS_Shape.TShape()``, so ``id()``/default ``__hash__`` is not stable.
+    We use OCC's own ``TopTools_ShapeMapHasher``, which hashes on the
+    underlying ``TShape*`` pointer and is the idiomatic key in OCC.
     """
-    return (shape.TShape().__hash__(), int(shape.Orientation()))
+    return (_SHAPE_HASHER(shape), int(shape.Orientation()))
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**

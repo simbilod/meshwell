@@ -159,3 +159,7 @@ cython_debug/
 .worktrees/
 .superpowers/
 .worktrees/
+
+# Ref repos
+# gmsh/
+# OCCT/

@@ -1,4 +1,4 @@
-"""meshwell - GMSH wrapper, with integrated photonics focus."""
+"""meshwell - OpenCASCADE-based CAD and GMSH-based meshing for integrated photonics and beyond."""
 
 from meshwell.orchestrator import generate_mesh
 from meshwell.utils import deserialize

@@ -51,10 +51,10 @@ class OCC_entity:
         return self.occ_function()
 
     def instanciate(self, cad_model: Any) -> Any:
-        """GMSH instantiation is not supported for OCC_entity."""
+        """Legacy GMSH instantiation is no longer supported."""
         raise NotImplementedError(
-            "OCC_entity only supports the OCC CAD backend. "
-            "Use GMSH_entity for the GMSH backend."
+            "OCC_entity only supports the OCC CAD backend; "
+            "the GMSH CAD backend has been removed."
         )
 
     def to_dict(self) -> dict:
