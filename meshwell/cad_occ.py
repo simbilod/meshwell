@@ -29,6 +29,31 @@ class OCCLabeledEntity:
     dim: int
 
 
+def _resolve_piece_ownership(
+    piece_candidates: dict[Any, list[tuple[int, float]]],
+) -> dict[Any, int]:
+    """Pick the owning entity index for each fragment piece.
+
+    Rule: lowest mesh_order wins. On tie, first candidate in insertion order wins.
+
+    Args:
+        piece_candidates: maps piece key -> list of (entity_index, mesh_order).
+
+    Returns:
+        dict mapping piece key -> winning entity_index.
+    """
+    owners: dict[Any, int] = {}
+    for piece, candidates in piece_candidates.items():
+        best_idx = candidates[0][0]
+        best_mo = candidates[0][1]
+        for idx, mo in candidates[1:]:
+            if mo < best_mo:
+                best_idx = idx
+                best_mo = mo
+        owners[piece] = best_idx
+    return owners
+
+
 class CAD_OCC:
     """CAD class for generating geometry using OpenCASCADE (via OCP)."""
 
