@@ -55,6 +55,24 @@ class PolyPrism(GeometryEntity):
             rotation_angle=rotation_angle,
         )
 
+        # Snap vertex coordinates to the tolerance grid. Pointwise mode
+        # preserves coordinate order (duplicate stripping and seam
+        # canonicalization are handled downstream in GeometryEntity).
+        if point_tolerance > 0:
+            import shapely
+
+            if isinstance(polygons, list):
+                polygons = [
+                    shapely.set_precision(
+                        p, grid_size=point_tolerance, mode="pointwise"
+                    )
+                    for p in polygons
+                ]
+            else:
+                polygons = shapely.set_precision(
+                    polygons, grid_size=point_tolerance, mode="pointwise"
+                )
+
         # Parse buffers or prepare extrusion
         self.polygons = polygons
         if all(buffer == 0 for buffer in buffers.values()):

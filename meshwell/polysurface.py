@@ -63,6 +63,17 @@ class PolySurface(GeometryEntity):
                     entry.geoms if hasattr(entry, "geoms") else [entry]
                 )
 
+        # Snap vertex coordinates to the tolerance grid. Pointwise mode
+        # preserves coordinate order (duplicate stripping and seam
+        # canonicalization are handled downstream in GeometryEntity).
+        if point_tolerance > 0:
+            import shapely
+
+            self.polygons = [
+                shapely.set_precision(p, grid_size=point_tolerance, mode="pointwise")
+                for p in self.polygons
+            ]
+
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):
             self.physical_name = (physical_name,)

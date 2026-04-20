@@ -67,6 +67,16 @@ class PolyLine(GeometryEntity):
         else:  # Single LineString
             self.linestrings = [linestrings]
 
+        # Snap to the tolerance grid. Pointwise mode preserves coordinate
+        # order; duplicate stripping is handled downstream.
+        if point_tolerance > 0:
+            import shapely
+
+            self.linestrings = [
+                shapely.set_precision(ls, grid_size=point_tolerance, mode="pointwise")
+                for ls in self.linestrings
+            ]
+
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):
             self.physical_name = (physical_name,)

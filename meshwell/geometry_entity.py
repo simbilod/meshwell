@@ -27,6 +27,91 @@ class DecompositionSegment:
     radius: float | None = None
 
 
+def _strip_consecutive_duplicates(
+    vertices: list[tuple[float, float, float]],
+    tolerance: float,
+) -> list[tuple[float, float, float]]:
+    """Collapse adjacent vertices coincident within ``tolerance``.
+
+    Preserves the closing vertex (equal to the opening vertex) when the input
+    is a closed polyline so downstream consumers still see a closed ring.
+    """
+    if len(vertices) < 2:
+        return list(vertices)
+    was_closed = vertices[0] == vertices[-1]
+    tol_sq = tolerance * tolerance
+    out = [vertices[0]]
+    for v in vertices[1:]:
+        prev = out[-1]
+        dx = v[0] - prev[0]
+        dy = v[1] - prev[1]
+        dz = v[2] - prev[2]
+        if dx * dx + dy * dy + dz * dz > tol_sq:
+            out.append(v)
+    if was_closed and len(out) >= 2 and out[0] != out[-1]:
+        out.append(out[0])
+    return out
+
+
+def _find_canonical_seam(
+    vertices: list[tuple[float, float, float]],
+    sharp_cos_threshold: float = 0.5,
+) -> int:
+    """Return index at which to start a closed polyline so arc runs don't straddle the seam.
+
+    Picks the vertex whose incoming/outgoing edges turn the most sharply
+    (smallest cos(angle)). Ties broken by lexicographic order so the result
+    is deterministic across rotated equivalent rings. If no corner is sharp
+    enough, falls back to the lex-min vertex.
+    """
+    n = len(vertices) - 1  # last equals first in a closed ring
+    if n < 3:
+        return 0
+
+    best_idx = 0
+    best_cos = 2.0
+    best_key: tuple | None = None
+    for i in range(n):
+        prev = vertices[(i - 1) % n]
+        cur = vertices[i]
+        nxt = vertices[(i + 1) % n]
+        v1x, v1y = cur[0] - prev[0], cur[1] - prev[1]
+        v2x, v2y = nxt[0] - cur[0], nxt[1] - cur[1]
+        n1 = (v1x * v1x + v1y * v1y) ** 0.5
+        n2 = (v2x * v2x + v2y * v2y) ** 0.5
+        if n1 < 1e-12 or n2 < 1e-12:
+            continue
+        cos_a = (v1x * v2x + v1y * v2y) / (n1 * n2)
+        key = (cos_a, tuple(round(c, 9) for c in cur))
+        if cos_a < best_cos - 1e-9 or (
+            abs(cos_a - best_cos) < 1e-9 and (best_key is None or key < best_key)
+        ):
+            best_cos = cos_a
+            best_idx = i
+            best_key = key
+
+    if best_cos > sharp_cos_threshold:
+        best_idx = min(range(n), key=lambda i: vertices[i])
+    return best_idx
+
+
+def _rotate_closed(
+    vertices: list[tuple[float, float, float]], start_idx: int
+) -> list[tuple[float, float, float]]:
+    """Rotate a closed polyline so it starts at ``start_idx``.
+
+    If ``vertices`` is not closed (first != last) it is rotated in place.
+    """
+    if start_idx == 0 or len(vertices) < 2:
+        return list(vertices)
+    closed = vertices[0] == vertices[-1]
+    core = vertices[:-1] if closed else list(vertices)
+    rotated = core[start_idx:] + core[:start_idx]
+    if closed:
+        rotated.append(rotated[0])
+    return rotated
+
+
 def fit_circle_2d(points: np.ndarray) -> tuple[tuple[float, float], float, float]:
     """Fit a circle to 2D points using algebraic distance (least squares).
 
@@ -176,6 +261,7 @@ class GeometryEntity:
         arc_tolerance: float = 1e-3,
     ) -> int:
         """Create a GMSH surface from vertex coordinates with optional arc identification."""
+        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not identify_arcs:
             # ORIGINAL BEHAVIOR
             points = self._create_points_from_vertices(vertices)
@@ -276,8 +362,17 @@ class GeometryEntity:
         Returns:
             List of DecompositionSegment objects
         """
+        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not vertices or len(vertices) < 2:
             return []
+
+        if (
+            identify_arcs
+            and len(vertices) >= max(min_arc_points + 1, 4)
+            and vertices[0] == vertices[-1]
+        ):
+            seam = _find_canonical_seam(vertices)
+            vertices = _rotate_closed(vertices, seam)
 
         if not identify_arcs or len(vertices) < min_arc_points:
             # Fallback to simple line segments
@@ -368,6 +463,7 @@ class GeometryEntity:
         """Create an OCC wire from vertex coordinates with optional arc identification."""
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
 
+        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not identify_arcs:
             # ORIGINAL BEHAVIOR
             points = self._make_occ_points(vertices)
