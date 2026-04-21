@@ -84,6 +84,8 @@ class CAD_OCC:
         n_threads: int = cpu_count(),
         fuzzy_value: float | None = None,
         canonicalize_topology: bool = False,
+        validate_fragment: bool = False,
+        validate_tolerance_multiplier: float = 10.0,
     ):
         """Initialize OCC CAD processor.
 
@@ -108,11 +110,25 @@ class CAD_OCC:
                 residual duplicates that would otherwise reach tetgen as
                 "overlapping facets" — an OCC-side substitute for the
                 gmsh-level ``remove_all_duplicates`` safety net.
+            validate_fragment: if True, run a post-fragment audit that
+                detects near-coincident faces with distinct TShapes and
+                raises :class:`CoincidentFacesError` if any are found.
+                Converts downstream tetgen ``dihedral 0`` / PLC errors
+                into a CAD-stage diagnostic naming the offending entities
+                and their face orientations. Opt-in because the audit
+                costs O(F) where F is the total face count.
+            validate_tolerance_multiplier: Multiplier applied to
+                ``point_tolerance`` before quantizing centroids / areas
+                in the audit. ``10`` is a good default; lower it if the
+                scene has legitimate sub-tolerance features, raise it to
+                catch looser drift.
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
         self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
         self.canonicalize_topology = canonicalize_topology
+        self.validate_fragment = validate_fragment
+        self.validate_tolerance_multiplier = validate_tolerance_multiplier
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from TopoDS_Shape type."""
@@ -286,6 +302,21 @@ class CAD_OCC:
                     flush=True,
                 )
 
+        if self.validate_fragment:
+            from meshwell.occ_fragment_audit import (
+                CoincidentFacesError,
+                audit_fragment_faces,
+                format_coincident_groups,
+            )
+
+            groups = audit_fragment_faces(
+                labeled_entities,
+                point_tolerance=self.point_tolerance,
+                tolerance_multiplier=self.validate_tolerance_multiplier,
+            )
+            if groups:
+                raise CoincidentFacesError(format_coincident_groups(groups))
+
         return labeled_entities
 
 
@@ -296,6 +327,8 @@ def cad_occ(
     progress_bars: bool = False,
     fuzzy_value: float | None = None,
     canonicalize_topology: bool = False,
+    validate_fragment: bool = False,
+    validate_tolerance_multiplier: float = 10.0,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing."""
     processor = CAD_OCC(
@@ -303,5 +336,7 @@ def cad_occ(
         n_threads=n_threads,
         fuzzy_value=fuzzy_value,
         canonicalize_topology=canonicalize_topology,
+        validate_fragment=validate_fragment,
+        validate_tolerance_multiplier=validate_tolerance_multiplier,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)
