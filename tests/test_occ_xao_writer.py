@@ -324,6 +324,95 @@ def test_keep_false_polyprism_void_is_not_meshed(tmp_path):
     assert abs(total_vol - (1000 - 64)) < 1.0
 
 
+def test_same_mesh_order_different_physicals():
+    """Entities with distinct names and identical mesh_order.
+
+    Two regimes to pin:
+
+    - Non-overlapping (touching at a face): both entities keep all their
+      pieces; the shared boundary gets a ``red___blue`` interface group,
+      each side gets its ``___None`` exterior. Same-mesh_order doesn't
+      imply any special merging.
+    - Overlapping: BOPAlgo splits into three pieces; ``mesh_order`` alone
+      can't resolve ownership of the overlap, so insertion order wins
+      (the first-listed entity owns the overlap piece). Volumes and the
+      interface-group name flip symmetrically when the order is reversed.
+    """
+
+    def _box(x, y, z, dx, dy, dz):
+        return lambda: BRepPrimAPI_MakeBox(gp_Pnt(x, y, z), dx, dy, dz).Shape()
+
+    # --- Touching, same mesh_order ---
+    red = OCC_entity(
+        occ_function=_box(0, 0, 0, 1, 1, 1),
+        physical_name="red",
+        mesh_order=1,
+        dimension=3,
+    )
+    blue = OCC_entity(
+        occ_function=_box(1, 0, 0, 1, 1, 1),
+        physical_name="blue",
+        mesh_order=1,
+        dimension=3,
+    )
+    mm = ModelManager(filename="test_same_mo_touching")
+    try:
+        mm.load_occ_entities(cad_occ([red, blue]))
+        vol_masses = {
+            gmsh.model.getPhysicalName(d, t): sum(
+                gmsh.model.occ.getMass(d, tt)
+                for tt in gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        assert set(vol_masses) == {"red", "blue"}
+        assert abs(vol_masses["red"] - 1.0) < 1e-9
+        assert abs(vol_masses["blue"] - 1.0) < 1e-9
+        surf_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        assert surf_names & {"red___blue", "blue___red"}
+    finally:
+        mm.finalize()
+
+    # --- Overlapping, same mesh_order: first in list wins the overlap ---
+    def overlap_masses(entities_in_order):
+        mm = ModelManager(filename="test_same_mo_overlap")
+        try:
+            mm.load_occ_entities(cad_occ(entities_in_order))
+            out = {}
+            for d, t in gmsh.model.getPhysicalGroups(3):
+                name = gmsh.model.getPhysicalName(d, t)
+                out[name] = sum(
+                    gmsh.model.occ.getMass(d, tt)
+                    for tt in gmsh.model.getEntitiesForPhysicalGroup(d, t)
+                )
+            return out
+        finally:
+            mm.finalize()
+
+    r = OCC_entity(
+        occ_function=_box(0, 0, 0, 2, 2, 2),
+        physical_name="red",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=_box(1, 1, 1, 2, 2, 2),
+        physical_name="blue",
+        mesh_order=1,
+        dimension=3,
+    )
+    # Red first: red wins the overlap (vol 1) -> red=8, blue=7.
+    m = overlap_masses([r, b])
+    assert abs(m["red"] - 8.0) < 1e-9
+    assert abs(m["blue"] - 7.0) < 1e-9
+    # Blue first: symmetric.
+    m = overlap_masses([b, r])
+    assert abs(m["red"] - 7.0) < 1e-9
+    assert abs(m["blue"] - 8.0) < 1e-9
+
+
 def test_shared_physical_name_across_entities():
     """Entities sharing a physical_name collapse into one physical group.
 
