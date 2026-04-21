@@ -215,3 +215,49 @@ def test_keep_false_entity_removed_but_interface_named():
         assert surf_names & {"kept___helper", "helper___kept"}
     finally:
         mm.finalize()
+
+
+def test_keep_false_lower_dim_cut_surface_is_tagged():
+    """A keep=False 2D cut inside a kept 3D box must tag the resulting face.
+
+    The helper has higher priority (mesh_order=1) than the box (mesh_order=2),
+    so it wins the overlap during ``cad_occ``'s all-fragment pass. The box's
+    solid gets split into two sub-solids whose shared face is the cut plane.
+    That face must carry the helper's physical_name ("cut") even though the
+    helper itself has keep=False -- it's the reason a user adds a
+    keep=False lower-dim entity in the first place.
+    """
+    box = PolyPrism(
+        polygons=shapely.box(0, 0, 1, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="box",
+        mesh_order=2,
+    )
+    cut = PolySurface(
+        polygons=shapely.box(0, 0, 1, 1),
+        physical_name="cut",
+        mesh_order=1,
+        mesh_bool=False,
+        translation=(0.0, 0.0, 0.5),
+    )
+    occ_ents = cad_occ([cut, box])
+    mm = ModelManager(filename="test_xao_keep_false_cut")
+    try:
+        mm.load_occ_entities(occ_ents)
+        # Box split in two.
+        assert len(gmsh.model.getEntities(3)) == 2
+        # "cut" is tagged at dim=2 with exactly one face (the shared cut plane).
+        surf_groups = gmsh.model.getPhysicalGroups(2)
+        name_to_tags = {
+            gmsh.model.getPhysicalName(d, t): list(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in surf_groups
+        }
+        assert "cut" in name_to_tags
+        assert len(name_to_tags["cut"]) == 1
+        cut_tag = name_to_tags["cut"][0]
+        # The cut face is excluded from the box's exterior (box___None).
+        assert cut_tag not in name_to_tags.get("box___None", [])
+    finally:
+        mm.finalize()

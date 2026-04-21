@@ -122,9 +122,18 @@ def _compute_physical_groups(
 
     groups: dict[tuple[int, str], list] = {}
 
-    # 1. tag_entities: skip keep=False.
+    # 1. tag_entities: always tag lower-dim entities (their leaves are shared
+    #    sub-shapes of kept higher-dim parents, so they survive into the
+    #    BREP regardless of the lower-dim entity's own keep flag --
+    #    that's the "embedded cutting helper" use case, e.g. a keep=False
+    #    PolySurface at z=0.5 splitting a kept PolyPrism must still
+    #    expose the cut face under its physical_name).
+    #
+    #    Top-dim keep=False entities get no entity group: their own shapes
+    #    are excluded from the BREP and any shared faces show up through
+    #    the interface path below.
     for ent, leaves in zip(entities, entity_leaves):
-        if not ent.keep:
+        if ent.dim == max_dim and not ent.keep:
             continue
         for name in ent.physical_name:
             groups.setdefault((ent.dim, name), []).extend(leaves)
@@ -207,14 +216,22 @@ def write_xao(
     """
     xao_path = Path(xao_path)
 
-    # Build compound of keep=True shapes only. Sub-boundaries shared with
-    # keep=False helpers come along for free because BOPAlgo made them
-    # share TShape with the kept entity's solid.
+    max_dim = max((e.dim for e in entities if e.shapes), default=0)
+
+    # Build the BREP compound.
+    # - Top-dim keep=False helpers: shapes excluded; they carved the kept
+    #   entities during ``cad_occ``, so the cut faces already live on the
+    #   kept entities' boundaries (shared TShape).
+    # - Lower-dim keep=False helpers (e.g. a PolySurface cutting a
+    #   PolyPrism): shapes INCLUDED. Their leaves are sub-shapes of the
+    #   kept parent's solid, but including them directly guarantees
+    #   ``main_map.FindIndex`` resolves even for floating helpers that
+    #   happen not to share a TShape with any kept volume.
     cb = BRep_Builder()
     compound = TopoDS_Compound()
     cb.MakeCompound(compound)
     for ent in entities:
-        if not ent.keep:
+        if ent.dim == max_dim and not ent.keep:
             continue
         for s in ent.shapes:
             cb.Add(compound, s)
