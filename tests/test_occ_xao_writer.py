@@ -324,6 +324,132 @@ def test_keep_false_polyprism_void_is_not_meshed(tmp_path):
     assert abs(total_vol - (1000 - 64)) < 1.0
 
 
+def test_shared_physical_name_across_entities():
+    """Entities sharing a physical_name collapse into one physical group.
+
+    Three shared-name patterns to pin:
+
+    - Two DISJOINT kept boxes named 'metal': one physical group 'metal'
+      with two volumes, no 'metal___metal' interface (same-name pairs
+      are skipped by the interface pass).
+    - Two OVERLAPPING kept boxes named 'bulk': BOPAlgo splits into three
+      pieces, all three go into the 'bulk' group. Volume equals union
+      2^3 + 2^3 - 1^3 = 15.
+    - Two disjoint keep=False voids both named 'void': the slab's
+      `slab___void` interface group contains all void walls (6 + 6 = 12
+      faces), not two separate groups.
+    """
+    # --- Pattern A: disjoint kept, shared name ---
+    a1 = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1, 1, 1).Shape(),
+        physical_name="metal",
+        mesh_order=1,
+        dimension=3,
+    )
+    a2 = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(5, 0, 0), 1, 1, 1).Shape(),
+        physical_name="metal",
+        mesh_order=2,
+        dimension=3,
+    )
+    mm = ModelManager(filename="test_shared_name_disjoint")
+    try:
+        mm.load_occ_entities(cad_occ([a1, a2]))
+        pgroups = {
+            gmsh.model.getPhysicalName(d, t): list(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in gmsh.model.getPhysicalGroups(3)
+        }
+        assert list(pgroups) == ["metal"]
+        assert len(pgroups["metal"]) == 2
+        # No same-name interface.
+        surf = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        assert "metal___metal" not in surf
+    finally:
+        mm.finalize()
+
+    # --- Pattern B: overlapping kept, shared name ---
+    b1 = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 2, 2, 2).Shape(),
+        physical_name="bulk",
+        mesh_order=1,
+        dimension=3,
+    )
+    b2 = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(1, 1, 1), 2, 2, 2).Shape(),
+        physical_name="bulk",
+        mesh_order=2,
+        dimension=3,
+    )
+    mm = ModelManager(filename="test_shared_name_overlap")
+    try:
+        mm.load_occ_entities(cad_occ([b1, b2]))
+        bulk_tags = [
+            t
+            for d, t in gmsh.model.getPhysicalGroups(3)
+            if gmsh.model.getPhysicalName(d, t) == "bulk"
+            for t in gmsh.model.getEntitiesForPhysicalGroup(d, t)
+        ]
+        assert len(bulk_tags) == 3  # union splits into three pieces
+        total_vol = sum(gmsh.model.occ.getMass(3, tt) for tt in bulk_tags)
+        assert abs(total_vol - 15.0) < 1e-6  # 2^3 + 2^3 - 1^3
+    finally:
+        mm.finalize()
+
+    # --- Pattern C: multiple keep=False helpers sharing a name ---
+    slab = PolyPrism(
+        polygons=shapely.box(0, 0, 10, 10),
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="slab",
+        mesh_order=5,
+    )
+    v_a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(1, 1, 0.5), 1, 1, 1).Shape(),
+        physical_name="void",
+        mesh_order=1,
+        mesh_bool=False,
+        dimension=3,
+    )
+    v_b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(5, 5, 0.5), 1, 1, 1).Shape(),
+        physical_name="void",
+        mesh_order=1,
+        mesh_bool=False,
+        dimension=3,
+    )
+    mm = ModelManager(filename="test_shared_name_voids")
+    try:
+        mm.load_occ_entities(cad_occ([slab, v_a, v_b]))
+        # Both voids' walls unified under slab___void.
+        surf_by_name = {
+            gmsh.model.getPhysicalName(d, t): list(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        interface_key = next(
+            k for k in ("slab___void", "void___slab") if k in surf_by_name
+        )
+        assert len(surf_by_name[interface_key]) == 12  # 6 + 6 void walls
+        # No separate void_a/void_b groups.
+        assert "void" not in surf_by_name  # keep=False -> no own group
+        # Slab mass = 200 - 2 * 1^3.
+        slab_tags = [
+            t
+            for d, t in gmsh.model.getPhysicalGroups(3)
+            if gmsh.model.getPhysicalName(d, t) == "slab"
+            for t in gmsh.model.getEntitiesForPhysicalGroup(d, t)
+        ]
+        assert (
+            abs(sum(gmsh.model.occ.getMass(3, tt) for tt in slab_tags) - 198.0) < 1e-6
+        )
+    finally:
+        mm.finalize()
+
+
 def test_keep_false_polyprism_fully_inside_leaves_interior_void():
     """Same hollow-solid semantic as the OCC_entity case, via PolyPrism.
 
