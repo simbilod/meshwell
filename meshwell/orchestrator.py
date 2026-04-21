@@ -41,8 +41,9 @@ def generate_mesh(
               all-fragment pass.
             - ``canonicalize_topology`` (bool): run the OCP post-fragment
               TShape canonicalization pass.
-            - ``remove_all_duplicates`` (bool, default ``True``):
-              gmsh-level fragment safety net after XAO load.
+            - ``remove_all_duplicates`` (bool, default ``False``):
+              gmsh-level fragment safety net after XAO load. Opt-in;
+              only catches OCC-identical coincident TShapes.
             - ``interface_delimiter``, ``boundary_delimiter``: XAO group
               name delimiters.
 
@@ -77,7 +78,7 @@ def generate_mesh(
     # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
     interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
     boundary_delimiter = mesh_kwargs.pop("boundary_delimiter", "None")
-    remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", True)
+    remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
 
     mm = ModelManager()
     mm.ensure_initialized(str(mm.filename))

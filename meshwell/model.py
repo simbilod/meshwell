@@ -96,19 +96,19 @@ class ModelManager:
     def load_from_xao(
         self,
         input_file: Path,
-        remove_all_duplicates: bool = True,
+        remove_all_duplicates: bool = False,
     ) -> None:
         """Load CAD geometry from .xao file.
 
         Args:
             input_file: Input .xao file path
-            remove_all_duplicates: run ``occ.fragment`` over every loaded
-                dimtag as a safety net for coincident TShapes that survived
-                the OCP-side fragmentation. Defaults on because the gmsh
-                3D pipeline (PLC + tetgen) is intolerant of duplicate
-                faces / edges: a single stray coincident TShape produces
-                cryptic ``dihedral angle 0`` or segment/facet errors.
-                Pay O(entities) extra fragment work in exchange.
+            remove_all_duplicates: opt-in gmsh-level ``occ.fragment`` pass
+                over every loaded dimtag. Only catches OCC-identical
+                coincident TShapes -- it does not fix geometric-but-not-
+                topological duplicates, slivers, or sub-fuzzy features,
+                which are the usual root cause of ``dihedral 0`` and PLC
+                errors. For those, prefer ``canonicalize_topology=True``
+                and/or raising ``fuzzy_value`` at the ``cad_occ`` stage.
 
         """
         self.ensure_initialized("temp")
@@ -121,7 +121,7 @@ class ModelManager:
     def load_occ_entities(
         self,
         entities: list,
-        remove_all_duplicates: bool = True,
+        remove_all_duplicates: bool = False,
         **write_xao_kwargs,
     ) -> None:
         """Serialize ``entities`` to a transient XAO and load it into gmsh.
