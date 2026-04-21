@@ -84,6 +84,8 @@ class CAD_OCC:
         n_threads: int = cpu_count(),
         fuzzy_value: float | None = None,
         canonicalize_topology: bool = False,
+        heal_shapes: bool = True,
+        heal_max_tolerance_multiplier: float = 100.0,
         validate_fragment: bool = False,
         validate_tolerance_multiplier: float = 10.0,
     ):
@@ -110,6 +112,17 @@ class CAD_OCC:
                 residual duplicates that would otherwise reach tetgen as
                 "overlapping facets" — an OCC-side substitute for the
                 gmsh-level ``remove_all_duplicates`` safety net.
+            heal_shapes: if True (default), run
+                :func:`meshwell.occ_shape_heal.heal_shapes` as the last
+                CAD-stage pass. ``ShapeFix_Shape`` repairs tiny edges,
+                disoriented wires, tolerance mismatches, and near-
+                degenerate faces that BOPAlgo leaves behind. Runs after
+                canonicalization so sub-shape sharing is already unified.
+                Physical-name attribution is preserved through the
+                fixer's ``ShapeBuild_ReShape`` context.
+            heal_max_tolerance_multiplier: Upper bound for the healing
+                fixer is ``heal_max_tolerance_multiplier *
+                point_tolerance``. Defaults to ``100``.
             validate_fragment: if True, run a post-fragment audit that
                 detects near-coincident faces with distinct TShapes and
                 raises :class:`CoincidentFacesError` if any are found.
@@ -127,6 +140,8 @@ class CAD_OCC:
         self.n_threads = n_threads
         self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
         self.canonicalize_topology = canonicalize_topology
+        self.heal_shapes = heal_shapes
+        self.heal_max_tolerance_multiplier = heal_max_tolerance_multiplier
         self.validate_fragment = validate_fragment
         self.validate_tolerance_multiplier = validate_tolerance_multiplier
 
@@ -302,6 +317,15 @@ class CAD_OCC:
                     flush=True,
                 )
 
+        if self.heal_shapes:
+            from meshwell.occ_shape_heal import heal_shapes as _heal_shapes
+
+            _heal_shapes(
+                labeled_entities,
+                point_tolerance=self.point_tolerance,
+                max_tolerance_multiplier=self.heal_max_tolerance_multiplier,
+            )
+
         if self.validate_fragment:
             from meshwell.occ_fragment_audit import (
                 CoincidentFacesError,
@@ -327,6 +351,8 @@ def cad_occ(
     progress_bars: bool = False,
     fuzzy_value: float | None = None,
     canonicalize_topology: bool = False,
+    heal_shapes: bool = True,
+    heal_max_tolerance_multiplier: float = 100.0,
     validate_fragment: bool = False,
     validate_tolerance_multiplier: float = 10.0,
 ) -> list[OCCLabeledEntity]:
@@ -336,6 +362,8 @@ def cad_occ(
         n_threads=n_threads,
         fuzzy_value=fuzzy_value,
         canonicalize_topology=canonicalize_topology,
+        heal_shapes=heal_shapes,
+        heal_max_tolerance_multiplier=heal_max_tolerance_multiplier,
         validate_fragment=validate_fragment,
         validate_tolerance_multiplier=validate_tolerance_multiplier,
     )
