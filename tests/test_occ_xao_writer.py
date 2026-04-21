@@ -217,6 +217,60 @@ def test_keep_false_entity_removed_but_interface_named():
         mm.finalize()
 
 
+def test_keep_false_3d_fully_inside_leaves_interior_void():
+    """keep=False 3D helper fully inside a kept 3D volume leaves a void.
+
+    helper = 4x4x4 at (3,3,3); kept = 10x10x10 at origin. helper has higher
+    priority (mesh_order=1) so during ``cad_occ`` it wins the overlap
+    region. After load the mesh has one hollow solid: outer volume
+    1000 - 64 = 936, bounded by 6 outer faces tagged ``kept___None`` and
+    6 inner faces tagged ``helper___kept`` (or the permutation). The
+    void region itself is absent from the mesh.
+    """
+    helper = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(3, 3, 3), 4, 4, 4).Shape(),
+        physical_name="helper",
+        mesh_order=1,
+        mesh_bool=False,
+        dimension=3,
+    )
+    kept = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 10, 10, 10).Shape(),
+        physical_name="kept",
+        mesh_order=2,
+        dimension=3,
+    )
+    occ_ents = cad_occ([helper, kept])
+    mm = ModelManager(filename="test_xao_keep_false_void")
+    try:
+        mm.load_occ_entities(occ_ents)
+        assert len(gmsh.model.getEntities(3)) == 1
+        (vol_tag,) = [t for _, t in gmsh.model.getEntities(3)]
+        kept_vol = gmsh.model.occ.getMass(3, vol_tag)
+        assert abs(kept_vol - (1000 - 64)) < 1e-6
+
+        surf_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        assert "kept___None" in surf_names
+        assert surf_names & {"helper___kept", "kept___helper"}
+
+        # Outer + void walls = 12 named surfaces; neither group is empty.
+        name_to_tags = {
+            gmsh.model.getPhysicalName(d, t): list(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        assert len(name_to_tags["kept___None"]) == 6
+        interface_key = next(
+            k for k in ("helper___kept", "kept___helper") if k in name_to_tags
+        )
+        assert len(name_to_tags[interface_key]) == 6
+    finally:
+        mm.finalize()
+
+
 def test_keep_false_lower_dim_cut_surface_is_tagged():
     """A keep=False 2D cut inside a kept 3D box must tag the resulting face.
 
