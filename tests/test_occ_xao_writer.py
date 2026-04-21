@@ -271,6 +271,50 @@ def test_keep_false_3d_fully_inside_leaves_interior_void():
         mm.finalize()
 
 
+def test_keep_false_polyprism_fully_inside_leaves_interior_void():
+    """Same hollow-solid semantic as the OCC_entity case, via PolyPrism.
+
+    outer 10x10x10 PolyPrism, void 4x4x4 PolyPrism fully inside, keep=False.
+    Mirrors :func:`test_keep_false_3d_fully_inside_leaves_interior_void`
+    but uses the shapely/PolyPrism entry path users actually write in the
+    wild.
+    """
+    inner = PolyPrism(
+        polygons=shapely.box(3, 3, 7, 7),
+        buffers={3.0: 0.0, 7.0: 0.0},
+        physical_name="void",
+        mesh_order=1,
+        mesh_bool=False,
+    )
+    outer = PolyPrism(
+        polygons=shapely.box(0, 0, 10, 10),
+        buffers={0.0: 0.0, 10.0: 0.0},
+        physical_name="outer",
+        mesh_order=2,
+    )
+    occ_ents = cad_occ([inner, outer])
+    mm = ModelManager(filename="test_xao_keep_false_polyprism_void")
+    try:
+        mm.load_occ_entities(occ_ents)
+        assert len(gmsh.model.getEntities(3)) == 1
+        (vol_tag,) = [t for _, t in gmsh.model.getEntities(3)]
+        assert abs(gmsh.model.occ.getMass(3, vol_tag) - (1000 - 64)) < 1e-6
+
+        name_to_tags = {
+            gmsh.model.getPhysicalName(d, t): list(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        assert len(name_to_tags["outer___None"]) == 6
+        interface_key = next(
+            k for k in ("void___outer", "outer___void") if k in name_to_tags
+        )
+        assert len(name_to_tags[interface_key]) == 6
+    finally:
+        mm.finalize()
+
+
 def test_keep_false_lower_dim_cut_surface_is_tagged():
     """A keep=False 2D cut inside a kept 3D box must tag the resulting face.
 
