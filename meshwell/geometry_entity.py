@@ -12,8 +12,6 @@ if TYPE_CHECKING:
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
 
-    from meshwell.occ_geometry_cache import OCCGeometryCache
-
 
 @dataclass
 class DecompositionSegment:
@@ -456,27 +454,49 @@ class GeometryEntity:
         identify_arcs: bool = False,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
-        occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Wire:
-        """Create an OCC wire from vertex coordinates with optional arc identification."""
+        """Create an OCC wire from vertex coordinates with optional arc identification.
+
+        Vertices and edges are built fresh per call; cross-entity TShape
+        sharing is delegated to ``BOPAlgo_Builder``'s fragment pass with
+        its fuzzy tolerance, which is how gmsh's own OCC kernel handles
+        the same scenario.
+        """
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
 
         vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not identify_arcs:
-            # ORIGINAL BEHAVIOR
             points = self._make_occ_points(vertices)
             wire_builder = BRepBuilderAPI_MakeWire()
             for i in range(len(points) - 1):
-                if occ_cache is not None:
-                    edge = occ_cache.get_line_edge(points[i], points[i + 1])
-                else:
-                    edge = BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
-                wire_builder.Add(edge)
+                wire_builder.Add(
+                    BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
+                )
             return wire_builder.Wire()
 
-        # ARC IDENTIFICATION BEHAVIOR
         from OCP.GC import GC_MakeArcOfCircle
         from OCP.gp import gp_Pnt
+
+        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
+
+        # Quantize coordinates once up front, then re-strip at the
+        # grid level: ``_strip_consecutive_duplicates`` compares raw
+        # coords with a strict-inequality Euclidean threshold, but
+        # rounding later in the loop can still collapse pairs that
+        # were just far enough apart to survive the strip. Feeding
+        # ``decompose_vertices`` (and the downstream arc fitter)
+        # already-quantized coords avoids fitting arcs through pairs
+        # of points that will later produce a zero-length edge.
+        quantized: list[tuple[float, float, float]] = []
+        for v in vertices:
+            q = tuple(round(c, ndigits) for c in v)
+            if quantized and q == quantized[-1]:
+                continue
+            quantized.append(q)
+        was_closed = vertices[0] == vertices[-1]
+        if was_closed and len(quantized) >= 2 and quantized[0] != quantized[-1]:
+            quantized.append(quantized[0])
+        vertices = quantized
 
         segments = self.decompose_vertices(
             vertices,
@@ -486,7 +506,6 @@ class GeometryEntity:
         )
 
         wire_builder = BRepBuilderAPI_MakeWire()
-        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
 
         def _rounded_pnt(coords):
             rc = [round(c, ndigits) for c in coords]
@@ -494,35 +513,32 @@ class GeometryEntity:
 
         for seg in segments:
             if seg.is_arc:
-                p_start = _rounded_pnt(seg.points[0])
+                start_coords = tuple(round(c, ndigits) for c in seg.points[0])
                 mid_idx = len(seg.points) // 2
-                p_mid = _rounded_pnt(seg.points[mid_idx])
-                p_end = _rounded_pnt(seg.points[-1])
+                mid_coords = tuple(round(c, ndigits) for c in seg.points[mid_idx])
+                end_coords = tuple(round(c, ndigits) for c in seg.points[-1])
+                # Drop degenerate arcs whose endpoints collapse under the
+                # quantization grid -- BRepBuilderAPI_MakeEdge raises
+                # StdFail_NotDone on a zero-length edge.
+                is_closed = seg.points[0] == seg.points[-1]
+                if not is_closed and start_coords == end_coords:
+                    continue
+                p_start = gp_Pnt(*start_coords)
+                p_mid = gp_Pnt(*mid_coords)
+                p_end = gp_Pnt(*end_coords)
                 center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
 
-                if seg.points[0] == seg.points[-1]:
+                if is_closed:
                     # Full circle: split into two 180-degree arcs.
                     quarter_idx = len(seg.points) // 4
                     three_quarter_idx = (len(seg.points) * 3) // 4
                     p1 = _rounded_pnt(seg.points[quarter_idx])
                     p3 = _rounded_pnt(seg.points[three_quarter_idx])
-                    if occ_cache is not None:
-                        edge1 = occ_cache.get_arc_edge(
-                            p_start, p1, p_mid, center, seg.radius
-                        )
-                        edge = occ_cache.get_arc_edge(
-                            p_mid, p3, p_end, center, seg.radius
-                        )
-                    else:
-                        arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
-                        edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
-                        arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
-                        edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
+                    arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
+                    edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
+                    arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
+                    edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
                     wire_builder.Add(edge1)
-                elif occ_cache is not None:
-                    edge = occ_cache.get_arc_edge(
-                        p_start, p_mid, p_end, center, seg.radius
-                    )
                 else:
                     from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
                     from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
@@ -531,11 +547,9 @@ class GeometryEntity:
                         axis = gp_Ax2(center, gp_Dir(0, 0, 1))
                         circle = gp_Circ(axis, seg.radius)
 
-                        # Try to make arc with positive sense
                         arc_geom_pos = GC_MakeArcOfCircle(
                             circle, p_start, p_end, True
                         ).Value()
-                        # Check if p_mid is on the positive arc
                         proj = GeomAPI_ProjectPointOnCurve(p_mid, arc_geom_pos)
                         if proj.NbPoints() > 0 and proj.LowerDistance() < 1e-2:
                             arc_geom = arc_geom_pos
@@ -548,12 +562,19 @@ class GeometryEntity:
                         arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
                         edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
-                p1 = _rounded_pnt(seg.points[0])
-                p2 = _rounded_pnt(seg.points[1])
-                if occ_cache is not None:
-                    edge = occ_cache.get_line_edge(p1, p2)
-                else:
-                    edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+                p1_coords = [round(c, ndigits) for c in seg.points[0]]
+                p2_coords = [round(c, ndigits) for c in seg.points[1]]
+                # Coords within `point_tolerance` that survive the
+                # Python-tuple dedup can still collapse to the same
+                # quantized point here (rounding bins wider than the
+                # strict inequality used by _strip_consecutive_duplicates);
+                # skip the resulting zero-length segment rather than let
+                # BRepBuilderAPI_MakeEdge raise StdFail_NotDone.
+                if p1_coords == p2_coords:
+                    continue
+                edge = BRepBuilderAPI_MakeEdge(
+                    gp_Pnt(*p1_coords), gp_Pnt(*p2_coords)
+                ).Edge()
             wire_builder.Add(edge)
         return wire_builder.Wire()
 
@@ -563,16 +584,8 @@ class GeometryEntity:
         identify_arcs: bool = False,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
-        occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Face:
-        """Create an OCC face from vertex coordinates with optional arc identification.
-
-        When ``occ_cache`` is provided, the face is looked up by its wire's
-        ordered edge-TShape key, so two entities that build geometrically
-        identical faces receive the same ``TopoDS_Face`` TShape. This is
-        what lets ``BOPAlgo_Builder`` fuse shared boundaries as SameDomain
-        rather than emit near-coincident duplicate facets.
-        """
+        """Create an OCC face from a wire built from the given vertices."""
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 
         wire = self._make_occ_wire_from_vertices(
@@ -580,10 +593,7 @@ class GeometryEntity:
             identify_arcs=identify_arcs,
             min_arc_points=min_arc_points,
             arc_tolerance=arc_tolerance,
-            occ_cache=occ_cache,
         )
-        if occ_cache is not None:
-            return occ_cache.get_face(wire)
         return BRepBuilderAPI_MakeFace(wire).Face()
 
     def plot_decomposition(
@@ -628,20 +638,8 @@ class GeometryEntity:
         """
         raise NotImplementedError("Subclasses must implement instanciate method")
 
-    def instanciate_occ(
-        self, occ_cache: OCCGeometryCache | None = None
-    ) -> TopoDS_Shape:
-        """Create OCC geometry. To be implemented by subclasses.
-
-        Args:
-            occ_cache: Optional shared geometry cache. When provided, edge
-                and vertex construction goes through the cache so coincident
-                sub-geometry is TShape-identical across entities.
-
-        Returns:
-            TopoDS_Shape: Created OCC shape
-
-        """
+    def instanciate_occ(self) -> TopoDS_Shape:
+        """Create OCC geometry. To be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement instanciate_occ method")
 
     def _get_rotation_point(self, geometries) -> tuple[float, float, float]:
@@ -679,11 +677,9 @@ class GeometryEntity:
     ) -> TopoDS_Shape:
         """Apply rotation and translation to OCC shape.
 
-        When neither a rotation nor a translation is configured, return
-        ``shape`` unchanged. ``BRepBuilderAPI_Transform`` mints fresh
-        TShapes even for an identity transform, which would defeat the
-        cross-entity TShape sharing that :class:`OCCGeometryCache`
-        establishes.
+        Returns ``shape`` unchanged when neither a rotation nor a
+        translation is configured -- ``BRepBuilderAPI_Transform`` mints
+        fresh TShapes even for an identity transform.
         """
         if shape is None:
             return None

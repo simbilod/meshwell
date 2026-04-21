@@ -1,6 +1,33 @@
-"""OCC CAD processor using OCP (OpenCASCADE Python) bindings."""
+"""OCC CAD processor: fragment + mesh_order ownership via OCP.
+
+Mirrors :mod:`meshwell.cad_gmsh` but drives OCCT directly through OCP
+instead of the gmsh API. The two backends are intentionally kept
+structurally identical so users can compare outputs head-to-head:
+
+1. Initialize per-session geometry cache (vertex / edge sharing is the
+   OCP-side equivalent of ``gmsh.model.occ``'s built-in TShape reuse).
+2. Call each entity's ``instanciate_occ`` to produce ``TopoDS_Shape``
+   instances.
+3. ``BOPAlgo_Builder`` all-fragment over every input shape; per-input
+   ``Modified()`` tells us which fragment piece descends from which
+   input, which we invert to build the per-piece candidate list.
+4. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
+   wins on tie).
+
+``keep=False`` handling differs from the gmsh backend: here the helper's
+shapes are preserved through fragmentation and the XAO writer
+(:mod:`meshwell.occ_xao_writer`) skips their bodies at serialization
+time while still using the shared TShapes to name
+``neighbour___helper`` interfaces. The gmsh backend calls
+``occ.remove(..., recursive=True)`` at model level for the same
+user-visible result.
+
+Ownership semantics match :func:`meshwell.cad_gmsh._resolve_piece_ownership`
+exactly; tests that pin one pin the other.
+"""
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
@@ -11,17 +38,16 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
-from meshwell.occ_geometry_cache import OCCGeometryCache
-
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
 
 
 @dataclass
 class OCCLabeledEntity:
-    """Dataclass to store OCC shape(s) and associated metadata.
+    """Per-entity record produced by :func:`cad_occ`.
 
-    shapes holds the fragment pieces this entity owns after the all-fragment pass.
+    ``shapes`` holds the fragment pieces this entity owns after the
+    all-fragment pass.
     """
 
     shapes: list[TopoDS_Shape]
@@ -38,14 +64,11 @@ _SHAPE_HASHER = TopTools_ShapeMapHasher()
 def _shape_key(shape: TopoDS_Shape) -> tuple[int, int]:
     """Return a hashable identity key for a TopoDS_Shape.
 
-    Uses the TShape pointer plus orientation so that reversed shapes
-    (e.g. a face and its reversed twin used to glue solids) compare distinct
-    when BOPAlgo differentiates them, and equal when it does not.
-
-    Note: OCP returns a fresh Python wrapper each time ``TopoDS_Shape.TShape()``
-    is called, so ``id()``/default ``__hash__`` is not stable. We instead use
-    OCC's own ``TopTools_ShapeMapHasher``, which hashes on the underlying
-    ``TShape*`` pointer and is the idiomatic key used throughout OCC.
+    Uses the TShape pointer plus orientation so reversed shapes compare
+    distinct when BOPAlgo differentiates them and equal when it does not.
+    OCP returns a fresh Python wrapper each time ``TShape()`` is called,
+    so ``id()``/default ``__hash__`` isn't stable -- ``TopTools_ShapeMapHasher``
+    hashes on the underlying ``TShape*`` pointer instead.
     """
     return (_SHAPE_HASHER(shape), int(shape.Orientation()))
 
@@ -55,13 +78,8 @@ def _resolve_piece_ownership(
 ) -> dict[Any, int]:
     """Pick the owning entity index for each fragment piece.
 
-    Rule: lowest mesh_order wins. On tie, first candidate in insertion order wins.
-
-    Args:
-        piece_candidates: maps piece key -> list of (entity_index, mesh_order).
-
-    Returns:
-        dict mapping piece key -> winning entity_index.
+    Rule: lowest ``mesh_order`` wins; first candidate in insertion order
+    wins on tie. Matches :func:`meshwell.cad_gmsh._resolve_piece_ownership`.
     """
     owners: dict[Any, int] = {}
     for piece, candidates in piece_candidates.items():
@@ -76,118 +94,64 @@ def _resolve_piece_ownership(
 
 
 class CAD_OCC:
-    """CAD class for generating geometry using OpenCASCADE (via OCP)."""
+    """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
     def __init__(
         self,
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
         fuzzy_value: float | None = None,
-        canonicalize_topology: bool = False,
-        heal_shapes: bool = True,
-        heal_angular_tolerance: float = 1e-6,
-        validate_fragment: bool = False,
-        validate_tolerance_multiplier: float = 10.0,
     ):
         """Initialize OCC CAD processor.
 
         Args:
-            point_tolerance: Quantization tolerance for the OCCGeometryCache.
-                Must be smaller than the smallest real feature in the input
-                geometry — vertices within this distance get snapped to a
-                single TopoDS_Vertex, and two snapped-identical vertices fed
-                to ``BRepBuilderAPI_MakeEdge`` raise
-                ``StdFail_NotDone: BRep_API: command not done``.
-            n_threads: Number of threads for parallel processing.
-            fuzzy_value: BOPAlgo_Builder fuzzy value used during the
-                all-fragment pass. Independent of ``point_tolerance`` so you
-                can fuse coincident interfaces that drifted more than a
-                cache-safe tolerance would allow. Defaults to
-                ``point_tolerance`` when ``None``.
-            canonicalize_topology: if True, run
-                :func:`meshwell.occ_canonicalize.canonicalize_topology` after
-                the all-fragment pass. Forces TShape sharing across entities
-                for coincident sub-vertices/edges/faces whose drift is below
-                ``point_tolerance`` but above ``fuzzy_value``. Removes
-                residual duplicates that would otherwise reach tetgen as
-                "overlapping facets" — an OCC-side substitute for the
-                gmsh-level ``remove_all_duplicates`` safety net.
-            heal_shapes: if True (default), run
-                :func:`meshwell.occ_shape_heal.heal_shapes` as the last
-                CAD-stage pass. Uses ``ShapeUpgrade_UnifySameDomain`` --
-                the same class OCCT's ``BRepAlgoAPI_BuilderAlgo::
-                SimplifyResult`` relies on -- to merge split-face
-                artifacts BOPAlgo leaves behind. Physical-name
-                attribution is preserved through the unifier's
-                ``BRepTools_History``.
-            heal_angular_tolerance: Maximum angle (radians) between
-                adjacent face normals for them to be considered
-                same-domain. Default ``1e-6``.
-            validate_fragment: if True, run a post-fragment audit that
-                detects near-coincident faces with distinct TShapes and
-                raises :class:`CoincidentFacesError` if any are found.
-                Converts downstream tetgen ``dihedral 0`` / PLC errors
-                into a CAD-stage diagnostic naming the offending entities
-                and their face orientations. Opt-in because the audit
-                costs O(F) where F is the total face count.
-            validate_tolerance_multiplier: Multiplier applied to
-                ``point_tolerance`` before quantizing centroids / areas
-                in the audit. ``10`` is a good default; lower it if the
-                scene has legitimate sub-tolerance features, raise it to
-                catch looser drift.
+            point_tolerance: Coordinate quantization applied inside entity
+                ``instanciate_occ`` hooks (e.g. PolySurface's
+                ``shapely.set_precision`` pass). Vertices closer than this
+                get snapped before the TopoDS graph is built.
+            n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
+            fuzzy_value: BOPAlgo fuzzy value used during the all-fragment
+                pass (gmsh's ``Geometry.ToleranceBoolean`` equivalent).
+                Decoupled from ``point_tolerance`` so near-coincident
+                interfaces can be fused without widening the vertex snap.
+                Defaults to ``point_tolerance`` when ``None``.
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
         self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
-        self.canonicalize_topology = canonicalize_topology
-        self.heal_shapes = heal_shapes
-        self.heal_angular_tolerance = heal_angular_tolerance
-        self.validate_fragment = validate_fragment
-        self.validate_tolerance_multiplier = validate_tolerance_multiplier
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
-        """Infer dimension from TopoDS_Shape type."""
-        # Check for Solids (3D)
-        explorer = TopExp_Explorer(shape, TopAbs_SOLID)
-        if explorer.More():
-            return 3
-
-        # Check for Faces (2D)
-        explorer = TopExp_Explorer(shape, TopAbs_FACE)
-        if explorer.More():
-            return 2
-
-        # Check for Edges (1D)
-        explorer = TopExp_Explorer(shape, TopAbs_EDGE)
-        if explorer.More():
-            return 1
-
-        # Check for Vertices (0D)
-        explorer = TopExp_Explorer(shape, TopAbs_VERTEX)
-        if explorer.More():
-            return 0
-
+        """Infer dimension from the first non-empty TopAbs class."""
+        for kind, dim in (
+            (TopAbs_SOLID, 3),
+            (TopAbs_FACE, 2),
+            (TopAbs_EDGE, 1),
+            (TopAbs_VERTEX, 0),
+        ):
+            if TopExp_Explorer(shape, kind).More():
+                return dim
         return -1
 
     def _instantiate_entity_occ(
         self,
         index: int,
         entity_obj: Any,
-        occ_cache: OCCGeometryCache,
     ) -> OCCLabeledEntity:
         """Instantiate a single entity into an OCC shape."""
-        shape = entity_obj.instanciate_occ(occ_cache=occ_cache)
+        shape = entity_obj.instanciate_occ()
         dim = getattr(entity_obj, "dimension", None)
         if dim is None:
             dim = self._get_shape_dimension(shape)
-
+        physical_name = entity_obj.physical_name
+        if isinstance(physical_name, str):
+            physical_name = (physical_name,)
         return OCCLabeledEntity(
             shapes=[shape],
-            physical_name=entity_obj.physical_name,
+            physical_name=physical_name,
             index=index,
-            keep=entity_obj.mesh_bool,
+            keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
-            mesh_order=entity_obj.mesh_order,
+            mesh_order=getattr(entity_obj, "mesh_order", None),
         )
 
     def _fragment_all(
@@ -195,17 +159,14 @@ class CAD_OCC:
         entities: list[OCCLabeledEntity],
         progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
-        """Fragment all entities together; assign pieces by mesh_order priority.
+        """Fragment all entity shapes; assign pieces by mesh_order priority.
 
-        Each input entity carries a ``mesh_order`` attribute (float or None).
-        After this call, each entity's ``shapes`` list contains only the
-        fragment pieces it owns. Ownership rule: lowest mesh_order wins.
-        Pieces that come from only one entity are unambiguously owned by it.
+        Each entity's ``shapes`` list is replaced with the fragment
+        pieces it owns. Matches ``gmsh.model.occ.fragment`` + mesh_order
+        post-processing semantically.
         """
         if not entities:
             return []
-
-        # Single-entity shortcut — nothing to fragment against.
         if len(entities) == 1:
             return entities
 
@@ -226,12 +187,15 @@ class CAD_OCC:
                 builder.AddArgument(s)
 
         if progress_bars:
-            print(f"BOPAlgo_Builder.Perform() on {len(entities)} entities…", flush=True)
+            print(
+                f"BOPAlgo_Builder.Perform() on {len(entities)} entities…",
+                flush=True,
+            )
         builder.Perform()
 
-        # piece_candidates: shape_key -> list of (entity_index, mesh_order).
-        # piece_shapes: shape_key -> the TopoDS_Shape handle.
-        piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = {}
+        piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = defaultdict(
+            list
+        )
         piece_shapes: dict[tuple[int, int], TopoDS_Shape] = {}
 
         for ent_idx, ent in enumerate(
@@ -248,18 +212,16 @@ class CAD_OCC:
             for original in originals_per_entity[ent_idx]:
                 modified = builder.Modified(original)
                 if modified.IsEmpty() and not builder.IsDeleted(original):
-                    # Shape survived untouched.
                     pieces = [original]
                 else:
                     pieces = list(modified)
                 for piece in pieces:
                     k = _shape_key(piece)
                     piece_shapes.setdefault(k, piece)
-                    piece_candidates.setdefault(k, []).append((ent_idx, mo))
+                    piece_candidates[k].append((ent_idx, mo))
 
         owners = _resolve_piece_ownership(piece_candidates)
 
-        # Reset each entity's shapes and reassign by owner.
         for ent in entities:
             ent.shapes = []
         for key, ent_idx in owners.items():
@@ -272,23 +234,21 @@ class CAD_OCC:
         entities_list: list[Any],
         progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
-        """Instantiate entities then do one BOPAlgo_Builder pass across all of them.
+        """Instantiate entities and fragment them.
 
-        Fragment pieces are assigned to the entity with the lowest mesh_order.
-        Lower-dim entities embedded in higher-dim ones end up sharing topology
-        (coincident sub-faces) because BOPAlgo preserves sub-shape sharing.
-
-        Instantiation is serialized so a single ``OCCGeometryCache`` can back
-        every entity; coincident sub-geometry across entities then carries
-        the same TopoDS TShape identity, which is what lets ``BOPAlgo_Builder``
-        merge shared boundaries rather than treating them as overlapping slivers.
+        Every entity builds its geometry with fresh TShapes; BOPAlgo's
+        fragment pass with ``fuzzy_value`` is the sole mechanism for
+        reconciling coincident sub-geometry -- mirroring how gmsh's own
+        OCC kernel handles shared boundaries between entities.
+        ``keep=False`` helpers keep their shapes for the XAO writer's
+        interface-naming pass; the writer itself excludes their bodies
+        from the emitted BREP.
         """
         if not entities_list:
             return []
 
-        occ_cache = OCCGeometryCache(point_tolerance=self.point_tolerance)
         labeled_entities = [
-            self._instantiate_entity_occ(i, ent, occ_cache)
+            self._instantiate_entity_occ(i, ent)
             for i, ent in enumerate(
                 tqdm(
                     entities_list,
@@ -298,50 +258,7 @@ class CAD_OCC:
             )
         ]
 
-        labeled_entities = self._fragment_all(
-            labeled_entities, progress_bars=progress_bars
-        )
-
-        if self.canonicalize_topology:
-            from meshwell.occ_canonicalize import canonicalize_topology
-
-            stats = canonicalize_topology(
-                labeled_entities, point_tolerance=self.point_tolerance
-            )
-            if progress_bars and any(stats.values()):
-                print(
-                    f"Canonicalized TShapes: "
-                    f"{stats['vertices']} vertices, "
-                    f"{stats['edges']} edges, "
-                    f"{stats['faces']} faces.",
-                    flush=True,
-                )
-
-        if self.heal_shapes:
-            from meshwell.occ_shape_heal import heal_shapes as _heal_shapes
-
-            _heal_shapes(
-                labeled_entities,
-                point_tolerance=self.point_tolerance,
-                angular_tolerance=self.heal_angular_tolerance,
-            )
-
-        if self.validate_fragment:
-            from meshwell.occ_fragment_audit import (
-                CoincidentFacesError,
-                audit_fragment_faces,
-                format_coincident_groups,
-            )
-
-            groups = audit_fragment_faces(
-                labeled_entities,
-                point_tolerance=self.point_tolerance,
-                tolerance_multiplier=self.validate_tolerance_multiplier,
-            )
-            if groups:
-                raise CoincidentFacesError(format_coincident_groups(groups))
-
-        return labeled_entities
+        return self._fragment_all(labeled_entities, progress_bars=progress_bars)
 
 
 def cad_occ(
@@ -350,21 +267,17 @@ def cad_occ(
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
     fuzzy_value: float | None = None,
-    canonicalize_topology: bool = False,
-    heal_shapes: bool = True,
-    heal_angular_tolerance: float = 1e-6,
-    validate_fragment: bool = False,
-    validate_tolerance_multiplier: float = 10.0,
 ) -> list[OCCLabeledEntity]:
-    """Utility function for OCC-based CAD processing."""
+    """Utility function for OCC-based CAD processing.
+
+    Mirrors :func:`meshwell.cad_gmsh.cad_gmsh`'s signature (minus the
+    gmsh-specific ``model`` / ``filename`` / tagging kwargs); the result
+    feeds :func:`meshwell.occ_xao_writer.write_xao` to produce a tagged
+    XAO gmsh can load.
+    """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
         fuzzy_value=fuzzy_value,
-        canonicalize_topology=canonicalize_topology,
-        heal_shapes=heal_shapes,
-        heal_angular_tolerance=heal_angular_tolerance,
-        validate_fragment=validate_fragment,
-        validate_tolerance_multiplier=validate_tolerance_multiplier,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)

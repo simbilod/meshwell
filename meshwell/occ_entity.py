@@ -8,8 +8,6 @@ from meshwell.validation import format_physical_name
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
 
-    from meshwell.occ_geometry_cache import OCCGeometryCache
-
 
 class OCC_entity:
     """Delayed evaluation of an OCC shape-creating function.
@@ -39,15 +37,8 @@ class OCC_entity:
         self.additive = additive
         self.dimension = dimension
 
-    def instanciate_occ(
-        self,
-        occ_cache: OCCGeometryCache | None = None,  # noqa: ARG002
-    ) -> TopoDS_Shape:
-        """Execute the OCC function and return the shape.
-
-        Pre-built shapes cannot benefit from the cache, so ``occ_cache`` is
-        accepted for interface compatibility and ignored.
-        """
+    def instanciate_occ(self) -> TopoDS_Shape:
+        """Execute the OCC function and return the shape."""
         return self.occ_function()
 
     def instanciate(self, cad_model: Any) -> Any:

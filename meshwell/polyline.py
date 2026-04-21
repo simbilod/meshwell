@@ -11,8 +11,6 @@ from meshwell.geometry_entity import GeometryEntity
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
 
-    from meshwell.occ_geometry_cache import OCCGeometryCache
-
 
 class PolyLine(GeometryEntity):
     """Creates bottom-up GMSH wires formed by list of shapely (multi)linestring.
@@ -163,9 +161,7 @@ class PolyLine(GeometryEntity):
         gmsh.model.occ.synchronize()
         return dimtags
 
-    def instanciate_occ(
-        self, occ_cache: OCCGeometryCache | None = None
-    ) -> TopoDS_Shape:
+    def instanciate_occ(self) -> TopoDS_Shape:
         """Create OCC wires directly using OCP."""
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
 
@@ -177,7 +173,6 @@ class PolyLine(GeometryEntity):
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
-                occ_cache=occ_cache,
             )
             wires.append(wire)
 

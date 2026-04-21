@@ -11,8 +11,6 @@ from meshwell.geometry_entity import GeometryEntity
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
 
-    from meshwell.occ_geometry_cache import OCCGeometryCache
-
 
 class PolySurface(GeometryEntity):
     """Creates bottom-up GMSH polygonal surfaces formed by list of shapely (multi)polygon.
@@ -158,9 +156,7 @@ class PolySurface(GeometryEntity):
         gmsh.model.occ.synchronize()
         return dimtags
 
-    def instanciate_occ(
-        self, occ_cache: OCCGeometryCache | None = None
-    ) -> TopoDS_Shape:
+    def instanciate_occ(self) -> TopoDS_Shape:
         """Create OCC surfaces directly using OCP."""
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 
@@ -175,7 +171,6 @@ class PolySurface(GeometryEntity):
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
-                occ_cache=occ_cache,
             )
 
             # Create interior surfaces (holes) and cut them
@@ -188,7 +183,6 @@ class PolySurface(GeometryEntity):
                     identify_arcs=self.identify_arcs,
                     min_arc_points=self.min_arc_points,
                     arc_tolerance=self.arc_tolerance,
-                    occ_cache=occ_cache,
                 )
 
                 cut_api = BRepAlgoAPI_Cut(exterior_face, interior_face)

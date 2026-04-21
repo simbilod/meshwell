@@ -12,8 +12,6 @@ from meshwell.validation import format_physical_name
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
 
-    from meshwell.occ_geometry_cache import OCCGeometryCache
-
 
 class PolyPrism(GeometryEntity):
     """Creates a bottom-up GMSH "prism" formed by a polygon associated with (optional) z-dependent grow/shrink operations.
@@ -372,7 +370,6 @@ class PolyPrism(GeometryEntity):
         entry: list[tuple[float, Polygon]],
         exterior: bool = True,
         interior_index: int = 0,
-        occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Shape:
         """Create OCC volume directly using OCP."""
         from OCP.BRep import BRep_Builder
@@ -396,7 +393,6 @@ class PolyPrism(GeometryEntity):
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
-                occ_cache=occ_cache,
             )
         ]
 
@@ -415,7 +411,6 @@ class PolyPrism(GeometryEntity):
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
-                occ_cache=occ_cache,
             )
         )
 
@@ -454,11 +449,7 @@ class PolyPrism(GeometryEntity):
 
                 facet_vertices = [p1, p2, p3, p4, p1]
                 # For vertical facets, we use simple linear interpolation
-                faces.append(
-                    self._make_occ_face_from_vertices(
-                        facet_vertices, occ_cache=occ_cache
-                    )
-                )
+                faces.append(self._make_occ_face_from_vertices(facet_vertices))
 
         # Build shell and solid
         shell_builder = BRep_Builder()
@@ -552,41 +543,28 @@ class PolyPrism(GeometryEntity):
     def _create_occ_volume_with_holes(
         self,
         entry: list[tuple[float, Polygon]],
-        occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Shape:
         """Create OCC volume with holes directly using OCP.
 
-        Non-extrude path still uses BRepAlgoAPI_Cut for the z-varying buffer
-        case; shared-topology guarantees from ``occ_cache`` only hold for the
-        extrude path (handled in ``instanciate_occ``).
+        Non-extrude path uses ``BRepAlgoAPI_Cut`` for the z-varying buffer
+        case; the extrude path in :meth:`instanciate_occ` builds the
+        prism as a single swept face.
         """
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 
-        exterior = self._create_occ_volume(entry, exterior=True, occ_cache=occ_cache)
+        exterior = self._create_occ_volume(entry, exterior=True)
         interior_count = len(entry[0][1].interiors)
 
         for i in range(interior_count):
-            interior = self._create_occ_volume(
-                entry, exterior=False, interior_index=i, occ_cache=occ_cache
-            )
+            interior = self._create_occ_volume(entry, exterior=False, interior_index=i)
             cut_api = BRepAlgoAPI_Cut(exterior, interior)
             cut_api.Build()
             exterior = cut_api.Shape()
 
         return exterior
 
-    def instanciate_occ(
-        self, occ_cache: OCCGeometryCache | None = None
-    ) -> TopoDS_Shape:
-        """Create OCC volumes directly using OCP.
-
-        When ``occ_cache`` is provided, the extrude branch builds the
-        bottom face via :meth:`OCCGeometryCache.get_face` so two entities
-        with coincident base polygons share the bottom-face TShape.
-        ``BRepPrimAPI_MakePrism`` is used for the sweep so top and side
-        faces are still generated per-entity; sharing across entities
-        there comes from BOPAlgo's SameDomain pass during fragmentation.
-        """
+    def instanciate_occ(self) -> TopoDS_Shape:
+        """Create OCC volumes directly using OCP."""
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
@@ -607,34 +585,25 @@ class PolyPrism(GeometryEntity):
                     identify_arcs=self.identify_arcs,
                     min_arc_points=self.min_arc_points,
                     arc_tolerance=self.arc_tolerance,
-                    occ_cache=occ_cache,
                 )
-                hole_wires = []
+                mf = BRepBuilderAPI_MakeFace(outer_wire)
                 for interior in poly.interiors:
                     hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
-                    hw = self._make_occ_wire_from_vertices(
+                    hole_wire = self._make_occ_wire_from_vertices(
                         hole_vertices,
                         identify_arcs=self.identify_arcs,
                         min_arc_points=self.min_arc_points,
                         arc_tolerance=self.arc_tolerance,
-                        occ_cache=occ_cache,
                     )
-                    hw.Reverse()
-                    hole_wires.append(hw)
-
-                if occ_cache is not None:
-                    face = occ_cache.get_face(outer_wire, tuple(hole_wires))
-                else:
-                    mf = BRepBuilderAPI_MakeFace(outer_wire)
-                    for hw in hole_wires:
-                        mf.Add(hw)
-                    face = mf.Face()
+                    hole_wire.Reverse()
+                    mf.Add(hole_wire)
+                face = mf.Face()
 
                 volumes.append(BRepPrimAPI_MakePrism(face, vec).Shape())
         else:
             volumes.extend(
                 [
-                    self._create_occ_volume_with_holes(entry, occ_cache=occ_cache)
+                    self._create_occ_volume_with_holes(entry)
                     for entry in self.buffered_polygons
                 ]
             )

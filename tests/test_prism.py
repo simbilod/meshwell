@@ -6,7 +6,6 @@ from OCP.Bnd import Bnd_Box
 from OCP.BRepBndLib import BRepBndLib
 
 from meshwell.cad_occ import cad_occ
-from meshwell.occ_geometry_cache import OCCGeometryCache
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 
@@ -40,9 +39,9 @@ def test_prism_extruded():
         polygons=polygon, buffers=buffers, physical_name="prism_extruded"
     )
 
-    # Extrude path: instantiate once via the OCC cache and check its z-extent
-    # before feeding through the full fragment/meshing pipeline.
-    shape = prism_obj.instanciate_occ(occ_cache=OCCGeometryCache())
+    # Extrude path: instantiate once and check its z-extent before
+    # feeding through the full fragment/meshing pipeline.
+    shape = prism_obj.instanciate_occ()
     assert prism_obj.extrude is True
 
     box = Bnd_Box()
