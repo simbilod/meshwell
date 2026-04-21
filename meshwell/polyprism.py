@@ -580,12 +580,12 @@ class PolyPrism(GeometryEntity):
     ) -> TopoDS_Shape:
         """Create OCC volumes directly using OCP.
 
-        When ``occ_cache`` is provided, the extrude branch constructs faces
-        with holes using ``BRepBuilderAPI_MakeFace.Add(hole_wire)`` on cached
-        wires so coincident sub-geometry (e.g. a rounded hole boundary and
-        a neighbouring rounded inner prism's boundary) is TShape-identical
-        across entities. That identity is what makes ``BOPAlgo_Builder``
-        merge the two boundaries during fragmentation.
+        When ``occ_cache`` is provided, the extrude branch builds the
+        bottom face via :meth:`OCCGeometryCache.get_face` so two entities
+        with coincident base polygons share the bottom-face TShape.
+        ``BRepPrimAPI_MakePrism`` is used for the sweep so top and side
+        faces are still generated per-entity; sharing across entities
+        there comes from BOPAlgo's SameDomain pass during fragmentation.
         """
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
@@ -599,6 +599,7 @@ class PolyPrism(GeometryEntity):
                 if hasattr(self.polygons, "geoms")
                 else [self.polygons]
             )
+            vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
                 exterior_vertices = [(x, y, self.zmin) for x, y in poly.exterior.coords]
                 outer_wire = self._make_occ_wire_from_vertices(
@@ -608,29 +609,28 @@ class PolyPrism(GeometryEntity):
                     arc_tolerance=self.arc_tolerance,
                     occ_cache=occ_cache,
                 )
+                hole_wires = []
+                for interior in poly.interiors:
+                    hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
+                    hw = self._make_occ_wire_from_vertices(
+                        hole_vertices,
+                        identify_arcs=self.identify_arcs,
+                        min_arc_points=self.min_arc_points,
+                        arc_tolerance=self.arc_tolerance,
+                        occ_cache=occ_cache,
+                    )
+                    hw.Reverse()
+                    hole_wires.append(hw)
 
-                if len(poly.interiors) == 0:
-                    face = BRepBuilderAPI_MakeFace(outer_wire).Face()
+                if occ_cache is not None:
+                    face = occ_cache.get_face(outer_wire, tuple(hole_wires))
                 else:
                     mf = BRepBuilderAPI_MakeFace(outer_wire)
-                    for interior in poly.interiors:
-                        hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
-                        hole_wire = self._make_occ_wire_from_vertices(
-                            hole_vertices,
-                            identify_arcs=self.identify_arcs,
-                            min_arc_points=self.min_arc_points,
-                            arc_tolerance=self.arc_tolerance,
-                            occ_cache=occ_cache,
-                        )
-                        # Holes must have reversed orientation relative to the outer.
-                        hole_wire.Reverse()
-                        mf.Add(hole_wire)
+                    for hw in hole_wires:
+                        mf.Add(hw)
                     face = mf.Face()
 
-                vec = gp_Vec(0, 0, self.zmax - self.zmin)
-                prism_api = BRepPrimAPI_MakePrism(face, vec)
-                prism_api.Build()
-                volumes.append(prism_api.Shape())
+                volumes.append(BRepPrimAPI_MakePrism(face, vec).Shape())
         else:
             volumes.extend(
                 [

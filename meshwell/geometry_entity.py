@@ -565,7 +565,14 @@ class GeometryEntity:
         arc_tolerance: float = 1e-3,
         occ_cache: OCCGeometryCache | None = None,
     ) -> TopoDS_Face:
-        """Create an OCC face from vertex coordinates with optional arc identification."""
+        """Create an OCC face from vertex coordinates with optional arc identification.
+
+        When ``occ_cache`` is provided, the face is looked up by its wire's
+        ordered edge-TShape key, so two entities that build geometrically
+        identical faces receive the same ``TopoDS_Face`` TShape. This is
+        what lets ``BOPAlgo_Builder`` fuse shared boundaries as SameDomain
+        rather than emit near-coincident duplicate facets.
+        """
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 
         wire = self._make_occ_wire_from_vertices(
@@ -575,6 +582,8 @@ class GeometryEntity:
             arc_tolerance=arc_tolerance,
             occ_cache=occ_cache,
         )
+        if occ_cache is not None:
+            return occ_cache.get_face(wire)
         return BRepBuilderAPI_MakeFace(wire).Face()
 
     def plot_decomposition(
@@ -668,9 +677,19 @@ class GeometryEntity:
     def _apply_transformation_occ(
         self, shape: TopoDS_Shape, rotation_point: tuple[float, float, float]
     ) -> TopoDS_Shape:
-        """Apply rotation and translation to OCC shape."""
+        """Apply rotation and translation to OCC shape.
+
+        When neither a rotation nor a translation is configured, return
+        ``shape`` unchanged. ``BRepBuilderAPI_Transform`` mints fresh
+        TShapes even for an identity transform, which would defeat the
+        cross-entity TShape sharing that :class:`OCCGeometryCache`
+        establishes.
+        """
         if shape is None:
             return None
+        if self.rotation_angle == 0 and not self.translation:
+            return shape
+
         import numpy as np
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
         from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
