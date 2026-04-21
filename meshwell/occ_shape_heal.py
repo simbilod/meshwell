@@ -30,6 +30,7 @@ each entity's ``shapes`` list.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from OCP.BRep import BRep_Builder
@@ -39,6 +40,40 @@ from OCP.TopoDS import TopoDS_Compound
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
 
+_logger = logging.getLogger(__name__)
+
+
+def _build_compound(shapes) -> TopoDS_Compound:
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for shape in shapes:
+        if shape is not None and not shape.IsNull():
+            builder.Add(compound, shape)
+    return compound
+
+
+def _perform_fix(
+    shape, point_tolerance: float, max_tolerance: float
+) -> ShapeFix_Shape | None:
+    """Run ``ShapeFix_Shape`` on ``shape``; return the fixer on success.
+
+    Returns ``None`` when the fixer raises (e.g. a degenerate vertex
+    without a ``gp_Pnt`` trips ``BRep_Tool::Pnt`` on some inputs). The
+    caller is expected to fall back to a narrower scope or skip healing
+    for that shape.
+    """
+    fixer = ShapeFix_Shape()
+    fixer.Init(shape)
+    fixer.SetPrecision(point_tolerance)
+    fixer.SetMaxTolerance(max_tolerance)
+    try:
+        fixer.Perform()
+    except Exception as exc:
+        _logger.warning("ShapeFix_Shape.Perform failed: %s", exc)
+        return None
+    return fixer
+
 
 def heal_shapes(
     entities: list[OCCLabeledEntity],
@@ -46,6 +81,12 @@ def heal_shapes(
     max_tolerance_multiplier: float = 100.0,
 ) -> list[OCCLabeledEntity]:
     """Heal every entity's shapes in place via ``ShapeFix_Shape``.
+
+    Healing is best-effort: if the fixer raises (for example on a
+    degenerate vertex without a ``gp_Pnt``), we first retry
+    per-entity so entities with clean geometry still benefit; if that
+    also fails, the entity's shapes are left untouched and a warning
+    is logged.
 
     Args:
         entities: Entities returned by ``CAD_OCC._fragment_all`` (and
@@ -60,37 +101,44 @@ def heal_shapes(
 
     Returns:
         The same ``entities`` list; each entity's ``shapes`` is updated
-        in place with its repaired counterparts. Entities whose shapes
-        are entirely removed by the fixer end up with an empty
-        ``shapes`` list -- the XAO writer will emit no geometry for
-        them but the physical-name record survives.
+        in place with its repaired counterparts where healing succeeded.
     """
     if not entities:
         return entities
 
-    builder = BRep_Builder()
-    compound = TopoDS_Compound()
-    builder.MakeCompound(compound)
+    max_tolerance = point_tolerance * max_tolerance_multiplier
+
+    # First try: fix the full compound so shared boundaries get a
+    # consistent repair across entities.
+    compound = _build_compound(shape for ent in entities for shape in ent.shapes)
+    fixer = _perform_fix(compound, point_tolerance, max_tolerance)
+    if fixer is not None:
+        context = fixer.Context()
+        for ent in entities:
+            ent.shapes = [
+                applied
+                for applied in (context.Apply(s) for s in ent.shapes)
+                if applied is not None and not applied.IsNull()
+            ]
+        return entities
+
+    # Fallback: per-entity healing. A single bad entity won't block
+    # healing for the rest; an entity whose fixer also raises is
+    # left unchanged.
+    _logger.warning("heal_shapes: compound healing failed; falling back to per-entity")
     for ent in entities:
-        for shape in ent.shapes:
-            builder.Add(compound, shape)
-
-    fixer = ShapeFix_Shape()
-    fixer.Init(compound)
-    fixer.SetPrecision(point_tolerance)
-    fixer.SetMaxTolerance(point_tolerance * max_tolerance_multiplier)
-    fixer.Perform()
-
-    context = fixer.Context()
-
-    for ent in entities:
-        repaired: list = []
-        for shape in ent.shapes:
-            new_shape = context.Apply(shape)
-            if new_shape is None or new_shape.IsNull():
-                # ShapeFix removed this piece entirely (degenerate).
-                continue
-            repaired.append(new_shape)
-        ent.shapes = repaired
-
+        ent_compound = _build_compound(ent.shapes)
+        ent_fixer = _perform_fix(ent_compound, point_tolerance, max_tolerance)
+        if ent_fixer is None:
+            _logger.warning(
+                "heal_shapes: skipping %s (per-entity healing raised)",
+                ent.physical_name,
+            )
+            continue
+        ctx = ent_fixer.Context()
+        ent.shapes = [
+            applied
+            for applied in (ctx.Apply(s) for s in ent.shapes)
+            if applied is not None and not applied.IsNull()
+        ]
     return entities
