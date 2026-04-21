@@ -85,7 +85,7 @@ class CAD_OCC:
         fuzzy_value: float | None = None,
         canonicalize_topology: bool = False,
         heal_shapes: bool = True,
-        heal_max_tolerance_multiplier: float = 100.0,
+        heal_angular_tolerance: float = 1e-6,
         validate_fragment: bool = False,
         validate_tolerance_multiplier: float = 10.0,
     ):
@@ -114,15 +114,15 @@ class CAD_OCC:
                 gmsh-level ``remove_all_duplicates`` safety net.
             heal_shapes: if True (default), run
                 :func:`meshwell.occ_shape_heal.heal_shapes` as the last
-                CAD-stage pass. ``ShapeFix_Shape`` repairs tiny edges,
-                disoriented wires, tolerance mismatches, and near-
-                degenerate faces that BOPAlgo leaves behind. Runs after
-                canonicalization so sub-shape sharing is already unified.
-                Physical-name attribution is preserved through the
-                fixer's ``ShapeBuild_ReShape`` context.
-            heal_max_tolerance_multiplier: Upper bound for the healing
-                fixer is ``heal_max_tolerance_multiplier *
-                point_tolerance``. Defaults to ``100``.
+                CAD-stage pass. Uses ``ShapeUpgrade_UnifySameDomain`` --
+                the same class OCCT's ``BRepAlgoAPI_BuilderAlgo::
+                SimplifyResult`` relies on -- to merge split-face
+                artifacts BOPAlgo leaves behind. Physical-name
+                attribution is preserved through the unifier's
+                ``BRepTools_History``.
+            heal_angular_tolerance: Maximum angle (radians) between
+                adjacent face normals for them to be considered
+                same-domain. Default ``1e-6``.
             validate_fragment: if True, run a post-fragment audit that
                 detects near-coincident faces with distinct TShapes and
                 raises :class:`CoincidentFacesError` if any are found.
@@ -141,7 +141,7 @@ class CAD_OCC:
         self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
         self.canonicalize_topology = canonicalize_topology
         self.heal_shapes = heal_shapes
-        self.heal_max_tolerance_multiplier = heal_max_tolerance_multiplier
+        self.heal_angular_tolerance = heal_angular_tolerance
         self.validate_fragment = validate_fragment
         self.validate_tolerance_multiplier = validate_tolerance_multiplier
 
@@ -323,7 +323,7 @@ class CAD_OCC:
             _heal_shapes(
                 labeled_entities,
                 point_tolerance=self.point_tolerance,
-                max_tolerance_multiplier=self.heal_max_tolerance_multiplier,
+                angular_tolerance=self.heal_angular_tolerance,
             )
 
         if self.validate_fragment:
@@ -352,7 +352,7 @@ def cad_occ(
     fuzzy_value: float | None = None,
     canonicalize_topology: bool = False,
     heal_shapes: bool = True,
-    heal_max_tolerance_multiplier: float = 100.0,
+    heal_angular_tolerance: float = 1e-6,
     validate_fragment: bool = False,
     validate_tolerance_multiplier: float = 10.0,
 ) -> list[OCCLabeledEntity]:
@@ -363,7 +363,7 @@ def cad_occ(
         fuzzy_value=fuzzy_value,
         canonicalize_topology=canonicalize_topology,
         heal_shapes=heal_shapes,
-        heal_max_tolerance_multiplier=heal_max_tolerance_multiplier,
+        heal_angular_tolerance=heal_angular_tolerance,
         validate_fragment=validate_fragment,
         validate_tolerance_multiplier=validate_tolerance_multiplier,
     )

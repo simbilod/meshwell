@@ -1,46 +1,82 @@
-"""Post-fragment shape healing via OCC's ShapeFix_Shape.
+"""Post-fragment shape healing for OCC entities.
 
-``ShapeFix_Shape`` runs the ``ShapeFix_Wire/Face/Shell/Solid`` sub-fixers
-and cleans up the small-geometry artifacts BOPAlgo sometimes leaves in
-the post-fragment compound: tiny edges, wires with out-of-order or
-degenerate segments, faces whose outer wire doesn't close under the
-face surface's tolerance, shells with inconsistent face orientations,
-and vertex/edge/face tolerance mismatches. These are exactly the inputs
-that reach tetgen as "almost coincident" facets or segments piercing
-triangulations.
+Primary tool: ``ShapeUpgrade_UnifySameDomain``. This is the same class
+that ``BRepAlgoAPI_BuilderAlgo::SimplifyResult`` uses for its post-BOP
+cleanup in OCCT itself -- it unifies adjacent coplanar faces and
+collinear edges into single sub-shapes, resolves the split-face
+artifacts BOPAlgo sometimes leaves behind, and preserves solid/shell
+structure (so it won't silently fuse two meshwell entities).
 
-Healing mints fresh TShapes for every repaired sub-shape. To preserve
-physical-tag attribution, we drive healing off a compound that contains
-every entity's owned shapes, then use the fixer's ``ShapeBuild_ReShape``
-context to rewrite each entity's ``shapes`` list in place. Untouched
-sub-shapes pass through the context unchanged; repaired ones come out
-with their new TShape. ``OCCLabeledEntity.physical_name``, ``keep``, and
-``mesh_order`` are untouched; the XAO writer re-enumerates sub-TShapes
-at write time so tags follow the new identities automatically.
+Secondary, opt-in tool: ``ShapeFix_Shape`` for broader cleanup (tiny
+edges, tolerance mismatches, disoriented wires). We leave it off by
+default because on some inputs ``BRep_Tool::Pnt`` raises on degenerate
+seam/apex vertices that ``ShapeFix_Shape`` tries to evaluate.
 
-Call order inside ``CAD_OCC.process_entities``:
+Tag preservation:
+    ``ShapeUpgrade_UnifySameDomain`` exposes ``History()`` -- a
+    ``BRepTools_History`` recording Modified/Generated/Removed for every
+    input sub-shape. We walk each entity's owned shapes, query the
+    history, and rewrite the shape list in place. ``physical_name``,
+    ``keep``, ``mesh_order`` are untouched; the XAO writer re-enumerates
+    sub-TShapes at write time so tags follow the new identities
+    automatically.
+
+Ordering inside ``CAD_OCC.process_entities``:
 
     instantiate -> _fragment_all -> canonicalize_topology -> heal_shapes
     -> validate_fragment
 
-Healing is last among the TShape-mutating passes so the
-``OCCGeometryCache``'s stored TShapes are irrelevant at this point --
-downstream consumers (XAO writer) only care about the current state of
-each entity's ``shapes`` list.
+Healing runs last among the TShape-mutating passes so the
+``OCCGeometryCache``'s stored TShapes are irrelevant at this point.
 """
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from OCP.BRep import BRep_Builder
-from OCP.ShapeFix import ShapeFix_Shape
+from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound
+from OCP.TopTools import TopTools_ShapeMapHasher
 
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
 
 _logger = logging.getLogger(__name__)
+_HASHER = TopTools_ShapeMapHasher()
+
+
+def _cross_entity_shared_shapes(entities) -> list:
+    """Return TopoDS_Shapes whose TShape appears in >1 entity.
+
+    Shared sub-shapes (interface edges/faces between neighbouring
+    entities, shared vertices on meeting corners) carry the meshwell
+    interface tagging -- if ``UnifySameDomain`` replaces them with a
+    fresh TShape, the XAO writer can't detect the interface anymore
+    and groups like ``A___B`` disappear. We feed this list into the
+    unifier's ``KeepShape`` to pin them across the Build.
+    """
+    owners: dict[int, set[int]] = defaultdict(set)
+    shape_by_hash: dict[int, object] = {}
+    for idx, ent in enumerate(entities):
+        seen: set[int] = set()
+        for top_shape in ent.shapes:
+            if top_shape is None or top_shape.IsNull():
+                continue
+            for kind in (TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE):
+                exp = TopExp_Explorer(top_shape, kind)
+                while exp.More():
+                    sub = exp.Current()
+                    h = _HASHER(sub)
+                    if h not in seen:
+                        seen.add(h)
+                        owners[h].add(idx)
+                        shape_by_hash.setdefault(h, sub)
+                    exp.Next()
+    return [shape_by_hash[h] for h, idxs in owners.items() if len(idxs) > 1]
 
 
 def _build_compound(shapes) -> TopoDS_Compound:
@@ -53,85 +89,164 @@ def _build_compound(shapes) -> TopoDS_Compound:
     return compound
 
 
-def _perform_fix(
-    shape, point_tolerance: float, max_tolerance: float
-) -> ShapeFix_Shape | None:
-    """Run ``ShapeFix_Shape`` on ``shape``; return the fixer on success.
+def _rewrite_through_history(entities, history) -> None:
+    """Rewrite each entity's ``shapes`` via a ``BRepTools_History`` query.
 
-    Returns ``None`` when the fixer raises (e.g. a degenerate vertex
-    without a ``gp_Pnt`` trips ``BRep_Tool::Pnt`` on some inputs). The
-    caller is expected to fall back to a narrower scope or skip healing
-    for that shape.
+    For every owned shape:
+      - if ``history.IsRemoved(s)``, drop it
+      - else if ``history.Modified(s)`` is non-empty, replace with that list
+      - else keep the original (unchanged by the pass)
     """
-    fixer = ShapeFix_Shape()
-    fixer.Init(shape)
-    fixer.SetPrecision(point_tolerance)
-    fixer.SetMaxTolerance(max_tolerance)
-    try:
-        fixer.Perform()
-    except Exception as exc:
-        _logger.warning("ShapeFix_Shape.Perform failed: %s", exc)
-        return None
-    return fixer
+    for ent in entities:
+        rewritten: list = []
+        for shape in ent.shapes:
+            if history.IsRemoved(shape):
+                continue
+            modified = history.Modified(shape)
+            try:
+                modified_list = list(modified)
+            except TypeError:
+                # OCP exposes NCollection_List with an iterator protocol,
+                # but some builds bind it without __iter__; fall back to
+                # treating the return as "no modifications found".
+                modified_list = []
+            if modified_list:
+                rewritten.extend(
+                    s for s in modified_list if s is not None and not s.IsNull()
+                )
+            elif shape is not None and not shape.IsNull():
+                rewritten.append(shape)
+        ent.shapes = rewritten
 
 
 def heal_shapes(
     entities: list[OCCLabeledEntity],
     point_tolerance: float = 1e-3,
-    max_tolerance_multiplier: float = 100.0,
+    angular_tolerance: float = 1e-6,
+    unify_edges: bool = True,
+    unify_faces: bool = True,
+    concat_bsplines: bool = False,
+    allow_internal_edges: bool = False,
+    run_shape_fix: bool = False,
+    shape_fix_max_tolerance_multiplier: float = 100.0,
 ) -> list[OCCLabeledEntity]:
-    """Heal every entity's shapes in place via ``ShapeFix_Shape``.
-
-    Healing is best-effort: if the fixer raises (for example on a
-    degenerate vertex without a ``gp_Pnt``), we first retry
-    per-entity so entities with clean geometry still benefit; if that
-    also fails, the entity's shapes are left untouched and a warning
-    is logged.
+    """Heal every entity's shapes in place.
 
     Args:
         entities: Entities returned by ``CAD_OCC._fragment_all`` (and
             optionally post-``canonicalize_topology``).
-        point_tolerance: Lower bound for ``ShapeFix_Shape.SetPrecision``.
-            Usually matches the ``cad_occ`` value.
-        max_tolerance_multiplier: Upper bound for the fixer is
-            ``max_tolerance_multiplier * point_tolerance``. Larger values
-            let ShapeFix repair wider gaps at the cost of potentially
-            fusing features you didn't want fused. ``100`` is the OCC
-            example default.
+        point_tolerance: Linear tolerance for the unifier -- the
+            ``SimplifyResult`` pattern in OCCT passes the BOP fuzzy value
+            here, so matching ``cad_occ``'s ``point_tolerance`` is the
+            conservative choice.
+        angular_tolerance: Maximum angle (radians) between adjacent face
+            normals or edge tangents for them to be considered
+            same-domain. Default ``1e-6``.
+        unify_edges: Merge collinear edges into a single edge.
+        unify_faces: Merge coplanar/cosurface faces into a single face.
+        concat_bsplines: Concatenate C1-continuous BSpline / Bezier edges.
+        allow_internal_edges: Permit creating INTERNAL edges inside merged
+            faces for non-manifold inputs. Default off.
+        run_shape_fix: If ``True``, chain a ``ShapeFix_Shape`` pass after
+            the unifier to clean up residual tiny edges / tolerance
+            mismatches. Off by default because some inputs raise
+            ``BRep_Tool::Pnt`` on degenerate seam vertices.
+        shape_fix_max_tolerance_multiplier: Upper bound for the optional
+            ``ShapeFix_Shape`` is this multiplier times ``point_tolerance``.
 
     Returns:
         The same ``entities`` list; each entity's ``shapes`` is updated
-        in place with its repaired counterparts where healing succeeded.
+        in place with its unified / repaired counterparts where healing
+        succeeded. On failure the entity's shapes are left unchanged and
+        a warning is logged.
     """
     if not entities:
         return entities
 
+    # Heal the full compound so BOPAlgo split-face artifacts at shared
+    # boundaries get a consistent repair across entities, and pin every
+    # cross-entity shared sub-shape so the unifier doesn't re-TShape
+    # them -- that would silently drop interface physical groups like
+    # ``A___B`` from the XAO writer's output.
+    compound = _build_compound(shape for ent in entities for shape in ent.shapes)
+    unifier = ShapeUpgrade_UnifySameDomain(
+        compound, unify_edges, unify_faces, concat_bsplines
+    )
+    unifier.SetLinearTolerance(point_tolerance)
+    unifier.SetAngularTolerance(angular_tolerance)
+    unifier.SetSafeInputMode(False)
+    unifier.AllowInternalEdges(allow_internal_edges)
+    for shared in _cross_entity_shared_shapes(entities):
+        unifier.KeepShape(shared)
+
+    try:
+        unifier.Build()
+    except Exception as exc:
+        _logger.warning("heal_shapes: UnifySameDomain failed: %s", exc)
+        if run_shape_fix:
+            _shape_fix_fallback(
+                entities, point_tolerance, shape_fix_max_tolerance_multiplier
+            )
+        return entities
+
+    _rewrite_through_history(entities, unifier.History())
+
+    if run_shape_fix:
+        _shape_fix_fallback(
+            entities, point_tolerance, shape_fix_max_tolerance_multiplier
+        )
+
+    return entities
+
+
+def _shape_fix_fallback(
+    entities,
+    point_tolerance: float,
+    max_tolerance_multiplier: float,
+) -> None:
+    """Optional ``ShapeFix_Shape`` cleanup pass after the unifier.
+
+    Guarded against ``BRep_Tool::Pnt`` crashes on degenerate vertices:
+    on any exception we fall back to per-entity fixing, and an entity
+    whose fixer also raises is left unchanged with a warning logged.
+    """
+    from OCP.ShapeFix import ShapeFix_Shape
+
     max_tolerance = point_tolerance * max_tolerance_multiplier
 
-    # First try: fix the full compound so shared boundaries get a
-    # consistent repair across entities.
+    def _fix(shape):
+        fixer = ShapeFix_Shape()
+        fixer.Init(shape)
+        fixer.SetPrecision(point_tolerance)
+        fixer.SetMaxTolerance(max_tolerance)
+        try:
+            fixer.Perform()
+        except Exception as exc:
+            _logger.warning("heal_shapes: ShapeFix_Shape failed: %s", exc)
+            return None
+        return fixer
+
     compound = _build_compound(shape for ent in entities for shape in ent.shapes)
-    fixer = _perform_fix(compound, point_tolerance, max_tolerance)
+    fixer = _fix(compound)
     if fixer is not None:
-        context = fixer.Context()
+        ctx = fixer.Context()
         for ent in entities:
             ent.shapes = [
                 applied
-                for applied in (context.Apply(s) for s in ent.shapes)
+                for applied in (ctx.Apply(s) for s in ent.shapes)
                 if applied is not None and not applied.IsNull()
             ]
-        return entities
+        return
 
-    # Fallback: per-entity healing. A single bad entity won't block
-    # healing for the rest; an entity whose fixer also raises is
-    # left unchanged.
-    _logger.warning("heal_shapes: compound healing failed; falling back to per-entity")
+    _logger.warning(
+        "heal_shapes: ShapeFix_Shape compound failed; falling back per-entity"
+    )
     for ent in entities:
         ent_compound = _build_compound(ent.shapes)
-        ent_fixer = _perform_fix(ent_compound, point_tolerance, max_tolerance)
+        ent_fixer = _fix(ent_compound)
         if ent_fixer is None:
             _logger.warning(
-                "heal_shapes: skipping %s (per-entity healing raised)",
+                "heal_shapes: skipping %s (per-entity ShapeFix raised)",
                 ent.physical_name,
             )
             continue
@@ -141,4 +256,3 @@ def heal_shapes(
             for applied in (ctx.Apply(s) for s in ent.shapes)
             if applied is not None and not applied.IsNull()
         ]
-    return entities
