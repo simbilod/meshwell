@@ -271,6 +271,59 @@ def test_keep_false_3d_fully_inside_leaves_interior_void():
         mm.finalize()
 
 
+def test_keep_false_polyprism_void_is_not_meshed(tmp_path):
+    """Meshing a keep=False void leaves the interior empty of tets.
+
+    Beyond the OCC-level 'void___outer interface tagged' check, the
+    resulting MSH must actually have zero tetrahedra with centroids
+    inside the void, and summed tet volume equal to outer-minus-inner.
+    That is the only way to confirm gmsh treated the void as absent
+    rather than as a separately-meshed sub-region.
+    """
+    import meshio
+    import numpy as np
+
+    from meshwell.mesh import mesh
+
+    inner = PolyPrism(
+        polygons=shapely.box(3, 3, 7, 7),
+        buffers={3.0: 0.0, 7.0: 0.0},
+        physical_name="void",
+        mesh_order=1,
+        mesh_bool=False,
+    )
+    outer = PolyPrism(
+        polygons=shapely.box(0, 0, 10, 10),
+        buffers={0.0: 0.0, 10.0: 0.0},
+        physical_name="outer",
+        mesh_order=2,
+    )
+    xao = tmp_path / "hollow.xao"
+    msh = tmp_path / "hollow.msh"
+    write_xao(cad_occ([inner, outer]), xao)
+    mesh(
+        dim=3,
+        input_file=xao,
+        output_file=msh,
+        default_characteristic_length=1.0,
+        n_threads=1,
+    )
+    m = meshio.read(str(msh))
+
+    tets = np.vstack([cb.data for cb in m.cells if cb.type == "tetra"])
+    centroids = m.points[tets].mean(axis=1)
+    in_void = np.all((centroids > 3) & (centroids < 7), axis=1)
+    assert in_void.sum() == 0, "tets found inside the void region"
+
+    # Summed tet volume matches outer minus inner (to meshing precision).
+    def tet_vol(tet):
+        a, b, c, d = [m.points[i] for i in tet]
+        return abs(np.dot(b - a, np.cross(c - a, d - a))) / 6.0
+
+    total_vol = sum(tet_vol(t) for t in tets)
+    assert abs(total_vol - (1000 - 64)) < 1.0
+
+
 def test_keep_false_polyprism_fully_inside_leaves_interior_void():
     """Same hollow-solid semantic as the OCC_entity case, via PolyPrism.
 
