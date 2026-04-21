@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,6 @@ import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
-from meshwell.occ_xao_writer import write_xao
 from meshwell.utils import deserialize
 
 
@@ -43,8 +41,8 @@ def generate_mesh(
               all-fragment pass.
             - ``canonicalize_topology`` (bool): run the OCP post-fragment
               TShape canonicalization pass.
-            - ``remove_all_duplicates`` (bool): gmsh-level fragment
-              safety net after XAO load.
+            - ``remove_all_duplicates`` (bool, default ``True``):
+              gmsh-level fragment safety net after XAO load.
             - ``interface_delimiter``, ``boundary_delimiter``: XAO group
               name delimiters.
 
@@ -79,28 +77,21 @@ def generate_mesh(
     # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
     interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
     boundary_delimiter = mesh_kwargs.pop("boundary_delimiter", "None")
-    remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
+    remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", True)
 
     mm = ModelManager()
     mm.ensure_initialized(str(mm.filename))
     gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        xao_path = Path(tmpdir) / "pipeline.xao"
-        write_xao(
-            occ_entities,
-            xao_path,
-            interface_delimiter=interface_delimiter,
-            boundary_delimiter=boundary_delimiter,
-        )
-        gmsh.open(str(xao_path))
-        mm.model.occ.synchronize()
+    mm.load_occ_entities(
+        occ_entities,
+        remove_all_duplicates=remove_all_duplicates,
+        interface_delimiter=interface_delimiter,
+        boundary_delimiter=boundary_delimiter,
+    )
 
     if checkpoint_cad:
         mm.save_to_xao(Path(checkpoint_cad))
-
-    if remove_all_duplicates:
-        _run_remove_all_duplicates(mm.model)
 
     # --- Stage 3: mesh. -------------------------------------------------
     return mesh(
@@ -109,23 +100,3 @@ def generate_mesh(
         output_file=Path(output_mesh) if output_mesh else None,
         **mesh_kwargs,
     )
-
-
-def _run_remove_all_duplicates(gmsh_model) -> None:
-    """Gmsh-level fragment safety net across all imported dimtags.
-
-    Mirrors ``occ.removeAllDuplicates()`` but survives without a per-entity
-    dimtag map: the refinement engine (``mesh.py``) rebuilds its state
-    from physical groups post-fragment, so we don't need to track dimtags
-    across the call.
-    """
-    all_dimtags = [(d, t) for d in (0, 1, 2, 3) for _, t in gmsh_model.getEntities(d)]
-    if not all_dimtags:
-        return
-    gmsh_model.occ.fragment(
-        all_dimtags,
-        [],
-        removeObject=True,
-        removeTool=True,
-    )
-    gmsh_model.occ.synchronize()

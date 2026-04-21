@@ -93,22 +93,35 @@ class ModelManager:
         output_file = Path(output_file)
         gmsh.write(str(output_file))
 
-    def load_from_xao(self, input_file: Path) -> None:
+    def load_from_xao(
+        self,
+        input_file: Path,
+        remove_all_duplicates: bool = True,
+    ) -> None:
         """Load CAD geometry from .xao file.
 
         Args:
             input_file: Input .xao file path
+            remove_all_duplicates: run ``occ.fragment`` over every loaded
+                dimtag as a safety net for coincident TShapes that survived
+                the OCP-side fragmentation. Defaults on because the gmsh
+                3D pipeline (PLC + tetgen) is intolerant of duplicate
+                faces / edges: a single stray coincident TShape produces
+                cryptic ``dihedral angle 0`` or segment/facet errors.
+                Pay O(entities) extra fragment work in exchange.
 
         """
         self.ensure_initialized("temp")
         input_file = Path(input_file)
         gmsh.open(str(input_file.with_suffix(".xao")))
         self.model.occ.synchronize()
+        if remove_all_duplicates:
+            self._fragment_all_loaded_dimtags()
 
     def load_occ_entities(
         self,
         entities: list,
-        remove_all_duplicates: bool = False,
+        remove_all_duplicates: bool = True,
         **write_xao_kwargs,
     ) -> None:
         """Serialize ``entities`` to a transient XAO and load it into gmsh.
@@ -119,10 +132,8 @@ class ModelManager:
 
         Args:
             entities: list of ``OCCLabeledEntity`` from ``cad_occ``.
-            remove_all_duplicates: run ``occ.fragment`` over the loaded
-                model afterwards. Equivalent to gmsh's own
-                ``removeAllDuplicates`` -- a safety net for coincident
-                TShapes that survived the OCP-side canonicalization.
+            remove_all_duplicates: forwarded to :meth:`load_from_xao`.
+                See its docstring for the tradeoff.
             **write_xao_kwargs: forwarded to
                 :func:`meshwell.occ_xao_writer.write_xao`
                 (``interface_delimiter``, ``boundary_delimiter``,
@@ -136,18 +147,23 @@ class ModelManager:
         with tempfile.TemporaryDirectory() as tmpdir:
             xao_path = Path(tmpdir) / "cad.xao"
             write_xao(entities, xao_path, **write_xao_kwargs)
-            gmsh.open(str(xao_path))
-            self.model.occ.synchronize()
+            self.load_from_xao(xao_path, remove_all_duplicates=remove_all_duplicates)
 
-        if remove_all_duplicates:
-            all_dimtags = [
-                (d, t) for d in (0, 1, 2, 3) for _, t in self.model.getEntities(d)
-            ]
-            if all_dimtags:
-                self.model.occ.fragment(
-                    all_dimtags, [], removeObject=True, removeTool=True
-                )
-                self.model.occ.synchronize()
+    def _fragment_all_loaded_dimtags(self) -> None:
+        """Run ``occ.fragment`` over every loaded dimtag.
+
+        Equivalent to gmsh's own ``removeAllDuplicates`` but survives
+        without a per-entity dimtag map: the refinement engine
+        (``mesh.py``) rebuilds its state from physical groups
+        post-fragment, so dimtag identity need not be preserved.
+        """
+        all_dimtags = [
+            (d, t) for d in (0, 1, 2, 3) for _, t in self.model.getEntities(d)
+        ]
+        if not all_dimtags:
+            return
+        self.model.occ.fragment(all_dimtags, [], removeObject=True, removeTool=True)
+        self.model.occ.synchronize()
 
     def save_to_xao(self, output_file: Path) -> None:
         """Save current model to .xao file.
