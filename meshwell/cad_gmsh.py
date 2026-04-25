@@ -29,11 +29,16 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import Any
 
+import gmsh
 from tqdm.auto import tqdm
 
-import gmsh
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
+
+
+def strip_suffix(name: str) -> str:
+    """Strip the unique suffix __#index from the name."""
+    return name.split("__#")[0] if "__#" in name else name
 
 
 @dataclass
@@ -120,6 +125,8 @@ class CAD_GMSH:
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
+        # Make physical name unique for internal tracking
+        physical_name = tuple(f"{n}__#{index}" for n in physical_name)
 
         dimtags_out = entity_obj.instanciate(self)
         dimtags = unpack_dimtags(dimtags_out)
@@ -230,16 +237,16 @@ class CAD_GMSH:
         ``keep=False`` semantics mirror the OCC / XAO writer:
 
         * Top-dim ``keep=False`` helpers: do NOT get a physical group of
-          their own (their body will be removed from the model after
-          tagging), but DO still appear in ``A___B`` interface names --
-          so a neighbour kept entity can still name a shared boundary
-          with a helper.
+           their own (their body will be removed from the model after
+           tagging), but DO still appear in ``A___B`` interface names --
+           so a neighbour kept entity can still name a shared boundary
+           with a helper.
         * Lower-dim ``keep=False`` helpers: always tagged (the embedded
-          cut surface / curve is the useful artefact).
+           cut surface / curve is the useful artefact).
         * Both-keep=False interface pairs are skipped: neither side
-          survives to be meshed so the named boundary would dangle.
+           survives to be meshed so the named boundary would dangle.
         * Exterior ``___None`` boundaries are only emitted for kept
-          top-dim entities.
+           top-dim entities.
         """
         max_dim = max((e.dim for e in entities if e.dimtags), default=-1)
 
@@ -259,8 +266,19 @@ class CAD_GMSH:
                 for dt in ent.dimtags:
                     name_dimtags[name].add(dt)
 
+        stripped_name_dimtags = defaultdict(set)
         for name, dts in name_dimtags.items():
+            stripped_name_dimtags[strip_suffix(name)].update(dts)
+
+        for name, dts in stripped_name_dimtags.items():
             _add_physical_group(name, dts)
+
+        lower_dim_dimtags: set[tuple[int, int]] = set()
+        for ent in entities:
+            if not ent.dimtags:
+                continue
+            if ent.dim < max_dim:
+                lower_dim_dimtags.update(ent.dimtags)
 
         # Pair-wise interfaces: one dim below the top-dim entities.
         boundary_of: dict[int, set[tuple[int, int]]] = {}
@@ -275,6 +293,8 @@ class CAD_GMSH:
             )
 
         pair_dimtags: dict[tuple[str, str], set[tuple[int, int]]] = defaultdict(set)
+        same_material_interfaces: set[tuple[int, int]] = set()
+
         for i, ei in enumerate(top_dim_entities):
             for j, ej in enumerate(top_dim_entities):
                 if j <= i:
@@ -289,14 +309,22 @@ class CAD_GMSH:
                 for ni in ei.physical_name:
                     for nj in ej.physical_name:
                         if ni == nj:
+                            same_material_interfaces.update(shared)
+                            pair_dimtags[(ni, ni)].update(shared)
                             continue
                         key = tuple(sorted((ni, nj)))
                         pair_dimtags[key].update(shared)
 
+        stripped_pair_dimtags = defaultdict(set)
         for (ni, nj), dts in pair_dimtags.items():
+            key = tuple(sorted((strip_suffix(ni), strip_suffix(nj))))
+            stripped_pair_dimtags[key].update(dts)
+
+        for (ni, nj), dts in stripped_pair_dimtags.items():
             _add_physical_group(f"{ni}{interface_delimiter}{nj}", dts)
 
         # Exterior domain boundaries.
+        exterior_boundaries = defaultdict(set)
         for ent in top_dim_entities:
             if not ent.keep:
                 continue
@@ -306,14 +334,18 @@ class CAD_GMSH:
                 if other.index == ent.index:
                     continue
                 others |= boundary_of[other.index]
-            exterior = my_bnd - others
+            exterior = my_bnd - others - same_material_interfaces - lower_dim_dimtags
+
             if not exterior:
                 continue
             for name in ent.physical_name:
-                _add_physical_group(
-                    f"{name}{interface_delimiter}{boundary_delimiter}",
-                    exterior,
-                )
+                exterior_boundaries[strip_suffix(name)].update(exterior)
+
+        for name, dts in exterior_boundaries.items():
+            _add_physical_group(
+                f"{name}{interface_delimiter}{boundary_delimiter}",
+                dts,
+            )
 
     def _remove_keep_false_top_dim(self, entities: list[GMSHLabeledEntity]) -> None:
         """Remove geometry of top-dim ``keep=False`` entities from the model.
@@ -353,40 +385,107 @@ class CAD_GMSH:
 
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
-        labeled = [
-            self._instantiate_entity(i, ent)
-            for i, ent in enumerate(
-                tqdm(
-                    entities_list,
-                    desc="Instantiating gmsh entities",
-                    disable=not progress_bars,
-                )
-            )
-        ]
+        # Calculate global bounding box of all polygons for clipping
+        from shapely.geometry import box
 
-        labeled = self._fragment_all(labeled, progress_bars=progress_bars)
+        xmin, ymin, xmax, ymax = (
+            float("inf"),
+            float("inf"),
+            float("-inf"),
+            float("-inf"),
+        )
+        for ent in entities_list:
+            if hasattr(ent, "polygons"):
+                polys = (
+                    ent.polygons if isinstance(ent.polygons, list) else [ent.polygons]
+                )
+                for p in polys:
+                    b = p.bounds
+                    xmin = min(xmin, b[0])
+                    ymin = min(ymin, b[1])
+                    xmax = max(xmax, b[2])
+                    ymax = max(ymax, b[3])
+        global_bbox = box(xmin, ymin, xmax, ymax)
+        print(f"Global bounding box for clipping: {global_bbox.bounds}")
+
+        # Sort all input entities by mesh_order (lowest first). Break ties by original index.
+        indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
+        indexed_entities.sort(
+            key=lambda x: (
+                x[0].mesh_order if x[0].mesh_order is not None else float("inf"),
+                x[1],
+            )
+        )
+
+        instantiated_entities = []
+
+        # Step 1: Sequential Cuts across ALL entities (restricted to same dimension for safety)
+        for ent, orig_idx in indexed_entities:
+            if hasattr(ent, "polygons"):
+                print(f"Buffering and clipping polygons for entity {orig_idx}")
+                if isinstance(ent.polygons, list):
+                    ent.polygons = [
+                        p.buffer(2 * self.point_tolerance, join_style=2).intersection(
+                            global_bbox
+                        )
+                        for p in ent.polygons
+                    ]
+                else:
+                    ent.polygons = ent.polygons.buffer(
+                        2 * self.point_tolerance, join_style=2
+                    ).intersection(global_bbox)
+
+            # Instantiate
+            labeled_ent = self._instantiate_entity(orig_idx, ent)
+
+            # Cut with all previously instantiated entities (higher priority)
+            if labeled_ent.dimtags:
+                all_tool_dimtags = []
+                for prev_ent in instantiated_entities:
+                    if prev_ent.dim == labeled_ent.dim and prev_ent.dimtags:
+                        all_tool_dimtags.extend(prev_ent.dimtags)
+
+                if all_tool_dimtags:
+                    try:
+                        out_dimtags, _ = gmsh.model.occ.cut(
+                            labeled_ent.dimtags,
+                            all_tool_dimtags,
+                            removeObject=True,
+                            removeTool=False,
+                        )
+                        self.model_manager.sync_model()
+                        labeled_ent.dimtags = out_dimtags
+                    except Exception as e:
+                        print(f"Warning: Cut failed for entity {orig_idx}: {e}")
+
+            instantiated_entities.append(labeled_ent)
+
+        # Step 3: Final Global Fragment
+        labeled = self._fragment_all(instantiated_entities, progress_bars=progress_bars)
         self._tag_entities(labeled, interface_delimiter, boundary_delimiter)
         self._remove_keep_false_top_dim(labeled)
         self.model_manager.sync_model()
+
         return labeled
 
 
 def _add_physical_group(name: str, dimtags) -> None:
     """Add a physical group with the given dimtags; no-op if empty.
 
-    All dimtags in the group must share a dimension -- gmsh enforces that
-    at the API layer, so the caller is responsible for not mixing
-    dimensions into a single physical name.
+    Groups dimtags by dimension and creates a physical group for each dimension
+    present, sharing the same name.
     """
     dimtags = list(dimtags)
     if not dimtags:
         return
-    dim = dimtags[0][0]
-    tags = [t for (d, t) in dimtags if d == dim]
-    if not tags:
-        return
-    pg = gmsh.model.addPhysicalGroup(dim, tags)
-    gmsh.model.setPhysicalName(dim, pg, name)
+
+    dim_to_tags = defaultdict(list)
+    for d, t in dimtags:
+        dim_to_tags[d].append(t)
+
+    for dim, tags in dim_to_tags.items():
+        pg = gmsh.model.addPhysicalGroup(dim, tags)
+        gmsh.model.setPhysicalName(dim, pg, name)
 
 
 def cad_gmsh(
