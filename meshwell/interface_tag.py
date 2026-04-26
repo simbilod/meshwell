@@ -217,8 +217,17 @@ class InterfaceTag(GeometryEntity):
         # Flat caps: do not extend past the user's linestring endpoints,
         # so we don't pick up corner artifacts where the strip crosses
         # the prism's lateral faces near the linestring's endpoints.
+        # Relax the shapely precision model before buffering so that a
+        # sub-tolerance snap (e.g. 1e-5 when point_tolerance = 1e-3) does
+        # not collapse the buffer to empty geometry.
+        relaxed_grid = max(snap / 100, 1e-12)
         nominal_strip = unary_union(
-            [ls.buffer(snap, join_style=2, cap_style="flat") for ls in self.linestrings]
+            [
+                shapely.set_precision(
+                    ls, grid_size=relaxed_grid, mode="pointwise"
+                ).buffer(snap, join_style=2, cap_style="flat")
+                for ls in self.linestrings
+            ]
         )
 
         # Replicate the cad_gmsh sequential cut cascade in shapely.

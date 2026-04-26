@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import Any
 
+import shapely
 from shapely.geometry import box
 from tqdm.auto import tqdm
 
@@ -96,8 +97,9 @@ class CAD_GMSH:
         """Initialize gmsh CAD processor.
 
         Args:
-            point_tolerance: Tolerance used for gmsh's ``Geometry.ToleranceBoolean``
-                when the processor owns the model.
+            point_tolerance: User-promised geometric precision. Drives the
+                shapely constructor snap (``set_precision`` in entity
+                constructors) and -- indirectly -- the BOP tolerance ladder.
             n_threads: Thread count for gmsh meshing / boolean parallelism.
             filename: Base filename for the model (used when ``model`` is
                 not provided).
@@ -105,18 +107,28 @@ class CAD_GMSH:
                 the processor does not finalize gmsh on exit -- the caller
                 owns the lifecycle.
             perturbation: Outward shapely buffer applied to polygon entities
-                before the sequential cut cascade. Default ``point_tolerance``
-                — halves distortion vs. the old ``2 * point_tolerance``
-                approach while keeping a factor-of-1000 headroom over
-                ``ToleranceBoolean`` so BOP can resolve InterfaceTag panel /
-                PolyPrism coincidences cleanly. Can be overridden per scene
-                for complex-geometry robustness.
+                before the sequential cut cascade. Default ``1e-5`` (sub-
+                tolerance, ~1% of the default ``point_tolerance = 1e-3``).
+                Can be overridden per scene for complex-geometry robustness.
         """
+        if perturbation is not None:
+            self.perturbation = perturbation
+        else:
+            # Sub-tolerance default. Empirically must remain meaningfully
+            # larger than FP noise (~1e-7); 1e-5 is two orders below
+            # default point_tolerance, giving ~1% distortion at user scale.
+            self.perturbation = 1e-5
+
         if model is None:
             self.model_manager = ModelManager(
                 n_threads=n_threads,
                 filename=filename,
                 point_tolerance=point_tolerance,
+                # Tolerance ladder:
+                #   geometry_tolerance < tolerance_boolean < perturbation
+                # so BOP can resolve the small offset cleanly.
+                geometry_tolerance=self.perturbation / 100,
+                tolerance_boolean=self.perturbation / 2,
             )
             self._owns_model = True
         else:
@@ -124,15 +136,6 @@ class CAD_GMSH:
             self._owns_model = False
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        if perturbation is not None:
-            self.perturbation = perturbation
-        else:
-            # Must be strictly greater than ``point_tolerance`` because gmsh's
-            # ``Geometry.ToleranceBoolean`` (set to ``point_tolerance``) treats
-            # near-coincident faces as identical, which causes BOPAlgo to fail
-            # on the InterfaceTag panel / PolyPrism face overlap. 10% headroom
-            # is empirically sufficient.
-            self.perturbation = 1.1 * point_tolerance
 
     # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
     # compatibility alias so entity ``instanciate(cad_model)`` calls that
@@ -421,22 +424,42 @@ class CAD_GMSH:
                     ymin = min(ymin, b[1])
                     xmax = max(xmax, b[2])
                     ymax = max(ymax, b[3])
-        global_bbox = box(xmin, ymin, xmax, ymax)
+        # Expand bbox by perturbation so that buffered polygon edges do not
+        # land exactly on the bbox boundary; clipping at the exact edge creates
+        # artificial horizontal / vertical corner artifacts in the resolve strip
+        # intersection that generate degenerate InterfaceTag panels.
+        global_bbox = box(
+            xmin - self.perturbation,
+            ymin - self.perturbation,
+            xmax + self.perturbation,
+            ymax + self.perturbation,
+        )
         if progress_bars:
             print(f"Global bounding box for clipping: {global_bbox.bounds}")
 
+        # Sub-tolerance buffering requires relaxing the shapely precision
+        # model installed by entity constructors (set_precision at
+        # point_tolerance). Without this re-set, polygon.buffer(d) with
+        # d < point_tolerance returns empty geometry.
+        relaxed_grid = max(self.perturbation / 100, 1e-12)
         for ent in entities_list:
             if not hasattr(ent, "polygons"):
                 continue
             if isinstance(ent.polygons, list):
                 ent.polygons = [
-                    p.buffer(self.perturbation, join_style=2).intersection(global_bbox)
+                    shapely.set_precision(p, grid_size=relaxed_grid, mode="pointwise")
+                    .buffer(self.perturbation, join_style=2)
+                    .intersection(global_bbox)
                     for p in ent.polygons
                 ]
             else:
-                ent.polygons = ent.polygons.buffer(
-                    self.perturbation, join_style=2
-                ).intersection(global_bbox)
+                ent.polygons = (
+                    shapely.set_precision(
+                        ent.polygons, grid_size=relaxed_grid, mode="pointwise"
+                    )
+                    .buffer(self.perturbation, join_style=2)
+                    .intersection(global_bbox)
+                )
 
         # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
         polygon_ents: dict[str, list[Any]] = defaultdict(list)
@@ -450,7 +473,13 @@ class CAD_GMSH:
 
         for ent in entities_list:
             if isinstance(ent, InterfaceTag):
-                ent.resolve(polygon_ents, default_snap=self.perturbation)
+                # Use point_tolerance as the snap distance so that the
+                # resolved strip is wide enough to produce non-degenerate
+                # panels (at least 2*point_tolerance in each direction).
+                # The polygon perturbation (which can be sub-tolerance) only
+                # shifts the boundary position, not the strip width.
+                resolve_snap = max(self.perturbation, self.point_tolerance)
+                ent.resolve(polygon_ents, default_snap=resolve_snap)
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
