@@ -245,3 +245,49 @@ def test_e2e_targets_none_picks_winners_only():
         assert len(iface_faces) >= 2, iface_faces
     finally:
         mm.finalize()
+
+
+def test_e2e_targets_explicit_subset():
+    """Explicit targets=['A','B'] tags only the A/B interface.
+
+    Same 3-prism scene, but targets=['A','B']. Only the A/B interface is
+    tagged; the B/C interface is not. The C entity must remain unsplit.
+    """
+    A = shapely.Polygon([(0, 0), (2, 0), (2, 5), (0, 5)])
+    B = shapely.Polygon([(2, 0), (5, 0), (5, 5), (2, 5)])
+    C = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        _, mm = cad_gmsh(
+            [
+                PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+                PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+                PolyPrism(polygons=C, buffers=buffers, physical_name="C", mesh_order=3),
+                InterfaceTag(
+                    linestrings=LineString([(2, 2.5), (5, 2.5)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface_AB",
+                    targets=["A", "B"],
+                    mesh_order=4,
+                ),
+            ]
+        )
+
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface_AB"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+
+        # The tagged interface must be at x ≈ 2 + pert (A's right edge),
+        # not at x ≈ 5. Inspect each tagged face's bounding box.
+        for d, t in [(2, ft) for ft in iface_faces]:
+            xmin, _, _, xmax, _, _ = gmsh.model.getBoundingBox(d, t)
+            x_center = 0.5 * (xmin + xmax)
+            assert (
+                1.5 < x_center < 3.5
+            ), f"unexpected face at x_center={x_center}, expected near x=2"
+    finally:
+        mm.finalize()
