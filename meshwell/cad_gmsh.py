@@ -29,9 +29,9 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import Any
 
-import gmsh
 from tqdm.auto import tqdm
 
+import gmsh
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
 
@@ -115,6 +115,17 @@ class CAD_GMSH:
             self._owns_model = False
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
+
+    @property
+    def perturbation(self) -> float:
+        """Outward shapely buffer applied to polygon entities before sequential cuts.
+
+        Same value used as the default snap distance for
+        :class:`meshwell.interface_tag.InterfaceTag`. Currently
+        ``2 * point_tolerance``; do not change without coordinated
+        validation on complex scenes.
+        """
+        return 2 * self.point_tolerance
 
     # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
     # compatibility alias so entity ``instanciate(cad_model)`` calls that
@@ -425,14 +436,14 @@ class CAD_GMSH:
                 print(f"Buffering and clipping polygons for entity {orig_idx}")
                 if isinstance(ent.polygons, list):
                     ent.polygons = [
-                        p.buffer(2 * self.point_tolerance, join_style=2).intersection(
+                        p.buffer(self.perturbation, join_style=2).intersection(
                             global_bbox
                         )
                         for p in ent.polygons
                     ]
                 else:
                     ent.polygons = ent.polygons.buffer(
-                        2 * self.point_tolerance, join_style=2
+                        self.perturbation, join_style=2
                     ).intersection(global_bbox)
 
             # Instantiate
