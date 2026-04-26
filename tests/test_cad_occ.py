@@ -10,6 +10,7 @@ from meshwell.occ_entity import OCC_entity
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
+from meshwell.utils import compare_gmsh_files
 
 
 def test_occ_polysurface(tmp_path):
@@ -44,6 +45,7 @@ def test_occ_polysurface(tmp_path):
         n_threads=1,
     )
     assert output_msh.exists()
+    compare_gmsh_files(output_msh)
 
 
 def test_occ_composite_3D():

@@ -9,6 +9,7 @@ from meshwell.occ_entity import OCC_entity
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import ConstantInField
+from meshwell.utils import compare_gmsh_files
 from tests.test_occ_helpers import _occ_sphere
 
 
@@ -50,6 +51,7 @@ def test_smoothing():
         default_characteristic_length=0.7,
         mesh_element_order=1,
     )
+    compare_gmsh_files("mesh3D_smoothing.msh")
 
 
 if __name__ == "__main__":

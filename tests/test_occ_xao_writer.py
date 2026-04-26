@@ -14,6 +14,7 @@ from meshwell.occ_xao_writer import write_xao
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
+from meshwell.utils import compare_gmsh_files
 
 
 def test_xao_writer_produces_single_self_contained_file(tmp_path):
@@ -322,6 +323,7 @@ def test_keep_false_polyprism_void_is_not_meshed(tmp_path):
 
     total_vol = sum(tet_vol(t) for t in tets)
     assert abs(total_vol - (1000 - 64)) < 1.0
+    compare_gmsh_files(msh)
 
 
 def test_same_mesh_order_different_physicals():

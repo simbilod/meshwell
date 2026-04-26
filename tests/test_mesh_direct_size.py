@@ -9,6 +9,7 @@ from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import DirectSizeSpecification
+from meshwell.utils import compare_gmsh_files
 
 
 def test_mesh_direct_size_specification_global():
@@ -81,6 +82,8 @@ def test_mesh_direct_size_specification_global():
     assert mean_left < 0.3
     assert mean_right > 0.5
     assert mean_left < mean_right
+
+    compare_gmsh_files(Path("test_mesh_direct.msh"))
 
     # Clean up
     Path("test_mesh_direct.xao").unlink(missing_ok=True)

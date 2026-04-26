@@ -6,6 +6,7 @@ from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
+from meshwell.utils import compare_gmsh_files
 
 
 def test_multiple_physicals():
@@ -74,6 +75,7 @@ def test_multiple_physicals():
         mesh_obj.cell_sets_dict["big_prism___None"]["triangle"].all()
         == mesh_obj.cell_sets_dict["domain___None"]["triangle"].all()
     )
+    compare_gmsh_files("test_multiple_physicals.msh")
 
 
 ref1_physical_present = ["big", "small"]
