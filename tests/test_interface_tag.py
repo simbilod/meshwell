@@ -228,21 +228,17 @@ def _physical_names() -> list[tuple[int, str]]:
     ]
 
 
-def test_e2e_interface_tag_resolves_to_winning_boundary():
+def test_e2e_interface_tag_resolves_to_winning_boundary(two_abutting_prisms):
     """Winning boundary resolves correctly for two abutting prisms.
 
     Two abutting prisms (A wins, B loses) plus a single InterfaceTag at
     the nominal interface x=5. After cad_gmsh: exactly one face is tagged
     `iface`, and A is not internally split.
     """
-    A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
-    B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
-    buffers = {0.0: 0.0, 1.0: 0.0}
     try:
         labeled, mm = cad_gmsh(
             [
-                PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
-                PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+                *two_abutting_prisms,
                 InterfaceTag(
                     linestrings=LineString([(5, 0), (5, 5)]),
                     zmin=0.0,
@@ -272,7 +268,7 @@ def test_e2e_interface_tag_resolves_to_winning_boundary():
         mm.finalize()
 
 
-def test_e2e_targets_none_picks_winners_only():
+def test_e2e_targets_none_picks_winners_only(three_abutting_prisms):
     """targets=None tags both interfaces in a three-prism scene.
 
     Three abutting prisms A/B/C (mesh_orders 1/2/3) with interfaces at
@@ -280,16 +276,10 @@ def test_e2e_targets_none_picks_winners_only():
     targets=None. Expect both interfaces tagged (one face each on the
     winner side), and no spurious internal cuts in any prism.
     """
-    A = shapely.Polygon([(0, 0), (2, 0), (2, 5), (0, 5)])
-    B = shapely.Polygon([(2, 0), (5, 0), (5, 5), (2, 5)])
-    C = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
-    buffers = {0.0: 0.0, 1.0: 0.0}
     try:
         labeled, mm = cad_gmsh(
             [
-                PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
-                PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
-                PolyPrism(polygons=C, buffers=buffers, physical_name="C", mesh_order=3),
+                *three_abutting_prisms,
                 InterfaceTag(
                     linestrings=LineString([(1, 2.5), (7, 2.5)]),
                     zmin=0.0,

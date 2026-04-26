@@ -69,23 +69,15 @@ def test_cad_gmsh_3d_adjacent_prisms_share_interface():
         mm.finalize()
 
 
-def test_cad_gmsh_mesh_order_lower_wins_in_overlap():
+def test_cad_gmsh_mesh_order_lower_wins_in_overlap(overlapping_unit_squares):
     """Overlapping scene: lower ``mesh_order`` claims the overlap piece.
 
     Two unit-square polysurfaces overlap on a 1x0.5 strip. Winner owns the
     overlap and so has larger area; loser only owns the non-overlapping
     half.
     """
-    A = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    B = shapely.Polygon([(0.5, 0), (1.5, 0), (1.5, 1), (0.5, 1)])
-
     try:
-        labeled, mm = cad_gmsh(
-            [
-                PolySurface(polygons=A, physical_name="A", mesh_order=1),
-                PolySurface(polygons=B, physical_name="B", mesh_order=2),
-            ]
-        )
+        labeled, mm = cad_gmsh(overlapping_unit_squares)
         # Compute per-entity area via gmsh mass properties.
         areas: dict[str, float] = {}
         for ent in labeled:
