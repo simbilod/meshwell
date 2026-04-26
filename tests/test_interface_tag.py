@@ -10,6 +10,7 @@ from shapely.geometry import LineString
 import gmsh
 from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.interface_tag import InterfaceTag
+from meshwell.mesh import mesh as mesh_func
 from meshwell.model import ModelManager
 from meshwell.polyprism import PolyPrism
 
@@ -338,5 +339,46 @@ def test_e2e_picks_up_hole_boundary():
         )
         iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
         assert len(iface_faces) >= 1, iface_faces
+    finally:
+        mm.finalize()
+
+
+def test_e2e_no_match_warns_and_skips():
+    """A far-away InterfaceTag emits a warning and no physical group is created.
+
+    A tag whose linestring is far from all targets emits a warning,
+    creates no physical group, and downstream meshing still succeeds.
+    """
+    A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _, mm = cad_gmsh(
+                [
+                    PolyPrism(
+                        polygons=A,
+                        buffers=buffers,
+                        physical_name="A",
+                        mesh_order=1,
+                    ),
+                    InterfaceTag(
+                        linestrings=LineString([(100, 0), (100, 5)]),
+                        zmin=0.0,
+                        zmax=1.0,
+                        physical_name="iface_far",
+                        mesh_order=2,
+                    ),
+                ]
+            )
+        assert any("resolved to no segments" in str(w.message) for w in caught), [
+            str(w.message) for w in caught
+        ]
+
+        names = {n for _, n in _physical_names()}
+        assert "iface_far" not in names
+
+        m = mesh_func(dim=3, model=mm, default_characteristic_length=2.0, verbosity=0)
+        assert any(c.type == "tetra" and len(c.data) for c in m.cells)
     finally:
         mm.finalize()
