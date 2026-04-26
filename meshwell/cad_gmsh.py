@@ -91,19 +91,24 @@ class CAD_GMSH:
         n_threads: int = cpu_count(),
         filename: str = "temp",
         model: ModelManager | None = None,
+        perturbation: float | None = None,
     ):
         """Initialize gmsh CAD processor.
 
         Args:
-            point_tolerance: Tolerance used for gmsh's ``Geometry.Tolerance``
-                and ``Geometry.ToleranceBoolean`` when the processor owns
-                the model.
+            point_tolerance: Tolerance used for gmsh's ``Geometry.ToleranceBoolean``
+                when the processor owns the model.
             n_threads: Thread count for gmsh meshing / boolean parallelism.
             filename: Base filename for the model (used when ``model`` is
                 not provided).
             model: Optional :class:`ModelManager` to reuse. When provided
                 the processor does not finalize gmsh on exit -- the caller
                 owns the lifecycle.
+            perturbation: Outward shapely buffer applied to polygon entities
+                before the sequential cut cascade. Default ``1e-9`` — sub-
+                tolerance, so geometry distortion is invisible at any user
+                precision. Can be overridden per scene for complex-geometry
+                robustness.
         """
         if model is None:
             self.model_manager = ModelManager(
@@ -117,17 +122,7 @@ class CAD_GMSH:
             self._owns_model = False
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-
-    @property
-    def perturbation(self) -> float:
-        """Outward shapely buffer applied to polygon entities before sequential cuts.
-
-        Same value used as the default snap distance for
-        :class:`meshwell.interface_tag.InterfaceTag`. Currently
-        ``2 * point_tolerance``; do not change without coordinated
-        validation on complex scenes.
-        """
-        return 2 * self.point_tolerance
+        self.perturbation = perturbation if perturbation is not None else 1e-9
 
     # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
     # compatibility alias so entity ``instanciate(cad_model)`` calls that
@@ -523,6 +518,7 @@ def cad_gmsh(
     model: ModelManager | None = None,
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
+    perturbation: float | None = None,
 ) -> tuple[list[GMSHLabeledEntity], ModelManager]:
     """Build + fragment + tag ``entities_list`` in a gmsh model.
 
@@ -535,6 +531,7 @@ def cad_gmsh(
         n_threads=n_threads,
         filename=filename,
         model=model,
+        perturbation=perturbation,
     )
     labeled = processor.process_entities(
         entities_list,

@@ -21,7 +21,6 @@ class ModelManager:
         n_threads: int = cpu_count(),
         filename: str = "temp",
         point_tolerance: float | None = 1e-3,
-        tolerance_scale: float = 100.0,
         geometry_tolerance: float | None = None,
     ):
         """Initialize Model with common settings.
@@ -30,33 +29,23 @@ class ModelManager:
             n_threads: Number of threads for GMSH operations
             filename: Base filename for the model
             point_tolerance: User-promised geometric precision. Drives
-                ``shapely.set_precision`` snap on inputs and
                 ``Geometry.ToleranceBoolean`` (BOP fuzzy merge).
-            tolerance_scale: Dimensionless ratio between adjacent
-                tolerance levels in the cad_gmsh ladder
-                ``geometry_tolerance < perturbation < point_tolerance``.
-                Larger values push the lower levels further below
-                ``point_tolerance`` (less distortion, less bridging
-                margin).
             geometry_tolerance: Optional explicit override for gmsh's
                 ``Geometry.Tolerance`` (vertex-snap distance). Defaults
-                to ``max(point_tolerance / (tolerance_scale ** 2), 1e-12)``
-                — i.e., two scale-steps below ``point_tolerance`` to
-                sit below the cad_gmsh ``perturbation``.
+                to ``point_tolerance`` so vertices within user precision
+                are snapped at ingestion. Decoupled from ``point_tolerance``
+                so users can override for high-precision OCC operations.
 
         """
         self.n_threads = n_threads
         self.filename = Path(filename)
         self.point_tolerance = point_tolerance
-        self.tolerance_scale = tolerance_scale
         if geometry_tolerance is not None:
             self.geometry_tolerance = geometry_tolerance
         elif point_tolerance is None:
             self.geometry_tolerance = None
         else:
-            self.geometry_tolerance = max(
-                point_tolerance / (tolerance_scale**2), 1e-12
-            )
+            self.geometry_tolerance = point_tolerance
 
         # GMSH objects (initialized in _initialize)
         self.model = None
