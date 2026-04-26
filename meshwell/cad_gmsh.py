@@ -434,14 +434,14 @@ class CAD_GMSH:
                 ).intersection(global_bbox)
 
         # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
-        polygon_ents: dict[str, Any] = {}
+        polygon_ents: dict[str, list[Any]] = defaultdict(list)
         for ent in entities_list:
             if not hasattr(ent, "polygons"):
                 continue
             name = ent.physical_name
             if isinstance(name, tuple):
                 name = name[0]
-            polygon_ents[name] = ent
+            polygon_ents[name].append(ent)
 
         for ent in entities_list:
             if isinstance(ent, InterfaceTag):

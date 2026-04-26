@@ -126,8 +126,19 @@ class InterfaceTag(GeometryEntity):
         # Populated by :meth:`resolve` before :meth:`instanciate` runs.
         self.resolved_linestrings: list[LineString] = []
 
-    def resolve(self, polygon_ents: dict[str, Any], default_snap: float) -> None:
+    def resolve(
+        self,
+        polygon_ents: dict[str, list[Any]],
+        default_snap: float,
+    ) -> None:
         """Compute the snapped trace by replicating the cad_gmsh cut cascade.
+
+        Args:
+            polygon_ents: Mapping from physical name to list of polygon-bearing
+                entities sharing that name. Multiple entities may share a name
+                (e.g. same-material disjoint regions).
+            default_snap: Fall-back snap distance when ``self.snap_distance``
+                is ``None``.
 
         Buffers are intersected with the user's nominal strip after the
         cascade is applied in shapely.
@@ -144,10 +155,16 @@ class InterfaceTag(GeometryEntity):
         snap = self.snap_distance if self.snap_distance is not None else default_snap
 
         if self.targets is not None:
-            # Skip names not present in the scene rather than KeyError-ing.
-            targets = [polygon_ents[n] for n in self.targets if n in polygon_ents]
+            # Flatten lists for explicitly-named targets; skip names not
+            # present in the scene rather than KeyError-ing.
+            targets = [
+                ent
+                for n in self.targets
+                if n in polygon_ents
+                for ent in polygon_ents[n]
+            ]
         else:
-            targets = list(polygon_ents.values())
+            targets = [ent for ents in polygon_ents.values() for ent in ents]
 
         # Stable sort by mesh_order; ties resolve to the entity that
         # appears earliest in `polygon_ents` iteration order (insertion

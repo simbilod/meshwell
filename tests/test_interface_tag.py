@@ -53,8 +53,8 @@ def test_resolve_picks_winning_boundary_in_abutting_prisms():
     )
     tag.resolve(
         polygon_ents={
-            "A": _FakePolyEntity(polygons=a_poly, mesh_order=1),
-            "B": _FakePolyEntity(polygons=b_poly, mesh_order=2),
+            "A": [_FakePolyEntity(polygons=a_poly, mesh_order=1)],
+            "B": [_FakePolyEntity(polygons=b_poly, mesh_order=2)],
         },
         default_snap=2 * 1e-3,
     )
@@ -83,7 +83,7 @@ def test_resolve_warns_when_no_match():
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         tag.resolve(
-            polygon_ents={"A": _FakePolyEntity(polygons=a_poly, mesh_order=1)},
+            polygon_ents={"A": [_FakePolyEntity(polygons=a_poly, mesh_order=1)]},
             default_snap=2 * 1e-3,
         )
 
@@ -109,7 +109,7 @@ def test_resolve_picks_up_hole_boundary():
         targets=None,
     )
     tag.resolve(
-        polygon_ents={"O": _FakePolyEntity(polygons=donut, mesh_order=1)},
+        polygon_ents={"O": [_FakePolyEntity(polygons=donut, mesh_order=1)]},
         default_snap=2 * 1e-3,
     )
 
@@ -211,8 +211,8 @@ def test_resolve_mesh_order_ties_resolve_to_first_inserted():
     )
     tag.resolve(
         polygon_ents={
-            "A": _FakePolyEntity(polygons=a_poly, mesh_order=1),
-            "B": _FakePolyEntity(polygons=b_poly, mesh_order=1),
+            "A": [_FakePolyEntity(polygons=a_poly, mesh_order=1)],
+            "B": [_FakePolyEntity(polygons=b_poly, mesh_order=1)],
         },
         default_snap=2 * 1e-3,
     )
@@ -545,5 +545,71 @@ def test_e2e_extrudes_to_correct_z_range():
             _, _, zmin_b, _, _, zmax_b = gmsh.model.getBoundingBox(2, t)
             assert abs(zmin_b - 0.0) < 1e-6, zmin_b
             assert abs(zmax_b - 1.0) < 1e-6, zmax_b
+    finally:
+        mm.finalize()
+
+
+def test_e2e_shared_physical_name_targets_all_resolve():
+    """Two PolyPrisms sharing physical_name 'A' (a common pattern for same-material shared regions).
+
+    InterfaceTag with targets=['A'] must resolve against BOTH prisms, not
+    just the last one inserted.
+    """
+    A_left = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    A_right = shapely.Polygon([(20, 0), (25, 0), (25, 5), (20, 5)])
+    other = shapely.Polygon([(5, 0), (20, 0), (20, 5), (5, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        _, mm = cad_gmsh(
+            [
+                PolyPrism(
+                    polygons=A_left,
+                    buffers=buffers,
+                    physical_name="A",
+                    mesh_order=1,
+                ),
+                PolyPrism(
+                    polygons=A_right,
+                    buffers=buffers,
+                    physical_name="A",
+                    mesh_order=1,
+                ),
+                PolyPrism(
+                    polygons=other,
+                    buffers=buffers,
+                    physical_name="other",
+                    mesh_order=2,
+                ),
+                # InterfaceTag tracing both A/other interfaces:
+                # one at x=5 (A_left right meets other left) and one at
+                # x=20 (other right meets A_right left).
+                InterfaceTag(
+                    linestrings=LineString([(5, 2.5), (20, 2.5)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface",
+                    targets=["A", "other"],
+                    mesh_order=3,
+                ),
+            ]
+        )
+
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+        # Must have at least 2 tagged faces (one for each A/other
+        # interface). With the bug, only the LAST 'A' (A_right) is in
+        # polygon_ents, so the x=5 interface would be missed.
+        assert len(iface_faces) >= 2, iface_faces
+        x_centers = []
+        for d, t in [(2, ft) for ft in iface_faces]:
+            xmin, _, _, xmax, _, _ = gmsh.model.getBoundingBox(d, t)
+            x_centers.append(0.5 * (xmin + xmax))
+        # Both x=5 and x=20 must be represented (within tolerance).
+        assert any(4.5 < x < 5.5 for x in x_centers), x_centers
+        assert any(19.5 < x < 20.5 for x in x_centers), x_centers
     finally:
         mm.finalize()
