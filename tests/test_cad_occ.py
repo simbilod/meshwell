@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import shapely
 
@@ -14,7 +12,7 @@ from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 
 
-def test_occ_polysurface():
+def test_occ_polysurface(tmp_path):
     """Test PolySurface with OCC backend."""
     polygon1 = shapely.Polygon(
         [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
@@ -31,13 +29,13 @@ def test_occ_polysurface():
     assert occ_entities[0].dim == 2
 
     # 2. Serialize to XAO
-    output_xao = Path("test_polysurface_occ.xao")
+    output_xao = tmp_path / "test_polysurface_occ.xao"
     write_xao(occ_entities, output_xao)
 
     assert output_xao.exists()
 
     # 3. Mesh from XAO
-    output_msh = Path("test_polysurface_occ.msh")
+    output_msh = tmp_path / "test_polysurface_occ.msh"
     mesh(
         input_file=output_xao,
         output_file=output_msh,
@@ -103,7 +101,7 @@ def test_occ_composite_3D():
     mm.finalize()
 
 
-def test_occ_buffered_prism():
+def test_occ_buffered_prism(tmp_path):
     """Test PolyPrism with buffering in OCC backend."""
     polygon = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]])
     # Non-zero buffers force the _create_occ_volume path
@@ -116,7 +114,7 @@ def test_occ_buffered_prism():
     assert len(occ_entities) == 1
     assert occ_entities[0].dim == 3
 
-    output_xao = Path("test_buffered_prism_occ.xao")
+    output_xao = tmp_path / "test_buffered_prism_occ.xao"
     write_xao(occ_entities, output_xao)
     assert output_xao.exists()
 

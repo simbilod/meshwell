@@ -16,7 +16,7 @@ from meshwell.utils import compare_gmsh_files
 
 
 @pytest.mark.slow
-def test_2D_resolution():
+def test_2D_resolution(tmp_path):
     large_rect = 20
     small_rect = 5
 
@@ -50,13 +50,13 @@ def test_2D_resolution():
         cad_occ(
             entities_list,
         ),
-        "test_2D_resolution.xao",
+        str(tmp_path / "test_2D_resolution.xao"),
     )
 
     mesh(
         dim=2,
-        input_file="test_2D_resolution.xao",
-        output_file="test_2D_resolution.msh",
+        input_file=str(tmp_path / "test_2D_resolution.xao"),
+        output_file=str(tmp_path / "test_2D_resolution.msh"),
         resolution_specs={
             "inner": [
                 ThresholdField(sizemin=0.1, distmax=2, sizemax=1, apply_to="curves")
@@ -67,11 +67,11 @@ def test_2D_resolution():
         default_characteristic_length=100,
     )
 
-    compare_gmsh_files(Path("test_2D_resolution.msh"))
+    compare_gmsh_files(tmp_path / "test_2D_resolution.msh")
 
 
 @pytest.mark.slow
-def test_3D_resolution():
+def test_3D_resolution(tmp_path):
     polygon1 = shapely.Polygon(
         [[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]],
     )
@@ -100,13 +100,13 @@ def test_3D_resolution():
         cad_occ(
             entities_list,
         ),
-        "test_3D_resolution.xao",
+        str(tmp_path / "test_3D_resolution.xao"),
     )
 
     mesh(
         dim=3,
-        input_file="test_3D_resolution.xao",
-        output_file="test_3D_resolution.msh",
+        input_file=str(tmp_path / "test_3D_resolution.xao"),
+        output_file=str(tmp_path / "test_3D_resolution.msh"),
         resolution_specs={
             "inner": [
                 ConstantInField(resolution=1, apply_to="volumes"),
@@ -118,7 +118,7 @@ def test_3D_resolution():
         default_characteristic_length=100,
     )
 
-    compare_gmsh_files(Path("test_3D_resolution.msh"))
+    compare_gmsh_files(tmp_path / "test_3D_resolution.msh")
 
 
 @pytest.mark.slow

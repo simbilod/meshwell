@@ -12,16 +12,19 @@ def compare_gmsh_files(meshfile: Path, other_meshfile: Path | None = None) -> No
     """Compare two GMSH mesh files and assert they are identical.
 
     Args:
-        meshfile: Path to the mesh file to compare
-        other_meshfile: Optional path to compare against. If None, uses reference file
-                       from PATH.references directory
+        meshfile: Path to the generated mesh file to compare. May be an
+                  absolute path (e.g. ``tmp_path / "foo.msh"``); only the
+                  basename is used when deriving the reference path.
+        other_meshfile: Optional explicit path to compare against. If None,
+                       the reference is looked up in ``PATH.references`` by
+                       the basename of ``meshfile``.
 
     Raises:
-        AssertionError: If the files differ
+        ValueError: If the files differ
     """
-    meshfile2 = meshfile
+    meshfile2 = Path(meshfile)
     if other_meshfile is None:
-        meshfile1 = PATH.references / str(meshfile)
+        meshfile1 = PATH.references / meshfile2.name
     else:
         meshfile1 = other_meshfile
 
@@ -39,13 +42,16 @@ def compare_mesh_headers(meshfile: Path, other_meshfile: Path | None = None) -> 
     """Compare mesh file headers.
 
     Args:
-        meshfile: Path to the mesh file whose header to compare
-        other_meshfile: Optional path to compare against. If None, uses reference file
-                       with .reference.msh extension from PATH.references directory
+        meshfile: Path to the generated mesh file whose header to compare. May
+                  be an absolute path; only the basename stem is used when
+                  deriving the reference path.
+        other_meshfile: Optional explicit path to compare against. If None,
+                       uses reference file with .reference.msh extension from
+                       PATH.references directory.
     """
-    meshfile2 = meshfile
+    meshfile2 = Path(meshfile)
     if other_meshfile is None:
-        meshfile1 = PATH.references / (str(meshfile.with_suffix("")) + ".reference.msh")
+        meshfile1 = PATH.references / (meshfile2.stem + ".reference.msh")
     else:
         meshfile1 = other_meshfile
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import shapely
 
 from meshwell.cad_occ import cad_occ
@@ -11,7 +9,7 @@ from meshwell.polysurface import PolySurface
 from meshwell.utils import compare_gmsh_files
 
 
-def test_polysurface():
+def test_polysurface(tmp_path):
     polygon1 = shapely.Polygon(
         [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
         holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
@@ -20,18 +18,18 @@ def test_polysurface():
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
     polysurface_obj = PolySurface(polygons=polygon, physical_name="polysurface")
-    write_xao(cad_occ([polysurface_obj]), "test_polysurface.xao")
+    write_xao(cad_occ([polysurface_obj]), str(tmp_path / "test_polysurface.xao"))
     mesh(
-        input_file="test_polysurface.xao",
-        output_file="test_polysurface.msh",
+        input_file=str(tmp_path / "test_polysurface.xao"),
+        output_file=str(tmp_path / "test_polysurface.msh"),
         dim=2,
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    compare_gmsh_files(Path("test_polysurface.msh"))
+    compare_gmsh_files(tmp_path / "test_polysurface.msh")
 
 
-def test_coinciding_polysurface():
+def test_coinciding_polysurface(tmp_path):
     width = 1
     height = 1
 
@@ -54,16 +52,16 @@ def test_coinciding_polysurface():
             entities,
             n_threads=1,
         ),
-        "test_polysurface_coinciding.xao",
+        str(tmp_path / "test_polysurface_coinciding.xao"),
     )
     mesh(
-        input_file="test_polysurface_coinciding.xao",
-        output_file="test_polysurface_coinciding.msh",
+        input_file=str(tmp_path / "test_polysurface_coinciding.xao"),
+        output_file=str(tmp_path / "test_polysurface_coinciding.msh"),
         dim=2,
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    compare_gmsh_files(Path("test_polysurface_coinciding.msh"))
+    compare_gmsh_files(tmp_path / "test_polysurface_coinciding.msh")
 
 
 if __name__ == "__main__":

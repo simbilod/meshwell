@@ -10,7 +10,7 @@ from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 
 
-def test_prism():
+def test_prism(tmp_path):
     polygon1 = shapely.Polygon(
         [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
         holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
@@ -22,10 +22,10 @@ def test_prism():
 
     prism_obj = PolyPrism(polygons=polygon, buffers=buffers, physical_name="prism")
     assert prism_obj.extrude is False
-    write_xao(cad_occ([prism_obj]), "test_prism.xao")
+    write_xao(cad_occ([prism_obj]), str(tmp_path / "test_prism.xao"))
 
 
-def test_prism_extruded():
+def test_prism_extruded(tmp_path):
     polygon1 = shapely.Polygon(
         [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
         holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
@@ -50,7 +50,7 @@ def test_prism_extruded():
     assert np.isclose(zmin, min(buffers.keys()))
     assert np.isclose(zmax, max(buffers.keys()))
 
-    write_xao(cad_occ([prism_obj]), "test_prism_extruded.xao")
+    write_xao(cad_occ([prism_obj]), str(tmp_path / "test_prism_extruded.xao"))
 
 
 if __name__ == "__main__":
