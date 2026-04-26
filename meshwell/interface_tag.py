@@ -51,6 +51,42 @@ def _flatten_to_linestrings(geoms) -> list[LineString]:
     return out
 
 
+def _extend_linestring_endpoints(ls: LineString, dist: float) -> LineString:
+    """Extend the start and end of a non-closed LineString by ``dist``.
+
+    The start is extended backward along the negative tangent of the first
+    segment; the end is extended forward along the positive tangent of the
+    last segment. Closed linestrings (start == end) are returned unchanged.
+
+    Used by :meth:`InterfaceTag.resolve` to make the resolved trace
+    fully cover the buffered polygon faces it sits on. Without this,
+    the panel built in ``instanciate`` is geometrically a strict subset
+    of the polygon face, and BOP fragment cannot resolve the partial
+    coincidence cleanly.
+    """
+    coords = list(ls.coords)
+    if len(coords) < 2 or dist <= 0:
+        return ls
+    # Closed loop: leave alone.
+    if coords[0] == coords[-1]:
+        return ls
+    # Extend start backward (along negative tangent of first segment).
+    x1, y1 = coords[0]
+    x2, y2 = coords[1]
+    dx, dy = x1 - x2, y1 - y2
+    n = (dx * dx + dy * dy) ** 0.5
+    if n > 0:
+        coords[0] = (x1 + dist * dx / n, y1 + dist * dy / n)
+    # Extend end forward (along positive tangent of last segment).
+    x1, y1 = coords[-1]
+    x2, y2 = coords[-2]
+    dx, dy = x1 - x2, y1 - y2
+    n = (dx * dx + dy * dy) ** 0.5
+    if n > 0:
+        coords[-1] = (x1 + dist * dx / n, y1 + dist * dy / n)
+    return LineString(coords)
+
+
 class InterfaceTag(GeometryEntity):
     """Snap-to-boundary interface tag for ``cad_gmsh``.
 
@@ -198,7 +234,14 @@ class InterfaceTag(GeometryEntity):
         # Coincident contributions from neighbouring targets collapse here.
         if snapped:
             merged = unary_union(snapped)
-            self.resolved_linestrings = _flatten_to_linestrings([merged])
+            flat = _flatten_to_linestrings([merged])
+            # Extend endpoints by snap so the InterfaceTag panel fully
+            # covers the buffered polygon face it sits on. Without this
+            # extension, BOP fragment fails on the partial coincidence
+            # (panel is a strict subset of the polygon face in y).
+            self.resolved_linestrings = [
+                _extend_linestring_endpoints(ls, snap) for ls in flat
+            ]
         else:
             self.resolved_linestrings = []
 
