@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import shapely
 
 from meshwell.cad_occ import cad_occ
@@ -11,6 +12,7 @@ from meshwell.resolution import ConstantInField
 from tests.test_occ_helpers import _occ_sphere
 
 
+@pytest.mark.slow
 def test_smoothing():
     polygon1 = shapely.Polygon(
         [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],

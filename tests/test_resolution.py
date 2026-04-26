@@ -15,6 +15,7 @@ from meshwell.resolution import ConstantInField, ExponentialField, ThresholdFiel
 from meshwell.utils import compare_gmsh_files
 
 
+@pytest.mark.slow
 def test_2D_resolution():
     large_rect = 20
     small_rect = 5
@@ -69,6 +70,7 @@ def test_2D_resolution():
     compare_gmsh_files(Path("test_2D_resolution.msh"))
 
 
+@pytest.mark.slow
 def test_3D_resolution():
     polygon1 = shapely.Polygon(
         [[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]],
@@ -119,6 +121,7 @@ def test_3D_resolution():
     compare_gmsh_files(Path("test_3D_resolution.msh"))
 
 
+@pytest.mark.slow
 def test_exponential_field():
     large_rect = 40
     small_rect = 5
@@ -179,6 +182,7 @@ def test_exponential_field():
     compare_gmsh_files(Path("test_exponential_field.msh"))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     ("field", "label"),
     [
@@ -252,6 +256,7 @@ def test_refine(field, label):
 
 
 # FIXME: add regression
+@pytest.mark.slow
 @pytest.mark.parametrize(
     ("apply_to", "min_mass", "max_mass"),
     [
@@ -347,6 +352,7 @@ def test_filter(apply_to, min_mass, max_mass):
     compare_gmsh_files(Path(f"test_filter_{label}.msh"))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "restrict_to",
     [
@@ -421,6 +427,7 @@ def test_restrict(restrict_to):
     compare_gmsh_files(Path(f"test_restrict_{restrict_to}.msh"))
 
 
+@pytest.mark.slow
 def test_interface_thresholds():
     """Test different threshold fields on each side of an interface."""
     # Create outer square
@@ -556,6 +563,7 @@ def _sharing_scene_outer(tmp_path: Path, **field_kwargs):
     return _sharing_scene(tmp_path, resolution_specs={"outer": [field]})
 
 
+@pytest.mark.slow
 def test_sharing_default_refines_everything(tmp_path):
     """``sharing=None`` should refine all curves touching the target entity."""
     baseline = _sharing_scene(tmp_path)
@@ -572,6 +580,7 @@ def test_sharing_default_refines_everything(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_sharing_includes_none_keeps_boundary(tmp_path):
     """Explicitly listing ``'None'`` in ``sharing`` keeps the domain boundary."""
     m = _sharing_scene_outer(tmp_path, sharing=["A", "B", "None"])
@@ -580,6 +589,7 @@ def test_sharing_includes_none_keeps_boundary(tmp_path):
     assert _count_physical_lines(m, "outer___B") > 50
 
 
+@pytest.mark.slow
 def test_sharing_specific_entity_drops_domain_boundary(tmp_path):
     """Listing only inner entities in ``sharing`` leaves the domain boundary coarse.
 
@@ -593,6 +603,7 @@ def test_sharing_specific_entity_drops_domain_boundary(tmp_path):
     assert _count_physical_lines(m, "outer___B") > 50
 
 
+@pytest.mark.slow
 def test_not_sharing_none_drops_domain_boundary(tmp_path):
     """``not_sharing=['None']`` should match ``sharing=[interior...]`` above."""
     m = _sharing_scene_outer(tmp_path, not_sharing=["None"])
@@ -601,6 +612,7 @@ def test_not_sharing_none_drops_domain_boundary(tmp_path):
     assert _count_physical_lines(m, "outer___B") > 50
 
 
+@pytest.mark.slow
 def test_not_sharing_entity_keeps_boundary(tmp_path):
     """``not_sharing`` without ``'None'`` still refines the domain boundary."""
     m = _sharing_scene_outer(tmp_path, not_sharing=["A"])
@@ -609,6 +621,7 @@ def test_not_sharing_entity_keeps_boundary(tmp_path):
     assert _count_physical_lines(m, "outer___B") > 50
 
 
+@pytest.mark.slow
 def test_mass_filter_only_large_surfaces_refined(tmp_path):
     """``min_mass`` should gate refinement by the target dimension's mass.
 
@@ -666,6 +679,7 @@ def test_mass_filter_only_large_surfaces_refined(tmp_path):
     assert small_refined > 5 * small_coarse
 
 
+@pytest.mark.slow
 def test_mass_filter_curves_excludes_short_edges(tmp_path):
     """``min_mass`` on curves should leave short edges at the default size."""
     rect = shapely.Polygon([[0, 0], [20, 0], [20, 2], [0, 2]])

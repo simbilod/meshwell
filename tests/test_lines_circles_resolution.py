@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import shapely
 
 from meshwell.cad_occ import cad_occ
@@ -9,6 +10,7 @@ from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField
 
 
+@pytest.mark.slow
 def test_lines_circles_disambiguation():
     square = shapely.box(0, 0, 10, 10)
     circle = shapely.Point(5, 5).buffer(2)

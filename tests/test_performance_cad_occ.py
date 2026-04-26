@@ -11,6 +11,7 @@ from meshwell.model import ModelManager
 from meshwell.polyprism import PolyPrism
 
 
+@pytest.mark.slow
 @pytest.mark.skip(reason="Too slow - run manually for perf investigations")
 def test_performance_occ():
     """Benchmark the OCC CAD pipeline for a large entity grid."""

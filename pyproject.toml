@@ -130,6 +130,10 @@ addopts = '--tb=short --cov=meshwell --cov-report=term-missing --cov-report=xml'
 norecursedirs = ["extra/*.py"]
 python_files = ["meshwell/*.py", "notebooks/*.ipynb", "tests/*.py"]
 testpaths = ["meshwell/", "tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests that run the full CAD + mesh pipeline end-to-end",
+]
 
 [tool.coverage.run]
 source = ["meshwell"]
