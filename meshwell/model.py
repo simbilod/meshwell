@@ -22,6 +22,7 @@ class ModelManager:
         filename: str = "temp",
         point_tolerance: float | None = 1e-3,
         geometry_tolerance: float | None = None,
+        tolerance_boolean: float | None = None,
     ):
         """Initialize Model with common settings.
 
@@ -29,12 +30,18 @@ class ModelManager:
             n_threads: Number of threads for GMSH operations
             filename: Base filename for the model
             point_tolerance: User-promised geometric precision. Drives
-                ``Geometry.ToleranceBoolean`` (BOP fuzzy merge).
+                ``Geometry.ToleranceBoolean`` (BOP fuzzy merge) when
+                ``tolerance_boolean`` is not specified.
             geometry_tolerance: Optional explicit override for gmsh's
                 ``Geometry.Tolerance`` (vertex-snap distance). Defaults
                 to ``point_tolerance`` so vertices within user precision
                 are snapped at ingestion. Decoupled from ``point_tolerance``
                 so users can override for high-precision OCC operations.
+            tolerance_boolean: Optional explicit override for gmsh's
+                ``Geometry.ToleranceBoolean`` (BOP fuzzy-merge distance).
+                Defaults to ``point_tolerance``. Decoupled so callers can
+                set a sub-perturbation value for clean InterfaceTag / prism
+                face resolution without raising the vertex-snap threshold.
 
         """
         self.n_threads = n_threads
@@ -46,6 +53,10 @@ class ModelManager:
             self.geometry_tolerance = None
         else:
             self.geometry_tolerance = point_tolerance
+        if tolerance_boolean is not None:
+            self.tolerance_boolean = tolerance_boolean
+        else:
+            self.tolerance_boolean = point_tolerance
 
         # GMSH objects (initialized in _initialize)
         self.model = None
@@ -97,7 +108,12 @@ class ModelManager:
                 else self.point_tolerance
             )
             gmsh.option.setNumber("Geometry.Tolerance", gmsh_tol)
-            gmsh.option.setNumber("Geometry.ToleranceBoolean", self.point_tolerance)
+            gmsh.option.setNumber(
+                "Geometry.ToleranceBoolean",
+                self.tolerance_boolean
+                if self.tolerance_boolean is not None
+                else self.point_tolerance,
+            )
 
         self._is_initialized = True
 
