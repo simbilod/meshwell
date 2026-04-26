@@ -291,3 +291,52 @@ def test_e2e_targets_explicit_subset():
             ), f"unexpected face at x_center={x_center}, expected near x=2"
     finally:
         mm.finalize()
+
+
+def test_e2e_picks_up_hole_boundary():
+    """InterfaceTag traces the hole boundary in a donut/inner-prism scene.
+
+    Outer prism with a square hole, inner prism filling the hole.
+    InterfaceTag traces the hole. After cad_gmsh, the hole's perimeter
+    must be tagged with iface, and at least one face exists in the group.
+    """
+    outer = shapely.Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[[(4, 4), (6, 4), (6, 6), (4, 6)]],
+    )
+    inner = shapely.Polygon([(4, 4), (6, 4), (6, 6), (4, 6)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        _, mm = cad_gmsh(
+            [
+                PolyPrism(
+                    polygons=outer,
+                    buffers=buffers,
+                    physical_name="O",
+                    mesh_order=2,
+                ),
+                PolyPrism(
+                    polygons=inner,
+                    buffers=buffers,
+                    physical_name="I",
+                    mesh_order=1,
+                ),
+                InterfaceTag(
+                    linestrings=LineString([(4, 4), (6, 4), (6, 6), (4, 6), (4, 4)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface",
+                    mesh_order=3,
+                ),
+            ]
+        )
+
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+        assert len(iface_faces) >= 1, iface_faces
+    finally:
+        mm.finalize()
