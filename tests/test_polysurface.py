@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import meshio
 import shapely
 
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
+from meshwell.utils import compare_gmsh_files
 
 
 def test_polysurface(tmp_path):
@@ -27,10 +27,7 @@ def test_polysurface(tmp_path):
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    # Verify the mesh was generated and contains triangles for a 2D mesh
-    m = meshio.read(str(msh_path))
-    assert any(c.type == "triangle" and len(c.data) > 0 for c in m.cells)
-    assert "polysurface" in m.cell_sets
+    compare_gmsh_files(msh_path)
 
 
 def test_coinciding_polysurface(tmp_path):
@@ -66,11 +63,7 @@ def test_coinciding_polysurface(tmp_path):
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    # Verify all three regions were meshed
-    m = meshio.read(str(msh_path))
-    assert any(c.type == "triangle" and len(c.data) > 0 for c in m.cells)
-    for region in ("core", "cladding", "buried_oxide"):
-        assert region in m.cell_sets, f"missing region: {region}"
+    compare_gmsh_files(msh_path)
 
 
 if __name__ == "__main__":

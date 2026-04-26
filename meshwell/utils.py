@@ -1,6 +1,8 @@
 """Mesh comparison utilities."""
 from __future__ import annotations
 
+import os
+import shutil
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
@@ -8,8 +10,21 @@ from typing import Any
 from meshwell.config import PATH
 
 
+def _is_generating_references() -> bool:
+    """Whether we are currently regenerating the reference fixtures.
+
+    When set (by ``tests/generate_references.py``), the comparison helpers
+    below switch from compare-mode to snapshot-mode: they copy the input
+    file to the reference location instead of asserting equality. This
+    lets the same test code drive both normal runs (byte-by-byte against
+    a baseline produced from a previous commit) and reference-baseline
+    refresh runs, without the tests having to know which mode is active.
+    """
+    return bool(os.environ.get("MESHWELL_GENERATING_REFERENCES"))
+
+
 def compare_gmsh_files(meshfile: Path, other_meshfile: Path | None = None) -> None:
-    """Compare two GMSH mesh files and assert they are identical.
+    """Compare a generated GMSH mesh file against its reference.
 
     Args:
         meshfile: Path to the generated mesh file to compare. May be an
@@ -19,14 +34,24 @@ def compare_gmsh_files(meshfile: Path, other_meshfile: Path | None = None) -> No
                        the reference is looked up in ``PATH.references`` by
                        the basename of ``meshfile``.
 
-    Raises:
-        ValueError: If the files differ
+    Behaviour:
+        * In normal runs: asserts that ``meshfile`` is byte-identical
+          (line-diff) to the reference, raising ``ValueError`` otherwise.
+        * When ``MESHWELL_GENERATING_REFERENCES`` is set: copies
+          ``meshfile`` to the reference location instead of comparing.
+          This is how :mod:`tests.generate_references` refreshes the
+          baseline fixtures without bypassing the tests' own output paths.
     """
     meshfile2 = Path(meshfile)
     if other_meshfile is None:
         meshfile1 = PATH.references / meshfile2.name
     else:
         meshfile1 = other_meshfile
+
+    if _is_generating_references():
+        meshfile1.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(meshfile2, meshfile1)
+        return
 
     with meshfile1.open() as f:
         expected_lines = f.readlines()
@@ -39,7 +64,7 @@ def compare_gmsh_files(meshfile: Path, other_meshfile: Path | None = None) -> No
 
 
 def compare_mesh_headers(meshfile: Path, other_meshfile: Path | None = None) -> None:
-    """Compare mesh file headers.
+    """Compare a generated mesh file's header against its reference.
 
     Args:
         meshfile: Path to the generated mesh file whose header to compare. May
@@ -48,12 +73,22 @@ def compare_mesh_headers(meshfile: Path, other_meshfile: Path | None = None) -> 
         other_meshfile: Optional explicit path to compare against. If None,
                        uses reference file with .reference.msh extension from
                        PATH.references directory.
+
+    Behaviour mirrors :func:`compare_gmsh_files` -- in
+    ``MESHWELL_GENERATING_REFERENCES`` mode, the input file is copied to
+    the reference location (header-only excerpt is NOT extracted; the
+    full file is copied so the comparison side can re-extract the header).
     """
     meshfile2 = Path(meshfile)
     if other_meshfile is None:
         meshfile1 = PATH.references / (meshfile2.stem + ".reference.msh")
     else:
         meshfile1 = other_meshfile
+
+    if _is_generating_references():
+        meshfile1.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(meshfile2, meshfile1)
+        return
 
     with meshfile1.open() as f:
         expected_lines = []
