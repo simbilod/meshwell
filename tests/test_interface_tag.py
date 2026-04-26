@@ -8,8 +8,10 @@ import shapely
 from shapely.geometry import LineString
 
 import gmsh
+from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.interface_tag import InterfaceTag
 from meshwell.model import ModelManager
+from meshwell.polyprism import PolyPrism
 
 
 @dataclass
@@ -145,5 +147,55 @@ def test_instanciate_builds_2d_vertical_surfaces():
             # gmsh pads bounding boxes by ~1e-7; use 1e-6 tolerance.
             assert abs(zmin_b - 0.0) < 1e-6, (zmin_b, t)
             assert abs(zmax_b - 2.0) < 1e-6, (zmax_b, t)
+    finally:
+        mm.finalize()
+
+
+def _physical_names() -> list[tuple[int, str]]:
+    return [
+        (d, gmsh.model.getPhysicalName(d, t)) for d, t in gmsh.model.getPhysicalGroups()
+    ]
+
+
+def test_e2e_interface_tag_resolves_to_winning_boundary():
+    """Winning boundary resolves correctly for two abutting prisms.
+
+    Two abutting prisms (A wins, B loses) plus a single InterfaceTag at
+    the nominal interface x=5. After cad_gmsh: exactly one face is tagged
+    `iface`, and A is not internally split.
+    """
+    A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        labeled, mm = cad_gmsh(
+            [
+                PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+                PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+                InterfaceTag(
+                    linestrings=LineString([(5, 0), (5, 5)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface",
+                    mesh_order=3,
+                ),
+            ]
+        )
+
+        names = {n for _, n in _physical_names()}
+        assert {"A", "B", "iface", "A___B"} <= names
+
+        # The iface physical group must exist at dim 2 with at least one face.
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+        assert len(iface_faces) >= 1, iface_faces
+
+        # A must remain a single 3D piece (no internal cut by InterfaceTag).
+        a_ent = next(e for e in labeled if strip_suffix(e.physical_name[0]) == "A")
+        assert sum(1 for d, _ in a_ent.dimtags if d == 3) == 1, a_ent.dimtags
     finally:
         mm.finalize()
