@@ -32,6 +32,7 @@ from typing import Any
 from tqdm.auto import tqdm
 
 import gmsh
+from meshwell.interface_tag import InterfaceTag
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
 
@@ -396,7 +397,7 @@ class CAD_GMSH:
 
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
-        # Calculate global bounding box of all polygons for clipping
+        # ----- Pass A: buffer all polygon-bearing entities (shapely only) -----
         from shapely.geometry import box
 
         xmin, ymin, xmax, ymax = (
@@ -419,7 +420,34 @@ class CAD_GMSH:
         global_bbox = box(xmin, ymin, xmax, ymax)
         print(f"Global bounding box for clipping: {global_bbox.bounds}")
 
-        # Sort all input entities by mesh_order (lowest first). Break ties by original index.
+        for ent in entities_list:
+            if not hasattr(ent, "polygons"):
+                continue
+            if isinstance(ent.polygons, list):
+                ent.polygons = [
+                    p.buffer(self.perturbation, join_style=2).intersection(global_bbox)
+                    for p in ent.polygons
+                ]
+            else:
+                ent.polygons = ent.polygons.buffer(
+                    self.perturbation, join_style=2
+                ).intersection(global_bbox)
+
+        # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
+        polygon_ents: dict[str, Any] = {}
+        for ent in entities_list:
+            if not hasattr(ent, "polygons"):
+                continue
+            name = ent.physical_name
+            if isinstance(name, tuple):
+                name = name[0]
+            polygon_ents[name] = ent
+
+        for ent in entities_list:
+            if isinstance(ent, InterfaceTag):
+                ent.resolve(polygon_ents, default_snap=self.perturbation)
+
+        # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
         indexed_entities.sort(
             key=lambda x: (
@@ -430,26 +458,12 @@ class CAD_GMSH:
 
         instantiated_entities = []
 
-        # Step 1: Sequential Cuts across ALL entities (restricted to same dimension for safety)
         for ent, orig_idx in indexed_entities:
-            if hasattr(ent, "polygons"):
-                print(f"Buffering and clipping polygons for entity {orig_idx}")
-                if isinstance(ent.polygons, list):
-                    ent.polygons = [
-                        p.buffer(self.perturbation, join_style=2).intersection(
-                            global_bbox
-                        )
-                        for p in ent.polygons
-                    ]
-                else:
-                    ent.polygons = ent.polygons.buffer(
-                        self.perturbation, join_style=2
-                    ).intersection(global_bbox)
-
-            # Instantiate
+            # Instantiate (polygon entities have already been buffered above;
+            # InterfaceTag entities will read resolved_linestrings).
             labeled_ent = self._instantiate_entity(orig_idx, ent)
 
-            # Cut with all previously instantiated entities (higher priority)
+            # Cut with all previously instantiated entities of the same dim.
             if labeled_ent.dimtags:
                 all_tool_dimtags = []
                 for prev_ent in instantiated_entities:
@@ -471,7 +485,7 @@ class CAD_GMSH:
 
             instantiated_entities.append(labeled_ent)
 
-        # Step 3: Final Global Fragment
+        # Final global fragment + tag + cleanup.
         labeled = self._fragment_all(instantiated_entities, progress_bars=progress_bars)
         self._tag_entities(labeled, interface_delimiter, boundary_delimiter)
         self._remove_keep_false_top_dim(labeled)
