@@ -436,3 +436,45 @@ def test_e2e_non_polygon_targets_skipped():
             ), f"unexpected face at x_center={x_center}, expected near x=5"
     finally:
         mm.finalize()
+
+
+def test_e2e_extrudes_to_correct_z_range():
+    """A single PolyPrism z=[0,1] with an InterfaceTag along its right boundary.
+
+    Expect the resulting tagged face's bbox to span z = [0, 1] (within
+    tolerance).
+    """
+    A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        _, mm = cad_gmsh(
+            [
+                PolyPrism(
+                    polygons=A,
+                    buffers=buffers,
+                    physical_name="A",
+                    mesh_order=1,
+                ),
+                InterfaceTag(
+                    linestrings=LineString([(5, 0), (5, 5)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface",
+                    mesh_order=2,
+                ),
+            ]
+        )
+
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+        assert len(iface_faces) >= 1, iface_faces
+        for t in iface_faces:
+            _, _, zmin_b, _, _, zmax_b = gmsh.model.getBoundingBox(2, t)
+            assert abs(zmin_b - 0.0) < 1e-6, zmin_b
+            assert abs(zmax_b - 1.0) < 1e-6, zmax_b
+    finally:
+        mm.finalize()
