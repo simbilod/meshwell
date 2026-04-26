@@ -200,6 +200,9 @@ class InterfaceTag(GeometryEntity):
         if dz == 0.0:
             return dimtags
 
+        # Per-segment plane surfaces (instead of extrude(wire) per spec):
+        # wire-extrude hit a gmsh sync issue producing double-height surfaces
+        # when multiple unsynchronized wires were in the model.
         for ls in self.resolved_linestrings:
             coords = list(ls.coords)
             if len(coords) < 2:
