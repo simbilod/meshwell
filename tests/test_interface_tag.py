@@ -12,6 +12,7 @@ from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.interface_tag import InterfaceTag
 from meshwell.mesh import mesh as mesh_func
 from meshwell.model import ModelManager
+from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 
 
@@ -380,5 +381,58 @@ def test_e2e_no_match_warns_and_skips():
 
         m = mesh_func(dim=3, model=mm, default_characteristic_length=2.0, verbosity=0)
         assert any(c.type == "tetra" and len(c.data) for c in m.cells)
+    finally:
+        mm.finalize()
+
+
+def test_e2e_non_polygon_targets_skipped():
+    """A scene mixing a PolyPrism and a PolyLine.
+
+    InterfaceTag with targets=None resolves only against the PolyPrism (the
+    PolyLine has no .polygons and is silently skipped). The tagged interface
+    lies on A's right edge regardless of any other non-polygon entity present.
+    """
+    A_poly = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    aux_line = LineString([(8, 0), (8, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        _, mm = cad_gmsh(
+            [
+                PolyPrism(
+                    polygons=A_poly,
+                    buffers=buffers,
+                    physical_name="A",
+                    mesh_order=1,
+                ),
+                PolyLine(
+                    linestrings=aux_line,
+                    physical_name="aux_line",
+                    mesh_order=2,
+                ),
+                InterfaceTag(
+                    linestrings=LineString([(5, 0), (5, 5)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface",
+                    mesh_order=3,
+                ),
+            ]
+        )
+
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+        assert len(iface_faces) >= 1, iface_faces
+        # The tagged face must be near A's right edge at x ≈ 5, not
+        # anywhere near the unrelated PolyLine at x = 8.
+        for d, t in [(2, ft) for ft in iface_faces]:
+            xmin, _, _, xmax, _, _ = gmsh.model.getBoundingBox(d, t)
+            x_center = 0.5 * (xmin + xmax)
+            assert (
+                4.5 < x_center < 5.5
+            ), f"unexpected face at x_center={x_center}, expected near x=5"
     finally:
         mm.finalize()
