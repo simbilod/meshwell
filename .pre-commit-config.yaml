@@ -13,6 +13,7 @@ repos:
       - id: mixed-line-ending
       - id: name-tests-test
         args: ["--pytest-test-first"]
+        exclude: "tests/diff_references\\.py|tests/generate_references\\.py"
       - id: trailing-whitespace
         exclude: "tests/references/.*"
 
