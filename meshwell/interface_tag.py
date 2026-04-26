@@ -149,9 +149,18 @@ class InterfaceTag(GeometryEntity):
         else:
             targets = list(polygon_ents.values())
 
-        targets.sort(
-            key=lambda t: t.mesh_order if t.mesh_order is not None else float("inf")
+        # Stable sort by mesh_order; ties resolve to the entity that
+        # appears earliest in `polygon_ents` iteration order (insertion
+        # order in CPython). The explicit second key makes this contract
+        # part of the algorithm rather than an implicit Python detail.
+        targets_with_pos = list(enumerate(targets))
+        targets_with_pos.sort(
+            key=lambda pair: (
+                pair[1].mesh_order if pair[1].mesh_order is not None else float("inf"),
+                pair[0],
+            )
         )
+        targets = [t for _, t in targets_with_pos]
 
         # Flat caps: do not extend past the user's linestring endpoints,
         # so we don't pick up corner artifacts where the strip crosses

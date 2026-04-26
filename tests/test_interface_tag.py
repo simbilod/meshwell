@@ -186,6 +186,42 @@ def test_interface_tag_rejects_missing_physical_name():
         InterfaceTag(linestrings=ls, zmin=0, zmax=1, physical_name=())
 
 
+def test_resolve_mesh_order_ties_resolve_to_first_inserted():
+    """When two targets share mesh_order, the one appearing first wins.
+
+    The entity appearing first in polygon_ents wins the cut cascade
+    and contributes its boundary.
+    """
+    pert = 1e-3
+    a_poly = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)]).buffer(
+        pert, join_style=2
+    )
+    b_poly = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)]).buffer(
+        pert, join_style=2
+    )
+
+    # A and B both at mesh_order = 1. A inserted first -> A wins ties,
+    # so the resolved boundary lies at A's right edge (x = 5 + pert).
+    tag = InterfaceTag(
+        linestrings=LineString([(5, 0), (5, 5)]),
+        zmin=0,
+        zmax=1,
+        physical_name="iface",
+        targets=None,
+    )
+    tag.resolve(
+        polygon_ents={
+            "A": _FakePolyEntity(polygons=a_poly, mesh_order=1),
+            "B": _FakePolyEntity(polygons=b_poly, mesh_order=1),
+        },
+        default_snap=2 * 1e-3,
+    )
+    assert len(tag.resolved_linestrings) == 1
+    seg = tag.resolved_linestrings[0]
+    xs = {round(x, 6) for x, _ in seg.coords}
+    assert xs == {round(5 + pert, 6)}, (xs, seg)
+
+
 def _physical_names() -> list[tuple[int, str]]:
     return [
         (d, gmsh.model.getPhysicalName(d, t)) for d, t in gmsh.model.getPhysicalGroups()
