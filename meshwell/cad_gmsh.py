@@ -417,7 +417,8 @@ class CAD_GMSH:
                     xmax = max(xmax, b[2])
                     ymax = max(ymax, b[3])
         global_bbox = box(xmin, ymin, xmax, ymax)
-        print(f"Global bounding box for clipping: {global_bbox.bounds}")
+        if progress_bars:
+            print(f"Global bounding box for clipping: {global_bbox.bounds}")
 
         for ent in entities_list:
             if not hasattr(ent, "polygons"):
@@ -480,7 +481,8 @@ class CAD_GMSH:
                         self.model_manager.sync_model()
                         labeled_ent.dimtags = out_dimtags
                     except Exception as e:
-                        print(f"Warning: Cut failed for entity {orig_idx}: {e}")
+                        if progress_bars:
+                            print(f"Warning: Cut failed for entity {orig_idx}: {e}")
 
             instantiated_entities.append(labeled_ent)
 
