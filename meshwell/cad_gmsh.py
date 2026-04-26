@@ -440,7 +440,7 @@ class CAD_GMSH:
 
         for ent in entities_list:
             if isinstance(ent, InterfaceTag):
-                ent.resolve(polygon_ents, default_snap=self.perturbation)
+                ent.resolve(polygon_ents, default_snap=self.point_tolerance)
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
