@@ -126,10 +126,18 @@ strict = true
 
 [tool.pytest.ini_options]
 # addopts = --tb=no
-addopts = '--tb=short'
+addopts = '--tb=short --cov=meshwell --cov-report=term-missing --cov-report=xml'
 norecursedirs = ["extra/*.py"]
 python_files = ["meshwell/*.py", "notebooks/*.ipynb", "tests/*.py"]
 testpaths = ["meshwell/", "tests"]
+
+[tool.coverage.run]
+source = ["meshwell"]
+omit = ["meshwell/__pycache__/*", "tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [tool.ruff.lint]
 ignore = [
