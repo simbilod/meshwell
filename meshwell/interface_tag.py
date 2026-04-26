@@ -87,6 +87,9 @@ class InterfaceTag(GeometryEntity):
         if physical_name is None or physical_name == "" or physical_name == ():
             raise ValueError("InterfaceTag requires a non-empty physical_name")
 
+        if snap_distance is not None and snap_distance <= 0:
+            raise ValueError(f"snap_distance must be positive, got {snap_distance}")
+
         # Normalize linestrings to a flat list[LineString].
         if isinstance(linestrings, list):
             normalized: list[LineString] = []

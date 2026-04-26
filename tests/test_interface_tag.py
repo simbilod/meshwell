@@ -154,6 +154,27 @@ def test_instanciate_builds_2d_vertical_surfaces():
         mm.finalize()
 
 
+def test_interface_tag_rejects_nonpositive_snap_distance():
+    """Zero or negative snap_distance must raise ValueError."""
+    ls = LineString([(0, 0), (1, 0)])
+    with pytest.raises(ValueError, match="snap_distance"):
+        InterfaceTag(
+            linestrings=ls,
+            zmin=0,
+            zmax=1,
+            physical_name="x",
+            snap_distance=0,
+        )
+    with pytest.raises(ValueError, match="snap_distance"):
+        InterfaceTag(
+            linestrings=ls,
+            zmin=0,
+            zmax=1,
+            physical_name="x",
+            snap_distance=-1e-3,
+        )
+
+
 def test_interface_tag_rejects_missing_physical_name():
     """physical_name is required; None / empty must raise ValueError."""
     ls = LineString([(0, 0), (1, 0)])
