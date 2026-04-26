@@ -14,6 +14,7 @@ exists between two polygon entities.
 """
 from __future__ import annotations
 
+import itertools
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,7 @@ from shapely.geometry import (
 )
 from shapely.ops import unary_union
 
+import gmsh
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
@@ -184,10 +186,47 @@ class InterfaceTag(GeometryEntity):
 
     def instanciate(
         self,
-        cad_model: Any | None = None,
+        cad_model: Any | None = None,  # noqa: ARG002
     ) -> list[tuple[int, int]]:
-        """Build vertical 2D surfaces from ``self.resolved_linestrings``."""
-        raise NotImplementedError("InterfaceTag.instanciate not yet implemented")
+        """Build vertical 2D surfaces from ``self.resolved_linestrings``.
+
+        Each linestring segment is turned into a vertical rectangular
+        panel by placing points at ``zmin`` and ``zmax``, forming a
+        closed curve loop, and adding a plane surface. All panel
+        dimtags are collected and returned.
+        """
+        dimtags: list[tuple[int, int]] = []
+        dz = self.zmax - self.zmin
+        if dz == 0.0:
+            return dimtags
+
+        for ls in self.resolved_linestrings:
+            coords = list(ls.coords)
+            if len(coords) < 2:
+                continue
+
+            # Build one vertical panel per consecutive pair of XY coords.
+            for (x1, y1), (x2, y2) in itertools.pairwise(coords):
+                p_bot1 = self._add_point_with_tolerance(x1, y1, self.zmin)
+                p_bot2 = self._add_point_with_tolerance(x2, y2, self.zmin)
+                p_top2 = self._add_point_with_tolerance(x2, y2, self.zmax)
+                p_top1 = self._add_point_with_tolerance(x1, y1, self.zmax)
+
+                l_bot = self._add_line_with_cache(p_bot1, p_bot2)
+                l_right = self._add_line_with_cache(p_bot2, p_top2)
+                l_top = self._add_line_with_cache(p_top2, p_top1)
+                l_left = self._add_line_with_cache(p_top1, p_bot1)
+
+                active_lines = [lt for lt in (l_bot, l_right, l_top, l_left) if lt != 0]
+                if len(active_lines) < 3:
+                    continue
+
+                cl = gmsh.model.occ.addCurveLoop(active_lines)
+                surf = gmsh.model.occ.addPlaneSurface([cl])
+                dimtags.append((2, surf))
+
+        gmsh.model.occ.synchronize()
+        return dimtags
 
     def instanciate_occ(self) -> "TopoDS_Shape":
         """OCC instantiation not supported for v1.

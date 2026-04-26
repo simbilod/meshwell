@@ -7,7 +7,9 @@ from dataclasses import dataclass
 import shapely
 from shapely.geometry import LineString
 
+import gmsh
 from meshwell.interface_tag import InterfaceTag
+from meshwell.model import ModelManager
 
 
 @dataclass
@@ -110,3 +112,38 @@ def test_resolve_picks_up_hole_boundary():
     total_len = sum(ls.length for ls in tag.resolved_linestrings)
     # The hole's perimeter is 8; expect resolved length ~8 (within buffer slop).
     assert 7.5 < total_len < 8.5, total_len
+
+
+def test_instanciate_builds_2d_vertical_surfaces():
+    """Given two pre-set resolved_linestrings, instanciate returns 2D dimtags.
+
+    The bounding box of each surface must match z = [zmin, zmax].
+    """
+    mm = ModelManager(filename="test_interface_tag_instanciate")
+    try:
+        mm.ensure_initialized("test_interface_tag_instanciate")
+
+        tag = InterfaceTag(
+            linestrings=LineString([(0, 0), (5, 0)]),  # placeholder
+            zmin=0.0,
+            zmax=2.0,
+            physical_name="iface",
+        )
+        # Bypass resolve(): inject the trace directly.
+        tag.resolved_linestrings = [
+            LineString([(0, 0), (5, 0)]),
+            LineString([(0, 5), (5, 5)]),
+        ]
+
+        dimtags = tag.instanciate()
+        assert len(dimtags) == 2, dimtags
+        assert all(d == 2 for d, _ in dimtags), dimtags
+
+        gmsh.model.occ.synchronize()
+        for d, t in dimtags:
+            _xmin, _ymin, zmin_b, _xmax, _ymax, zmax_b = gmsh.model.getBoundingBox(d, t)
+            # gmsh pads bounding boxes by ~1e-7; use 1e-6 tolerance.
+            assert abs(zmin_b - 0.0) < 1e-6, (zmin_b, t)
+            assert abs(zmax_b - 2.0) < 1e-6, (zmax_b, t)
+    finally:
+        mm.finalize()
