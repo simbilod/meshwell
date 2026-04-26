@@ -14,6 +14,7 @@ exists between two polygon entities.
 """
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import shapely
@@ -22,6 +23,7 @@ from shapely.geometry import (
     LineString,
     MultiLineString,
 )
+from shapely.ops import unary_union
 
 from meshwell.geometry_entity import GeometryEntity
 
@@ -117,11 +119,68 @@ class InterfaceTag(GeometryEntity):
         self.resolved_linestrings: list[LineString] = []
 
     def resolve(self, polygon_ents: dict[str, Any], default_snap: float) -> None:
-        """Compute the snapped trace from buffered polygon entities.
+        """Compute the snapped trace by replicating the cad_gmsh cut cascade.
 
-        Must be called before :meth:`instanciate`. See spec for algorithm.
+        Buffers are intersected with the user's nominal strip after the
+        cascade is applied in shapely.
+
+        Targets are processed lowest ``mesh_order`` first. Each target's
+        polygon has all higher-priority targets' polygons subtracted
+        from it (mirroring the cad_gmsh cut step), so the resulting
+        boundaries are exactly what would survive the cuts. Intersecting
+        those boundaries with the nominal strip - built with flat caps,
+        so it does not extend past the user's linestring endpoints -
+        gives the snapped interface trace. Coincident contributions
+        from neighbouring targets collapse via a final ``unary_union``.
         """
-        raise NotImplementedError("InterfaceTag.resolve not yet implemented")
+        snap = self.snap_distance if self.snap_distance is not None else default_snap
+
+        if self.targets is not None:
+            # Skip names not present in the scene rather than KeyError-ing.
+            targets = [polygon_ents[n] for n in self.targets if n in polygon_ents]
+        else:
+            targets = list(polygon_ents.values())
+
+        targets.sort(
+            key=lambda t: t.mesh_order if t.mesh_order is not None else float("inf")
+        )
+
+        # Flat caps: do not extend past the user's linestring endpoints,
+        # so we don't pick up corner artifacts where the strip crosses
+        # the prism's lateral faces near the linestring's endpoints.
+        nominal_strip = unary_union(
+            [ls.buffer(snap, join_style=2, cap_style="flat") for ls in self.linestrings]
+        )
+
+        # Replicate the cad_gmsh sequential cut cascade in shapely.
+        cut_polys: list = []
+        for tgt in targets:
+            polys = tgt.polygons if isinstance(tgt.polygons, list) else [tgt.polygons]
+            tgt_geom = unary_union(polys)
+            for prev in cut_polys:
+                tgt_geom = tgt_geom.difference(prev)
+            cut_polys.append(tgt_geom)
+
+        snapped: list = []
+        for cp in cut_polys:
+            if cp.is_empty:
+                continue
+            hit = cp.boundary.intersection(nominal_strip)
+            if not hit.is_empty:
+                snapped.append(hit)
+
+        # Coincident contributions from neighbouring targets collapse here.
+        if snapped:
+            merged = unary_union(snapped)
+            self.resolved_linestrings = _flatten_to_linestrings([merged])
+        else:
+            self.resolved_linestrings = []
+
+        if not self.resolved_linestrings:
+            warnings.warn(
+                f"InterfaceTag {self.physical_name} resolved to no segments",
+                stacklevel=2,
+            )
 
     def instanciate(
         self,
