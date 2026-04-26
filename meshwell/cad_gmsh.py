@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import Any
 
+from shapely.geometry import box
 from tqdm.auto import tqdm
 
 import gmsh
@@ -398,8 +399,6 @@ class CAD_GMSH:
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
         # ----- Pass A: buffer all polygon-bearing entities (shapely only) -----
-        from shapely.geometry import box
-
         xmin, ymin, xmax, ymax = (
             float("inf"),
             float("inf"),
