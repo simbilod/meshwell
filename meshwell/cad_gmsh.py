@@ -124,9 +124,15 @@ class CAD_GMSH:
             self._owns_model = False
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.perturbation = (
-            perturbation if perturbation is not None else point_tolerance
-        )
+        if perturbation is not None:
+            self.perturbation = perturbation
+        else:
+            # Must be strictly greater than ``point_tolerance`` because gmsh's
+            # ``Geometry.ToleranceBoolean`` (set to ``point_tolerance``) treats
+            # near-coincident faces as identical, which causes BOPAlgo to fail
+            # on the InterfaceTag panel / PolyPrism face overlap. 10% headroom
+            # is empirically sufficient.
+            self.perturbation = 1.1 * point_tolerance
 
     # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
     # compatibility alias so entity ``instanciate(cad_model)`` calls that
