@@ -18,6 +18,7 @@ import itertools
 import warnings
 from typing import TYPE_CHECKING, Any
 
+import shapely
 from shapely.geometry import (
     GeometryCollection,
     LineString,
@@ -138,6 +139,12 @@ class InterfaceTag(GeometryEntity):
             self.linestrings = list(linestrings.geoms)
         else:
             self.linestrings = [linestrings]
+
+        if point_tolerance > 0:
+            self.linestrings = [
+                shapely.set_precision(ls, grid_size=point_tolerance, mode="pointwise")
+                for ls in self.linestrings
+            ]
 
         self.zmin = float(zmin)
         self.zmax = float(zmax)

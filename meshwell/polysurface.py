@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
 import gmsh
@@ -59,6 +60,12 @@ class PolySurface(GeometryEntity):
                 self.polygons.extend(
                     entry.geoms if hasattr(entry, "geoms") else [entry]
                 )
+
+        if point_tolerance > 0:
+            self.polygons = [
+                shapely.set_precision(p, grid_size=point_tolerance, mode="pointwise")
+                for p in self.polygons
+            ]
 
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):

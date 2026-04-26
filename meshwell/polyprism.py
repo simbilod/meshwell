@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
 import gmsh
@@ -53,6 +54,19 @@ class PolyPrism(GeometryEntity):
         )
 
         # Parse buffers or prepare extrusion
+        if point_tolerance > 0:
+            # Snap input polygons to user grid before storing / buffering.
+            if isinstance(polygons, list):
+                polygons = [
+                    shapely.set_precision(
+                        p, grid_size=point_tolerance, mode="pointwise"
+                    )
+                    for p in polygons
+                ]
+            else:
+                polygons = shapely.set_precision(
+                    polygons, grid_size=point_tolerance, mode="pointwise"
+                )
         self.polygons = polygons
         if all(buffer == 0 for buffer in buffers.values()):
             self.extrude = True

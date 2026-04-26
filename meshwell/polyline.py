@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import shapely
 from shapely.geometry import LineString, MultiLineString
 
 import gmsh
@@ -63,6 +64,12 @@ class PolyLine(GeometryEntity):
             self.linestrings = list(linestrings.geoms)
         else:  # Single LineString
             self.linestrings = [linestrings]
+
+        if point_tolerance > 0:
+            self.linestrings = [
+                shapely.set_precision(ls, grid_size=point_tolerance, mode="pointwise")
+                for ls in self.linestrings
+            ]
 
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):
