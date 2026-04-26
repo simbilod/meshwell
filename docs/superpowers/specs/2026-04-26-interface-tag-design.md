@@ -113,17 +113,22 @@ existing "lower-dim entities are always tagged" branch in `_tag_entities`.
 
 ## `InterfaceTag.resolve()` algorithm
 
-The resolve step mirrors the cut cascade exactly: iterate targets in
-ascending `mesh_order` (winners first). Each winner *claims* its body's
-spatial region, so subsequent (higher `mesh_order`) targets can only be
-matched against the still-unclaimed part of the strip. The boundary that
-ends up tagged is therefore exactly the boundary that survives the cut.
+The resolve step replicates the cad_gmsh cut cascade in shapely directly,
+then takes boundaries of the cut polygons. Iterate targets in ascending
+`mesh_order` (winners first). Each target's polygon has all higher-priority
+targets' polygons subtracted from it, mirroring the cad_gmsh cut step. The
+resulting cut-polygon boundaries are exactly what would survive in gmsh.
+Intersecting those boundaries with the user's nominal strip (built with
+flat caps so the strip does not extend past the linestring endpoints)
+gives the snapped trace. Coincident contributions from neighbouring
+targets — both contribute the same shared face — collapse via a final
+`unary_union`.
 
 ```python
 def resolve(self, polygon_ents, default_snap):
     snap = self.snap_distance if self.snap_distance is not None else default_snap
 
-    targets = ([polygon_ents[n] for n in self.targets]
+    targets = ([polygon_ents[n] for n in self.targets if n in polygon_ents]
                if self.targets is not None
                else list(polygon_ents.values()))
 
@@ -131,22 +136,37 @@ def resolve(self, polygon_ents, default_snap):
         key=lambda t: t.mesh_order if t.mesh_order is not None else float("inf")
     )
 
+    # Flat caps: don't extend past linestring endpoints, so corner
+    # artifacts where the strip crosses lateral prism faces don't pollute
+    # the resolved trace.
     nominal_strip = unary_union(
-        [ls.buffer(snap, join_style=2) for ls in self.linestrings]
+        [ls.buffer(snap, join_style=2, cap_style="flat")
+         for ls in self.linestrings]
     )
 
-    snapped_segments = []
-    remaining_strip = nominal_strip
+    # Replicate the cad_gmsh sequential cut cascade in shapely.
+    cut_polys = []
     for tgt in targets:
         polys = tgt.polygons if isinstance(tgt.polygons, list) else [tgt.polygons]
-        for poly in polys:
-            hit = poly.boundary.intersection(remaining_strip)
-            if not hit.is_empty:
-                snapped_segments.append(hit)
-        for poly in polys:
-            remaining_strip = remaining_strip.difference(poly)
+        tgt_geom = unary_union(polys)
+        for prev in cut_polys:
+            tgt_geom = tgt_geom.difference(prev)
+        cut_polys.append(tgt_geom)
 
-    self.resolved_linestrings = _flatten_to_linestrings(snapped_segments)
+    snapped = []
+    for cp in cut_polys:
+        if cp.is_empty:
+            continue
+        hit = cp.boundary.intersection(nominal_strip)
+        if not hit.is_empty:
+            snapped.append(hit)
+
+    if snapped:
+        merged = unary_union(snapped)
+        self.resolved_linestrings = _flatten_to_linestrings([merged])
+    else:
+        self.resolved_linestrings = []
+
     if not self.resolved_linestrings:
         warnings.warn(
             f"InterfaceTag {self.physical_name} resolved to no segments"
@@ -164,18 +184,20 @@ up donut-style hole edges.
 ### Walkthrough — abutting prisms
 
 A `mesh_order=1`, B `mesh_order=2`, both buffered by `pert`.
-Nominal LineString at `x=5`, `snap=2*point_tolerance`.
+Nominal LineString at `x=5`, `snap=2*point_tolerance`, flat caps.
 
-1. nominal strip = `[5-2pt, 5+2pt] × [y_lo, y_hi]`.
-2. Process A (winner): `A.boundary ∩ strip` →
-   line at `x = 5+pert` (A's right edge). Snapped segments append.
-   `remaining_strip -= A.body` → strip shrinks to `(5+pert, 5+2pt)`.
-3. Process B: `B.boundary ∩ remaining_strip`. B's left boundary at
-   `x = 5-pert` is no longer in `remaining_strip` (it was inside A's body) →
-   empty hit.
+1. nominal strip = `[5-2pt, 5+2pt] × [0, 5]` (flat caps clip y to the
+   linestring's y range).
+2. Cut cascade: `A_cut = A` (winner), `B_cut = B - A = [5+pert, 10+pert] × [...]`.
+3. `A_cut.boundary ∩ strip` → vertical line at `x = 5+pert` (A's right
+   edge in strip).
+4. `B_cut.boundary ∩ strip` → vertical line at `x = 5+pert` (B_cut's
+   new left edge, exactly identical to A's right since B was cut by A).
+5. `unary_union(snapped)` → single line at `x = 5+pert`.
 
 Result: single resolved segment at `x = 5+pert`, exactly the post-cut
-shared face. No internal cut in A.
+shared face. B's pre-cut left at `x = 5-pert` never appears (it was
+removed by the difference in step 2). No internal cut in A.
 
 ## `instanciate(cad_model)`
 

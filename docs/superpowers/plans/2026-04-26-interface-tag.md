@@ -387,15 +387,19 @@ Replace the stub `resolve` method with:
 
 ```python
     def resolve(self, polygon_ents: dict[str, Any], default_snap: float) -> None:
-        """Compute the snapped trace from buffered polygon entities.
+        """Compute the snapped trace by replicating the cad_gmsh cut
+        cascade on the buffered input polygons in shapely, then
+        intersecting the resulting cut-polygon boundaries with the
+        user's nominal strip.
 
-        The cad_gmsh cut cascade processes targets lowest-``mesh_order``
-        first; the winner keeps its full buffered shape. We mirror that
-        ordering here: we walk targets in ascending ``mesh_order`` and
-        each one *claims* its body's spatial region, so subsequent (higher
-        mesh_order) targets only see the strip outside that claim. The
-        boundary that ends up tagged is therefore exactly the boundary
-        that survives the cut.
+        Targets are processed lowest ``mesh_order`` first. Each target's
+        polygon has all higher-priority targets' polygons subtracted
+        from it (mirroring the cad_gmsh cut step), so the resulting
+        boundaries are exactly what would survive the cuts. Intersecting
+        those boundaries with the nominal strip — built with flat caps,
+        so it does not extend past the user's linestring endpoints —
+        gives the snapped interface trace. Coincident contributions
+        from neighbouring targets collapse via a final ``unary_union``.
         """
         snap = self.snap_distance if self.snap_distance is not None else default_snap
 
@@ -411,26 +415,44 @@ Replace the stub `resolve` method with:
             else float("inf")
         )
 
+        # Flat caps: do not extend past the user's linestring endpoints,
+        # so we don't pick up corner artifacts where the strip crosses
+        # the prism's lateral faces near the linestring's endpoints.
         nominal_strip = unary_union(
-            [ls.buffer(snap, join_style=2) for ls in self.linestrings]
+            [
+                ls.buffer(snap, join_style=2, cap_style="flat")
+                for ls in self.linestrings
+            ]
         )
 
-        snapped: list = []
-        remaining = nominal_strip
+        # Replicate the cad_gmsh sequential cut cascade in shapely.
+        cut_polys: list = []
         for tgt in targets:
             polys = (
                 tgt.polygons
                 if isinstance(tgt.polygons, list)
                 else [tgt.polygons]
             )
-            for poly in polys:
-                hit = poly.boundary.intersection(remaining)
-                if not hit.is_empty:
-                    snapped.append(hit)
-            for poly in polys:
-                remaining = remaining.difference(poly)
+            tgt_geom = unary_union(polys)
+            for prev in cut_polys:
+                tgt_geom = tgt_geom.difference(prev)
+            cut_polys.append(tgt_geom)
 
-        self.resolved_linestrings = _flatten_to_linestrings(snapped)
+        snapped: list = []
+        for cp in cut_polys:
+            if cp.is_empty:
+                continue
+            hit = cp.boundary.intersection(nominal_strip)
+            if not hit.is_empty:
+                snapped.append(hit)
+
+        # Coincident contributions from neighbouring targets collapse here.
+        if snapped:
+            merged = unary_union(snapped)
+            self.resolved_linestrings = _flatten_to_linestrings([merged])
+        else:
+            self.resolved_linestrings = []
+
         if not self.resolved_linestrings:
             warnings.warn(
                 f"InterfaceTag {self.physical_name} resolved to no segments",
