@@ -12,7 +12,7 @@ from __future__ import annotations
 import shapely
 
 import gmsh
-from meshwell.cad_gmsh import cad_gmsh
+from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.mesh import mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -92,11 +92,14 @@ def test_cad_gmsh_mesh_order_lower_wins_in_overlap():
             total = 0.0
             for dim, tag in ent.dimtags:
                 total += gmsh.model.occ.getMass(dim, tag)
-            areas[ent.physical_name[0]] = total
+            areas[strip_suffix(ent.physical_name[0])] = total
         assert areas["A"] > areas["B"], areas
         # A (winner) is the full unit square; B is the non-overlap half.
-        assert abs(areas["A"] - 1.0) < 1e-6, areas
-        assert abs(areas["B"] - 0.5) < 1e-6, areas
+        # Tolerance 1e-2: with perturbation = point_tolerance = 1e-3 the
+        # polygon buffer inflates each side by ~1e-3, giving an area delta
+        # up to ~4e-3 for a unit polygon.
+        assert abs(areas["A"] - 1.0) < 1e-2, areas
+        assert abs(areas["B"] - 0.5) < 1e-2, areas
     finally:
         mm.finalize()
 
@@ -114,7 +117,7 @@ def test_cad_gmsh_same_mesh_order_ties_to_insertion_order():
             ]
         )
         areas = {
-            ent.physical_name[0]: sum(
+            strip_suffix(ent.physical_name[0]): sum(
                 gmsh.model.occ.getMass(d, t) for d, t in ent.dimtags
             )
             for ent in labeled
@@ -148,7 +151,9 @@ def test_cad_gmsh_keep_false_top_dim_removed_but_interface_named():
         # helper's boundary with A must still carry the interface name.
         assert "A___helper" in names
         # helper has been removed -- no volume for it.
-        helper = next(e for e in labeled if e.physical_name == ("helper",))
+        helper = next(
+            e for e in labeled if strip_suffix(e.physical_name[0]) == "helper"
+        )
         assert helper.dimtags == []
 
         m = mesh(dim=3, model=mm, default_characteristic_length=2.0, verbosity=0)
@@ -211,5 +216,31 @@ def test_cad_gmsh_single_entity_no_fragment():
         assert "only" in names
         # No neighbour -> no interface groups, only the domain-boundary.
         assert "only___None" in names
+    finally:
+        mm.finalize()
+
+
+def test_cad_gmsh_perturbation_below_or_equal_point_tolerance():
+    """Bounding box stays within 2 * point_tolerance when perturbation defaults.
+
+    At default perturbation (= point_tolerance), polygon entity bounding
+    box is within 2 * point_tolerance of the input. Pins the contract that
+    the cut-bridging buffer does not exceed user-promised precision.
+    """
+    point_tol = 1e-3
+    poly = shapely.Polygon([(0, 0), (2, 0), (2, 1), (0, 1)])
+    try:
+        labeled, mm = cad_gmsh(
+            [PolySurface(polygons=poly, physical_name="A", mesh_order=1)],
+            point_tolerance=point_tol,
+        )
+        ent = next(e for e in labeled if strip_suffix(e.physical_name[0]) == "A")
+        assert ent.dimtags
+        for dim, tag in ent.dimtags:
+            xmin, ymin, _, xmax, ymax, _ = gmsh.model.getBoundingBox(dim, tag)
+            assert abs(xmin - 0.0) < 2 * point_tol, xmin
+            assert abs(ymin - 0.0) < 2 * point_tol, ymin
+            assert abs(xmax - 2.0) < 2 * point_tol, xmax
+            assert abs(ymax - 1.0) < 2 * point_tol, ymax
     finally:
         mm.finalize()
