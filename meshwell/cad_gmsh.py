@@ -105,10 +105,12 @@ class CAD_GMSH:
                 the processor does not finalize gmsh on exit -- the caller
                 owns the lifecycle.
             perturbation: Outward shapely buffer applied to polygon entities
-                before the sequential cut cascade. Default ``1e-9`` — sub-
-                tolerance, so geometry distortion is invisible at any user
-                precision. Can be overridden per scene for complex-geometry
-                robustness.
+                before the sequential cut cascade. Default ``point_tolerance``
+                — halves distortion vs. the old ``2 * point_tolerance``
+                approach while keeping a factor-of-1000 headroom over
+                ``ToleranceBoolean`` so BOP can resolve InterfaceTag panel /
+                PolyPrism coincidences cleanly. Can be overridden per scene
+                for complex-geometry robustness.
         """
         if model is None:
             self.model_manager = ModelManager(
@@ -122,7 +124,9 @@ class CAD_GMSH:
             self._owns_model = False
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.perturbation = perturbation if perturbation is not None else 1e-9
+        self.perturbation = (
+            perturbation if perturbation is not None else point_tolerance
+        )
 
     # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
     # compatibility alias so entity ``instanciate(cad_model)`` calls that
@@ -440,7 +444,7 @@ class CAD_GMSH:
 
         for ent in entities_list:
             if isinstance(ent, InterfaceTag):
-                ent.resolve(polygon_ents, default_snap=self.point_tolerance)
+                ent.resolve(polygon_ents, default_snap=self.perturbation)
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
