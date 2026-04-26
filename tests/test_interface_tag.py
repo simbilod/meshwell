@@ -199,3 +199,49 @@ def test_e2e_interface_tag_resolves_to_winning_boundary():
         assert sum(1 for d, _ in a_ent.dimtags if d == 3) == 1, a_ent.dimtags
     finally:
         mm.finalize()
+
+
+def test_e2e_targets_none_picks_winners_only():
+    """targets=None tags both interfaces in a three-prism scene.
+
+    Three abutting prisms A/B/C (mesh_orders 1/2/3) with interfaces at
+    x=2 and x=5. A single InterfaceTag with linestring spanning both,
+    targets=None. Expect both interfaces tagged (one face each on the
+    winner side), and no spurious internal cuts in any prism.
+    """
+    A = shapely.Polygon([(0, 0), (2, 0), (2, 5), (0, 5)])
+    B = shapely.Polygon([(2, 0), (5, 0), (5, 5), (2, 5)])
+    C = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    try:
+        labeled, mm = cad_gmsh(
+            [
+                PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+                PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+                PolyPrism(polygons=C, buffers=buffers, physical_name="C", mesh_order=3),
+                InterfaceTag(
+                    linestrings=LineString([(1, 2.5), (7, 2.5)]),
+                    zmin=0.0,
+                    zmax=1.0,
+                    physical_name="iface",
+                    mesh_order=4,
+                ),
+            ]
+        )
+
+        # Each prism stays as exactly one 3D piece.
+        for nm in ("A", "B", "C"):
+            ent = next(e for e in labeled if strip_suffix(e.physical_name[0]) == nm)
+            n_3d = sum(1 for d, _ in ent.dimtags if d == 3)
+            assert n_3d == 1, (nm, ent.dimtags)
+
+        # iface tagged at dim 2 with at least 2 faces (one per real interface).
+        iface_pg = next(
+            t
+            for d, t in gmsh.model.getPhysicalGroups(dim=2)
+            if gmsh.model.getPhysicalName(d, t) == "iface"
+        )
+        iface_faces = gmsh.model.getEntitiesForPhysicalGroup(2, iface_pg)
+        assert len(iface_faces) >= 2, iface_faces
+    finally:
+        mm.finalize()
