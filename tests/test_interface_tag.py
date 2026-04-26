@@ -4,6 +4,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 
+import pytest
 import shapely
 from shapely.geometry import LineString
 
@@ -151,6 +152,17 @@ def test_instanciate_builds_2d_vertical_surfaces():
             assert abs(zmax_b - 2.0) < 1e-6, (zmax_b, t)
     finally:
         mm.finalize()
+
+
+def test_interface_tag_rejects_missing_physical_name():
+    """physical_name is required; None / empty must raise ValueError."""
+    ls = LineString([(0, 0), (1, 0)])
+    with pytest.raises(ValueError, match="physical_name"):
+        InterfaceTag(linestrings=ls, zmin=0, zmax=1, physical_name=None)
+    with pytest.raises(ValueError, match="physical_name"):
+        InterfaceTag(linestrings=ls, zmin=0, zmax=1, physical_name="")
+    with pytest.raises(ValueError, match="physical_name"):
+        InterfaceTag(linestrings=ls, zmin=0, zmax=1, physical_name=())
 
 
 def _physical_names() -> list[tuple[int, str]]:

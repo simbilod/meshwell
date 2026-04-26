@@ -75,7 +75,7 @@ class InterfaceTag(GeometryEntity):
         linestrings: LineString | list[LineString] | MultiLineString,
         zmin: float,
         zmax: float,
-        physical_name: str | tuple[str, ...] | None = None,
+        physical_name: str | tuple[str, ...] | None,
         targets: list[str] | None = None,
         snap_distance: float | None = None,
         mesh_order: float | None = None,
@@ -83,6 +83,9 @@ class InterfaceTag(GeometryEntity):
         point_tolerance: float = 1e-3,
     ):
         super().__init__(point_tolerance=point_tolerance)
+
+        if physical_name is None or physical_name == "" or physical_name == ():
+            raise ValueError("InterfaceTag requires a non-empty physical_name")
 
         # Normalize linestrings to a flat list[LineString].
         if isinstance(linestrings, list):
