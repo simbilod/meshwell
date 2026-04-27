@@ -108,6 +108,40 @@ def _mesh_summary(
     return summary
 
 
+_IFACE_DELIM = "___"
+
+
+def _normalize_group_name(name: str) -> str:
+    """Canonicalize interface names so ``A___B`` and ``B___A`` compare equal.
+
+    The gmsh and OCC backends may emit interface names with the two entity
+    names in opposite order (e.g. ``I___O`` vs ``O___I``).  Sorting the
+    parts makes comparisons order-independent.  Non-interface names (no
+    delimiter) are returned unchanged.
+    """
+    if _IFACE_DELIM in name:
+        parts = name.split(_IFACE_DELIM)
+        return _IFACE_DELIM.join(sorted(parts))
+    return name
+
+
+def _normalize_summary(
+    s: dict[str, dict[str, tuple[int, float]]],
+) -> dict[str, dict[str, tuple[int, float]]]:
+    """Return a copy of ``s`` with all group names normalized."""
+    out: dict[str, dict[str, tuple[int, float]]] = {}
+    for name, types in s.items():
+        norm = _normalize_group_name(name)
+        if norm in out:
+            # Merge: add counts and masses for duplicate canonical names.
+            for ct, (cnt, mass) in types.items():
+                existing = out[norm].get(ct, (0, 0.0))
+                out[norm][ct] = (existing[0] + cnt, existing[1] + mass)
+        else:
+            out[norm] = dict(types)
+    return out
+
+
 def _assert_summaries_equivalent(
     s_gmsh: dict[str, dict[str, tuple[int, float]]],
     s_occ: dict[str, dict[str, tuple[int, float]]],
@@ -121,10 +155,13 @@ def _assert_summaries_equivalent(
     required to match -- mesher non-determinism is fine; only the
     integrated mass per group matters.
 
-    Groups whose name starts with ``"gmsh:"`` (meshio internal markers
-    such as ``gmsh:bounding_entities``) are always skipped -- they are
-    not user-defined physical groups and differ across backends.
+    Interface names are normalized (``A___B`` == ``B___A``) since the
+    two backends may emit them in opposite order. Groups whose name
+    starts with ``"gmsh:"`` (meshio internal markers such as
+    ``gmsh:bounding_entities``) are always skipped.
     """
+    s_gmsh = _normalize_summary(s_gmsh)
+    s_occ = _normalize_summary(s_occ)
 
     def _skip(g: str) -> bool:
         return g in ignore_groups or g.startswith("gmsh:")
@@ -254,10 +291,38 @@ def test_three_abutting_prisms_match(tmp_path):
     m_gmsh, m_occ = _run_both(make, tmp_path)
     s_gmsh = _mesh_summary(m_gmsh)
     s_occ = _mesh_summary(m_occ)
+    # Normalize names so A___B and B___A compare equal across backends.
+    ns_gmsh = _normalize_summary(s_gmsh)
+    ns_occ = _normalize_summary(s_occ)
 
-    # Both backends must produce both interfaces.
+    # Both backends must produce both interfaces (order-independent).
     for iface in ("A___B", "B___C"):
-        assert iface in s_gmsh, (s_gmsh.keys(), "gmsh missing", iface)
-        assert iface in s_occ, (s_occ.keys(), "occ missing", iface)
+        assert iface in ns_gmsh, (ns_gmsh.keys(), "gmsh missing", iface)
+        assert iface in ns_occ, (ns_occ.keys(), "occ missing", iface)
 
+    _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_donut_with_inner_prism_match(tmp_path):
+    """Outer prism with a hole, inner prism filling it.
+
+    Both backends must tag the hole interface and produce matching inner
+    volumes.
+    """
+
+    def make():
+        outer = shapely.Polygon(
+            [(0, 0), (10, 0), (10, 10), (0, 10)],
+            holes=[[(4, 4), (6, 4), (6, 6), (4, 6)]],
+        )
+        inner = shapely.Polygon([(4, 4), (6, 4), (6, 6), (4, 6)])
+        buffers = {0.0: 0.0, 1.0: 0.0}
+        return [
+            PolyPrism(polygons=outer, buffers=buffers, physical_name="O", mesh_order=2),
+            PolyPrism(polygons=inner, buffers=buffers, physical_name="I", mesh_order=1),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
     _assert_summaries_equivalent(s_gmsh, s_occ)
