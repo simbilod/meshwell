@@ -195,3 +195,33 @@ def test_smoke_two_unit_prisms_match(tmp_path):
     s_gmsh = _mesh_summary(m_gmsh)
     s_occ = _mesh_summary(m_occ)
     _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_three_abutting_prisms_match(tmp_path):
+    """Three prisms in a row.
+
+    Both backends must tag both interfaces (A___B and B___C) and produce
+    equivalent volumes per region.
+    """
+
+    def make():
+        A = shapely.Polygon([(0, 0), (2, 0), (2, 5), (0, 5)])
+        B = shapely.Polygon([(2, 0), (5, 0), (5, 5), (2, 5)])
+        C = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+        buffers = {0.0: 0.0, 1.0: 0.0}
+        return [
+            PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+            PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+            PolyPrism(polygons=C, buffers=buffers, physical_name="C", mesh_order=3),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+
+    # Both backends must produce both interfaces.
+    for iface in ("A___B", "B___C"):
+        assert iface in s_gmsh, (s_gmsh.keys(), "gmsh missing", iface)
+        assert iface in s_occ, (s_occ.keys(), "occ missing", iface)
+
+    _assert_summaries_equivalent(s_gmsh, s_occ)
