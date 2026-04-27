@@ -817,7 +817,16 @@ def test_stacked_layer_mismatch_raises():
 
 
 def test_generate_mesh_endtoend_with_structured_prism(tmp_path):
-    """generate_mesh (orchestrator) routes structured slabs through OCC + XAO + sidecar."""
+    """generate_mesh (orchestrator) routes structured slabs through OCC + XAO + sidecar.
+
+    Stronger than just checking the physical name: assert the actual layered
+    structure (each interior xy-column has exactly n_layers+1 z-levels), which
+    is only produced when the cascade + sidecar + apply_structured_slabs all
+    fire correctly. Without the wiring, the unstructured fallback would
+    produce a tet mesh with arbitrary z-levels.
+    """
+    from collections import defaultdict
+
     import meshio
     from shapely.geometry import Polygon
 
@@ -828,7 +837,7 @@ def test_generate_mesh_endtoend_with_structured_prism(tmp_path):
     sp = PolyPrism(
         polygons=sq,
         buffers={0.0: 0.0, 1.0: 0.0},
-        n_layers=[3],
+        n_layers=[5],
         physical_name="film",
     )
     out_msh = tmp_path / "t16.msh"
@@ -840,3 +849,9 @@ def test_generate_mesh_endtoend_with_structured_prism(tmp_path):
     )
     m = meshio.read(out_msh)
     assert "film" in m.field_data
+    # Structured layering signature: 5 layers => 6 distinct z-levels per column.
+    z_by_xy = defaultdict(set)
+    for c in m.points:
+        z_by_xy[(round(c[0], 6), round(c[1], 6))].add(round(c[2], 6))
+    column_lengths = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
+    assert column_lengths == {6}, column_lengths
