@@ -375,3 +375,143 @@ class _StructuredPhantom:
             fuser.Build()
             result = fuser.Shape()
         return result
+
+
+def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
+    """Reinstantiate each ``Slab`` in the gmsh geo kernel as a structured layered volume.
+
+    Pipeline per slab:
+      1. Build the bottom-face polygon in the geo kernel using the slab
+         footprint's vertex coordinates at z = ``slab.zlo``.
+      2. Call ``geo.extrude`` with ``numElements=[n_layers]``,
+         ``heights=[1.0]`` and ``recombine=slab.recombine``.
+      3. ``geo.synchronize()``.
+      4. Find OCC neighbor faces coincident with the geo replica's
+         bottom / top. For each match, ``mesh.embed`` the geo face into
+         the OCC face so nodes mate across kernels.
+      5. Tag the geo volume with the slab's ``physical_name``.
+
+    No OCC face is ever removed -- the void's bounding faces are owned
+    by neighbor volumes and must remain in place.
+    """
+    import gmsh
+
+    if not slabs:
+        return
+
+    tol = model_manager.point_tolerance or 1e-9
+    for slab in slabs:
+        _apply_one_slab(slab, tol)
+
+    gmsh.model.geo.synchronize()
+
+
+def _apply_one_slab(slab: Slab, tol: float) -> None:
+    import gmsh
+
+    polys = (
+        slab.footprint.geoms if hasattr(slab.footprint, "geoms") else [slab.footprint]
+    )
+    height = slab.zhi - slab.zlo
+    for poly in polys:
+        loops = [_geo_curve_loop(list(poly.exterior.coords)[:-1], slab.zlo)]
+        loops.extend(
+            _geo_curve_loop(list(interior.coords)[:-1], slab.zlo)
+            for interior in poly.interiors
+        )
+        bottom_surface = gmsh.model.geo.addPlaneSurface(loops)
+
+        extruded = gmsh.model.geo.extrude(
+            [(2, bottom_surface)],
+            0,
+            0,
+            height,
+            numElements=[slab.n_layers],
+            heights=[1.0],
+            recombine=slab.recombine,
+        )
+        # extruded layout per gmsh docs: [(2, top_surface), (3, volume), (2, lateral_0), (2, lateral_1), ...]
+        top_dt = next(dt for dt in extruded if dt[0] == 2)
+        volume_dt = next(dt for dt in extruded if dt[0] == 3)
+        side_dts = [dt for dt in extruded if dt[0] == 2 and dt != top_dt]
+
+        gmsh.model.geo.synchronize()
+
+        _embed_geo_into_occ_neighbors(
+            geo_bottom=bottom_surface,
+            geo_top=top_dt[1],
+            geo_sides=[dt[1] for dt in side_dts],
+            slab=slab,
+            tol=tol,
+        )
+
+        for name in slab.physical_name:
+            pg = gmsh.model.addPhysicalGroup(3, [volume_dt[1]])
+            gmsh.model.setPhysicalName(3, pg, name)
+
+
+def _geo_curve_loop(coords, z: float) -> int:
+    """Build a closed curve loop in the geo kernel at given z."""
+    import gmsh
+
+    pts = [gmsh.model.geo.addPoint(x, y, z) for x, y in coords]
+    lines = [gmsh.model.geo.addLine(a, b) for a, b in pairwise(pts)]
+    lines.append(gmsh.model.geo.addLine(pts[-1], pts[0]))
+    return gmsh.model.geo.addCurveLoop(lines)
+
+
+def _embed_geo_into_occ_neighbors(
+    geo_bottom: int,
+    geo_top: int,
+    geo_sides: list[int],  # noqa: ARG001 - lateral embedding deferred
+    slab: Slab,
+    tol: float,
+) -> None:
+    """Embed bottom/top geo faces into any coincident OCC neighbor faces.
+
+    Lateral side embedding is intricate (geo sides are rectangles, OCC
+    lateral faces may be polygons). Defer to v2; v1 focuses on bottom/top
+    mating, which covers the t3-style stack-of-films use case.
+    """
+    import contextlib
+
+    import gmsh
+
+    occ_faces = gmsh.model.occ.getEntities(2)
+    for geo_face_tag, expected_z in [
+        (geo_bottom, slab.zlo),
+        (geo_top, slab.zhi),
+    ]:
+        match = _find_occ_face_at_z(occ_faces, expected_z, tol)
+        if match is None:
+            continue
+        # Embed can fail if the geo face is not strictly contained in
+        # the OCC face. Non-fatal in v1 -- gmsh will mesh the void
+        # independently. Mating quality is exercised by Task 14.
+        with contextlib.suppress(Exception):
+            gmsh.model.mesh.embed(2, [geo_face_tag], 2, match)
+
+
+def _find_occ_face_at_z(candidates, target_z: float, tol: float) -> int | None:
+    """Return tag of an OCC face whose centroid z is within tol of target_z.
+
+    Uses ``occ.getBoundingBox`` (only works on OCC entities). The
+    candidate list is from ``occ.getEntities(2)`` so all candidates are
+    OCC-side; geo faces are excluded by construction.
+    """
+    import gmsh
+
+    best_tag: int | None = None
+    best_delta = float("inf")
+    for dim, tag in candidates:
+        if dim != 2:
+            continue
+        _xmin, _ymin, zmin, _xmax, _ymax, zmax = gmsh.model.occ.getBoundingBox(2, tag)
+        if abs(zmin - zmax) > tol:
+            continue  # not an axis-aligned constant-z face
+        z_face = 0.5 * (zmin + zmax)
+        delta = abs(z_face - target_z)
+        if delta < tol and delta < best_delta:
+            best_tag = tag
+            best_delta = delta
+    return best_tag

@@ -477,3 +477,41 @@ def test_cad_gmsh_populates_model_manager_structured_slabs(square_poly):
         assert slabs[0].n_layers == 3
     finally:
         mm.finalize()
+
+
+def test_apply_structured_slabs_isolated_slab(square_poly):
+    """Single structured prism, no neighbors -> geo extrude with N layers."""
+    from collections import defaultdict
+
+    import gmsh
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import apply_structured_slabs
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+    _, mm = cad_gmsh([sp], filename="t9")
+    try:
+        # After CAD, the OCC body is gone (mesh_bool=False) and the void's
+        # boundary faces no longer exist (no neighbors held them).
+        # apply_structured_slabs builds the geo replica from scratch.
+        apply_structured_slabs(mm, mm.structured_slabs)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", 0.5)
+        mm.model.mesh.generate(3)
+
+        # Use the structured layer signature: every interior xy node should
+        # appear at exactly n_layers+1 distinct z values.
+        all_nodes = mm.model.mesh.getNodes()
+        _, coords, _ = all_nodes
+        coords = coords.reshape(-1, 3)
+        z_by_xy = defaultdict(set)
+        for c in coords:
+            z_by_xy[(round(c[0], 6), round(c[1], 6))].add(round(c[2], 6))
+        layer_counts = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
+        assert layer_counts == {4}, layer_counts  # 3 layers => 4 z-levels
+    finally:
+        mm.finalize()
