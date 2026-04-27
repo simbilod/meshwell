@@ -104,3 +104,57 @@ def three_abutting_prisms(standard_prism_buffers) -> list[PolyPrism]:
             mesh_order=3,
         ),
     ]
+
+
+# --- Cross-backend pipeline fixture --------------------------------------
+
+
+@pytest.fixture(params=["gmsh", "occ"])
+def cad_pipeline(request, tmp_path):
+    """Run the full CAD+mesh pipeline through one backend.
+
+    Tests requesting this fixture run twice (once per backend) and receive
+    a callable ``run(entities, dim=3, **mesh_kwargs) -> meshio.Mesh``. The
+    callable abstracts the in-memory (cad_gmsh) vs xao-roundtrip (cad_occ)
+    glue. ``run.backend`` is the active backend name ("gmsh" or "occ").
+    """
+    import meshio  # noqa: F401 — confirm meshio is importable at fixture time
+
+    backend = request.param
+    msh_path = tmp_path / "out.msh"
+
+    if backend == "gmsh":
+        from meshwell.cad_gmsh import cad_gmsh
+        from meshwell.mesh import mesh
+
+        def run(entities, dim=3, default_characteristic_length=1.0, **mesh_kwargs):
+            _, mm = cad_gmsh(entities)
+            return mesh(
+                dim=dim,
+                default_characteristic_length=default_characteristic_length,
+                model=mm,
+                output_file=str(msh_path),
+                n_threads=1,
+                **mesh_kwargs,
+            )
+
+    else:
+        from meshwell.cad_occ import cad_occ
+        from meshwell.mesh import mesh
+        from meshwell.occ_xao_writer import write_xao
+
+        def run(entities, dim=3, default_characteristic_length=1.0, **mesh_kwargs):
+            labeled = cad_occ(entities)
+            xao_path = tmp_path / "out.xao"
+            write_xao(labeled, str(xao_path))
+            return mesh(
+                dim=dim,
+                default_characteristic_length=default_characteristic_length,
+                input_file=str(xao_path),
+                output_file=str(msh_path),
+                n_threads=1,
+                **mesh_kwargs,
+            )
+
+    run.backend = backend
+    return run
