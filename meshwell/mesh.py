@@ -639,34 +639,36 @@ def mesh(
     if resolution_specs is None:
         resolution_specs = {}
 
-    # Load geometry from file if provided
-    if input_file is not None:
-        mesh_generator.load_xao_file(input_file)
+    try:
+        # Load geometry from file if provided
+        if input_file is not None:
+            mesh_generator.load_xao_file(input_file)
 
-    # Process geometry into mesh
-    mesh_obj = mesh_generator.process_geometry(
-        dim=dim,
-        background_remeshing_file=background_remeshing_file,
-        default_characteristic_length=default_characteristic_length,
-        global_scaling=global_scaling,
-        global_2D_algorithm=global_2D_algorithm,
-        global_3D_algorithm=global_3D_algorithm,
-        mesh_element_order=mesh_element_order,
-        verbosity=verbosity,
-        periodic_entities=periodic_entities,
-        optimization_flags=optimization_flags,
-        boundary_delimiter=boundary_delimiter,
-        resolution_specs=resolution_specs,
-        gmsh_version=gmsh_version,
-        interface_delimiter=interface_delimiter,
-    )
+        # Process geometry into mesh
+        mesh_obj = mesh_generator.process_geometry(
+            dim=dim,
+            background_remeshing_file=background_remeshing_file,
+            default_characteristic_length=default_characteristic_length,
+            global_scaling=global_scaling,
+            global_2D_algorithm=global_2D_algorithm,
+            global_3D_algorithm=global_3D_algorithm,
+            mesh_element_order=mesh_element_order,
+            verbosity=verbosity,
+            periodic_entities=periodic_entities,
+            optimization_flags=optimization_flags,
+            boundary_delimiter=boundary_delimiter,
+            resolution_specs=resolution_specs,
+            gmsh_version=gmsh_version,
+            interface_delimiter=interface_delimiter,
+        )
 
-    # Save to file if output file provided
-    if output_file is not None:
-        mesh_generator.save_to_file(output_file)
-
-    # Finalize if we created the model
-    if model is None:
-        mesh_generator.model_manager.finalize()
+        # Save to file if output file provided
+        if output_file is not None:
+            mesh_generator.save_to_file(output_file)
+    finally:
+        # Finalize if we created the model -- even on failure, so gmsh
+        # state doesn't leak into subsequent test runs / callers.
+        if model is None:
+            mesh_generator.model_manager.finalize()
 
     return mesh_obj
