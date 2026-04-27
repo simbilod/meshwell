@@ -29,6 +29,7 @@ def prepare_entities(
     entities_list: list[Any],
     perturbation: float,
     resolve_snap: float | None = None,
+    structured_slabs_out: list | None = None,
 ) -> None:
     """In-place pre-pass shared by cad_gmsh and cad_occ.
 
@@ -42,6 +43,16 @@ def prepare_entities(
             Defaults to ``perturbation`` when ``None``. cad_gmsh passes
             ``max(perturbation, point_tolerance)`` so the resolved strip
             is wide enough for non-degenerate panels.
+        structured_slabs_out: Opt-in hook. When a list is provided, the
+            structured-PolyPrism cascade runs after buffering; resolved
+            :class:`meshwell.structured_polyprism.Slab` objects are
+            appended to this list and each
+            :class:`meshwell.structured_polyprism._StructuredPolyPrism`
+            in ``entities_list`` is replaced in-place with a batch of
+            :class:`meshwell.structured_polyprism._StructuredPhantom`
+            entities (one per slab). When ``None`` (default), structured
+            prisms flow through unchanged so existing callers are
+            unaffected.
     """
     if not entities_list:
         return
@@ -114,3 +125,41 @@ def prepare_entities(
     for ent in entities_list:
         if isinstance(ent, InterfaceTag):
             ent.resolve(polygon_ents, default_snap=snap)
+
+    # ----- Pass C: structured-PolyPrism cascade (opt-in) -----
+    if structured_slabs_out is not None:
+        from meshwell.structured_polyprism import (
+            _StructuredPhantom,
+            _StructuredPolyPrism,
+            resolve_structured_slabs,
+        )
+
+        # Run the cascade once on the full list (uses the post-buffer
+        # polygons; structured prisms participate in buffering above).
+        slabs = resolve_structured_slabs(entities_list)
+        structured_slabs_out.extend(slabs)
+
+        # Build phantoms in source order so insertion order maps directly
+        # back to user intent for fragmentation tie-breaks.
+        phantom_entities = [_StructuredPhantom(s) for s in slabs]
+
+        # Replace original structured-mode PolyPrism instances with
+        # phantoms in place.
+        new_list: list = []
+        replaced = False
+        for ent in entities_list:
+            if isinstance(ent, _StructuredPolyPrism):
+                if not replaced:
+                    new_list.extend(phantom_entities)
+                    replaced = True
+                # subsequent structured entries: skip (already represented
+                # in the phantom batch).
+                continue
+            new_list.append(ent)
+        if not replaced and phantom_entities:
+            # All slabs came from a single structured PolyPrism scanned
+            # first; this branch is unreachable in practice because the
+            # loop above handles that case, but kept for safety.
+            new_list = phantom_entities + new_list
+
+        entities_list[:] = new_list

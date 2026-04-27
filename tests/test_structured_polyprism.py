@@ -396,3 +396,64 @@ def test_phantom_gmsh_extrudes_volume(square_poly):
         assert dimtags[0][0] == 3
     finally:
         mm.finalize()
+
+
+def test_prepare_entities_swaps_structured_for_phantoms(square_poly):
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_common import prepare_entities
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import (
+        _StructuredPhantom,
+        _StructuredPolyPrism,
+    )
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+
+    class _NeutralPolyEntity:
+        def __init__(self, p):
+            self.polygons = p
+            self.physical_name = ("bg",)
+
+    other = _NeutralPolyEntity(Polygon([(-2, -2), (2, -2), (2, 2), (-2, 2)]))
+    entities = [other, sp]
+
+    captured_slabs: list = []
+    prepare_entities(
+        entities,
+        perturbation=1e-5,
+        resolve_snap=1e-3,
+        structured_slabs_out=captured_slabs,
+    )
+    # Structured PolyPrism replaced by phantom in-place.
+    assert not any(isinstance(e, _StructuredPolyPrism) for e in entities)
+    phantoms = [e for e in entities if isinstance(e, _StructuredPhantom)]
+    assert len(phantoms) == 1
+    assert phantoms[0].physical_name == ("film",)
+    assert phantoms[0].mesh_bool is False
+    # Captured slab list mirrors the cascade output.
+    assert len(captured_slabs) == 1
+    assert captured_slabs[0].physical_name == ("film",)
+
+
+def test_prepare_entities_no_kwarg_preserves_structured(square_poly):
+    """Without structured_slabs_out, structured PolyPrism flows unchanged."""
+    from meshwell.cad_common import prepare_entities
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import _StructuredPolyPrism
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+    entities = [sp]
+    prepare_entities(entities, perturbation=1e-5)
+    # Without the kwarg, structured prism is passed through (no phantom).
+    assert any(isinstance(e, _StructuredPolyPrism) for e in entities)
