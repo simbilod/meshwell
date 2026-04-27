@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import gmsh
 import numpy as np
 import shapely
 
+import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -23,7 +23,7 @@ def test_polysurface_transformation_occ():
     )
 
     labeled_entities = cad_occ(entities_list=[surface])
-    shape = labeled_entities[0].shape
+    shape = labeled_entities[0].shapes[0]
 
     # Get bounding box
     from OCP.Bnd import Bnd_Box
@@ -87,7 +87,7 @@ def test_polyprism_transformation_occ():
     )
 
     labeled_entities = cad_occ(entities_list=[prism])
-    shape = labeled_entities[0].shape
+    shape = labeled_entities[0].shapes[0]
 
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib

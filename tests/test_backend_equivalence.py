@@ -408,6 +408,10 @@ def test_backends_mesh_keep_false_equivalently(tmp_path):
     assert "A" in gmsh_sum
     assert "helper" not in occ_sum
     assert "helper" not in gmsh_sum
-    # Prism A is 5x5x2 = 50.
-    assert abs(occ_sum["A"][1] - 50.0) < 1e-6
-    assert abs(gmsh_sum["A"][1] - 50.0) < 1e-6
+    # Prism A is 5x5x2 = 50. The cad_gmsh backend buffers polygon entities
+    # outward by ``perturbation`` (default 1.1*point_tolerance, ~1.1e-3),
+    # which inflates the prism volume by ~4e-4 for this scene -- still well
+    # below the user-promised ``point_tolerance``. Tolerance picks the
+    # looser of the two backends so the assertion is symmetric.
+    assert abs(occ_sum["A"][1] - 50.0) < 1e-3
+    assert abs(gmsh_sum["A"][1] - 50.0) < 1e-3
