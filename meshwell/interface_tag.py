@@ -315,10 +315,62 @@ class InterfaceTag(GeometryEntity):
         return dimtags
 
     def instanciate_occ(self) -> "TopoDS_Shape":
-        """OCC instantiation not supported for v1.
+        """Build vertical 2D faces from ``self.resolved_linestrings``.
 
-        InterfaceTag is gmsh-only for v1; use the cad_gmsh backend.
+        Each linestring segment is laid out at ``z = zmin``, then
+        extruded by ``zmax - zmin`` to produce a vertical rectangular
+        face (mirrors the per-segment construction of :meth:`instanciate`
+        for the gmsh backend).
+
+        Returns:
+            A single ``TopoDS_Face`` if there is exactly one segment, or
+            a ``TopoDS_Compound`` of faces otherwise. An empty compound
+            is returned when ``resolved_linestrings`` is empty so that
+            ``cad_occ`` can include the entity in its fragment pass
+            (and emit the warning issued by :meth:`resolve`).
         """
-        raise NotImplementedError(
-            "InterfaceTag is gmsh-only for v1; use the cad_gmsh backend."
+        from OCP.BRep import BRep_Builder
+        from OCP.BRepBuilderAPI import (
+            BRepBuilderAPI_MakeEdge,
+            BRepBuilderAPI_MakeVertex,
+            BRepBuilderAPI_MakeWire,
         )
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+        from OCP.gp import gp_Pnt, gp_Vec
+        from OCP.TopoDS import TopoDS_Compound
+
+        builder = BRep_Builder()
+        compound = TopoDS_Compound()
+        builder.MakeCompound(compound)
+
+        if not self.resolved_linestrings:
+            return compound
+
+        dz = self.zmax - self.zmin
+        if dz == 0.0:
+            return compound
+
+        face_count = 0
+        single_face = None
+
+        for ls in self.resolved_linestrings:
+            coords = list(ls.coords)
+            if len(coords) < 2:
+                continue
+            for (x1, y1), (x2, y2) in itertools.pairwise(coords):
+                if (x1, y1) == (x2, y2):
+                    continue
+                v1 = BRepBuilderAPI_MakeVertex(gp_Pnt(x1, y1, self.zmin)).Vertex()
+                v2 = BRepBuilderAPI_MakeVertex(gp_Pnt(x2, y2, self.zmin)).Vertex()
+                edge = BRepBuilderAPI_MakeEdge(v1, v2).Edge()
+                wire = BRepBuilderAPI_MakeWire(edge).Wire()
+                # Extruding a wire by a vector produces a face (Shell of one face).
+                face_shape = BRepPrimAPI_MakePrism(wire, gp_Vec(0.0, 0.0, dz)).Shape()
+                builder.Add(compound, face_shape)
+                face_count += 1
+                if single_face is None:
+                    single_face = face_shape
+
+        if face_count == 1:
+            return single_face
+        return compound
