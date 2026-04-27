@@ -113,8 +113,11 @@ def test_inject_full_mixed_scene():
                 for tag in gmsh.model.getEntitiesForPhysicalGroup(d, t)
             )
             vol_by_name[name] = total
-        assert abs(vol_by_name["A"] - 2.0) < 1e-6
-        assert abs(vol_by_name["B"] - 2.0) < 1e-6
+        # cad_occ applies a 1e-5 perturbation buffer to polygon entities,
+        # so volumes can differ from the nominal by O(1e-4). Use point_tolerance
+        # as the bound.
+        assert abs(vol_by_name["A"] - 2.0) < 1e-3
+        assert abs(vol_by_name["B"] - 2.0) < 1e-3
 
         # Shared A___B interface exists, and it is area ~ 2.
         surf_groups = gmsh.model.getPhysicalGroups(2)
@@ -136,7 +139,7 @@ def test_inject_full_mixed_scene():
             gmsh.model.occ.getMass(2, tag)
             for tag in gmsh.model.getEntitiesForPhysicalGroup(2, interface_tag)
         )
-        assert abs(ifc_area - 2.0) < 1e-6
+        assert abs(ifc_area - 2.0) < 1e-3
     finally:
         mm.finalize()
 
@@ -484,9 +487,12 @@ def test_shared_physical_name_across_entities():
             if gmsh.model.getPhysicalName(d, t) == "bulk"
             for t in gmsh.model.getEntitiesForPhysicalGroup(d, t)
         ]
-        assert len(bulk_tags) == 3  # union splits into three pieces
+        # The new sequential-cut pipeline carves the overlap out of b2 before
+        # fragmentation, so b1 owns the overlap outright and "bulk" has 2
+        # entities (one per input), not 3 from a raw fragment split.
+        assert len(bulk_tags) == 2
         total_vol = sum(gmsh.model.occ.getMass(3, tt) for tt in bulk_tags)
-        assert abs(total_vol - 15.0) < 1e-6  # 2^3 + 2^3 - 1^3
+        assert abs(total_vol - 15.0) < 1e-3  # 2^3 + (2^3 - 1^3)
     finally:
         mm.finalize()
 
@@ -534,8 +540,10 @@ def test_shared_physical_name_across_entities():
             if gmsh.model.getPhysicalName(d, t) == "slab"
             for t in gmsh.model.getEntitiesForPhysicalGroup(d, t)
         ]
+        # cad_occ applies a 1e-5 perturbation buffer to PolyPrism polygons;
+        # slab mass deviates by O(1e-3) from the nominal 198.0.
         assert (
-            abs(sum(gmsh.model.occ.getMass(3, tt) for tt in slab_tags) - 198.0) < 1e-6
+            abs(sum(gmsh.model.occ.getMass(3, tt) for tt in slab_tags) - 198.0) < 1e-2
         )
     finally:
         mm.finalize()
@@ -568,7 +576,9 @@ def test_keep_false_polyprism_fully_inside_leaves_interior_void():
         mm.load_occ_entities(occ_ents)
         assert len(gmsh.model.getEntities(3)) == 1
         (vol_tag,) = [t for _, t in gmsh.model.getEntities(3)]
-        assert abs(gmsh.model.occ.getMass(3, vol_tag) - (1000 - 64)) < 1e-6
+        # cad_occ applies a 1e-5 perturbation buffer to polygon entities; the
+        # PolyPrism volumes are inflated by O(1e-3), so use point_tolerance as bound.
+        assert abs(gmsh.model.occ.getMass(3, vol_tag) - (1000 - 64)) < 1e-2
 
         name_to_tags = {
             gmsh.model.getPhysicalName(d, t): list(

@@ -461,13 +461,15 @@ def test_multi_entity_physical_assignment_by_location_and_mass():
             ("C", 1.0, (4.5, 0.5, 0.5)),
         ]:
             mass, centroid = _aggregate_physical(3, name)
-            assert abs(mass - expected_mass) < 1e-6, (name, mass, expected_mass)
+            # cad_occ applies a 1e-5 perturbation buffer to polygon entities;
+            # volumes deviate by O(1e-4) from nominal.
+            assert abs(mass - expected_mass) < 1e-3, (name, mass, expected_mass)
             for got, exp in zip(centroid, expected_c):
-                assert abs(got - exp) < 1e-4, (name, centroid, expected_c)
+                assert abs(got - exp) < 1e-3, (name, centroid, expected_c)
 
         # Embedded cut surface: area=1, at z=1 on A's footprint.
         mass, centroid = _aggregate_physical(2, "cut")
-        assert abs(mass - 1.0) < 1e-6, mass
+        assert abs(mass - 1.0) < 1e-3, mass
         for got, exp in zip(centroid, (0.5, 0.5, 1.0)):
             assert abs(got - exp) < 1e-4, (centroid, exp)
 
@@ -483,11 +485,13 @@ def test_multi_entity_physical_assignment_by_location_and_mass():
         )
         assert interface_name is not None
         mass, centroid = _aggregate_physical(2, interface_name)
-        assert abs(mass - 2.0) < 1e-6, mass  # 1 wide x 2 tall
+        # cad_occ buffers polygon entities by 1e-5; the shared face area
+        # deviates by O(1e-5) from the nominal 2.0.
+        assert abs(mass - 2.0) < 1e-3, mass  # 1 wide x 2 tall
         for got, exp in zip(centroid, (1.0, 0.5, 1.0)):
             assert abs(got - exp) < 1e-4, (centroid, exp)
 
-        # 1D wire.
+        # 1D wire (PolyLine, no polygon buffer).
         mass, centroid = _aggregate_physical(1, "wire")
         assert abs(mass - 1.0) < 1e-6, mass
         for got, exp in zip(centroid, (6.5, 0.0, 0.0)):
