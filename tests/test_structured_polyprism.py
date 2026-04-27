@@ -739,3 +739,44 @@ def test_resolve_partial_z_split_rejects_unaligned_layers():
     )
     with pytest.raises(ValueError, match="layer count"):
         resolve_structured_slabs([sp_lo, sp_hi])
+
+
+def test_overlapping_structured_priority_resolution(tmp_path):
+    """Two overlapping prisms (xy + z): higher priority wins, loser is split."""
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    big = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    small = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
+
+    # Compatible layer densities so the cascade produces matching n_layers
+    # on shared z-intervals (2 layers/unit on both lo and hi).
+    sp_lo = PolyPrism(
+        polygons=big,
+        buffers={0.0: 0.0, 3.0: 0.0},
+        n_layers=[6],
+        physical_name="lo",
+        mesh_order=2.0,
+    )
+    sp_hi = PolyPrism(
+        polygons=small,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        n_layers=[2],
+        physical_name="hi",
+        mesh_order=1.0,
+    )
+    _, mm = cad_gmsh([sp_lo, sp_hi], filename="t13")
+    out_msh = tmp_path / "t13.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=1.0, output_file=out_msh, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out_msh)
+    assert "lo" in m.field_data
+    assert "hi" in m.field_data
