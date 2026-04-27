@@ -59,16 +59,16 @@ def test_multiple_physicals():
         )
     # Equivalence of surfaces
     assert (
-        mesh_obj.cell_sets_dict["small_prism___medium_prism"]["triangle"].all()
-        == mesh_obj.cell_sets_dict["small_prism___center"]["triangle"].all()
+        mesh_obj.cell_sets_dict["medium_prism___small_prism"]["triangle"].all()
+        == mesh_obj.cell_sets_dict["center___small_prism"]["triangle"].all()
     )
     assert (
-        mesh_obj.cell_sets_dict["medium_prism___big_prism"]["triangle"].all()
-        == mesh_obj.cell_sets_dict["medium_prism___domain"]["triangle"].all()
+        mesh_obj.cell_sets_dict["big_prism___medium_prism"]["triangle"].all()
+        == mesh_obj.cell_sets_dict["domain___medium_prism"]["triangle"].all()
     )
     assert (
-        mesh_obj.cell_sets_dict["medium_prism___big_prism"]["triangle"].all()
-        == mesh_obj.cell_sets_dict["center___domain"]["triangle"].all()
+        mesh_obj.cell_sets_dict["big_prism___medium_prism"]["triangle"].all()
+        == mesh_obj.cell_sets_dict["domain___center"]["triangle"].all()
     )
     # Equivalence of boundaries
     assert (

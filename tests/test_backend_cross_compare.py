@@ -435,3 +435,27 @@ def test_pipeline_runs_on_both_backends(cad_pipeline, scene_factory):
     dim = 2 if any(type(e).__name__ == "PolySurface" for e in entities) else 3
     m = cad_pipeline(entities, dim=dim)
     assert "A" in m.cell_sets_dict
+
+
+def test_tapered_prism_match(tmp_path):
+    """Tapered prism match across backends (sidewall buffer => extrude=False).
+
+    Without the OCC ThruSections port, the OCC backend produced facets
+    that gmsh's PLC mesher rejected.
+    """
+
+    def make():
+        polygon = shapely.Polygon([(-5, -5), (5, -5), (5, 5), (-5, 5)])
+        return [
+            PolyPrism(
+                polygons=polygon,
+                buffers={0.0: 0.0, 1.0: -0.1},
+                physical_name="tapered",
+                mesh_order=1,
+            ),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    _assert_summaries_equivalent(s_gmsh, s_occ)
