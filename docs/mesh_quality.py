@@ -9,8 +9,9 @@ from pathlib import Path
 import numpy as np
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.quality import MeshQualityAnalyzer, main
 from meshwell.resolution import ResolutionSpec
@@ -26,7 +27,7 @@ polygon = shapely.box(-5, -5, 5, 5)
 entity = PolySurface(polygons=polygon, physical_name="test_region", mesh_order=1)
 
 # Generate CAD and mesh
-cad(entities_list=[entity], output_file="quality_test.xao")
+write_xao(cad_occ([entity]), "quality_test.xao")
 test_mesh = mesh(
     dim=2,
     input_file="quality_test.xao",
@@ -119,7 +120,7 @@ poly2 = shapely.box(0, 0, 5, 5)
 region1 = PolySurface(polygons=poly1, physical_name="fine_region", mesh_order=1)
 region2 = PolySurface(polygons=poly2, physical_name="coarse_region", mesh_order=1)
 
-cad(entities_list=[region1, region2], output_file="multi_region.xao")
+write_xao(cad_occ([region1, region2]), "multi_region.xao")
 
 # Generate mesh with different sizes in each region
 

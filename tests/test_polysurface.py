@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.utils import compare_gmsh_files
 
 
-def test_polysurface():
+def test_polysurface(tmp_path):
     polygon1 = shapely.Polygon(
         [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]],
         holes=([[0.5, 0.5], [1.5, 0.5], [1.5, 1.5], [0.5, 1.5], [0.5, 0.5]],),
@@ -19,18 +18,19 @@ def test_polysurface():
     polygon = shapely.MultiPolygon([polygon1, polygon2])
 
     polysurface_obj = PolySurface(polygons=polygon, physical_name="polysurface")
-    cad(entities_list=[polysurface_obj], output_file="test_polysurface")
+    write_xao(cad_occ([polysurface_obj]), str(tmp_path / "test_polysurface.xao"))
+    msh_path = tmp_path / "test_polysurface.msh"
     mesh(
-        input_file="test_polysurface.xao",
-        output_file="test_polysurface.msh",
+        input_file=str(tmp_path / "test_polysurface.xao"),
+        output_file=str(msh_path),
         dim=2,
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    compare_gmsh_files(Path("test_polysurface.msh"))
+    compare_gmsh_files(msh_path)
 
 
-def test_coinciding_polysurface():
+def test_coinciding_polysurface(tmp_path):
     width = 1
     height = 1
 
@@ -48,19 +48,22 @@ def test_coinciding_polysurface():
 
     entities = [core_surface, cladding_surface, buried_oxide_surface]
 
-    cad(
-        entities_list=entities,
-        output_file="test_polysurface_coinciding.xao",
-        n_threads=1,
+    write_xao(
+        cad_occ(
+            entities,
+            n_threads=1,
+        ),
+        str(tmp_path / "test_polysurface_coinciding.xao"),
     )
+    msh_path = tmp_path / "test_polysurface_coinciding.msh"
     mesh(
-        input_file="test_polysurface_coinciding.xao",
-        output_file="test_polysurface_coinciding.msh",
+        input_file=str(tmp_path / "test_polysurface_coinciding.xao"),
+        output_file=str(msh_path),
         dim=2,
         default_characteristic_length=0.5,
         n_threads=1,
     )
-    compare_gmsh_files(Path("test_polysurface_coinciding.msh"))
+    compare_gmsh_files(msh_path)
 
 
 if __name__ == "__main__":

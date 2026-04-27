@@ -5,8 +5,9 @@
 # %%
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField, ThresholdField
 from meshwell.visualization import plot2D
@@ -30,10 +31,7 @@ polysurface = PolySurface(
     physical_name="filtered_boxes",
 )
 
-cad(
-    entities_list=[polysurface],
-    output_file="filtering_model.xao",
-)
+write_xao(cad_occ([polysurface]), "filtering_model.xao")
 
 output_mesh = mesh(
     dim=2,
@@ -115,10 +113,7 @@ poly_right = PolySurface(
     physical_name="inner_right",
 )
 
-cad(
-    entities_list=[poly_outer, poly_left, poly_right],
-    output_file="restricted_field_model.xao",
-)
+write_xao(cad_occ([poly_outer, poly_left, poly_right]), "restricted_field_model.xao")
 
 output_mesh = mesh(
     dim=2,

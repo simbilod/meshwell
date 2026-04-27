@@ -26,6 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # generate_references.sh installs meshwell at HEAD~1 to
+          # produce reference .msh / .xao files that the local working
+          # tree is then compared against byte-by-byte. Default
+          # checkout depth is 1, so we need at least 2.
+          fetch-depth: 2
       - name: Install uv
         uses: astral-sh/setup-uv@v7
       - name: Generate references from reference version
@@ -35,3 +41,8 @@ jobs:
         run: sudo apt-get install libglu1-mesa
       - name: Test
         run: uv run --extra dev pytest -n auto
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false

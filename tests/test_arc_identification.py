@@ -1,9 +1,8 @@
-import gmsh
 import numpy as np
 import pytest
 from shapely.geometry import LineString, Polygon
 
-from meshwell.cad import CAD
+import gmsh
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
@@ -168,7 +167,8 @@ def test_polyprism_arc_instantiate_gmsh():
     gmsh.initialize()
     gmsh.model.add("test_pp")
 
-    dimtags = pp.instanciate(CAD())
+    # pp.instanciate only touches cad_model when subdivision is set; pass None.
+    dimtags = pp.instanciate(None)
 
     assert len(dimtags) >= 1
     assert dimtags[0][0] == 3  # Dimension 3

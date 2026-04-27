@@ -1,12 +1,12 @@
 """Gmsh polyprism definitions."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import gmsh
+import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
-from meshwell.cad import CAD
+import gmsh
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.validation import format_physical_name
 
@@ -54,6 +54,19 @@ class PolyPrism(GeometryEntity):
         )
 
         # Parse buffers or prepare extrusion
+        if point_tolerance > 0:
+            # Snap input polygons to user grid before storing / buffering.
+            if isinstance(polygons, list):
+                polygons = [
+                    shapely.set_precision(
+                        p, grid_size=point_tolerance, mode="pointwise"
+                    )
+                    for p in polygons
+                ]
+            else:
+                polygons = shapely.set_precision(
+                    polygons, grid_size=point_tolerance, mode="pointwise"
+                )
         self.polygons = polygons
         if all(buffer == 0 for buffer in buffers.values()):
             self.extrude = True
@@ -334,7 +347,7 @@ class PolyPrism(GeometryEntity):
         model.occ.remove(list(prisms_dimtags))
         return subdivided_prisms
 
-    def instanciate(self, cad_model: CAD) -> list[tuple[int, int]]:
+    def instanciate(self, cad_model: Any) -> list[tuple[int, int]]:
         """Create GMSH volumes directly without using CAD class methods."""
         prisms = self._create_volumes_directly()
         if self.subdivision is not None:
@@ -353,97 +366,39 @@ class PolyPrism(GeometryEntity):
         entry: list[tuple[float, Polygon]],
         exterior: bool = True,
         interior_index: int = 0,
-    ) -> TopoDS_Shape:
-        """Create OCC volume directly using OCP."""
-        from OCP.BRep import BRep_Builder
-        from OCP.BRepBuilderAPI import (
-            BRepBuilderAPI_MakeSolid,
-        )
-        from OCP.TopoDS import TopoDS_Shell
+    ) -> "TopoDS_Shape":
+        """Loft a tapered solid through the per-z wires of ``entry``.
 
-        # Draw bottom surface
-        bottom_polygon = entry[0][1]
-        bottom_z = entry[0][0]
-        bottom_polygon_vertices = self.xy_surface_vertices(
-            polygon=bottom_polygon,
-            polygon_z=bottom_z,
-            exterior=exterior,
-            interior_index=interior_index,
-        )
-        faces = [
-            self._make_occ_face_from_vertices(
-                bottom_polygon_vertices,
+        Mirrors gmsh's ``addThruSections(makeSolid=True, makeRuled=True)``.
+        Each layer in ``entry`` contributes one wire (built with the
+        existing :meth:`_make_occ_wire_from_vertices` helper so arcs are
+        preserved). ``BRepOffsetAPI_ThruSections`` builds bottom + top +
+        lateral surface as a single closed solid -- no manual face
+        stitching, no shell sealing, no MakeSolid wrapping.
+
+        All wires must have the same vertex count (true for any
+        consistently-buffered polygon, which is the only case meshwell
+        currently supports). OCC raises during ``Build()`` if violated.
+        """
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+
+        loft = BRepOffsetAPI_ThruSections(True, True)  # isSolid, isRuled
+        for z, polygon in entry:
+            vertices = self.xy_surface_vertices(
+                polygon=polygon,
+                polygon_z=z,
+                exterior=exterior,
+                interior_index=interior_index,
+            )
+            wire = self._make_occ_wire_from_vertices(
+                vertices,
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
             )
-        ]
-
-        # Draw top surface
-        top_polygon = entry[-1][1]
-        top_z = entry[-1][0]
-        top_polygon_vertices = self.xy_surface_vertices(
-            polygon=top_polygon,
-            polygon_z=top_z,
-            exterior=exterior,
-            interior_index=interior_index,
-        )
-        faces.append(
-            self._make_occ_face_from_vertices(
-                top_polygon_vertices,
-                identify_arcs=self.identify_arcs,
-                min_arc_points=self.min_arc_points,
-                arc_tolerance=self.arc_tolerance,
-            )
-        )
-
-        # Draw vertical surfaces
-        # Note: Vertical surfaces remain straight lines between layers for now
-        # unless we want to also identify arcs in the vertical direction.
-        # But usually PolyPrism arcs are in the XY plane.
-        for pair_index in range(len(entry) - 1):
-            if exterior:
-                bottom_coords = entry[pair_index][1].exterior.coords
-                top_coords = entry[pair_index + 1][1].exterior.coords
-            else:
-                bottom_coords = entry[pair_index][1].interiors[interior_index].coords
-                top_coords = entry[pair_index + 1][1].interiors[interior_index].coords
-
-            bottom_z = entry[pair_index][0]
-            top_z = entry[pair_index + 1][0]
-
-            for facet_pt_ind in range(len(bottom_coords) - 1):
-                p1 = (
-                    bottom_coords[facet_pt_ind][0],
-                    bottom_coords[facet_pt_ind][1],
-                    bottom_z,
-                )
-                p2 = (
-                    bottom_coords[facet_pt_ind + 1][0],
-                    bottom_coords[facet_pt_ind + 1][1],
-                    bottom_z,
-                )
-                p3 = (
-                    top_coords[facet_pt_ind + 1][0],
-                    top_coords[facet_pt_ind + 1][1],
-                    top_z,
-                )
-                p4 = (top_coords[facet_pt_ind][0], top_coords[facet_pt_ind][1], top_z)
-
-                facet_vertices = [p1, p2, p3, p4, p1]
-                # For vertical facets, we use simple linear interpolation
-                faces.append(self._make_occ_face_from_vertices(facet_vertices))
-
-        # Build shell and solid
-        shell_builder = BRep_Builder()
-        shell = TopoDS_Shell()
-        shell_builder.MakeShell(shell)
-        for face in faces:
-            shell_builder.Add(shell, face)
-
-        solid_builder = BRepBuilderAPI_MakeSolid()
-        solid_builder.Add(shell)
-        return solid_builder.Solid()
+            loft.AddWire(wire)
+        loft.Build()
+        return loft.Shape()
 
     def plot_decomposition(
         self,
@@ -524,13 +479,18 @@ class PolyPrism(GeometryEntity):
         return ax
 
     def _create_occ_volume_with_holes(
-        self, entry: list[tuple[float, Polygon]]
+        self,
+        entry: list[tuple[float, Polygon]],
     ) -> TopoDS_Shape:
-        """Create OCC volume with holes directly using OCP."""
+        """Create OCC volume with holes directly using OCP.
+
+        Non-extrude path uses ``BRepAlgoAPI_Cut`` for the z-varying buffer
+        case; the extrude path in :meth:`instanciate_occ` builds the
+        prism as a single swept face.
+        """
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 
         exterior = self._create_occ_volume(entry, exterior=True)
-        # entry[0][1] is a Polygon
         interior_count = len(entry[0][1].interiors)
 
         for i in range(interior_count):
@@ -543,7 +503,8 @@ class PolyPrism(GeometryEntity):
 
     def instanciate_occ(self) -> TopoDS_Shape:
         """Create OCC volumes directly using OCP."""
-        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
         from OCP.gp import gp_Vec
 
@@ -554,35 +515,29 @@ class PolyPrism(GeometryEntity):
                 if hasattr(self.polygons, "geoms")
                 else [self.polygons]
             )
+            vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
-                # Create face (with holes) at zmin
                 exterior_vertices = [(x, y, self.zmin) for x, y in poly.exterior.coords]
-                face = self._make_occ_face_from_vertices(
+                outer_wire = self._make_occ_wire_from_vertices(
                     exterior_vertices,
                     identify_arcs=self.identify_arcs,
                     min_arc_points=self.min_arc_points,
                     arc_tolerance=self.arc_tolerance,
                 )
-
+                mf = BRepBuilderAPI_MakeFace(outer_wire)
                 for interior in poly.interiors:
                     hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
-                    hole_face = self._make_occ_face_from_vertices(
+                    hole_wire = self._make_occ_wire_from_vertices(
                         hole_vertices,
                         identify_arcs=self.identify_arcs,
                         min_arc_points=self.min_arc_points,
                         arc_tolerance=self.arc_tolerance,
                     )
-                    cut_api = BRepAlgoAPI_Cut(face, hole_face)
-                    cut_api.Build()
-                    face = cut_api.Shape()
+                    hole_wire.Reverse()
+                    mf.Add(hole_wire)
+                face = mf.Face()
 
-                # Extrude
-                vec = gp_Vec(0, 0, self.zmax - self.zmin)
-                prism_api = BRepPrimAPI_MakePrism(face, vec)
-                # BRepPrimAPI classes often perform on Construction, or have Build/Perform.
-                # Let's check prism_api. It usually has Build().
-                prism_api.Build()
-                volumes.append(prism_api.Shape())
+                volumes.append(BRepPrimAPI_MakePrism(face, vec).Shape())
         else:
             volumes.extend(
                 [

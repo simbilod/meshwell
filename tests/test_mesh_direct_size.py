@@ -4,10 +4,12 @@ import meshio
 import numpy as np
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import DirectSizeSpecification
+from meshwell.utils import compare_gmsh_files
 
 
 def test_mesh_direct_size_specification_global():
@@ -17,7 +19,7 @@ def test_mesh_direct_size_specification_global():
         [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
     )
     poly_obj = PolySurface(polygons=polygon, mesh_order=1, physical_name="domain")
-    cad(entities_list=[poly_obj], output_file="test_mesh_direct.xao")
+    write_xao(cad_occ([poly_obj]), "test_mesh_direct.xao")
 
     # 2. Create refinement data (N, 4)
     # Gradient in X direction
@@ -80,6 +82,8 @@ def test_mesh_direct_size_specification_global():
     assert mean_left < 0.3
     assert mean_right > 0.5
     assert mean_left < mean_right
+
+    compare_gmsh_files(Path("test_mesh_direct.msh"))
 
     # Clean up
     Path("test_mesh_direct.xao").unlink(missing_ok=True)

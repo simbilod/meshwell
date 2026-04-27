@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import pytest
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField
 
 
+@pytest.mark.slow
 def test_lines_circles_disambiguation():
     square = shapely.box(0, 0, 10, 10)
     circle = shapely.Point(5, 5).buffer(2)
@@ -19,7 +22,7 @@ def test_lines_circles_disambiguation():
         mesh_order=1,
     )
 
-    cad(entities_list=[entity], output_file="test_lc.xao")
+    write_xao(cad_occ([entity]), "test_lc.xao")
 
     # Case 1: straight lines coarse (res=5), circles fine (res=0.1)
     # → dominated by dense circle discretization

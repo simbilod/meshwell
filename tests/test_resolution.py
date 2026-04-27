@@ -6,15 +6,17 @@ import numpy as np
 import pytest
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField, ExponentialField, ThresholdField
 from meshwell.utils import compare_gmsh_files
 
 
-def test_2D_resolution():
+@pytest.mark.slow
+def test_2D_resolution(tmp_path):
     large_rect = 20
     small_rect = 5
 
@@ -44,15 +46,17 @@ def test_2D_resolution():
 
     entities_list = [poly_obj1, poly_obj2]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_2D_resolution",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        str(tmp_path / "test_2D_resolution.xao"),
     )
 
     mesh(
         dim=2,
-        input_file="test_2D_resolution.xao",
-        output_file="test_2D_resolution.msh",
+        input_file=str(tmp_path / "test_2D_resolution.xao"),
+        output_file=str(tmp_path / "test_2D_resolution.msh"),
         resolution_specs={
             "inner": [
                 ThresholdField(sizemin=0.1, distmax=2, sizemax=1, apply_to="curves")
@@ -63,10 +67,11 @@ def test_2D_resolution():
         default_characteristic_length=100,
     )
 
-    compare_gmsh_files(Path("test_2D_resolution.msh"))
+    compare_gmsh_files(tmp_path / "test_2D_resolution.msh")
 
 
-def test_3D_resolution():
+@pytest.mark.slow
+def test_3D_resolution(tmp_path):
     polygon1 = shapely.Polygon(
         [[0, 0], [9, 0], [9, 9], [0, 9], [0, 0]],
     )
@@ -91,15 +96,17 @@ def test_3D_resolution():
 
     entities_list = [prism_obj1, prism_obj2]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_3D_resolution.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        str(tmp_path / "test_3D_resolution.xao"),
     )
 
     mesh(
         dim=3,
-        input_file="test_3D_resolution.xao",
-        output_file="test_3D_resolution.msh",
+        input_file=str(tmp_path / "test_3D_resolution.xao"),
+        output_file=str(tmp_path / "test_3D_resolution.msh"),
         resolution_specs={
             "inner": [
                 ConstantInField(resolution=1, apply_to="volumes"),
@@ -111,9 +118,10 @@ def test_3D_resolution():
         default_characteristic_length=100,
     )
 
-    compare_gmsh_files(Path("test_3D_resolution.msh"))
+    compare_gmsh_files(tmp_path / "test_3D_resolution.msh")
 
 
+@pytest.mark.slow
 def test_exponential_field():
     large_rect = 40
     small_rect = 5
@@ -144,9 +152,11 @@ def test_exponential_field():
 
     entities_list = [poly_obj1, poly_obj2]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_exponential_field.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_exponential_field.xao",
     )
 
     mesh(
@@ -172,6 +182,7 @@ def test_exponential_field():
     compare_gmsh_files(Path("test_exponential_field.msh"))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     ("field", "label"),
     [
@@ -211,9 +222,11 @@ def test_refine(field, label):
         physical_name="inner",
     )
 
-    cad(
-        entities_list=[poly_obj2],
-        output_file=f"test_refine_{label}.xao",
+    write_xao(
+        cad_occ(
+            [poly_obj2],
+        ),
+        f"test_refine_{label}.xao",
     )
 
     points = []
@@ -243,6 +256,7 @@ def test_refine(field, label):
 
 
 # FIXME: add regression
+@pytest.mark.slow
 @pytest.mark.parametrize(
     ("apply_to", "min_mass", "max_mass"),
     [
@@ -299,9 +313,11 @@ def test_filter(apply_to, min_mass, max_mass):
 
     entities_list = [prism1, prism2]
 
-    cad(
-        entities_list=entities_list,
-        output_file=f"test_filter_{label}.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        f"test_filter_{label}.xao",
     )
 
     mesh(
@@ -336,6 +352,7 @@ def test_filter(apply_to, min_mass, max_mass):
     compare_gmsh_files(Path(f"test_filter_{label}.msh"))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "restrict_to",
     [
@@ -381,9 +398,11 @@ def test_restrict(restrict_to):
     )
     entities_list = [poly_outer, poly_left, poly_right]
 
-    cad(
-        entities_list=entities_list,
-        output_file=f"test_restrict_{restrict_to}.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        f"test_restrict_{restrict_to}.xao",
     )
 
     mesh(
@@ -408,6 +427,7 @@ def test_restrict(restrict_to):
     compare_gmsh_files(Path(f"test_restrict_{restrict_to}.msh"))
 
 
+@pytest.mark.slow
 def test_interface_thresholds():
     """Test different threshold fields on each side of an interface."""
     # Create outer square
@@ -432,9 +452,11 @@ def test_interface_thresholds():
 
     entities_list = [poly_outer, poly_inner]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_interface_thresholds.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_interface_thresholds.xao",
     )
 
     mesh(
@@ -467,6 +489,238 @@ def test_interface_thresholds():
     )
 
     compare_gmsh_files(Path("test_interface_thresholds.msh"))
+
+
+def _count_physical_lines(m, physical_name: str) -> int:
+    """Count 1D mesh elements belonging to ``physical_name``.
+
+    meshio stores per-physical-group cell indices in ``cell_sets``; one
+    sub-array per cell block. We only sum entries where the block type
+    is ``line`` so the counts are comparable across refinements.
+    """
+    total = 0
+    for block_idx, arr in enumerate(m.cell_sets.get(physical_name, [])):
+        if arr is None:
+            continue
+        if m.cells[block_idx].type == "line":
+            total += len(arr)
+    return total
+
+
+def _count_surface_triangles(m, physical_name: str) -> int:
+    total = 0
+    for block_idx, arr in enumerate(m.cell_sets.get(physical_name, [])):
+        if arr is None:
+            continue
+        if m.cells[block_idx].type == "triangle":
+            total += len(arr)
+    return total
+
+
+def _sharing_scene(tmp_path: Path, resolution_specs=None):
+    """Build an outer annulus around two disjoint inner squares and mesh it.
+
+    Resolution is applied only to ``outer`` so we can read off refinement
+    effects through the ``outer___None`` (domain boundary), ``outer___A``
+    and ``outer___B`` physical groups.
+    """
+    outer_sq = shapely.Polygon([[0, 0], [20, 0], [20, 10], [0, 10]])
+    a_sq = shapely.Polygon([[3, 3], [7, 3], [7, 7], [3, 7]])
+    b_sq = shapely.Polygon([[13, 3], [17, 3], [17, 7], [13, 7]])
+
+    xao = tmp_path / "scene.xao"
+    write_xao(
+        cad_occ(
+            [
+                PolySurface(polygons=outer_sq, mesh_order=2, physical_name="outer"),
+                PolySurface(polygons=a_sq, mesh_order=1, physical_name="A"),
+                PolySurface(polygons=b_sq, mesh_order=1, physical_name="B"),
+            ]
+        ),
+        xao,
+    )
+    return mesh(
+        dim=2,
+        input_file=xao,
+        output_file=tmp_path / "scene.msh",
+        n_threads=1,
+        default_characteristic_length=5.0,
+        resolution_specs=resolution_specs or {},
+        verbosity=0,
+    )
+
+
+def _sharing_scene_outer(tmp_path: Path, **field_kwargs):
+    """Run :func:`_sharing_scene` with a :class:`ThresholdField` on ``outer``."""
+    field = ThresholdField(
+        apply_to="curves",
+        sizemin=0.1,
+        sizemax=5,
+        distmin=0,
+        distmax=0.1,
+        **field_kwargs,
+    )
+    return _sharing_scene(tmp_path, resolution_specs={"outer": [field]})
+
+
+@pytest.mark.slow
+def test_sharing_default_refines_everything(tmp_path):
+    """``sharing=None`` should refine all curves touching the target entity."""
+    baseline = _sharing_scene(tmp_path)
+    refined = _sharing_scene_outer(tmp_path)
+
+    assert _count_physical_lines(refined, "outer___None") > 5 * _count_physical_lines(
+        baseline, "outer___None"
+    )
+    assert _count_physical_lines(refined, "outer___A") > 5 * _count_physical_lines(
+        baseline, "outer___A"
+    )
+    assert _count_physical_lines(refined, "outer___B") > 5 * _count_physical_lines(
+        baseline, "outer___B"
+    )
+
+
+@pytest.mark.slow
+def test_sharing_includes_none_keeps_boundary(tmp_path):
+    """Explicitly listing ``'None'`` in ``sharing`` keeps the domain boundary."""
+    m = _sharing_scene_outer(tmp_path, sharing=["A", "B", "None"])
+    assert _count_physical_lines(m, "outer___None") > 100
+    assert _count_physical_lines(m, "outer___A") > 50
+    assert _count_physical_lines(m, "outer___B") > 50
+
+
+@pytest.mark.slow
+def test_sharing_specific_entity_drops_domain_boundary(tmp_path):
+    """Listing only inner entities in ``sharing`` leaves the domain boundary coarse.
+
+    Interface curves (with any inner entity) still refine because the
+    include_boundary filter only targets the domain-boundary curves —
+    that is the current behavior and the assertion we want to lock in.
+    """
+    m = _sharing_scene_outer(tmp_path, sharing=["A"])
+    assert _count_physical_lines(m, "outer___None") < 20
+    assert _count_physical_lines(m, "outer___A") > 50
+    assert _count_physical_lines(m, "outer___B") > 50
+
+
+@pytest.mark.slow
+def test_not_sharing_none_drops_domain_boundary(tmp_path):
+    """``not_sharing=['None']`` should match ``sharing=[interior...]`` above."""
+    m = _sharing_scene_outer(tmp_path, not_sharing=["None"])
+    assert _count_physical_lines(m, "outer___None") < 20
+    assert _count_physical_lines(m, "outer___A") > 50
+    assert _count_physical_lines(m, "outer___B") > 50
+
+
+@pytest.mark.slow
+def test_not_sharing_entity_keeps_boundary(tmp_path):
+    """``not_sharing`` without ``'None'`` still refines the domain boundary."""
+    m = _sharing_scene_outer(tmp_path, not_sharing=["A"])
+    assert _count_physical_lines(m, "outer___None") > 100
+    assert _count_physical_lines(m, "outer___A") > 50
+    assert _count_physical_lines(m, "outer___B") > 50
+
+
+@pytest.mark.slow
+def test_mass_filter_only_large_surfaces_refined(tmp_path):
+    """``min_mass`` should gate refinement by the target dimension's mass.
+
+    Two disjoint PolySurface regions (area 4 and area 64) receive the
+    same :class:`ConstantInField` with a mass filter. The filter lets
+    the field fire on one region at a time; the unrefined region stays
+    at the default element size.
+    """
+    small_poly = shapely.Polygon([[0, 0], [2, 0], [2, 2], [0, 2]])
+    big_poly = shapely.Polygon([[10, 0], [18, 0], [18, 8], [10, 8]])
+
+    xao = tmp_path / "mass.xao"
+    write_xao(
+        cad_occ(
+            [
+                PolySurface(polygons=small_poly, mesh_order=1, physical_name="small"),
+                PolySurface(polygons=big_poly, mesh_order=1, physical_name="big"),
+            ]
+        ),
+        xao,
+    )
+
+    def run(min_mass, max_mass):
+        return mesh(
+            dim=2,
+            input_file=xao,
+            output_file=tmp_path / "mass.msh",
+            n_threads=1,
+            default_characteristic_length=5.0,
+            resolution_specs={
+                name: [
+                    ConstantInField(
+                        apply_to="surfaces",
+                        resolution=0.3,
+                        min_mass=min_mass,
+                        max_mass=max_mass,
+                    )
+                ]
+                for name in ("small", "big")
+            },
+            verbosity=0,
+        )
+
+    # "big" area=64 passes min_mass=10; "small" area=4 does not.
+    only_big = run(min_mass=10, max_mass=np.inf)
+    # "small" passes max_mass=10; "big" does not.
+    only_small = run(min_mass=0, max_mass=10)
+
+    big_refined = _count_surface_triangles(only_big, "big")
+    big_coarse = _count_surface_triangles(only_small, "big")
+    small_refined = _count_surface_triangles(only_small, "small")
+    small_coarse = _count_surface_triangles(only_big, "small")
+
+    assert big_refined > 5 * big_coarse
+    assert small_refined > 5 * small_coarse
+
+
+@pytest.mark.slow
+def test_mass_filter_curves_excludes_short_edges(tmp_path):
+    """``min_mass`` on curves should leave short edges at the default size."""
+    rect = shapely.Polygon([[0, 0], [20, 0], [20, 2], [0, 2]])
+    xao = tmp_path / "curve_mass.xao"
+    write_xao(
+        cad_occ(
+            [PolySurface(polygons=rect, mesh_order=1, physical_name="slab")],
+        ),
+        xao,
+    )
+
+    def run(min_mass):
+        return mesh(
+            dim=2,
+            input_file=xao,
+            output_file=tmp_path / "curve_mass.msh",
+            n_threads=1,
+            default_characteristic_length=2.0,
+            resolution_specs={
+                "slab": [
+                    ThresholdField(
+                        apply_to="curves",
+                        sizemin=0.1,
+                        sizemax=2.0,
+                        distmin=0,
+                        distmax=0.05,
+                        min_mass=min_mass,
+                        max_mass=np.inf,
+                    )
+                ]
+            },
+            verbosity=0,
+        )
+
+    # ``slab___None`` holds all four perimeter edges (2 long at length 20,
+    # 2 short at length 2). With min_mass=10 only the long edges emit a
+    # refinement; total 1D count stays below the unfiltered case.
+    filtered = _count_physical_lines(run(min_mass=10), "slab___None")
+    unfiltered = _count_physical_lines(run(min_mass=0), "slab___None")
+
+    assert unfiltered > filtered
 
 
 if __name__ == "__main__":

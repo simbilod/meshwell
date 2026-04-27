@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import gmsh
 import numpy as np
 import shapely
 
+import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -23,7 +23,7 @@ def test_polysurface_transformation_occ():
     )
 
     labeled_entities = cad_occ(entities_list=[surface])
-    shape = labeled_entities[0].shape
+    shape = labeled_entities[0].shapes[0]
 
     # Get bounding box
     from OCP.Bnd import Bnd_Box
@@ -40,12 +40,14 @@ def test_polysurface_transformation_occ():
     # Final Y range should be 0 (it's flat in YZ plane, so Y should be near 0).
     # Final X range should be [-1, 1].
 
-    assert np.isclose(xmin, -1)
-    assert np.isclose(xmax, 1)
-    assert np.isclose(ymin, 0, atol=1e-6)
-    assert np.isclose(ymax, 0, atol=1e-6)
-    assert np.isclose(zmin, 9)
-    assert np.isclose(zmax, 11)
+    # cad_occ applies a 1e-5 perturbation buffer to polygon entities,
+    # so bounds are within 1e-4 of the nominal values.
+    assert np.isclose(xmin, -1, atol=1e-4)
+    assert np.isclose(xmax, 1, atol=1e-4)
+    assert np.isclose(ymin, 0, atol=1e-4)
+    assert np.isclose(ymax, 0, atol=1e-4)
+    assert np.isclose(zmin, 9, atol=1e-4)
+    assert np.isclose(zmax, 11, atol=1e-4)
 
 
 def test_polysurface_transformation_gmsh():
@@ -87,7 +89,7 @@ def test_polyprism_transformation_occ():
     )
 
     labeled_entities = cad_occ(entities_list=[prism])
-    shape = labeled_entities[0].shape
+    shape = labeled_entities[0].shapes[0]
 
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
@@ -112,12 +114,14 @@ def test_polyprism_transformation_occ():
     # Y stays [-1, 1]
     # Z becomes [-1, 1]
 
-    assert np.isclose(xmin, 10)
-    assert np.isclose(xmax, 11)
-    assert np.isclose(ymin, -1)
-    assert np.isclose(ymax, 1)
-    assert np.isclose(zmin, -1)
-    assert np.isclose(zmax, 1)
+    # cad_occ applies a 1e-5 perturbation buffer to polygon entities,
+    # so bounds are within 1e-4 of the nominal values.
+    assert np.isclose(xmin, 10, atol=1e-4)
+    assert np.isclose(xmax, 11, atol=1e-4)
+    assert np.isclose(ymin, -1, atol=1e-4)
+    assert np.isclose(ymax, 1, atol=1e-4)
+    assert np.isclose(zmin, -1, atol=1e-4)
+    assert np.isclose(zmax, 1, atol=1e-4)
 
 
 def test_serialization():

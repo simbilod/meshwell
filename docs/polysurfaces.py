@@ -6,8 +6,9 @@
 import matplotlib.pyplot as plt
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.visualization import plot2D
 
@@ -50,10 +51,7 @@ entities_list = [poly2D]
 
 # %%
 
-cad(
-    entities_list=entities_list,
-    output_file="polysurface.xao",
-)
+write_xao(cad_occ(entities_list), "polysurface.xao")
 
 # %% [markdown]
 # Then generate a mesh from the CAD:
@@ -103,10 +101,7 @@ poly2D = PolySurface(
 
 entities_list = [poly2D]
 
-cad(
-    entities_list=entities_list,
-    output_file="complicated.xao",
-)
+write_xao(cad_occ(entities_list), "complicated.xao")
 
 output_mesh = mesh(
     dim=2,

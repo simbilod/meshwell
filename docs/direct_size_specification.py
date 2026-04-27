@@ -14,8 +14,9 @@ from pathlib import Path
 import numpy as np
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField, DirectSizeSpecification
 from meshwell.visualization import plot2D
@@ -64,10 +65,7 @@ poly_obj2 = PolySurface(
 )
 
 # Generate CAD
-cad(
-    entities_list=[poly_obj1, poly_obj2],
-    output_file="direct_size_example.xao",
-)
+write_xao(cad_occ([poly_obj1, poly_obj2]), "direct_size_example.xao")
 
 # %% [markdown]
 # ## Define Size Field

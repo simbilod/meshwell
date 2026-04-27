@@ -25,7 +25,7 @@ from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
-from meshwell.occ_to_gmsh import occ_to_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.resolution import ConstantInField
 
 
@@ -60,7 +60,7 @@ def test_volume_with_internal_surface_occ():
     entities = [box_obj, surface_obj]
     occ_entities = cad_occ(entities_list=entities)
     output_xao = Path("test_volume_with_surface_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
 
     mesh(
         dim=3,
@@ -97,7 +97,7 @@ def test_lower_dim_with_multiple_higher_entities_occ():
     entities = [box1_obj, box2_obj, spanning_surface]
     occ_entities = cad_occ(entities_list=entities)
     output_xao = Path("test_lower_dim_multiple_higher_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
 
     mesh(
         dim=3,
@@ -127,7 +127,7 @@ def test_surface_boundary_overlap_occ():
     entities = [box_obj, boundary_surface]
     occ_entities = cad_occ(entities_list=entities)
     output_xao = Path("test_boundary_overlap_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
 
     mesh(
         dim=3,
@@ -166,7 +166,7 @@ def test_point_in_multiple_entities_occ():
     entities = [box_obj, sphere_obj, surface_obj, point_obj]
     occ_entities = cad_occ(entities_list=entities)
     output_xao = Path("test_point_multiple_entities_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
 
     mesh(
         dim=3,
@@ -225,7 +225,7 @@ def test_sequential_fragmentation_complex_occ():
     entities = [base_volume, surface1, surface2, curve, point1, point2]
     occ_entities = cad_occ(entities_list=entities)
     output_xao = Path("test_sequential_complex_occ.xao")
-    occ_to_xao(occ_entities, output_xao)
+    write_xao(occ_entities, output_xao)
 
     mesh(
         dim=3,

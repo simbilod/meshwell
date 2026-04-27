@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 import gmsh
-import numpy as np
 
 if TYPE_CHECKING:
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
-
-from meshwell.cad import CAD
 
 
 @dataclass
@@ -22,6 +21,91 @@ class DecompositionSegment:
     is_arc: bool
     center: tuple[float, float, float] | None = None
     radius: float | None = None
+
+
+def _strip_consecutive_duplicates(
+    vertices: list[tuple[float, float, float]],
+    tolerance: float,
+) -> list[tuple[float, float, float]]:
+    """Collapse adjacent vertices coincident within ``tolerance``.
+
+    Preserves the closing vertex (equal to the opening vertex) when the input
+    is a closed polyline so downstream consumers still see a closed ring.
+    """
+    if len(vertices) < 2:
+        return list(vertices)
+    was_closed = vertices[0] == vertices[-1]
+    tol_sq = tolerance * tolerance
+    out = [vertices[0]]
+    for v in vertices[1:]:
+        prev = out[-1]
+        dx = v[0] - prev[0]
+        dy = v[1] - prev[1]
+        dz = v[2] - prev[2]
+        if dx * dx + dy * dy + dz * dz > tol_sq:
+            out.append(v)
+    if was_closed and len(out) >= 2 and out[0] != out[-1]:
+        out.append(out[0])
+    return out
+
+
+def _find_canonical_seam(
+    vertices: list[tuple[float, float, float]],
+    sharp_cos_threshold: float = 0.5,
+) -> int:
+    """Return index at which to start a closed polyline so arc runs don't straddle the seam.
+
+    Picks the vertex whose incoming/outgoing edges turn the most sharply
+    (smallest cos(angle)). Ties broken by lexicographic order so the result
+    is deterministic across rotated equivalent rings. If no corner is sharp
+    enough, falls back to the lex-min vertex.
+    """
+    n = len(vertices) - 1  # last equals first in a closed ring
+    if n < 3:
+        return 0
+
+    best_idx = 0
+    best_cos = 2.0
+    best_key: tuple | None = None
+    for i in range(n):
+        prev = vertices[(i - 1) % n]
+        cur = vertices[i]
+        nxt = vertices[(i + 1) % n]
+        v1x, v1y = cur[0] - prev[0], cur[1] - prev[1]
+        v2x, v2y = nxt[0] - cur[0], nxt[1] - cur[1]
+        n1 = (v1x * v1x + v1y * v1y) ** 0.5
+        n2 = (v2x * v2x + v2y * v2y) ** 0.5
+        if n1 < 1e-12 or n2 < 1e-12:
+            continue
+        cos_a = (v1x * v2x + v1y * v2y) / (n1 * n2)
+        key = (cos_a, tuple(round(c, 9) for c in cur))
+        if cos_a < best_cos - 1e-9 or (
+            abs(cos_a - best_cos) < 1e-9 and (best_key is None or key < best_key)
+        ):
+            best_cos = cos_a
+            best_idx = i
+            best_key = key
+
+    if best_cos > sharp_cos_threshold:
+        best_idx = min(range(n), key=lambda i: vertices[i])
+    return best_idx
+
+
+def _rotate_closed(
+    vertices: list[tuple[float, float, float]], start_idx: int
+) -> list[tuple[float, float, float]]:
+    """Rotate a closed polyline so it starts at ``start_idx``.
+
+    If ``vertices`` is not closed (first != last) it is rotated in place.
+    """
+    if start_idx == 0 or len(vertices) < 2:
+        return list(vertices)
+    closed = vertices[0] == vertices[-1]
+    core = vertices[:-1] if closed else list(vertices)
+    rotated = core[start_idx:] + core[:start_idx]
+    if closed:
+        rotated.append(rotated[0])
+    return rotated
 
 
 def fit_circle_2d(points: np.ndarray) -> tuple[tuple[float, float], float, float]:
@@ -173,6 +257,7 @@ class GeometryEntity:
         arc_tolerance: float = 1e-3,
     ) -> int:
         """Create a GMSH surface from vertex coordinates with optional arc identification."""
+        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not identify_arcs:
             # ORIGINAL BEHAVIOR
             points = self._create_points_from_vertices(vertices)
@@ -273,8 +358,17 @@ class GeometryEntity:
         Returns:
             List of DecompositionSegment objects
         """
+        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not vertices or len(vertices) < 2:
             return []
+
+        if (
+            identify_arcs
+            and len(vertices) >= max(min_arc_points + 1, 4)
+            and vertices[0] == vertices[-1]
+        ):
+            seam = _find_canonical_seam(vertices)
+            vertices = _rotate_closed(vertices, seam)
 
         if not identify_arcs or len(vertices) < min_arc_points:
             # Fallback to simple line segments
@@ -361,21 +455,48 @@ class GeometryEntity:
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
     ) -> TopoDS_Wire:
-        """Create an OCC wire from vertex coordinates with optional arc identification."""
+        """Create an OCC wire from vertex coordinates with optional arc identification.
+
+        Vertices and edges are built fresh per call; cross-entity TShape
+        sharing is delegated to ``BOPAlgo_Builder``'s fragment pass with
+        its fuzzy tolerance, which is how gmsh's own OCC kernel handles
+        the same scenario.
+        """
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
 
+        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
         if not identify_arcs:
-            # ORIGINAL BEHAVIOR
             points = self._make_occ_points(vertices)
             wire_builder = BRepBuilderAPI_MakeWire()
             for i in range(len(points) - 1):
-                edge = BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
-                wire_builder.Add(edge)
+                wire_builder.Add(
+                    BRepBuilderAPI_MakeEdge(points[i], points[i + 1]).Edge()
+                )
             return wire_builder.Wire()
 
-        # ARC IDENTIFICATION BEHAVIOR
         from OCP.GC import GC_MakeArcOfCircle
         from OCP.gp import gp_Pnt
+
+        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
+
+        # Quantize coordinates once up front, then re-strip at the
+        # grid level: ``_strip_consecutive_duplicates`` compares raw
+        # coords with a strict-inequality Euclidean threshold, but
+        # rounding later in the loop can still collapse pairs that
+        # were just far enough apart to survive the strip. Feeding
+        # ``decompose_vertices`` (and the downstream arc fitter)
+        # already-quantized coords avoids fitting arcs through pairs
+        # of points that will later produce a zero-length edge.
+        quantized: list[tuple[float, float, float]] = []
+        for v in vertices:
+            q = tuple(round(c, ndigits) for c in v)
+            if quantized and q == quantized[-1]:
+                continue
+            quantized.append(q)
+        was_closed = vertices[0] == vertices[-1]
+        if was_closed and len(quantized) >= 2 and quantized[0] != quantized[-1]:
+            quantized.append(quantized[0])
+        vertices = quantized
 
         segments = self.decompose_vertices(
             vertices,
@@ -385,52 +506,50 @@ class GeometryEntity:
         )
 
         wire_builder = BRepBuilderAPI_MakeWire()
-        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
+
+        def _rounded_pnt(coords):
+            rc = [round(c, ndigits) for c in coords]
+            return gp_Pnt(*rc)
 
         for seg in segments:
             if seg.is_arc:
-                # Round points to consistent decimal places based on tolerance
-                # to ensure exact geometrical match between adjacent polygons
-                p0 = [round(c, ndigits) for c in seg.points[0]]
-                p_start = gp_Pnt(*p0)
-
+                start_coords = tuple(round(c, ndigits) for c in seg.points[0])
                 mid_idx = len(seg.points) // 2
-                pmid = [round(c, ndigits) for c in seg.points[mid_idx]]
-                p_mid = gp_Pnt(*pmid)
+                mid_coords = tuple(round(c, ndigits) for c in seg.points[mid_idx])
+                end_coords = tuple(round(c, ndigits) for c in seg.points[-1])
+                # Drop degenerate arcs whose endpoints collapse under the
+                # quantization grid -- BRepBuilderAPI_MakeEdge raises
+                # StdFail_NotDone on a zero-length edge.
+                is_closed = seg.points[0] == seg.points[-1]
+                if not is_closed and start_coords == end_coords:
+                    continue
+                p_start = gp_Pnt(*start_coords)
+                p_mid = gp_Pnt(*mid_coords)
+                p_end = gp_Pnt(*end_coords)
+                center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
 
-                pend = [round(c, ndigits) for c in seg.points[-1]]
-                p_end = gp_Pnt(*pend)
-
-                if seg.points[0] == seg.points[-1]:
-                    # Full circle: split into two 180-degree arcs
+                if is_closed:
+                    # Full circle: split into two 180-degree arcs.
                     quarter_idx = len(seg.points) // 4
                     three_quarter_idx = (len(seg.points) * 3) // 4
-                    pq1 = [round(c, ndigits) for c in seg.points[quarter_idx]]
-                    p1 = gp_Pnt(*pq1)
-
-                    pq3 = [round(c, ndigits) for c in seg.points[three_quarter_idx]]
-                    p3 = gp_Pnt(*pq3)
-
+                    p1 = _rounded_pnt(seg.points[quarter_idx])
+                    p3 = _rounded_pnt(seg.points[three_quarter_idx])
                     arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
                     edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
-                    wire_builder.Add(edge1)
-
                     arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
                     edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
+                    wire_builder.Add(edge1)
                 else:
                     from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
                     from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
 
                     try:
-                        center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
                         axis = gp_Ax2(center, gp_Dir(0, 0, 1))
                         circle = gp_Circ(axis, seg.radius)
 
-                        # Try to make arc with positive sense
                         arc_geom_pos = GC_MakeArcOfCircle(
                             circle, p_start, p_end, True
                         ).Value()
-                        # Check if p_mid is on the positive arc
                         proj = GeomAPI_ProjectPointOnCurve(p_mid, arc_geom_pos)
                         if proj.NbPoints() > 0 and proj.LowerDistance() < 1e-2:
                             arc_geom = arc_geom_pos
@@ -443,12 +562,19 @@ class GeometryEntity:
                         arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
                         edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
-                p1_rounded = [round(c, ndigits) for c in seg.points[0]]
-                p1 = gp_Pnt(*p1_rounded)
-
-                p2_rounded = [round(c, ndigits) for c in seg.points[1]]
-                p2 = gp_Pnt(*p2_rounded)
-                edge = BRepBuilderAPI_MakeEdge(p1, p2).Edge()
+                p1_coords = [round(c, ndigits) for c in seg.points[0]]
+                p2_coords = [round(c, ndigits) for c in seg.points[1]]
+                # Coords within `point_tolerance` that survive the
+                # Python-tuple dedup can still collapse to the same
+                # quantized point here (rounding bins wider than the
+                # strict inequality used by _strip_consecutive_duplicates);
+                # skip the resulting zero-length segment rather than let
+                # BRepBuilderAPI_MakeEdge raise StdFail_NotDone.
+                if p1_coords == p2_coords:
+                    continue
+                edge = BRepBuilderAPI_MakeEdge(
+                    gp_Pnt(*p1_coords), gp_Pnt(*p2_coords)
+                ).Edge()
             wire_builder.Add(edge)
         return wire_builder.Wire()
 
@@ -459,7 +585,7 @@ class GeometryEntity:
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
     ) -> TopoDS_Face:
-        """Create an OCC face from vertex coordinates with optional arc identification."""
+        """Create an OCC face from a wire built from the given vertices."""
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
 
         wire = self._make_occ_wire_from_vertices(
@@ -500,11 +626,11 @@ class GeometryEntity:
             **kwargs,
         )
 
-    def instanciate(self, cad_model: CAD | None = None) -> list[tuple[int, int]]:
+    def instanciate(self, cad_model: Any | None = None) -> list[tuple[int, int]]:
         """Create GMSH geometry. To be implemented by subclasses.
 
         Args:
-            cad_model: CAD model (kept for interface compatibility)
+            cad_model: Any model (kept for interface compatibility)
 
         Returns:
             List of (dimension, tag) tuples representing created entities
@@ -513,12 +639,7 @@ class GeometryEntity:
         raise NotImplementedError("Subclasses must implement instanciate method")
 
     def instanciate_occ(self) -> TopoDS_Shape:
-        """Create OCC geometry. To be implemented by subclasses.
-
-        Returns:
-            TopoDS_Shape: Created OCC shape
-
-        """
+        """Create OCC geometry. To be implemented by subclasses."""
         raise NotImplementedError("Subclasses must implement instanciate_occ method")
 
     def _get_rotation_point(self, geometries) -> tuple[float, float, float]:
@@ -554,9 +675,17 @@ class GeometryEntity:
     def _apply_transformation_occ(
         self, shape: TopoDS_Shape, rotation_point: tuple[float, float, float]
     ) -> TopoDS_Shape:
-        """Apply rotation and translation to OCC shape."""
+        """Apply rotation and translation to OCC shape.
+
+        Returns ``shape`` unchanged when neither a rotation nor a
+        translation is configured -- ``BRepBuilderAPI_Transform`` mints
+        fresh TShapes even for an identity transform.
+        """
         if shape is None:
             return None
+        if self.rotation_angle == 0 and not self.translation:
+            return shape
+
         import numpy as np
         from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
         from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec

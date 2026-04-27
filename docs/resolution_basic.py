@@ -7,8 +7,9 @@ from collections import OrderedDict
 
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polysurface import PolySurface
 from meshwell.resolution import ConstantInField, ExponentialField, ThresholdField
 from meshwell.visualization import plot2D
@@ -37,10 +38,7 @@ for i, (box_name, box) in enumerate(boxes.items()):
         )
     )
 
-cad(
-    entities_list=polysurfaces,
-    output_file="model.xao",
-)
+write_xao(cad_occ(polysurfaces), "model.xao")
 
 
 # %%

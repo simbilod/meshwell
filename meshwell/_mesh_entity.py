@@ -1,13 +1,18 @@
-"""Class definition for tracking gmsh entities."""
+"""Internal per-entity state for mesh.py's resolution / refinement driver.
+
+This module is private (underscore prefix). External callers should not
+import ``_MeshEntity`` -- it's an implementation detail of the
+resolution-spec engine inside :mod:`meshwell.mesh`. The public OCC -> gmsh
+bridge lives in :mod:`meshwell.occ_xao_writer`.
+"""
 import warnings
 from typing import Any
 
 import gmsh
-
 from meshwell.resolution import CURVE_SUBTYPE_MAP, ResolutionSpec
 
 
-class LabeledEntities:
+class _MeshEntity:
     """General class to track the gmsh entities that result from the geometry definition."""
 
     def __init__(

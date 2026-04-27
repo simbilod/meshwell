@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import shapely
 
-from meshwell.cad import cad
+from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
+from meshwell.utils import compare_gmsh_files
 
 
 def test_multiple_physicals():
@@ -34,9 +36,11 @@ def test_multiple_physicals():
     )
     entities_list = [big_prism, medium_prism, small_prism]
 
-    cad(
-        entities_list=entities_list,
-        output_file="test_multiple_physicals.xao",
+    write_xao(
+        cad_occ(
+            entities_list,
+        ),
+        "test_multiple_physicals.xao",
     )
 
     mesh_obj = mesh(
@@ -55,22 +59,23 @@ def test_multiple_physicals():
         )
     # Equivalence of surfaces
     assert (
-        mesh_obj.cell_sets_dict["small_prism___medium_prism"]["triangle"].all()
-        == mesh_obj.cell_sets_dict["small_prism___center"]["triangle"].all()
+        mesh_obj.cell_sets_dict["medium_prism___small_prism"]["triangle"].all()
+        == mesh_obj.cell_sets_dict["center___small_prism"]["triangle"].all()
     )
     assert (
-        mesh_obj.cell_sets_dict["medium_prism___big_prism"]["triangle"].all()
-        == mesh_obj.cell_sets_dict["medium_prism___domain"]["triangle"].all()
+        mesh_obj.cell_sets_dict["big_prism___medium_prism"]["triangle"].all()
+        == mesh_obj.cell_sets_dict["domain___medium_prism"]["triangle"].all()
     )
     assert (
-        mesh_obj.cell_sets_dict["medium_prism___big_prism"]["triangle"].all()
-        == mesh_obj.cell_sets_dict["center___domain"]["triangle"].all()
+        mesh_obj.cell_sets_dict["big_prism___medium_prism"]["triangle"].all()
+        == mesh_obj.cell_sets_dict["domain___center"]["triangle"].all()
     )
     # Equivalence of boundaries
     assert (
         mesh_obj.cell_sets_dict["big_prism___None"]["triangle"].all()
         == mesh_obj.cell_sets_dict["domain___None"]["triangle"].all()
     )
+    compare_gmsh_files("test_multiple_physicals.msh")
 
 
 ref1_physical_present = ["big", "small"]
