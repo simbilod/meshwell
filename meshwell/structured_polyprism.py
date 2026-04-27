@@ -255,3 +255,123 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
                 )
             )
     return resolved
+
+
+class _StructuredPhantom:
+    """Internal CAD-stage phantom for one resolved structured ``Slab``.
+
+    Quacks like a meshwell entity for the purposes of ``cad_gmsh`` /
+    ``cad_occ``: exposes ``polygons``, ``physical_name``, ``mesh_order``,
+    ``mesh_bool``, ``dimension``, and the ``instanciate`` /
+    ``instanciate_occ`` hooks. Built from a fully-resolved ``Slab`` (so
+    the cascade has already pinned its footprint) and always sets
+    ``mesh_bool = False`` so the existing keep=False top-dim machinery
+    removes the body after fragmentation, leaving a void.
+    """
+
+    def __init__(self, slab: Slab):
+        self.slab = slab
+        self.polygons = slab.footprint  # MultiPolygon, used by prepare_entities
+        self.physical_name = slab.physical_name
+        self.mesh_order = slab.mesh_order if slab.mesh_order != float("inf") else None
+        self.mesh_bool = False  # phantom -> removed after fragmentation
+        self.dimension = 3
+
+    # gmsh path: build via gmsh.model.occ.extrude
+    def instanciate(self, cad_model) -> list[tuple[int, int]]:  # noqa: ARG002
+        import gmsh
+
+        height = self.slab.zhi - self.slab.zlo
+        polys = (
+            self.slab.footprint.geoms
+            if hasattr(self.slab.footprint, "geoms")
+            else [self.slab.footprint]
+        )
+        out_dimtags: list[tuple[int, int]] = []
+        for poly in polys:
+            ext_tags = self._add_polygon_face_gmsh(poly, z=self.slab.zlo)
+            ext_dimtags = [(2, t) for t in ext_tags]
+            extruded = gmsh.model.occ.extrude(ext_dimtags, 0, 0, height)
+            out_dimtags.extend([dt for dt in extruded if dt[0] == 3])
+        gmsh.model.occ.synchronize()
+        return out_dimtags
+
+    def _add_polygon_face_gmsh(self, polygon: Polygon, z: float) -> list[int]:
+        """Construct a planar face for ``polygon`` at ``z`` in the OCC kernel.
+
+        Holes are honored: the exterior is a curve loop; interiors become
+        additional curve loops passed to ``addPlaneSurface``.
+        """
+        import gmsh
+
+        def _curve_loop(coords) -> int:
+            pts: list[int] = []
+            for x, y in coords:
+                pts.append(gmsh.model.occ.addPoint(x, y, z))
+            lines: list[int] = []
+            for a, b in pairwise(pts):
+                lines.append(gmsh.model.occ.addLine(a, b))
+            # Close the loop
+            lines.append(gmsh.model.occ.addLine(pts[-1], pts[0]))
+            return gmsh.model.occ.addCurveLoop(lines)
+
+        # Drop the duplicated closing vertex shapely returns
+        ext_coords = list(polygon.exterior.coords)[:-1]
+        loops = [_curve_loop(ext_coords)]
+        for interior in polygon.interiors:
+            int_coords = list(interior.coords)[:-1]
+            loops.append(_curve_loop(int_coords))
+        face = gmsh.model.occ.addPlaneSurface(loops)
+        return [face]
+
+    # OCC path: build via OCP BRepPrimAPI_MakePrism
+    def instanciate_occ(self):
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+        from OCP.gp import gp_Vec
+
+        height = self.slab.zhi - self.slab.zlo
+        vec = gp_Vec(0, 0, height)
+        polys = (
+            self.slab.footprint.geoms
+            if hasattr(self.slab.footprint, "geoms")
+            else [self.slab.footprint]
+        )
+        # Delegate wire construction to GeometryEntity helpers via a
+        # tiny adapter so we don't duplicate arc handling. The phantom
+        # itself never carries arcs (slabs are linear-segment polygons
+        # produced by shapely), so we use the simple polyline path.
+        from meshwell.geometry_entity import GeometryEntity
+
+        adapter = GeometryEntity(point_tolerance=0.0)
+        result_solids = []
+        for poly in polys:
+            ext_vertices = [(x, y, self.slab.zlo) for x, y in poly.exterior.coords]
+            outer = adapter._make_occ_wire_from_vertices(
+                ext_vertices, identify_arcs=False, min_arc_points=4, arc_tolerance=0.0
+            )
+            mf = BRepBuilderAPI_MakeFace(outer)
+            for interior in poly.interiors:
+                int_vertices = [(x, y, self.slab.zlo) for x, y in interior.coords]
+                hole = adapter._make_occ_wire_from_vertices(
+                    int_vertices,
+                    identify_arcs=False,
+                    min_arc_points=4,
+                    arc_tolerance=0.0,
+                )
+                hole.Reverse()
+                mf.Add(hole)
+            face = mf.Face()
+            result_solids.append(BRepPrimAPI_MakePrism(face, vec).Shape())
+
+        if len(result_solids) == 1:
+            return result_solids[0]
+
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+        result = result_solids[0]
+        for s in result_solids[1:]:
+            fuser = BRepAlgoAPI_Fuse(result, s)
+            fuser.Build()
+            result = fuser.Shape()
+        return result

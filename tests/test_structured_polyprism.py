@@ -360,3 +360,39 @@ def test_resolve_partial_z_overlap_splits_low_priority():
     full = next(s for s in lo_slabs if s.zlo == 0.0)
     assert middle.footprint.area == pytest.approx(base.area - small.area, rel=1e-9)
     assert full.footprint.area == pytest.approx(base.area, rel=1e-9)
+
+
+def test_phantom_gmsh_extrudes_volume(square_poly):
+    """The phantom's instanciate must produce one 3D dimtag."""
+    from shapely.geometry import MultiPolygon
+
+    from meshwell.model import ModelManager
+    from meshwell.structured_polyprism import Slab, _StructuredPhantom
+
+    slab = Slab(
+        footprint=MultiPolygon([square_poly]),
+        zlo=0.0,
+        zhi=1.0,
+        n_layers=4,
+        recombine=False,
+        physical_name=("film",),
+        source_index=0,
+    )
+    phantom = _StructuredPhantom(slab)
+    assert phantom.dimension == 3
+    assert phantom.mesh_bool is False  # keep=False at top-dim
+    assert phantom.physical_name == ("film",)
+
+    # Drive instanciate() against a minimal gmsh model.
+    mm = ModelManager(filename="t_phantom_gmsh")
+    mm.ensure_initialized("t_phantom_gmsh")
+
+    class _Mock:
+        model_manager = mm
+
+    try:
+        dimtags = phantom.instanciate(_Mock())
+        assert len(dimtags) == 1
+        assert dimtags[0][0] == 3
+    finally:
+        mm.finalize()
