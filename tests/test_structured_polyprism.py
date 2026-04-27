@@ -565,3 +565,37 @@ def test_mesh_endtoend_single_structured_slab(tmp_path, square_poly):
         z_by_xy[(round(x, 6), round(y, 6))].add(round(z, 6))
     layer_counts = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
     assert layer_counts == {6}, layer_counts
+
+
+def test_multi_interval_layer_counts(tmp_path, square_poly):
+    """Two stacked z-intervals -> respective layer counts respected."""
+    from collections import defaultdict
+
+    import meshio
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 0.5: 0.0, 1.0: 0.0},
+        n_layers=[8, 2],
+        physical_name="film",
+    )
+    _, mm = cad_gmsh([sp], filename="t11")
+    out_msh = tmp_path / "t11.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=0.5, output_file=out_msh, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out_msh)
+    coords = m.points
+    z_by_xy = defaultdict(set)
+    for c in coords:
+        z_by_xy[(round(c[0], 6), round(c[1], 6))].add(round(c[2], 6))
+    column_lengths = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
+    # 8 + 2 = 10 layers => 11 distinct z values per column
+    assert 11 in column_lengths, column_lengths
