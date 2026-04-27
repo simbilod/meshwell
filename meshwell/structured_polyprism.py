@@ -118,3 +118,47 @@ class _StructuredPolyPrism(PolyPrism):
     @property
     def z_breakpoints(self) -> list[float]:
         return list(self.buffers.keys())
+
+
+def _polygon_to_multipolygon(geom: Polygon | MultiPolygon | list) -> MultiPolygon:
+    """Coerce shapely Polygon / list / MultiPolygon to a MultiPolygon."""
+    if isinstance(geom, MultiPolygon):
+        return geom
+    if isinstance(geom, list):
+        flat: list[Polygon] = []
+        for g in geom:
+            if isinstance(g, MultiPolygon):
+                flat.extend(g.geoms)
+            else:
+                flat.append(g)
+        return MultiPolygon(flat)
+    return MultiPolygon([geom])
+
+
+def expand_slabs_for_entity(
+    entity: "_StructuredPolyPrism", source_index: int
+) -> list[Slab]:
+    """Expand a structured ``PolyPrism`` into per-z-interval slabs.
+
+    Each adjacent pair of z-keys becomes one slab with the corresponding
+    ``n_layers``. The 2D footprint is the same for every slab (no taper
+    in structured mode).
+    """
+    z_keys = entity.z_breakpoints
+    mp = _polygon_to_multipolygon(entity.polygons)
+    mesh_order = entity.mesh_order if entity.mesh_order is not None else float("inf")
+    out: list[Slab] = []
+    for (zlo, zhi), n in zip(pairwise(z_keys), entity.n_layers):
+        out.append(
+            Slab(
+                footprint=mp,
+                zlo=zlo,
+                zhi=zhi,
+                n_layers=int(n),
+                recombine=entity.recombine,
+                physical_name=entity.physical_name,
+                source_index=source_index,
+                mesh_order=mesh_order,
+            )
+        )
+    return out

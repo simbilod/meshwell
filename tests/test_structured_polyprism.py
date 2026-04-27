@@ -135,3 +135,69 @@ def test_polyprism_init_direct_with_n_layers_raises(square_poly):
             buffers={0.0: 0.0, 1.0: 0.0},
             n_layers=[4],
         )
+
+
+def test_expand_slabs_single_interval(square_poly):
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import expand_slabs_for_entity
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="film",
+        mesh_order=2.0,
+    )
+    slabs = expand_slabs_for_entity(sp, source_index=7)
+    assert len(slabs) == 1
+    s = slabs[0]
+    assert s.zlo == 0.0
+    assert s.zhi == 1.0
+    assert s.n_layers == 4
+    assert s.physical_name == ("film",)
+    assert s.source_index == 7
+    assert s.mesh_order == 2.0
+    # Footprint is a MultiPolygon wrapping the original square.
+    from shapely.geometry import MultiPolygon
+
+    assert isinstance(s.footprint, MultiPolygon)
+    assert len(s.footprint.geoms) == 1
+    assert s.footprint.geoms[0].equals(square_poly)
+
+
+def test_expand_slabs_multi_interval(square_poly):
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import expand_slabs_for_entity
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 0.5: 0.0, 1.0: 0.0},
+        n_layers=[8, 2],
+        physical_name="film",
+    )
+    slabs = expand_slabs_for_entity(sp, source_index=0)
+    assert len(slabs) == 2
+    assert (slabs[0].zlo, slabs[0].zhi, slabs[0].n_layers) == (0.0, 0.5, 8)
+    assert (slabs[1].zlo, slabs[1].zhi, slabs[1].n_layers) == (0.5, 1.0, 2)
+
+
+def test_expand_slabs_handles_multipolygon_input():
+    """If user passes a MultiPolygon, expand preserves all geoms."""
+    from shapely.geometry import MultiPolygon, Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import expand_slabs_for_entity
+
+    a = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    b = Polygon([(2, 0), (3, 0), (3, 1), (2, 1)])
+    mp = MultiPolygon([a, b])
+    sp = PolyPrism(
+        polygons=mp,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+    slabs = expand_slabs_for_entity(sp, source_index=0)
+    assert len(slabs) == 1
+    assert isinstance(slabs[0].footprint, MultiPolygon)
+    assert len(slabs[0].footprint.geoms) == 2
