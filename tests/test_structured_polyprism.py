@@ -949,3 +949,43 @@ def test_backend_equivalence_structured_prism(tmp_path):
     o = meshio.read(out_occ)
     assert set(g.field_data.keys()) == set(o.field_data.keys())
     assert "film" in g.field_data
+
+
+def test_recombine_true_produces_wedge_or_hex_elements(tmp_path, square_poly):
+    """recombine=True asks gmsh to recombine swept layers into wedge/hex prisms.
+
+    gmsh's ``geo.extrude(..., recombine=True)`` produces wedge (triangular
+    prism) elements when the base is triangulated, and hex elements when the
+    base is itself recombined to quads. We assert that at least one of those
+    cell types is present -- which is only true when recombine=True is
+    plumbed all the way through to the geo extrude call.
+    """
+    import meshio
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+        recombine=True,
+    )
+    _, mm = cad_gmsh([sp], filename="t_recombine")
+    out_msh = tmp_path / "t_recombine.msh"
+    try:
+        mesh_fn(
+            dim=3,
+            default_characteristic_length=0.5,
+            output_file=out_msh,
+            model=mm,
+        )
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out_msh)
+    cell_types = {b.type for b in m.cells}
+    assert cell_types & {"wedge", "hexahedron"}, cell_types

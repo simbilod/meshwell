@@ -540,10 +540,11 @@ def _embed_geo_into_occ_neighbors(
     lateral faces may be polygons). Defer to v2; v1 focuses on bottom/top
     mating, which covers the t3-style stack-of-films use case.
     """
-    import contextlib
+    import logging
 
     import gmsh
 
+    logger = logging.getLogger(__name__)
     occ_faces = gmsh.model.occ.getEntities(2)
     for geo_face_tag, expected_z in [
         (geo_bottom, slab.zlo),
@@ -552,11 +553,23 @@ def _embed_geo_into_occ_neighbors(
         match = _find_occ_face_at_z(occ_faces, expected_z, tol)
         if match is None:
             continue
-        # Embed can fail if the geo face is not strictly contained in
-        # the OCC face. Non-fatal in v1 -- gmsh will mesh the void
-        # independently. Mating quality is exercised by Task 14.
-        with contextlib.suppress(Exception):
+        try:
             gmsh.model.mesh.embed(2, [geo_face_tag], 2, match)
+        except Exception as exc:
+            # Embed can fail if the geo face is not strictly contained in
+            # the OCC face. Non-fatal in v1 -- gmsh will mesh the void
+            # independently and the resulting mesh may be non-conformal
+            # at the shared face. Warn so users can spot the problem.
+            logger.warning(
+                "Failed to embed structured-slab geo face %d into OCC face %d "
+                "for slab %s at z=%g: %s. Mesh may be non-conformal at this "
+                "interface.",
+                geo_face_tag,
+                match,
+                slab.physical_name,
+                expected_z,
+                exc,
+            )
 
 
 def _find_occ_face_at_z(candidates, target_z: float, tol: float) -> int | None:
