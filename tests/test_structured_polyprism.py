@@ -814,3 +814,29 @@ def test_stacked_layer_mismatch_raises():
             mesh_fn(dim=3, default_characteristic_length=0.5, model=mm)
     finally:
         mm.finalize()
+
+
+def test_generate_mesh_endtoend_with_structured_prism(tmp_path):
+    """generate_mesh (orchestrator) routes structured slabs through OCC + XAO + sidecar."""
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    sp = PolyPrism(
+        polygons=sq,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+    out_msh = tmp_path / "t16.msh"
+    generate_mesh(
+        entities=[sp],
+        dim=3,
+        output_mesh=out_msh,
+        default_characteristic_length=0.5,
+    )
+    m = meshio.read(out_msh)
+    assert "film" in m.field_data

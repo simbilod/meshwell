@@ -78,7 +78,7 @@ def generate_mesh(
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     cad_kwargs["progress_bars"] = progress_bars
 
-    occ_entities = cad_occ(entities, **cad_kwargs)
+    occ_entities, slabs = cad_occ(entities, return_slabs=True, **cad_kwargs)
 
     # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
     interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
@@ -96,8 +96,16 @@ def generate_mesh(
         boundary_delimiter=boundary_delimiter,
     )
 
+    # Slabs flow through to the mesh stage so ``apply_structured_slabs``
+    # can replay them in the gmsh geo kernel after XAO load.
+    if slabs:
+        mm.structured_slabs = slabs
+
     if checkpoint_cad:
         mm.save_to_xao(Path(checkpoint_cad))
+        from meshwell.occ_xao_writer import write_structured_slabs_sidecar
+
+        write_structured_slabs_sidecar(Path(checkpoint_cad), slabs)
 
     # --- Stage 3: mesh. -------------------------------------------------
     return mesh(

@@ -153,6 +153,10 @@ class CAD_OCC:
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
         )
+        # Populated by ``process_entities`` via ``prepare_entities``'s
+        # ``structured_slabs_out`` hook. Surfaced to callers (e.g. the
+        # orchestrator) via ``cad_occ(..., return_slabs=True)``.
+        self._captured_slabs: list = []
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from the first non-empty TopAbs class."""
@@ -391,6 +395,7 @@ class CAD_OCC:
             entities_list,
             perturbation=self.perturbation,
             resolve_snap=max(self.perturbation, self.point_tolerance),
+            structured_slabs_out=self._captured_slabs,
         )
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
@@ -530,13 +535,31 @@ def cad_occ(
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
-) -> list[OCCLabeledEntity]:
+    *,
+    return_slabs: bool = False,
+) -> list[OCCLabeledEntity] | tuple[list[OCCLabeledEntity], list]:
     """Utility function for OCC-based CAD processing.
 
     Mirrors :func:`meshwell.cad_gmsh.cad_gmsh`'s signature (minus the
     gmsh-specific ``model`` / ``filename`` / tagging kwargs); the result
     feeds :func:`meshwell.occ_xao_writer.write_xao` to produce a tagged
     XAO gmsh can load.
+
+    Args:
+        entities_list: Entities to fragment.
+        point_tolerance: Coordinate quantization for vertex snapping;
+            forwarded to :class:`CAD_OCC`.
+        n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
+        progress_bars: Show ``tqdm`` progress for the per-stage loops.
+        fuzzy_value: BOPAlgo fuzzy value used during the all-fragment
+            pass; defaults to ``point_tolerance`` when ``None``.
+        perturbation: Outward shapely buffer applied to polygon entities
+            before the cut cascade.
+        return_slabs: When True, return ``(labeled, slabs)`` so the
+            caller (e.g. the orchestrator) can carry structured-prism
+            ``Slab`` records past the OCC stage and replay them in the
+            mesh stage. Default ``False`` preserves the previous return
+            type (single labeled list) for backward compatibility.
     """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
@@ -545,4 +568,7 @@ def cad_occ(
         fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
-    return processor.process_entities(entities_list, progress_bars=progress_bars)
+    labeled = processor.process_entities(entities_list, progress_bars=progress_bars)
+    if return_slabs:
+        return labeled, processor._captured_slabs
+    return labeled

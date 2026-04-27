@@ -582,3 +582,41 @@ def _find_occ_face_at_z(candidates, target_z: float, tol: float) -> int | None:
             best_tag = tag
             best_delta = delta
     return best_tag
+
+
+def slabs_to_json(slabs: list[Slab]) -> list[dict]:
+    """Serialize a slab list to a JSON-safe list of dicts."""
+    import shapely.wkt
+
+    return [
+        {
+            "footprint_wkt": shapely.wkt.dumps(s.footprint, rounding_precision=12),
+            "zlo": s.zlo,
+            "zhi": s.zhi,
+            "n_layers": s.n_layers,
+            "recombine": s.recombine,
+            "physical_name": list(s.physical_name),
+            "source_index": s.source_index,
+            "mesh_order": s.mesh_order if s.mesh_order != float("inf") else None,
+        }
+        for s in slabs
+    ]
+
+
+def slabs_from_json(data: list[dict]) -> list[Slab]:
+    """Inverse of ``slabs_to_json``."""
+    import shapely.wkt
+
+    return [
+        Slab(
+            footprint=shapely.wkt.loads(d["footprint_wkt"]),
+            zlo=d["zlo"],
+            zhi=d["zhi"],
+            n_layers=d["n_layers"],
+            recombine=d["recombine"],
+            physical_name=tuple(d["physical_name"]),
+            source_index=d["source_index"],
+            mesh_order=d["mesh_order"] if d["mesh_order"] is not None else float("inf"),
+        )
+        for d in data
+    ]

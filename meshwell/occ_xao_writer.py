@@ -397,3 +397,35 @@ def write_xao(
     xml_text = xml_bytes.decode("utf-8")
     xml_text = xml_text.replace(cdata_placeholder, f"<![CDATA[{brep_text}]]>")
     xao_path.write_text(xml_text, encoding="utf-8")
+
+
+def write_structured_slabs_sidecar(
+    output_xao,
+    slabs: list,
+) -> None:
+    """Write ``<output_xao>.structured_slabs.json`` next to the XAO.
+
+    No-op when ``slabs`` is empty.
+    """
+    import json
+    from pathlib import Path
+
+    from meshwell.structured_polyprism import slabs_to_json
+
+    if not slabs:
+        return
+    sidecar = Path(output_xao).with_suffix(".structured_slabs.json")
+    sidecar.write_text(json.dumps(slabs_to_json(slabs)))
+
+
+def read_structured_slabs_sidecar(input_xao) -> list:
+    """Read ``<input_xao>.structured_slabs.json`` if present; else []."""
+    import json
+    from pathlib import Path
+
+    from meshwell.structured_polyprism import slabs_from_json
+
+    sidecar = Path(input_xao).with_suffix(".structured_slabs.json")
+    if not sidecar.exists():
+        return []
+    return slabs_from_json(json.loads(sidecar.read_text()))

@@ -467,13 +467,13 @@ class Mesh:
             return meshio.read(temp_mesh_path)
 
     def load_xao_file(self, input_file: Path) -> None:
-        """Load CAD geometry from .xao file.
-
-        Args:
-            input_file: Input .xao file path
-
-        """
+        """Load CAD geometry from .xao file (and structured-slab sidecar if present)."""
         self.model_manager.load_from_xao(input_file)
+        from meshwell.occ_xao_writer import read_structured_slabs_sidecar
+
+        slabs = read_structured_slabs_sidecar(input_file)
+        if slabs:
+            self.model_manager.structured_slabs = slabs
 
     def process_geometry(
         self,
