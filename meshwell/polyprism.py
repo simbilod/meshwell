@@ -26,6 +26,21 @@ class PolyPrism(GeometryEntity):
 
     """
 
+    def __new__(cls, *args, n_layers=None, **kwargs):  # noqa: ARG004
+        """Dispatch to ``_StructuredPolyPrism`` when ``n_layers`` is given.
+
+        Keeps the user-facing surface as one class (``PolyPrism``) while
+        letting the structured pipeline own its own subclass for
+        validation and isinstance dispatch.
+        """
+        if cls is PolyPrism and n_layers is not None:
+            # Lazy import to avoid the structured module importing
+            # PolyPrism back at module load time.
+            from meshwell.structured_polyprism import _StructuredPolyPrism
+
+            return object.__new__(_StructuredPolyPrism)
+        return object.__new__(cls)
+
     def __init__(
         self,
         polygons: Polygon | list[Polygon] | MultiPolygon | list[MultiPolygon],
@@ -43,7 +58,16 @@ class PolyPrism(GeometryEntity):
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
+        n_layers=None,
+        recombine: bool = False,
     ):
+        # When `n_layers` is None, this is the regular unstructured path;
+        # `recombine` is also unused here. When `n_layers` is set, ``__new__``
+        # has already returned a ``_StructuredPolyPrism`` instance whose
+        # subclass ``__init__`` is the one that actually runs (Python looks
+        # up __init__ on the type returned by __new__). These parameters
+        # exist on PolyPrism only to keep the public signature consistent.
+        del n_layers, recombine
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
             point_tolerance=point_tolerance,
