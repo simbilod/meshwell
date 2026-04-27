@@ -638,6 +638,8 @@ class PolyPrism(GeometryEntity):
             "rotation_axis": self.rotation_axis,
             "rotation_point": self.rotation_point,
             "rotation_angle": self.rotation_angle,
+            "n_layers": list(self.n_layers) if hasattr(self, "n_layers") else None,
+            "recombine": getattr(self, "recombine", False),
         }
 
     @classmethod
@@ -675,6 +677,8 @@ class PolyPrism(GeometryEntity):
             rotation_axis=data.get("rotation_axis"),
             rotation_point=data.get("rotation_point"),
             rotation_angle=data.get("rotation_angle", 0.0),
+            n_layers=data.get("n_layers"),
+            recombine=data.get("recombine", False),
         )
 
     def _validate_polygon_buffers(self) -> bool:

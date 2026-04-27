@@ -855,3 +855,51 @@ def test_generate_mesh_endtoend_with_structured_prism(tmp_path):
         z_by_xy[(round(c[0], 6), round(c[1], 6))].add(round(c[2], 6))
     column_lengths = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
     assert column_lengths == {6}, column_lengths
+
+
+def test_polyprism_dict_roundtrip_unstructured(square_poly):
+    """Existing PolyPrism (no n_layers) roundtrip is unchanged."""
+    from meshwell.polyprism import PolyPrism
+    from meshwell.utils import deserialize
+
+    pp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="film",
+    )
+    d = pp.to_dict()
+    assert d["type"] == "PolyPrism"
+    # New keys are absent (or None) when unstructured.
+    assert d.get("n_layers") is None
+    pp2 = deserialize(d)
+    assert type(pp2) is PolyPrism
+
+
+def test_polyprism_dict_roundtrip_structured(square_poly):
+    """Structured-mode PolyPrism roundtrips through the unified type string.
+
+    Uses the same ``PolyPrism`` type tag and re-dispatches to
+    ``_StructuredPolyPrism`` via __new__.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import _StructuredPolyPrism
+    from meshwell.utils import deserialize
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 0.5: 0.0, 1.0: 0.0},
+        n_layers=[3, 7],
+        physical_name="film",
+        recombine=True,
+        mesh_order=2.0,
+    )
+    d = sp.to_dict()
+    assert d["type"] == "PolyPrism"  # unified type
+    assert d["n_layers"] == [3, 7]
+    assert d["recombine"] is True
+
+    sp2 = deserialize(d)
+    assert isinstance(sp2, _StructuredPolyPrism)
+    assert sp2.n_layers == [3, 7]
+    assert sp2.recombine is True
+    assert sp2.physical_name == ("film",)
