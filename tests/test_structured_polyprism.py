@@ -599,3 +599,36 @@ def test_multi_interval_layer_counts(tmp_path, square_poly):
     column_lengths = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
     # 8 + 2 = 10 layers => 11 distinct z values per column
     assert 11 in column_lengths, column_lengths
+
+
+def test_two_xy_disjoint_structured_slabs(tmp_path, square_poly):
+    import meshio
+    from shapely.affinity import translate
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    spA = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[2],
+        physical_name="A",
+    )
+    spB = PolyPrism(
+        polygons=translate(square_poly, xoff=2.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[5],
+        physical_name="B",
+    )
+    _, mm = cad_gmsh([spA, spB], filename="t12")
+    out_msh = tmp_path / "t12.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=0.5, output_file=out_msh, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out_msh)
+    assert "A" in m.field_data
+    assert "B" in m.field_data
