@@ -220,34 +220,60 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
 
     resolved: list[Slab] = []
     for slab in raw_slabs:
-        # Working list: list of (zlo, zhi, footprint) sub-pieces still to
-        # resolve against subsequent higher-priority slabs.
-        pieces: list[tuple[float, float, Polygon | MultiPolygon]] = [
-            (slab.zlo, slab.zhi, slab.footprint)
+        # Working list: list of (zlo, zhi, footprint, n_layers_for_this_piece)
+        # sub-pieces still to resolve against subsequent higher-priority slabs.
+        # n_layers is distributed proportionally on each z-split so total layer
+        # count is preserved and donut-loser pieces sharing a z-range with the
+        # winner end up with matching layer counts.
+        pieces: list[tuple[float, float, Polygon | MultiPolygon, int]] = [
+            (slab.zlo, slab.zhi, slab.footprint, slab.n_layers)
         ]
         for hi in resolved:
-            new_pieces: list[tuple[float, float, Polygon | MultiPolygon]] = []
-            for p_lo, p_hi, p_fp in pieces:
+            new_pieces: list[tuple[float, float, Polygon | MultiPolygon, int]] = []
+            for p_lo, p_hi, p_fp, p_n in pieces:
                 overlap = _z_overlap(p_lo, p_hi, hi.zlo, hi.zhi)
                 if overlap is None:
-                    new_pieces.append((p_lo, p_hi, p_fp))
+                    new_pieces.append((p_lo, p_hi, p_fp, p_n))
                     continue
                 ov_lo, ov_hi = overlap
+                # Proportional distribution of p_n across the (up to) three
+                # z-pieces. The remainder goes into the overlap piece so the
+                # total stays exactly equal to p_n.
+                total_h = p_hi - p_lo
+                n_pre = round(p_n * (ov_lo - p_lo) / total_h) if p_lo < ov_lo else 0
+                n_post = round(p_n * (p_hi - ov_hi) / total_h) if p_hi > ov_hi else 0
+                n_ov = p_n - n_pre - n_post
+                # A pre/post piece with positive z-extent but 0 (or negative)
+                # layers is degenerate -- gmsh can't extrude a 0-layer slab.
+                # Treat that as the same alignment failure as n_ov <= 0.
+                pre_bad = (p_lo < ov_lo) and n_pre <= 0
+                post_bad = (p_hi > ov_hi) and n_post <= 0
+                if n_ov <= 0 or pre_bad or post_bad or n_pre < 0 or n_post < 0:
+                    # Task 15 will turn this into a dedicated
+                    # StructuredLayerMismatchError class.
+                    raise ValueError(
+                        f"Cannot split structured slab {slab.physical_name} "
+                        f"(z=[{p_lo}, {p_hi}], n_layers={p_n}) at "
+                        f"z=[{ov_lo}, {ov_hi}]: layer count cannot be "
+                        f"distributed evenly. Choose z-breakpoints that align "
+                        f"with the layer grid. (Task 15 will turn this into "
+                        f"StructuredLayerMismatchError.)"
+                    )
                 if p_lo < ov_lo:
-                    new_pieces.append((p_lo, ov_lo, p_fp))
+                    new_pieces.append((p_lo, ov_lo, p_fp, n_pre))
                 ov_fp = _difference_footprint(p_fp, hi.footprint)
                 if ov_fp is not None:
-                    new_pieces.append((ov_lo, ov_hi, ov_fp))
+                    new_pieces.append((ov_lo, ov_hi, ov_fp, n_ov))
                 if p_hi > ov_hi:
-                    new_pieces.append((ov_hi, p_hi, p_fp))
+                    new_pieces.append((ov_hi, p_hi, p_fp, n_post))
             pieces = new_pieces
-        for p_lo, p_hi, p_fp in pieces:
+        for p_lo, p_hi, p_fp, p_n in pieces:
             resolved.append(
                 Slab(
                     footprint=p_fp,
                     zlo=p_lo,
                     zhi=p_hi,
-                    n_layers=slab.n_layers,
+                    n_layers=p_n,
                     recombine=slab.recombine,
                     physical_name=slab.physical_name,
                     source_index=slab.source_index,

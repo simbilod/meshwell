@@ -671,3 +671,71 @@ def test_structured_slab_with_unstructured_neighbor(tmp_path):
     m = meshio.read(out_msh)
     assert "structured" in m.field_data
     assert "unstruct" in m.field_data
+
+
+def test_resolve_partial_z_split_distributes_layers_proportionally():
+    """Splitting in z must distribute n_layers proportionally across pieces."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    base = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    small = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
+
+    sp_lo = PolyPrism(
+        polygons=base,
+        buffers={0.0: 0.0, 3.0: 0.0},
+        n_layers=[6],
+        physical_name="lo",
+        mesh_order=2.0,
+    )
+    sp_hi = PolyPrism(
+        polygons=small,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        n_layers=[2],
+        physical_name="hi",
+        mesh_order=1.0,
+    )
+    slabs = resolve_structured_slabs([sp_lo, sp_hi])
+
+    lo_slabs = sorted(
+        [s for s in slabs if s.physical_name == ("lo",)], key=lambda s: s.zlo
+    )
+    # 3 lo slabs each spanning 1 of 3 z-units; 6 total layers => 2 per slab.
+    assert [(s.zlo, s.zhi, s.n_layers) for s in lo_slabs] == [
+        (0.0, 1.0, 2),
+        (1.0, 2.0, 2),
+        (2.0, 3.0, 2),
+    ]
+    hi_slab = next(s for s in slabs if s.physical_name == ("hi",))
+    assert hi_slab.n_layers == 2
+
+
+def test_resolve_partial_z_split_rejects_unaligned_layers():
+    """If the user's z-split doesn't divide n_layers evenly, raise."""
+    import pytest
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    base = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    small = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
+
+    sp_lo = PolyPrism(
+        polygons=base,
+        buffers={0.0: 0.0, 3.0: 0.0},
+        n_layers=[1],  # 1 layer over 3 units; can't be split into 3
+        physical_name="lo",
+        mesh_order=2.0,
+    )
+    sp_hi = PolyPrism(
+        polygons=small,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        n_layers=[1],
+        physical_name="hi",
+        mesh_order=1.0,
+    )
+    with pytest.raises(ValueError, match="layer count"):
+        resolve_structured_slabs([sp_lo, sp_hi])
