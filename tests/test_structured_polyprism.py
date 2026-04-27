@@ -632,3 +632,42 @@ def test_two_xy_disjoint_structured_slabs(tmp_path, square_poly):
     m = meshio.read(out_msh)
     assert "A" in m.field_data
     assert "B" in m.field_data
+
+
+def test_structured_slab_with_unstructured_neighbor(tmp_path):
+    """Structured slab next to a PolyPrism, both physicals present.
+
+    Structured slab keeps n_layers, PolyPrism is meshed unstructured.
+    """
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    sq_neighbor = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
+
+    sp = PolyPrism(
+        polygons=sq,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="structured",
+    )
+    pp = PolyPrism(
+        polygons=sq_neighbor,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="unstruct",
+    )
+    _, mm = cad_gmsh([sp, pp], filename="t14")
+    out_msh = tmp_path / "t14.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=0.5, output_file=out_msh, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out_msh)
+    assert "structured" in m.field_data
+    assert "unstruct" in m.field_data
