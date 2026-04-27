@@ -515,3 +515,53 @@ def test_apply_structured_slabs_isolated_slab(square_poly):
         assert layer_counts == {4}, layer_counts  # 3 layers => 4 z-levels
     finally:
         mm.finalize()
+
+
+def test_mesh_endtoend_single_structured_slab(tmp_path, square_poly):
+    """Drive the full Mesh pipeline.
+
+    structured slab should be meshed with n_layers layers automatically.
+    """
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[5],
+        physical_name="film",
+    )
+    _, mm = cad_gmsh([sp], filename="t10")
+    out_msh = tmp_path / "t10.msh"
+    try:
+        mesh_fn(
+            dim=3,
+            default_characteristic_length=0.5,
+            output_file=out_msh,
+            model=mm,
+        )
+    except Exception:
+        mm.finalize()
+        raise
+    assert out_msh.exists()
+    import meshio
+
+    m = meshio.read(out_msh)
+    # Without the wiring, no 3D entities exist (the structured void is
+    # untouched), so meshio.read finds zero 3D blocks. The wedge/hex
+    # check originally proposed in the plan only holds with recombine=True;
+    # gmsh subdivides extruded prisms into tetrahedra when recombine is
+    # False (the structured-mode default), so we instead assert that the
+    # mesh contains 3D cells AND retains the structured z-layering.
+    cell_block_types = {b.type for b in m.cells}
+    assert cell_block_types & {"tetra", "wedge", "hexahedron"}, cell_block_types
+
+    # n_layers=5 -> 6 distinct z-levels for any column of nodes.
+    from collections import defaultdict
+
+    z_by_xy: dict[tuple[float, float], set[float]] = defaultdict(set)
+    for x, y, z in m.points:
+        z_by_xy[(round(x, 6), round(y, 6))].add(round(z, 6))
+    layer_counts = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
+    assert layer_counts == {6}, layer_counts

@@ -539,6 +539,13 @@ class Mesh:
                 resolution_specs=resolution_specs,
                 interface_delimiter=interface_delimiter,
             )
+            # Reinstantiate any structured-prism slabs in the geo kernel
+            # before meshing. No-op when the model has none.
+            structured_slabs = getattr(self.model_manager, "structured_slabs", [])
+            if structured_slabs:
+                from meshwell.structured_polyprism import apply_structured_slabs
+
+                apply_structured_slabs(self.model_manager, structured_slabs)
             return self.process_mesh(
                 dim=dim,
                 global_3D_algorithm=algo3d,
