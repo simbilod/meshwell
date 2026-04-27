@@ -413,6 +413,7 @@ class CAD_GMSH:
             entities_list,
             perturbation=self.perturbation,
             resolve_snap=max(self.perturbation, self.point_tolerance),
+            structured_slabs_out=self.model_manager.structured_slabs,
         )
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----

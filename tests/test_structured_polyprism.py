@@ -457,3 +457,23 @@ def test_prepare_entities_no_kwarg_preserves_structured(square_poly):
     prepare_entities(entities, perturbation=1e-5)
     # Without the kwarg, structured prism is passed through (no phantom).
     assert any(isinstance(e, _StructuredPolyPrism) for e in entities)
+
+
+def test_cad_gmsh_populates_model_manager_structured_slabs(square_poly):
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.polyprism import PolyPrism
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+    _, mm = cad_gmsh([sp], filename="t8")
+    try:
+        slabs = mm.structured_slabs
+        assert len(slabs) == 1
+        assert slabs[0].physical_name == ("film",)
+        assert slabs[0].n_layers == 3
+    finally:
+        mm.finalize()

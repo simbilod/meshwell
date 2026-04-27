@@ -65,6 +65,12 @@ class ModelManager:
         # Initialization state
         self._is_initialized = False
 
+        # Structured-slab metadata, populated by cad_gmsh / cad_occ when
+        # any structured PolyPrism (n_layers given) flows through
+        # prepare_entities. The mesh stage reads this to drive
+        # geo-kernel reinstantiation.
+        self.structured_slabs: list = []
+
         # CAD and Mesh instances (created lazily)
         self._mesh = None
 
