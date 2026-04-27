@@ -903,3 +903,49 @@ def test_polyprism_dict_roundtrip_structured(square_poly):
     assert sp2.n_layers == [3, 7]
     assert sp2.recombine is True
     assert sp2.physical_name == ("film",)
+
+
+def test_backend_equivalence_structured_prism(tmp_path):
+    """cad_gmsh path and cad_occ-via-orchestrator path agree on physical groups."""
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    def make_entities():
+        sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+        return [
+            PolyPrism(
+                polygons=sq,
+                buffers={0.0: 0.0, 1.0: 0.0},
+                n_layers=[3],
+                physical_name="film",
+            )
+        ]
+
+    out_gmsh = tmp_path / "gmsh.msh"
+    out_occ = tmp_path / "occ.msh"
+
+    _, mm = cad_gmsh(make_entities(), filename="t19g")
+    try:
+        mesh_fn(
+            dim=3, default_characteristic_length=0.5, output_file=out_gmsh, model=mm
+        )
+    except Exception:
+        mm.finalize()
+        raise
+
+    generate_mesh(
+        entities=make_entities(),
+        dim=3,
+        output_mesh=out_occ,
+        default_characteristic_length=0.5,
+    )
+
+    g = meshio.read(out_gmsh)
+    o = meshio.read(out_occ)
+    assert set(g.field_data.keys()) == set(o.field_data.keys())
+    assert "film" in g.field_data
