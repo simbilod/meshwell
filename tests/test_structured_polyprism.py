@@ -267,3 +267,59 @@ def test_resolve_filters_non_structured_entities(square_poly):
     slabs = resolve_structured_slabs([_Other(), sp, _Other()])
     assert len(slabs) == 1
     assert slabs[0].physical_name == ("film",)
+
+
+def test_resolve_xy_overlap_same_z():
+    from shapely.geometry import MultiPolygon, Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    big = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    small = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])  # inside big
+
+    sp_big = PolyPrism(
+        polygons=big,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[2],
+        physical_name="bg",
+        mesh_order=2.0,
+    )
+    sp_small = PolyPrism(
+        polygons=small,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[5],
+        physical_name="hole",
+        mesh_order=1.0,
+    )
+    slabs = resolve_structured_slabs([sp_big, sp_small])
+    by_name = {s.physical_name[0]: s for s in slabs}
+    assert "hole" in by_name
+    assert "bg" in by_name
+    assert by_name["hole"].footprint.equals(MultiPolygon([small]))
+    assert by_name["bg"].footprint.area == pytest.approx(
+        big.area - small.area, rel=1e-9
+    )
+
+
+def test_resolve_xy_overlap_total_eats_low_priority(square_poly):
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    sp_loser = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="loser",
+        mesh_order=2.0,
+    )
+    sp_winner = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="winner",
+        mesh_order=1.0,
+    )
+    slabs = resolve_structured_slabs([sp_loser, sp_winner])
+    assert len(slabs) == 1
+    assert slabs[0].physical_name == ("winner",)

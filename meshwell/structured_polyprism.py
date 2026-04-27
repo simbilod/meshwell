@@ -164,6 +164,38 @@ def expand_slabs_for_entity(
     return out
 
 
+def _z_overlap(
+    a_lo: float, a_hi: float, b_lo: float, b_hi: float
+) -> tuple[float, float] | None:
+    """Return overlapping z-interval, or None if disjoint or zero-volume touching."""
+    lo = max(a_lo, b_lo)
+    hi = min(a_hi, b_hi)
+    if hi <= lo:
+        return None
+    return (lo, hi)
+
+
+def _difference_footprint(
+    low: Polygon | MultiPolygon, high: Polygon | MultiPolygon
+) -> Polygon | MultiPolygon | None:
+    """Shapely difference returning ``None`` when the result is empty.
+
+    Filters non-polygonal residue (lines/points produced by degenerate
+    subtractions) so callers always see a polygon-typed result.
+    """
+    diff = low.difference(high)
+    if diff.is_empty:
+        return None
+    if isinstance(diff, Polygon):
+        return diff
+    if isinstance(diff, MultiPolygon):
+        return diff
+    polys = [g for g in getattr(diff, "geoms", []) if isinstance(g, Polygon)]
+    if not polys:
+        return None
+    return polys[0] if len(polys) == 1 else MultiPolygon(polys)
+
+
 def resolve_structured_slabs(entities_list: list) -> list[Slab]:
     """Decompose structured ``PolyPrism`` (``_StructuredPolyPrism``) entities into 3D-disjoint slabs.
 
@@ -185,4 +217,36 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
         return raw_slabs
 
     raw_slabs.sort(key=lambda s: (s.mesh_order, s.source_index, s.zlo))
-    return raw_slabs
+
+    # Run priority-ordered subtraction. In Task 4 we only handle the
+    # full-z-overlap case; partial-z splitting comes in Task 5.
+    resolved: list[Slab] = []
+    for slab in raw_slabs:
+        footprint: Polygon | MultiPolygon | None = slab.footprint
+        for hi in resolved:
+            overlap = _z_overlap(slab.zlo, slab.zhi, hi.zlo, hi.zhi)
+            if overlap is None:
+                continue
+            # Skip partial-z overlaps; Task 5 handles them.
+            if (overlap[0], overlap[1]) != (slab.zlo, slab.zhi):
+                continue
+            new_fp = _difference_footprint(footprint, hi.footprint)
+            if new_fp is None:
+                footprint = None
+                break
+            footprint = new_fp
+        if footprint is None:
+            continue
+        resolved.append(
+            Slab(
+                footprint=footprint,
+                zlo=slab.zlo,
+                zhi=slab.zhi,
+                n_layers=slab.n_layers,
+                recombine=slab.recombine,
+                physical_name=slab.physical_name,
+                source_index=slab.source_index,
+                mesh_order=slab.mesh_order,
+            )
+        )
+    return resolved
