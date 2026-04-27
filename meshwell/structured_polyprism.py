@@ -68,7 +68,7 @@ class _StructuredPolyPrism(PolyPrism):
         self,
         polygons,
         buffers,
-        n_layers,
+        n_layers: list[int],
         recombine: bool = False,
         **kwargs,
     ):

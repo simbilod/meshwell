@@ -58,7 +58,7 @@ class PolyPrism(GeometryEntity):
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
-        n_layers=None,
+        n_layers: list[int] | None = None,
         recombine: bool = False,
     ):
         # When `n_layers` is None, this is the regular unstructured path;
@@ -67,6 +67,12 @@ class PolyPrism(GeometryEntity):
         # subclass ``__init__`` is the one that actually runs (Python looks
         # up __init__ on the type returned by __new__). These parameters
         # exist on PolyPrism only to keep the public signature consistent.
+        if n_layers is not None and type(self) is PolyPrism:
+            raise TypeError(
+                "PolyPrism.__init__ received n_layers but instance type is PolyPrism, "
+                "not _StructuredPolyPrism. Construct via PolyPrism(...) so __new__ "
+                "can dispatch, or instantiate _StructuredPolyPrism directly."
+            )
         del n_layers, recombine
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(

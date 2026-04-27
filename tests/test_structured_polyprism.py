@@ -116,3 +116,22 @@ def test_structured_mode_rejects_additive_or_subdivision(square_poly):
             n_layers=[4],
             subdivision=(2, 2, 1),
         )
+
+
+def test_polyprism_init_direct_with_n_layers_raises(square_poly):
+    """Bypassing __new__ and calling __init__ directly with n_layers must error.
+
+    Guards against future from_dict/round-trip code paths constructing a
+    bare PolyPrism with n_layers set, which would silently produce a
+    non-structured prism.
+    """
+    from meshwell.polyprism import PolyPrism
+
+    bare = object.__new__(PolyPrism)
+    with pytest.raises(TypeError, match="n_layers"):
+        PolyPrism.__init__(
+            bare,
+            polygons=square_poly,
+            buffers={0.0: 0.0, 1.0: 0.0},
+            n_layers=[4],
+        )
