@@ -29,12 +29,10 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import Any
 
-import shapely
-from shapely.geometry import box
 from tqdm.auto import tqdm
 
 import gmsh
-from meshwell.interface_tag import InterfaceTag
+from meshwell.cad_common import prepare_entities
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
 
@@ -406,80 +404,16 @@ class CAD_GMSH:
 
         self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
-        # ----- Pass A: buffer all polygon-bearing entities (shapely only) -----
-        xmin, ymin, xmax, ymax = (
-            float("inf"),
-            float("inf"),
-            float("-inf"),
-            float("-inf"),
+        # ----- Shared shapely pre-pass: buffer polygons + resolve InterfaceTags -----
+        # resolve_snap must be >= point_tolerance so the resolved strip is wide
+        # enough to produce non-degenerate panels (at least 2*point_tolerance
+        # in each direction). The polygon perturbation (which can be
+        # sub-tolerance) only shifts the boundary position, not the strip width.
+        prepare_entities(
+            entities_list,
+            perturbation=self.perturbation,
+            resolve_snap=max(self.perturbation, self.point_tolerance),
         )
-        for ent in entities_list:
-            if hasattr(ent, "polygons"):
-                polys = (
-                    ent.polygons if isinstance(ent.polygons, list) else [ent.polygons]
-                )
-                for p in polys:
-                    b = p.bounds
-                    xmin = min(xmin, b[0])
-                    ymin = min(ymin, b[1])
-                    xmax = max(xmax, b[2])
-                    ymax = max(ymax, b[3])
-        # Expand bbox by perturbation so that buffered polygon edges do not
-        # land exactly on the bbox boundary; clipping at the exact edge creates
-        # artificial horizontal / vertical corner artifacts in the resolve strip
-        # intersection that generate degenerate InterfaceTag panels.
-        global_bbox = box(
-            xmin - self.perturbation,
-            ymin - self.perturbation,
-            xmax + self.perturbation,
-            ymax + self.perturbation,
-        )
-        if progress_bars:
-            print(f"Global bounding box for clipping: {global_bbox.bounds}")
-
-        # Sub-tolerance buffering requires relaxing the shapely precision
-        # model installed by entity constructors (set_precision at
-        # point_tolerance). Without this re-set, polygon.buffer(d) with
-        # d < point_tolerance returns empty geometry.
-        relaxed_grid = max(self.perturbation / 100, 1e-12)
-        for ent in entities_list:
-            if not hasattr(ent, "polygons"):
-                continue
-            if isinstance(ent.polygons, list):
-                ent.polygons = [
-                    shapely.set_precision(p, grid_size=relaxed_grid, mode="pointwise")
-                    .buffer(self.perturbation, join_style=2)
-                    .intersection(global_bbox)
-                    for p in ent.polygons
-                ]
-            else:
-                ent.polygons = (
-                    shapely.set_precision(
-                        ent.polygons, grid_size=relaxed_grid, mode="pointwise"
-                    )
-                    .buffer(self.perturbation, join_style=2)
-                    .intersection(global_bbox)
-                )
-
-        # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
-        polygon_ents: dict[str, list[Any]] = defaultdict(list)
-        for ent in entities_list:
-            if not hasattr(ent, "polygons"):
-                continue
-            name = ent.physical_name
-            if isinstance(name, tuple):
-                name = name[0]
-            polygon_ents[name].append(ent)
-
-        for ent in entities_list:
-            if isinstance(ent, InterfaceTag):
-                # Use point_tolerance as the snap distance so that the
-                # resolved strip is wide enough to produce non-degenerate
-                # panels (at least 2*point_tolerance in each direction).
-                # The polygon perturbation (which can be sub-tolerance) only
-                # shifts the boundary position, not the strip width.
-                resolve_snap = max(self.perturbation, self.point_tolerance)
-                ent.resolve(polygon_ents, default_snap=resolve_snap)
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
