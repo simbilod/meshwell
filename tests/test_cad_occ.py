@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import shapely
 
@@ -278,6 +280,94 @@ def test_occ_many_polyprism_stress_with_arcs_and_coincidences():
         assert any("___" in n for n in dim2_names), dim2_names
     finally:
         mm.finalize()
+
+
+def _physical_names_in_xao(xao_path: Path) -> set[str]:
+    """Open xao_path in gmsh and return the set of physical names."""
+    gmsh.initialize()
+    try:
+        gmsh.open(str(xao_path))
+        gmsh.model.occ.synchronize()
+        return {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups()
+        }
+    finally:
+        gmsh.finalize()
+
+
+def test_cad_occ_two_abutting_prisms_share_interface(tmp_path):
+    """OCC backend mirror of cad_gmsh's adjacent-prisms-share-interface test."""
+    A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+    buffers = {0.0: 0.0, 2.0: 0.0}
+    labeled = cad_occ(
+        [
+            PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+            PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+        ]
+    )
+    xao = tmp_path / "two_prisms.xao"
+    write_xao(labeled, xao)
+    names = _physical_names_in_xao(xao)
+    assert {"A", "B"} <= names
+    assert "A___B" in names or "B___A" in names
+    assert "A___None" in names
+    assert "B___None" in names
+
+
+def test_cad_occ_interface_tag_resolves_to_winning_boundary(tmp_path):
+    """OCC backend mirror of the InterfaceTag e2e test.
+
+    Two abutting prisms + one InterfaceTag at their shared face. The
+    InterfaceTag must produce an `iface` physical group, and A must
+    not be internally split by the InterfaceTag panel.
+    """
+    from shapely.geometry import LineString
+
+    from meshwell.interface_tag import InterfaceTag
+
+    A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+    B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+    buffers = {0.0: 0.0, 1.0: 0.0}
+    labeled = cad_occ(
+        [
+            PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+            PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+            InterfaceTag(
+                linestrings=LineString([(5, 0), (5, 5)]),
+                zmin=0.0,
+                zmax=1.0,
+                physical_name="iface",
+                mesh_order=3,
+            ),
+        ]
+    )
+    xao = tmp_path / "iface.xao"
+    write_xao(labeled, xao)
+    names = _physical_names_in_xao(xao)
+    assert {"A", "B", "iface"} <= names
+
+
+def test_cad_occ_perturbation_below_point_tolerance():
+    """Default perturbation in cad_occ is 1e-5; bound shift stays below point_tolerance."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    point_tol = 1e-3
+    poly = shapely.Polygon([(0, 0), (2, 0), (2, 1), (0, 1)])
+    labeled = cad_occ(
+        [PolySurface(polygons=poly, physical_name="A", mesh_order=1)],
+        point_tolerance=point_tol,
+    )
+    assert len(labeled) == 1
+    bbox = Bnd_Box()
+    for shape in labeled[0].shapes:
+        BRepBndLib.Add_s(shape, bbox)
+    xmin, ymin, _, xmax, ymax, _ = bbox.Get()
+    assert abs(xmin - 0.0) < point_tol, xmin
+    assert abs(ymin - 0.0) < point_tol, ymin
+    assert abs(xmax - 2.0) < point_tol, xmax
+    assert abs(ymax - 1.0) < point_tol, ymax
 
 
 if __name__ == "__main__":
