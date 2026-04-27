@@ -361,3 +361,35 @@ def test_polyprism_with_interface_tag_match(tmp_path):
     assert "iface" in ns_gmsh
     assert "iface" in ns_occ
     _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_keep_false_helper_match(tmp_path):
+    """A helper prism (mesh_bool=False) carves an interface in a kept neighbour.
+
+    Both backends must omit the helper from the mesh but still tag the
+    kept___helper interface.
+    """
+
+    def make():
+        A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+        B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+        buffers = {0.0: 0.0, 1.0: 0.0}
+        return [
+            PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+            PolyPrism(
+                polygons=B,
+                buffers=buffers,
+                physical_name="helper",
+                mesh_order=2,
+                mesh_bool=False,
+            ),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    # helper has no body in the mesh on either side
+    assert "helper" not in s_gmsh or "tetra" not in s_gmsh.get("helper", {})
+    assert "helper" not in s_occ or "tetra" not in s_occ.get("helper", {})
+    # Compare ignoring the helper itself; A___helper interface must match.
+    _assert_summaries_equivalent(s_gmsh, s_occ, ignore_groups={"helper"})
