@@ -201,3 +201,69 @@ def test_expand_slabs_handles_multipolygon_input():
     assert len(slabs) == 1
     assert isinstance(slabs[0].footprint, MultiPolygon)
     assert len(slabs[0].footprint.geoms) == 2
+
+
+def test_resolve_disjoint_xy_identity(square_poly):
+    from shapely.affinity import translate
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    sp1 = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="A",
+    )
+    sp2 = PolyPrism(
+        polygons=translate(square_poly, xoff=2.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="B",
+    )
+    slabs = resolve_structured_slabs([sp1, sp2])
+    assert len(slabs) == 2
+    names = {s.physical_name[0] for s in slabs}
+    assert names == {"A", "B"}
+
+
+def test_resolve_disjoint_z_identity(square_poly):
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    sp1 = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="A",
+    )
+    sp2 = PolyPrism(
+        polygons=square_poly,  # same xy
+        buffers={2.0: 0.0, 3.0: 0.0},  # disjoint z
+        n_layers=[3],
+        physical_name="B",
+    )
+    slabs = resolve_structured_slabs([sp1, sp2])
+    assert len(slabs) == 2
+    z_ranges = {(s.zlo, s.zhi) for s in slabs}
+    assert z_ranges == {(0.0, 1.0), (2.0, 3.0)}
+
+
+def test_resolve_filters_non_structured_entities(square_poly):
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    class _Other:
+        polygons = square_poly
+        physical_name = ("foo",)
+        mesh_order = None
+
+    sp = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="film",
+    )
+    slabs = resolve_structured_slabs([_Other(), sp, _Other()])
+    assert len(slabs) == 1
+    assert slabs[0].physical_name == ("film",)

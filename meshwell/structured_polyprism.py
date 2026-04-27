@@ -162,3 +162,27 @@ def expand_slabs_for_entity(
             )
         )
     return out
+
+
+def resolve_structured_slabs(entities_list: list) -> list[Slab]:
+    """Decompose structured ``PolyPrism`` (``_StructuredPolyPrism``) entities into 3D-disjoint slabs.
+
+    For overlapping prisms, lower ``mesh_order`` wins; ties resolved by
+    insertion order. After this call, every returned :class:`Slab` is
+    pairwise 3D-disjoint with every other returned slab (touching faces
+    are allowed; volumetric intersection is not).
+
+    Non-structured entities (``isinstance(ent, _StructuredPolyPrism)`` is
+    False) are skipped.
+    """
+    raw_slabs: list[Slab] = []
+    for idx, ent in enumerate(entities_list):
+        if not isinstance(ent, _StructuredPolyPrism):
+            continue
+        raw_slabs.extend(expand_slabs_for_entity(ent, source_index=idx))
+
+    if len(raw_slabs) <= 1:
+        return raw_slabs
+
+    raw_slabs.sort(key=lambda s: (s.mesh_order, s.source_index, s.zlo))
+    return raw_slabs
