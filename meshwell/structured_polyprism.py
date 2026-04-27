@@ -249,15 +249,12 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
                 pre_bad = (p_lo < ov_lo) and n_pre <= 0
                 post_bad = (p_hi > ov_hi) and n_post <= 0
                 if n_ov <= 0 or pre_bad or post_bad or n_pre < 0 or n_post < 0:
-                    # Task 15 will turn this into a dedicated
-                    # StructuredLayerMismatchError class.
-                    raise ValueError(
+                    raise StructuredLayerMismatchError(
                         f"Cannot split structured slab {slab.physical_name} "
                         f"(z=[{p_lo}, {p_hi}], n_layers={p_n}) at "
                         f"z=[{ov_lo}, {ov_hi}]: layer count cannot be "
                         f"distributed evenly. Choose z-breakpoints that align "
-                        f"with the layer grid. (Task 15 will turn this into "
-                        f"StructuredLayerMismatchError.)"
+                        f"with the layer grid."
                     )
                 if p_lo < ov_lo:
                     new_pieces.append((p_lo, ov_lo, p_fp, n_pre))
@@ -403,6 +400,48 @@ class _StructuredPhantom:
         return result
 
 
+class StructuredLayerMismatchError(ValueError):
+    """Raised on conflicting ``n_layers`` across a shared horizontal face.
+
+    Two structured slabs that stack vertically (one's ``zhi`` equals the
+    other's ``zlo``) and overlap in xy must agree on ``n_layers`` so the
+    shared face has a single, consistent mesh.
+    """
+
+
+def _validate_slab_layer_mating(slabs: list[Slab], tol: float) -> None:
+    """Raise if any pair of slabs sharing a horizontal face disagrees on n_layers.
+
+    Two slabs share a horizontal face iff ``a.zhi == b.zlo`` (within
+    ``tol``) and their xy footprints overlap with non-zero area.
+    """
+    for i, a in enumerate(slabs):
+        for b in slabs[i + 1 :]:
+            # Slabs from the same originating entity are consistent by
+            # construction (the user supplied one n_layers per z-interval);
+            # intra-entity stacking with differing counts is allowed.
+            if a.source_index == b.source_index:
+                continue
+            # Order so lo is below hi (lo.zhi == hi.zlo).
+            if abs(a.zhi - b.zlo) <= tol:
+                lo, hi = a, b
+            elif abs(b.zhi - a.zlo) <= tol:
+                lo, hi = b, a
+            else:
+                continue
+            shared = lo.footprint.intersection(hi.footprint)
+            if shared.is_empty or shared.area < tol * tol:
+                continue
+            if lo.n_layers != hi.n_layers:
+                raise StructuredLayerMismatchError(
+                    f"Stacked structured slabs {lo.physical_name} (n_layers="
+                    f"{lo.n_layers}) and {hi.physical_name} (n_layers="
+                    f"{hi.n_layers}) share a horizontal face at z="
+                    f"{lo.zhi} but disagree on n_layers. v1 requires "
+                    f"matching layer counts on shared horizontal faces."
+                )
+
+
 def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     """Reinstantiate each ``Slab`` in the gmsh geo kernel as a structured layered volume.
 
@@ -426,6 +465,8 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
         return
 
     tol = model_manager.point_tolerance or 1e-9
+    _validate_slab_layer_mating(slabs, tol)
+
     for slab in slabs:
         _apply_one_slab(slab, tol)
 

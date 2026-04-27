@@ -718,7 +718,10 @@ def test_resolve_partial_z_split_rejects_unaligned_layers():
     from shapely.geometry import Polygon
 
     from meshwell.polyprism import PolyPrism
-    from meshwell.structured_polyprism import resolve_structured_slabs
+    from meshwell.structured_polyprism import (
+        StructuredLayerMismatchError,
+        resolve_structured_slabs,
+    )
 
     base = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
     small = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
@@ -737,7 +740,7 @@ def test_resolve_partial_z_split_rejects_unaligned_layers():
         physical_name="hi",
         mesh_order=1.0,
     )
-    with pytest.raises(ValueError, match="layer count"):
+    with pytest.raises(StructuredLayerMismatchError, match="layer count"):
         resolve_structured_slabs([sp_lo, sp_hi])
 
 
@@ -780,3 +783,34 @@ def test_overlapping_structured_priority_resolution(tmp_path):
     m = meshio.read(out_msh)
     assert "lo" in m.field_data
     assert "hi" in m.field_data
+
+
+def test_stacked_layer_mismatch_raises():
+    """Two structured slabs share a horizontal face with different n_layers."""
+    import pytest
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import StructuredLayerMismatchError
+
+    sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    sp_low = PolyPrism(
+        polygons=sq,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="lo",
+    )
+    sp_high = PolyPrism(
+        polygons=sq,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        n_layers=[7],  # mismatch with lo
+        physical_name="hi",
+    )
+    _, mm = cad_gmsh([sp_low, sp_high], filename="t15")
+    try:
+        with pytest.raises(StructuredLayerMismatchError, match="n_layers"):
+            mesh_fn(dim=3, default_characteristic_length=0.5, model=mm)
+    finally:
+        mm.finalize()
