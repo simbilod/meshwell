@@ -21,6 +21,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
+import pytest
 import shapely
 from shapely.geometry import LineString
 
@@ -393,3 +394,44 @@ def test_keep_false_helper_match(tmp_path):
     assert "helper" not in s_occ or "tetra" not in s_occ.get("helper", {})
     # Compare ignoring the helper itself; A___helper interface must match.
     _assert_summaries_equivalent(s_gmsh, s_occ, ignore_groups={"helper"})
+
+
+# ----- cad_pipeline fixture demo -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "scene_factory",
+    [
+        pytest.param(
+            lambda: [
+                PolyPrism(
+                    polygons=shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)]),
+                    buffers={0.0: 0.0, 2.0: 0.0},
+                    physical_name="A",
+                    mesh_order=1,
+                ),
+            ],
+            id="single_prism",
+        ),
+        pytest.param(
+            lambda: [
+                PolySurface(
+                    polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                    physical_name="A",
+                    mesh_order=1,
+                ),
+            ],
+            id="single_polysurface_2d",
+        ),
+    ],
+)
+def test_pipeline_runs_on_both_backends(cad_pipeline, scene_factory):
+    """Demonstrate the ``cad_pipeline`` fixture.
+
+    pytest runs this 2x2 = 4 times, once per (scene, backend) combination.
+    Each run produces a valid mesh with the expected physical group.
+    """
+    entities = scene_factory()
+    dim = 2 if any(type(e).__name__ == "PolySurface" for e in entities) else 3
+    m = cad_pipeline(entities, dim=dim)
+    assert "A" in m.cell_sets_dict
