@@ -22,9 +22,11 @@ from pathlib import Path
 import meshio
 import numpy as np
 import shapely
+from shapely.geometry import LineString
 
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
+from meshwell.interface_tag import InterfaceTag
 from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
@@ -325,4 +327,37 @@ def test_donut_with_inner_prism_match(tmp_path):
     m_gmsh, m_occ = _run_both(make, tmp_path)
     s_gmsh = _mesh_summary(m_gmsh)
     s_occ = _mesh_summary(m_occ)
+    _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_polyprism_with_interface_tag_match(tmp_path):
+    """Two abutting prisms + one InterfaceTag at their shared face.
+
+    Both backends must produce an ``iface`` physical group with matching
+    face area.
+    """
+
+    def make():
+        A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+        B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+        buffers = {0.0: 0.0, 1.0: 0.0}
+        return [
+            PolyPrism(polygons=A, buffers=buffers, physical_name="A", mesh_order=1),
+            PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
+            InterfaceTag(
+                linestrings=LineString([(5, 0), (5, 5)]),
+                zmin=0.0,
+                zmax=1.0,
+                physical_name="iface",
+                mesh_order=3,
+            ),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    ns_gmsh = _normalize_summary(s_gmsh)
+    ns_occ = _normalize_summary(s_occ)
+    assert "iface" in ns_gmsh
+    assert "iface" in ns_occ
     _assert_summaries_equivalent(s_gmsh, s_occ)
