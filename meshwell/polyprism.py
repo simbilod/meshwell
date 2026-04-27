@@ -366,97 +366,39 @@ class PolyPrism(GeometryEntity):
         entry: list[tuple[float, Polygon]],
         exterior: bool = True,
         interior_index: int = 0,
-    ) -> TopoDS_Shape:
-        """Create OCC volume directly using OCP."""
-        from OCP.BRep import BRep_Builder
-        from OCP.BRepBuilderAPI import (
-            BRepBuilderAPI_MakeSolid,
-        )
-        from OCP.TopoDS import TopoDS_Shell
+    ) -> "TopoDS_Shape":
+        """Loft a tapered solid through the per-z wires of ``entry``.
 
-        # Draw bottom surface
-        bottom_polygon = entry[0][1]
-        bottom_z = entry[0][0]
-        bottom_polygon_vertices = self.xy_surface_vertices(
-            polygon=bottom_polygon,
-            polygon_z=bottom_z,
-            exterior=exterior,
-            interior_index=interior_index,
-        )
-        faces = [
-            self._make_occ_face_from_vertices(
-                bottom_polygon_vertices,
+        Mirrors gmsh's ``addThruSections(makeSolid=True, makeRuled=True)``.
+        Each layer in ``entry`` contributes one wire (built with the
+        existing :meth:`_make_occ_wire_from_vertices` helper so arcs are
+        preserved). ``BRepOffsetAPI_ThruSections`` builds bottom + top +
+        lateral surface as a single closed solid -- no manual face
+        stitching, no shell sealing, no MakeSolid wrapping.
+
+        All wires must have the same vertex count (true for any
+        consistently-buffered polygon, which is the only case meshwell
+        currently supports). OCC raises during ``Build()`` if violated.
+        """
+        from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+
+        loft = BRepOffsetAPI_ThruSections(True, True)  # isSolid, isRuled
+        for z, polygon in entry:
+            vertices = self.xy_surface_vertices(
+                polygon=polygon,
+                polygon_z=z,
+                exterior=exterior,
+                interior_index=interior_index,
+            )
+            wire = self._make_occ_wire_from_vertices(
+                vertices,
                 identify_arcs=self.identify_arcs,
                 min_arc_points=self.min_arc_points,
                 arc_tolerance=self.arc_tolerance,
             )
-        ]
-
-        # Draw top surface
-        top_polygon = entry[-1][1]
-        top_z = entry[-1][0]
-        top_polygon_vertices = self.xy_surface_vertices(
-            polygon=top_polygon,
-            polygon_z=top_z,
-            exterior=exterior,
-            interior_index=interior_index,
-        )
-        faces.append(
-            self._make_occ_face_from_vertices(
-                top_polygon_vertices,
-                identify_arcs=self.identify_arcs,
-                min_arc_points=self.min_arc_points,
-                arc_tolerance=self.arc_tolerance,
-            )
-        )
-
-        # Draw vertical surfaces
-        # Note: Vertical surfaces remain straight lines between layers for now
-        # unless we want to also identify arcs in the vertical direction.
-        # But usually PolyPrism arcs are in the XY plane.
-        for pair_index in range(len(entry) - 1):
-            if exterior:
-                bottom_coords = entry[pair_index][1].exterior.coords
-                top_coords = entry[pair_index + 1][1].exterior.coords
-            else:
-                bottom_coords = entry[pair_index][1].interiors[interior_index].coords
-                top_coords = entry[pair_index + 1][1].interiors[interior_index].coords
-
-            bottom_z = entry[pair_index][0]
-            top_z = entry[pair_index + 1][0]
-
-            for facet_pt_ind in range(len(bottom_coords) - 1):
-                p1 = (
-                    bottom_coords[facet_pt_ind][0],
-                    bottom_coords[facet_pt_ind][1],
-                    bottom_z,
-                )
-                p2 = (
-                    bottom_coords[facet_pt_ind + 1][0],
-                    bottom_coords[facet_pt_ind + 1][1],
-                    bottom_z,
-                )
-                p3 = (
-                    top_coords[facet_pt_ind + 1][0],
-                    top_coords[facet_pt_ind + 1][1],
-                    top_z,
-                )
-                p4 = (top_coords[facet_pt_ind][0], top_coords[facet_pt_ind][1], top_z)
-
-                facet_vertices = [p1, p2, p3, p4, p1]
-                # For vertical facets, we use simple linear interpolation
-                faces.append(self._make_occ_face_from_vertices(facet_vertices))
-
-        # Build shell and solid
-        shell_builder = BRep_Builder()
-        shell = TopoDS_Shell()
-        shell_builder.MakeShell(shell)
-        for face in faces:
-            shell_builder.Add(shell, face)
-
-        solid_builder = BRepBuilderAPI_MakeSolid()
-        solid_builder.Add(shell)
-        return solid_builder.Solid()
+            loft.AddWire(wire)
+        loft.Build()
+        return loft.Shape()
 
     def plot_decomposition(
         self,
