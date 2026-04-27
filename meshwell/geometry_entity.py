@@ -526,7 +526,7 @@ class GeometryEntity:
                 p_start = gp_Pnt(*start_coords)
                 p_mid = gp_Pnt(*mid_coords)
                 p_end = gp_Pnt(*end_coords)
-                center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
+                _center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
 
                 if is_closed:
                     # Full circle: split into two 180-degree arcs.
@@ -540,27 +540,16 @@ class GeometryEntity:
                     edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
                     wire_builder.Add(edge1)
                 else:
-                    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
-                    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
-
-                    try:
-                        axis = gp_Ax2(center, gp_Dir(0, 0, 1))
-                        circle = gp_Circ(axis, seg.radius)
-
-                        arc_geom_pos = GC_MakeArcOfCircle(
-                            circle, p_start, p_end, True
-                        ).Value()
-                        proj = GeomAPI_ProjectPointOnCurve(p_mid, arc_geom_pos)
-                        if proj.NbPoints() > 0 and proj.LowerDistance() < 1e-2:
-                            arc_geom = arc_geom_pos
-                        else:
-                            arc_geom = GC_MakeArcOfCircle(
-                                circle, p_start, p_end, False
-                            ).Value()
-                        edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
-                    except Exception:
-                        arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
-                        edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
+                    # Three-point arc form: GC_MakeArcOfCircle(p_start, p_mid,
+                    # p_end) builds the unique arc passing through all three
+                    # points, in that order. This avoids the CCW-vs-CW
+                    # ambiguity of the (circle, p_start, p_end, sense) form
+                    # -- the latter cannot be disambiguated by projecting
+                    # p_mid, since p_mid lies on the underlying full circle
+                    # and projection ignores the parametric trim of the arc
+                    # (gives LowerDistance == 0 for both senses).
+                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                    edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
                 p1_coords = [round(c, ndigits) for c in seg.points[0]]
                 p2_coords = [round(c, ndigits) for c in seg.points[1]]
