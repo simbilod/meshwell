@@ -323,3 +323,40 @@ def test_resolve_xy_overlap_total_eats_low_priority(square_poly):
     slabs = resolve_structured_slabs([sp_loser, sp_winner])
     assert len(slabs) == 1
     assert slabs[0].physical_name == ("winner",)
+
+
+def test_resolve_partial_z_overlap_splits_low_priority():
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured_polyprism import resolve_structured_slabs
+
+    base = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
+    small = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
+
+    sp_lo = PolyPrism(
+        polygons=base,
+        buffers={0.0: 0.0, 3.0: 0.0},
+        n_layers=[6],
+        physical_name="lo",
+        mesh_order=2.0,
+    )
+    sp_hi = PolyPrism(
+        polygons=small,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        n_layers=[2],
+        physical_name="hi",
+        mesh_order=1.0,
+    )
+    slabs = resolve_structured_slabs([sp_lo, sp_hi])
+    by_name = sorted(slabs, key=lambda s: (s.physical_name, s.zlo))
+    names_z = [(s.physical_name[0], s.zlo, s.zhi) for s in by_name]
+    assert ("hi", 1.0, 2.0) in names_z
+    assert ("lo", 0.0, 1.0) in names_z
+    assert ("lo", 1.0, 2.0) in names_z
+    assert ("lo", 2.0, 3.0) in names_z
+    lo_slabs = [s for s in slabs if s.physical_name == ("lo",)]
+    middle = next(s for s in lo_slabs if s.zlo == 1.0)
+    full = next(s for s in lo_slabs if s.zlo == 0.0)
+    assert middle.footprint.area == pytest.approx(base.area - small.area, rel=1e-9)
+    assert full.footprint.area == pytest.approx(base.area, rel=1e-9)

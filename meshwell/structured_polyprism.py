@@ -218,35 +218,40 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
 
     raw_slabs.sort(key=lambda s: (s.mesh_order, s.source_index, s.zlo))
 
-    # Run priority-ordered subtraction. In Task 4 we only handle the
-    # full-z-overlap case; partial-z splitting comes in Task 5.
     resolved: list[Slab] = []
     for slab in raw_slabs:
-        footprint: Polygon | MultiPolygon | None = slab.footprint
+        # Working list: list of (zlo, zhi, footprint) sub-pieces still to
+        # resolve against subsequent higher-priority slabs.
+        pieces: list[tuple[float, float, Polygon | MultiPolygon]] = [
+            (slab.zlo, slab.zhi, slab.footprint)
+        ]
         for hi in resolved:
-            overlap = _z_overlap(slab.zlo, slab.zhi, hi.zlo, hi.zhi)
-            if overlap is None:
-                continue
-            # Skip partial-z overlaps; Task 5 handles them.
-            if (overlap[0], overlap[1]) != (slab.zlo, slab.zhi):
-                continue
-            new_fp = _difference_footprint(footprint, hi.footprint)
-            if new_fp is None:
-                footprint = None
-                break
-            footprint = new_fp
-        if footprint is None:
-            continue
-        resolved.append(
-            Slab(
-                footprint=footprint,
-                zlo=slab.zlo,
-                zhi=slab.zhi,
-                n_layers=slab.n_layers,
-                recombine=slab.recombine,
-                physical_name=slab.physical_name,
-                source_index=slab.source_index,
-                mesh_order=slab.mesh_order,
+            new_pieces: list[tuple[float, float, Polygon | MultiPolygon]] = []
+            for p_lo, p_hi, p_fp in pieces:
+                overlap = _z_overlap(p_lo, p_hi, hi.zlo, hi.zhi)
+                if overlap is None:
+                    new_pieces.append((p_lo, p_hi, p_fp))
+                    continue
+                ov_lo, ov_hi = overlap
+                if p_lo < ov_lo:
+                    new_pieces.append((p_lo, ov_lo, p_fp))
+                ov_fp = _difference_footprint(p_fp, hi.footprint)
+                if ov_fp is not None:
+                    new_pieces.append((ov_lo, ov_hi, ov_fp))
+                if p_hi > ov_hi:
+                    new_pieces.append((ov_hi, p_hi, p_fp))
+            pieces = new_pieces
+        for p_lo, p_hi, p_fp in pieces:
+            resolved.append(
+                Slab(
+                    footprint=p_fp,
+                    zlo=p_lo,
+                    zhi=p_hi,
+                    n_layers=slab.n_layers,
+                    recombine=slab.recombine,
+                    physical_name=slab.physical_name,
+                    source_index=slab.source_index,
+                    mesh_order=slab.mesh_order,
+                )
             )
-        )
     return resolved
