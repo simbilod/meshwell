@@ -112,7 +112,10 @@ def _run_job_in_subprocess(job_dir_str: str) -> dict:
 
 
 def _clip_entity_to_polygon(
-    entity: Any, mask: Polygon, point_tolerance: float = 1e-3
+    entity: Any,
+    mask: Polygon,
+    point_tolerance: float = 1e-3,
+    perturbation: float = 0.0,
 ) -> Any | None:
     """Return a copy of ``entity`` whose ``.polygons`` are intersected with ``mask``.
 
@@ -132,6 +135,15 @@ def _clip_entity_to_polygon(
     would otherwise snap to degenerate polygons under PolyPrism's
     ``set_precision(grid_size=point_tolerance)`` and erase legitimate
     materials in the receiving subdomain.
+
+    Args:
+        entity: PolyPrism / PolySurface (anything with a ``.polygons`` attr).
+        mask: subdomain polygon to clip against.
+        point_tolerance: area threshold for sliver removal (see above).
+        perturbation: Inward erosion of the mask before intersection.
+            Equal to the master-side polygon buffer (default 1e-5 in
+            generate_mesh_distributed). Prevents adjacent subdomains'
+            buffer halos from leaking across the cut. Set to 0 to disable.
     """
     from copy import deepcopy
 
@@ -143,9 +155,13 @@ def _clip_entity_to_polygon(
 
     area_threshold = point_tolerance * point_tolerance
 
+    effective_mask = mask if perturbation == 0 else mask.buffer(-perturbation)
+    if effective_mask.is_empty:
+        return None
+
     polys = entity.polygons
     if isinstance(polys, list):
-        clipped_list = [p.intersection(mask) for p in polys]
+        clipped_list = [p.intersection(effective_mask) for p in polys]
         clipped_list = [
             p for p in clipped_list if not p.is_empty and p.area >= area_threshold
         ]
@@ -153,7 +169,7 @@ def _clip_entity_to_polygon(
             return None
         new_polys = clipped_list
     else:
-        c = polys.intersection(mask)
+        c = polys.intersection(effective_mask)
         if c.is_empty or c.area < area_threshold:
             return None
         new_polys = c
@@ -475,6 +491,7 @@ def write_bundles(
             entities,
             mesh_kwargs,
             point_tolerance=plan.point_tolerance,
+            perturbation=plan.perturbation,
         )
     for s in plan.interfaces:
         _write_seam_bundle(
@@ -484,6 +501,7 @@ def write_bundles(
             mesh_kwargs,
             role="interface",
             point_tolerance=plan.point_tolerance,
+            perturbation=plan.perturbation,
         )
     for s in plan.junctions:
         _write_seam_bundle(
@@ -493,6 +511,7 @@ def write_bundles(
             mesh_kwargs,
             role="junction",
             point_tolerance=plan.point_tolerance,
+            perturbation=plan.perturbation,
         )
 
 
@@ -506,13 +525,19 @@ def _write_volume_bundle(
     entities: list[Any],
     mesh_kwargs: dict,
     point_tolerance: float = 1e-3,
+    perturbation: float = 0.0,
 ) -> None:
     import json
 
     job_dir.mkdir(parents=True, exist_ok=True)
     clipped = []
     for ent in entities:
-        c = _clip_entity_to_polygon(ent, vol.polygon, point_tolerance=point_tolerance)
+        c = _clip_entity_to_polygon(
+            ent,
+            vol.polygon,
+            point_tolerance=point_tolerance,
+            perturbation=perturbation,
+        )
         if c is not None:
             clipped.append(c)
     (job_dir / "job.json").write_text(
@@ -544,6 +569,7 @@ def _write_seam_bundle(
     mesh_kwargs: dict,
     role: str,
     point_tolerance: float = 1e-3,
+    perturbation: float = 0.0,
 ) -> None:
     import json
 
@@ -552,7 +578,12 @@ def _write_seam_bundle(
     job_dir.mkdir(parents=True, exist_ok=True)
     clipped = []
     for ent in entities:
-        c = _clip_entity_to_polygon(ent, slab.polygon, point_tolerance=point_tolerance)
+        c = _clip_entity_to_polygon(
+            ent,
+            slab.polygon,
+            point_tolerance=point_tolerance,
+            perturbation=perturbation,
+        )
         if c is not None:
             clipped.append(c)
         elif _entity_within(ent, slab.polygon, slab.width) and getattr(

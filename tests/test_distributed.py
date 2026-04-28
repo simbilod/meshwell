@@ -377,6 +377,45 @@ def test_clip_drops_slivers_below_area_threshold():
     assert result is None, f"sliver should be dropped, got {result}"
 
 
+def test_clip_with_perturbation_drops_neighbor_buffer_halo():
+    """Eroded-mask clipping drops adjacent-subdomain buffer halos.
+
+    A polygon master-buffered outward by perturbation should not
+    leak into the adjacent subdomain when clipped with the eroded mask.
+    """
+    import shapely
+
+    from meshwell.distributed import _clip_entity_to_polygon
+    from meshwell.polyprism import PolyPrism
+
+    perturbation = 1e-5
+
+    # Original "silicon" polygon at x in [0, 1]; master buffer extends to ~1+perturbation.
+    p_buffered = shapely.box(
+        -perturbation, -perturbation, 1 + perturbation, 1 + perturbation
+    )
+    prism = PolyPrism(
+        polygons=p_buffered,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="silicon",
+        mesh_order=1,
+    )
+    # Adjacent oxide subdomain mask.
+    oxide_subdomain = shapely.box(1, 0, 2, 1)
+
+    # With perturbation > 0, the eroded mask = box(1+perturbation, perturbation,
+    # 2-perturbation, 1-perturbation). The buffered prism extends to
+    # x=1+perturbation, so intersection x range collapses to a degenerate strip
+    # of zero area — _clip_entity_to_polygon must return None.
+    result_with_perturb = _clip_entity_to_polygon(
+        prism, oxide_subdomain, point_tolerance=1e-3, perturbation=perturbation
+    )
+    assert result_with_perturb is None, (
+        f"silicon halo should be eroded out of oxide subdomain, "
+        f"got {result_with_perturb}"
+    )
+
+
 def test_clip_polysurface_to_mask():
     import shapely
 
