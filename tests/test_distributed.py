@@ -753,3 +753,46 @@ def test_in_process_executor_runs_jobs_synchronously(tmp_path):
     assert (tmp_path / "jobs" / "volume_0000" / "result.msh").exists()
     # silence unused import warning
     assert callable(run_job)
+
+
+def test_run_plan_two_phases_completes(tmp_path):
+    import json
+
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        build_subdomain_plan,
+        run_plan,
+        write_bundles,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    write_bundles(
+        tmp_path, plan, [prism], mesh_kwargs={"default_characteristic_length": 0.3}
+    )
+
+    run_plan(tmp_path, plan, executor=InProcessExecutor())
+
+    # Phase 1 result
+    assert (tmp_path / "jobs" / "interface_0000" / "result.msh").exists()
+    # Phase 2 results
+    for vid in ["volume_0000", "volume_0001"]:
+        assert (tmp_path / "jobs" / vid / "result.msh").exists()
+        # Volume job.json should now reference the interface input.
+        j = json.loads((tmp_path / "jobs" / vid / "job.json").read_text())
+        assert j["interface_inputs"], f"{vid} did not get interface_inputs populated"

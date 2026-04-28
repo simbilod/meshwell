@@ -646,6 +646,87 @@ def run_job(job_dir: Path) -> None:
         raise RuntimeError(f"run_job failed for {job['id']}: {err}")
 
 
+def run_plan(work_dir: Path, plan: SubdomainPlan, executor: Executor) -> None:
+    """Drive the two-phase distributed run.
+
+    Phase 1: submit all interface + junction bundles, wait for completion,
+    collect failures. Raise ``RuntimeError("Phase 1 failures: ...")`` if any
+    failed and DO NOT proceed to phase 2.
+
+    Between phases: for each volume bundle, find every Slab in
+    ``plan.interfaces + plan.junctions`` whose ``between`` includes that
+    volume id, link the slab's ``result.msh`` into the volume's
+    ``interface_meshes/`` subdir (falling back to a copy if symlinking is
+    not supported), and append an entry to the volume's
+    ``job.json["interface_inputs"]`` list.
+
+    Phase 2: submit all volume bundles, wait, collect failures, raise if
+    any.
+    """
+    import json
+    import shutil
+
+    work_dir = Path(work_dir)
+
+    # ---- Phase 1: interfaces + junctions ----
+    phase1_ids = [s.id for s in plan.interfaces] + [s.id for s in plan.junctions]
+    futures = {sid: executor.submit(work_dir / "jobs" / sid) for sid in phase1_ids}
+    failures: list[tuple[str, str]] = []
+    for sid, f in futures.items():
+        try:
+            res = f.result()
+            if isinstance(res, dict) and res.get("returncode", 0) != 0:
+                failures.append((sid, res.get("stderr", "")))
+        except Exception as e:
+            failures.append((sid, repr(e)))
+    if failures:
+        raise RuntimeError(f"Phase 1 failures: {failures}")
+
+    # ---- Populate volume bundles' interface_inputs ----
+    # ``s.between`` may contain volume ids (interfaces, len=2) or any number
+    # of volume ids (junctions, len>=3). The membership check against
+    # ``seams_by_volume`` (keyed by volume ids) tolerates both cleanly.
+    seams_by_volume: dict[str, list[Slab]] = {v.id: [] for v in plan.volumes}
+    for s in plan.interfaces + plan.junctions:
+        for v_id in s.between:
+            if v_id in seams_by_volume:
+                seams_by_volume[v_id].append(s)
+
+    for vol in plan.volumes:
+        job_path = work_dir / "jobs" / vol.id / "job.json"
+        j = json.loads(job_path.read_text())
+        ifaces = []
+        for s in seams_by_volume[vol.id]:
+            src = work_dir / "jobs" / s.id / "result.msh"
+            dst_dir = work_dir / "jobs" / vol.id / "interface_meshes"
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst = dst_dir / f"{s.id}.msh"
+            if dst.exists() or dst.is_symlink():
+                dst.unlink()
+            try:
+                dst.symlink_to(src.resolve())
+            except (OSError, NotImplementedError):
+                # Windows / restricted filesystems: fall back to copy.
+                shutil.copy(src, dst)
+            ifaces.append({"id": s.id, "path": f"interface_meshes/{s.id}.msh"})
+        j["interface_inputs"] = ifaces
+        job_path.write_text(json.dumps(j, indent=2))
+
+    # ---- Phase 2: volumes ----
+    phase2_ids = [v.id for v in plan.volumes]
+    futures = {vid: executor.submit(work_dir / "jobs" / vid) for vid in phase2_ids}
+    failures = []
+    for vid, f in futures.items():
+        try:
+            res = f.result()
+            if isinstance(res, dict) and res.get("returncode", 0) != 0:
+                failures.append((vid, res.get("stderr", "")))
+        except Exception as e:
+            failures.append((vid, repr(e)))
+    if failures:
+        raise RuntimeError(f"Phase 2 failures: {failures}")
+
+
 def cli_main() -> None:
     """``meshwell`` CLI entrypoint.
 
