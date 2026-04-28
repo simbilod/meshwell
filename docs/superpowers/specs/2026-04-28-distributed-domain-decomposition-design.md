@@ -31,12 +31,16 @@ decomposition" item already advertised in `README.md`.
 - **In:** Two-phase scheduling: phase 1 meshes interface + junction
   subdomains (surface mesh only); phase 2 meshes volume subdomains
   with the phase-1 results as fixed boundary constraints.
-- **In:** Auto-derived interface slab width from ResolutionSpec
-  influence radii, with per-cut user override.
+- **In:** User-supplied interface slab width (scalar or per-cut dict).
+- **In:** Phantom-imprint of the cut polyline inside each interface
+  slab so the seam surface is identified by physical name, not by
+  coordinate matching.
 - **In:** Junction subdomains for points/edges where ≥3 volume
   subdomains meet.
 - **In:** Conformal stitching by construction; physical group merging
   by name equality across subdomain results.
+- **Out:** Auto-derivation of `interface_width` from ResolutionSpec
+  influence radii (deferred; v1 requires user-supplied width).
 - **Out:** Auto-routed cuts (METIS-style adjacency partitioning).
 - **Out:** In-memory-only transport (file bundles always).
 - **Out:** Restart-from-partial-failure beyond "rerun a single job by
@@ -65,7 +69,7 @@ def generate_mesh_distributed(
     subdomains: list[Polygon],
     output_mesh: Path | str,
     work_dir: Path | str,
-    interface_width: float | dict[tuple[int, int], float] | None = None,
+    interface_width: float | dict[tuple[int, int], float],
     executor: Executor | None = None,
     keep_bundles: bool = False,
     registry: dict[str, callable] | None = None,
@@ -91,9 +95,12 @@ flow is purely additive.
   applies at every z. The full extruded domain is implicitly
   `subdomain_polygon × (-inf, +inf)` for clipping purposes; the actual
   z extent comes from the entities themselves.
-- `interface_width`: scalar (one width for every interface), dict
-  keyed by `(i, j)` subdomain pair (per-cut override), or `None` for
-  auto-derivation.
+- `interface_width`: required. Scalar (one width for every
+  interface) or dict keyed by `(i, j)` subdomain pair. Must be
+  large enough to encompass any ResolutionSpec influence that should
+  affect the seam mesh; the user picks this based on their
+  ResolutionSpec characteristic lengths. Auto-derivation is deferred
+  to a later version (see Out of Scope).
 - `executor`: defaults to `SubprocessExecutor()` (process pool,
   `meshwell run-job` CLI per job).
 - `work_dir`: parent directory for job bundles. Created if absent.
@@ -107,7 +114,9 @@ flow is purely additive.
   disjoint (touching boundaries allowed). Raises `ValueError`.
 - Their union must cover the bounding union of polygon-bearing entities
   within `point_tolerance`. Raises `ValueError` listing uncovered area.
-- `interface_width`, if provided as a scalar, must be `> 0`.
+- `interface_width`, scalar form: must be `> 0`. Dict form: every
+  pair `(i, j)` with a non-empty shared boundary must have an entry,
+  each `> 0`.
 
 ## Architecture overview
 
@@ -130,10 +139,14 @@ flow is purely additive.
 │ For each interface / junction bundle, executor runs:                │
 │   meshwell run-job <bundle>                                         │
 │ Worker:                                                             │
-│   - deserialize entities (already pre-buffered)                     │
-│   - call generate_mesh(dim=2, _pre_buffered=True,                   │
+│   - deserialize entities (already pre-buffered, includes the        │
+│     master's phantom imprint along the cut polyline tagged          │
+│     "_seam___volume_i___volume_j", keep=False)                      │
+│   - call generate_mesh(dim=3, _pre_buffered=True,                   │
 │                        _emit_only_seam_surfaces=True)               │
-│   - write result.msh containing only the 2D mesh on the cut planes  │
+│   - meshes the slab volumetrically, then exports ONLY the           │
+│     physical groups whose name starts with "_seam___"               │
+│   - write result.msh containing the 2D mesh on the seam surfaces    │
 │   - write result.json with seam-surface inventory + node count      │
 └─────────────────────────────────────────────────────────────────────┘
                                   ↓
@@ -200,22 +213,90 @@ Steps:
 4. **Interface slabs.** For each `boundary_ij` LineString, generate a
    slab `boundary_ij.buffer(width_ij / 2)` minus a small disk around
    each junction locus that the slab touches (the junction owns those
-   neighborhoods). Slab id `interface_{k:04d}`.
+   neighborhoods). Slab id `interface_{k:04d}`. The slab carries its
+   originating `boundary_ij` polyline as a separate field on the plan
+   record — this polyline is imprinted into the slab CAD as a phantom
+   (see "Interface CAD construction" below) so the seam surface can
+   be identified by physical name.
 5. **Junction subdomains.** For each junction locus, generate a small
-   box `point.buffer(width_jct)`. Junction id `junction_{m:04d}`.
-6. **Width derivation** (when `interface_width is None`):
-   - Initial guess: `w = 4 × point_tolerance`.
-   - Compute the set of ResolutionSpecs whose owning entity intersects
-     `boundary_ij.buffer(w)`. Let `r_max` = max influence radius among
-     them (for size-field types this is the spec's characteristic
-     length × growth-factor envelope; for constant-in-field this is
-     the entity bbox).
-   - If `2 × r_max > w`: set `w = 2 × r_max` and repeat.
-   - Cap at 5 iterations; warn and continue if not converged.
-7. **Coverage check.** Union of all volumes must cover the union of all
+   box `point.buffer(width_jct)` where `width_jct = max(width_ij)`
+   over all interfaces meeting at the junction. The junction's plan
+   record carries the set of meeting boundary polylines so each can
+   be imprinted in the junction CAD.
+6. **Coverage check.** Union of all volumes must cover the union of all
    polygon-bearing entity polygons (within `point_tolerance`).
 
 The plan is serialized to `manifest.json` and reused by both phases.
+
+## Interface CAD construction (phase 1)
+
+The phase-1 worker needs to mesh a thin slab around a cut polyline,
+then emit *only* the surface mesh that lies on the cut polyline (the
+seam). To make seam identification unambiguous, the master imprints
+the cut polyline into the slab CAD as a phantom feature with a known
+physical name.
+
+**Master, building a phase-1 bundle for interface `(i, j)`:**
+
+1. `cut_line = boundary(subdomains[i]).intersection(boundary(subdomains[j]))`
+2. `slab = cut_line.buffer(interface_width / 2)`
+3. **Geometry entities into the bundle:** for each pre-buffered entity:
+   - `sliver = entity.polygons.intersection(slab)`. If non-empty, ship
+     a clipped copy (via `_clip_entity_to_polygon`).
+   - Else if the entity is within `interface_width` of the slab AND
+     carries any ResolutionSpec, ship the entity *unclipped* with a
+     marker `_resolution_only=True`. Phase-1 worker uses it only as a
+     ResolutionSpec source (see "Worker handling of resolution-only
+     entities" below).
+4. **Phantom seam imprint:** add a `keep=False` entity along
+   `cut_line` with `physical_name = f"_seam___volume_{i:04d}___volume_{j:04d}"`.
+   Concretely this is a meshwell `InterfaceTag` (preferred — it
+   already imprints linestrings into the CAD as internal 1D / 2D
+   features) or, where InterfaceTag is not applicable, a `keep=False`
+   PolySurface.
+5. Worker meshes at `dim=3`. The slab is meshed volumetrically; the
+   imprint produces a 2D face along the cut surface (vertical
+   extrusion of `cut_line` through the entity z-stack) carrying the
+   `_seam___volume_i___volume_j` physical name. Existing fragmentation
+   propagates that name to every fragment of the seam face.
+6. Worker `result.msh` export filter (`_emit_only_seam_surfaces=True`):
+   restrict written elements to physical groups whose name starts with
+   `_seam___`. Other elements (the slab's volumetric mesh, the slab's
+   outer boundary surfaces) are discarded — they were scratch.
+
+**Junction CAD** uses the same mechanism with multiple imprints: each
+boundary polyline meeting at the junction is imprinted as a separate
+`InterfaceTag`, producing one seam face per pairwise contact in the
+junction mesh, each with its own `_seam___volume_i___volume_j` name.
+
+**Why a phantom instead of a coordinate filter:** unambiguous physical
+naming survives fragmentation, propagates through XAO export, and
+matches at phase-2 import via `gmsh.merge` without any post-mesh
+geometry queries. The same `keep=False` machinery is already in use
+elsewhere in meshwell (see structured-polyprism design).
+
+### Worker handling of resolution-only entities
+
+An entity shipped with `_resolution_only=True` is added to the
+worker's entity list with `mesh_bool=False` and an empty geometry
+proxy: its `instanciate_occ` returns an empty shape. After CAD,
+its tag list is empty so it produces no fragments and no physical
+group. Its `resolutions` list is still passed to the resolution
+engine, where any `restrict_to` / `sharing` / `not_sharing` references
+to physical names that exist in the worker's local fragment inventory
+take effect; references to absent names are no-ops (per
+`_global_physical_names` handling). The net effect: the size field
+defined by such a ResolutionSpec applies to whatever local entities
+match, even though the source entity itself contributes no geometry.
+
+This is a no-op when the ResolutionSpec is keyed only on its own
+entity (the common case for `ConstantInField` on "this material") —
+that field needs the source entity's geometry to apply. For v1 we
+document that ResolutionSpecs whose size field requires the source
+entity's own geometry will not extend across subdomain seams; users
+who need such extension should choose `interface_width` large enough
+that the source entity's geometry intersects the slab directly (i.e.
+the entity is shipped fully clipped, not as resolution-only).
 
 ## Job bundle format
 
@@ -331,7 +412,8 @@ def run_job(job_dir: Path) -> None:
 
     if job["role"] in ("interface", "junction"):
         extra["_emit_only_seam_surfaces"] = True
-        extra["_seam_targets"] = manifest["subdomains"][job["id"]]["between"]
+        # No _seam_targets needed: filter is purely by physical-name
+        # prefix "_seam___" (set by the master via the phantom imprint).
 
     if job["role"] == "volume":
         extra["_interface_constraints"] = [
@@ -362,15 +444,19 @@ is set. InterfaceTag resolution still runs (it's idempotent and still
 needed). The flag is plumbed via a new `prepare_entities(...,
 skip_buffer: bool = False)` parameter.
 
-### `_emit_only_seam_surfaces: bool = False` + `_seam_targets`
+### `_emit_only_seam_surfaces: bool = False`
 
-In `meshwell/mesh.py`, after CAD load and `mesh.generate(dim=2)`:
-restrict the emitted physical groups + element export to those
-surfaces whose tag-derived physical name matches the seam targets
-(the volume subdomain ids whose shared boundary this slab represents).
-Implementation: walk physical groups in the loaded model, drop any
-group whose name does not contain the `interface_delimiter` joining
-two of `_seam_targets`. Then write only those groups' elements.
+In `meshwell/mesh.py`, after `mesh.generate(dim=3)` and before
+writing `output_mesh`: restrict the emitted physical groups + element
+export to those whose name starts with the prefix `_seam___`. These
+are the phantom-imprint physical groups put in place by the master
+(see "Interface CAD construction"). All other physical groups and
+their elements are stripped before writing.
+
+Implementation: walk `gmsh.model.getPhysicalGroups()`, identify
+target groups by name prefix, then write a filtered `.msh`. The
+slab's volumetric mesh and outer-boundary surfaces are scratch and
+do not appear in `result.msh`.
 
 ### `_interface_constraints: list[Path] = []`
 
@@ -415,6 +501,16 @@ def _clip_entity_to_polygon(entity: Any, mask: Polygon) -> Any | None:
     the entity's polygons attribute. OCC_entity is not clipped; per
     risk R7 it must be fully contained in a single subdomain (validated
     at plan time).
+    """
+
+
+def _resolution_only_proxy(entity: Any) -> Any:
+    """Wrap an entity so it contributes no geometry but keeps its specs.
+
+    Used by phase-1 bundles for entities near (but not intersecting)
+    a slab whose ResolutionSpecs may still affect the seam mesh.
+    Sets mesh_bool=False and overrides instanciate_occ to return an
+    empty TopoDS_Compound. The resolutions list is preserved verbatim.
     """
 ```
 
@@ -479,22 +575,30 @@ New test file `tests/test_distributed.py`:
    junction subdomain is generated, the four-way edge mesh is shared
    by all four volume workers, and the merged mesh is conformal at
    the junction.
-4. **ResolutionSpec straddling a cut.** Define a ConstantInField on
-   one subdomain that influences mesh size in the slab. Verify
-   interface mesh respects the spec (auto interface_width detected).
-5. **Per-cut interface_width override.** Pass a dict; verify only the
-   specified cut uses the override.
-6. **Coverage validation.** Pass subdomains that don't cover the
+4. **ResolutionSpec near a cut.** Define a ConstantInField on an
+   entity adjacent to (but not crossing) the cut, with an
+   `interface_width` chosen to enclose the entity. Verify the
+   resolution-only proxy mechanism ships the entity to the phase-1
+   worker, the seam mesh node spacing reflects the spec, and the
+   phase-2 volume meshes inherit those spacings on the seam.
+5. **Per-cut interface_width dict.** Pass a dict with two different
+   widths for two different cuts; verify each interface bundle uses
+   its assigned width.
+6. **Phantom imprint identity.** Inspect a phase-1 `result.msh`;
+   verify the only physical groups present have names starting with
+   `_seam___` and they cover exactly the cut surface area predicted
+   by the slab geometry.
+7. **Coverage validation.** Pass subdomains that don't cover the
    entity union; verify clean ValueError listing missing area.
-7. **Worker reproducibility.** After a successful run with
+8. **Worker reproducibility.** After a successful run with
    `keep_bundles=True`, manually run `meshwell run-job` on a single
    volume bundle; verify identical `result.msh`.
-8. **Executor swap.** Subclass Executor with a synchronous-in-process
+9. **Executor swap.** Subclass Executor with a synchronous-in-process
    variant; verify same final mesh.
-9. **Glue physical-group dedup.** Create a scenario where the same
-   material appears in 4 tiles; verify one consolidated physical group
-   in the final mesh, not 4.
-10. **Failure path.** Force one phase-1 job to crash (inject malformed
+10. **Glue physical-group dedup.** Create a scenario where the same
+    material appears in 4 tiles; verify one consolidated physical
+    group in the final mesh, not 4.
+11. **Failure path.** Force one phase-1 job to crash (inject malformed
     entity); verify `MeshwellJobError`, work_dir intact, no phase-2
     submitted.
 
@@ -507,9 +611,9 @@ all be present in both).
 
 | File | Change |
 |------|--------|
-| `meshwell/distributed.py` | NEW — `generate_mesh_distributed`, `build_subdomain_plan`, `run_job`, `Executor`, `SubprocessExecutor`, `subdomains_from_grid`, `_clip_entity_to_polygon` |
+| `meshwell/distributed.py` | NEW — `generate_mesh_distributed`, `build_subdomain_plan`, `run_job`, `Executor`, `SubprocessExecutor`, `subdomains_from_grid`, `_clip_entity_to_polygon`, `_resolution_only_proxy` |
 | `meshwell/cad_common.py` | Add `skip_buffer: bool = False` to `prepare_entities`. |
-| `meshwell/mesh.py` | Accept `_pre_buffered`, `_emit_only_seam_surfaces`, `_seam_targets`, `_interface_constraints`, `_global_physical_names` kwargs. Add `_embed_imported_seam_into_occ_face` helper. Tolerate unresolved ResolutionSpec name refs when `_global_physical_names` provided. |
+| `meshwell/mesh.py` | Accept `_pre_buffered`, `_emit_only_seam_surfaces`, `_interface_constraints`, `_global_physical_names` kwargs. Add `_embed_imported_seam_into_occ_face` helper. Tolerate unresolved ResolutionSpec name refs when `_global_physical_names` provided. Filter export by `_seam___` physical-name prefix when `_emit_only_seam_surfaces` is set. |
 | `meshwell/orchestrator.py` | Forward the new private kwargs to `mesh()`. |
 | `meshwell/__init__.py` | Export `generate_mesh_distributed`, `subdomains_from_grid`, `Executor`, `SubprocessExecutor`. |
 | `pyproject.toml` | Add `meshwell` console script → `meshwell.distributed:cli_main`. |
@@ -525,10 +629,14 @@ all be present in both).
   worker's resolver treats absent-but-globally-known names as empty
   matches with a debug log instead of erroring.
 
-- **R2: Auto interface_width iteration may not converge** with
-  overlapping ResolutionSpec radii on multiple cuts.
-  **Mitigation:** cap at 5 iterations, warn, and proceed with the
-  current width. Oversized slab is wasteful, not wrong.
+- **R2: User picks `interface_width` too small** to capture relevant
+  ResolutionSpec influence, producing a seam mesh that does not match
+  the size field the volume workers expect at the seam.
+  **Mitigation:** v1 documents the rule of thumb (≥ 4× the largest
+  characteristic length of any ResolutionSpec near the cut). Phase-2
+  workers detect a > 2× sizing mismatch between the embedded seam
+  nodes and the locally-computed size field at the seam, and warn.
+  Auto-derivation of `interface_width` is deferred (see Out of Scope).
 
 - **R3: `gmsh.model.mesh.embed` from a `gmsh.merge`-imported discrete
   entity into an OCC face may behave inconsistently** (same risk
