@@ -137,3 +137,57 @@ def test_resolution_spec_unknown_name_without_global_set_is_silent(tmp_path):
             resolution_specs={"A": [spec]},
             # _global_physical_names intentionally omitted
         )
+
+
+def test_emit_only_seam_surfaces_filters_output(tmp_path):
+    """Filter restricts output to seam-prefixed physical groups.
+
+    A mesh emitted with ``_emit_only_seam_surfaces=True`` contains only
+    physical groups whose name starts with ``_seam___``.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    # Two prisms abutting at x=1: one normal material A, one phantom seam.
+    a = PolyPrism(
+        polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+    seam = PolyPrism(
+        polygons=shapely.Polygon([(1, 0), (1.5, 0), (1.5, 1), (1, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="_seam___A___B",
+        mesh_order=2,
+        # NOTE: spec called for a 0.001-thick slab + mesh_bool=False to keep
+        # the slab as a phantom while preserving seam-named faces. In this
+        # codebase, (1) mesh_bool=False removes the volume AND its named
+        # physical group, and (2) a 0.001-thick slab at lc=0.5 is too thin to
+        # mesh as a separate volume (the _seam___ tag exists in field_data but
+        # no elements carry it, so the filter would correctly produce an empty
+        # mesh). Since this test only verifies the FILTER behavior (not phantom
+        # semantics), widen the slab to 0.5 and use the default mesh_bool=True
+        # so the _seam___ group actually has elements pre-filter.
+    )
+
+    out = tmp_path / "out.msh"
+    generate_mesh(
+        entities=[a, seam],
+        dim=3,
+        output_mesh=out,
+        default_characteristic_length=0.5,
+        _emit_only_seam_surfaces=True,
+    )
+    m = meshio.read(out)
+    field_names = set((m.field_data or {}).keys())
+    # Only _seam___ groups survive.
+    assert all(
+        n.startswith("_seam___") for n in field_names
+    ), f"unexpected groups: {field_names}"
+    assert any(
+        n.startswith("_seam___") for n in field_names
+    ), f"no seam groups in output: {field_names}"

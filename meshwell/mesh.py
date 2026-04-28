@@ -36,6 +36,97 @@ def _pair_algos(
     ]
 
 
+def _filter_msh_to_seam_groups(msh_path):
+    """Rewrite msh_path keeping only physical groups whose name starts with '_seam___'.
+
+    Reads via meshio, drops cells / cell_data / field_data not associated with seam
+    groups, writes back to msh_path. Used by phase-1 workers in the distributed
+    pipeline to emit only the seam surface mesh.
+
+    Notes:
+        meshio's ``field_data`` maps physical-group name -> ``[tag_id, dim]``.
+        Gmsh tag ids are scoped per-dimension, so the filter keeps a (dim,
+        tag_id) pair set rather than a flat tag-id set (different physical
+        groups in different dimensions can share a tag id).
+
+        We must write with ``file_format="gmsh22"``: meshio 5.3 .msh inference
+        picks gmsh4 which silently drops ``field_data`` on round-trip.
+    """
+    # Hard-coded type -> topological dim. Covers everything meshwell emits
+    # (triangles for surface groups, tetras for volume groups, plus higher-
+    # order variants). Unknown types are skipped rather than guessed.
+    _TYPE_DIM = {
+        "vertex": 0,
+        "line": 1,
+        "line3": 1,
+        "triangle": 2,
+        "triangle6": 2,
+        "triangle7": 2,
+        "quad": 2,
+        "quad8": 2,
+        "quad9": 2,
+        "tetra": 3,
+        "tetra10": 3,
+        "hexahedron": 3,
+        "hexahedron20": 3,
+        "hexahedron27": 3,
+        "wedge": 3,
+        "wedge15": 3,
+        "wedge18": 3,
+        "pyramid": 3,
+        "pyramid13": 3,
+        "pyramid14": 3,
+    }
+
+    msh_path = Path(msh_path)
+    m = meshio.read(msh_path)
+    keep_field_data = {
+        name: np.asarray(tag_dim)
+        for name, tag_dim in (m.field_data or {}).items()
+        if name.startswith("_seam___")
+    }
+    if not keep_field_data:
+        # Nothing to keep — write a minimal empty mesh.
+        empty = meshio.Mesh(points=m.points[:0], cells=[])
+        meshio.write(msh_path, empty, file_format="gmsh22")
+        return
+
+    # (dim, tag_id) pairs we want to keep. tag ids are per-dimension in gmsh.
+    keep_pairs = {(int(arr[1]), int(arr[0])) for arr in keep_field_data.values()}
+
+    new_cells = []
+    new_cell_data = {k: [] for k in (m.cell_data or {})}
+    gmsh_phys_arr = (m.cell_data or {}).get("gmsh:physical")
+    for i, cellblock in enumerate(m.cells):
+        if gmsh_phys_arr is None or i >= len(gmsh_phys_arr):
+            continue
+        block_dim = _TYPE_DIM.get(cellblock.type)
+        if block_dim is None:
+            # Unknown cell type — skip rather than guess.
+            continue
+        gmsh_phys = gmsh_phys_arr[i]
+        mask = np.array(
+            [(block_dim, int(t)) in keep_pairs for t in gmsh_phys],
+            dtype=bool,
+        )
+        if not mask.any():
+            continue
+        idx = np.where(mask)[0]
+        new_cells.append(meshio.CellBlock(cellblock.type, cellblock.data[idx]))
+        for k in new_cell_data:
+            new_cell_data[k].append(np.asarray(m.cell_data[k][i])[idx])
+
+    out = meshio.Mesh(
+        points=m.points,
+        cells=new_cells,
+        cell_data=new_cell_data,
+        field_data=keep_field_data,
+    )
+    # Force gmsh22 format: meshio's gmsh4 writer drops field_data on .msh
+    # files in our version (5.3.5), but gmsh22 round-trips it correctly.
+    meshio.write(msh_path, out, file_format="gmsh22")
+
+
 class Mesh:
     """Mesh class for generating meshes from cad models."""
 
@@ -612,6 +703,7 @@ def mesh(
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
     _global_physical_names: list[str] | None = None,
+    _emit_only_seam_surfaces: bool = False,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -638,6 +730,14 @@ def mesh(
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
         interface_delimiter: String used to separate names in an interface
+        _global_physical_names: Optional list of physical names known across the
+            wider distributed model (see :func:`generate_mesh`).
+        _emit_only_seam_surfaces: If True, post-process ``output_file`` so that
+            only physical groups whose name starts with ``_seam___`` survive.
+            Used by phase-1 workers in the distributed-meshing pipeline to emit
+            just the seam-surface mesh; everything else is treated as scratch.
+            No effect when ``output_file`` is None. Implies a rewrite to gmsh22
+            format (meshio's gmsh4 writer drops field_data on round-trip).
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -680,6 +780,8 @@ def mesh(
         # Save to file if output file provided
         if output_file is not None:
             mesh_generator.save_to_file(output_file)
+            if _emit_only_seam_surfaces:
+                _filter_msh_to_seam_groups(output_file)
     finally:
         # Finalize if we created the model -- even on failure, so gmsh
         # state doesn't leak into subsequent test runs / callers.

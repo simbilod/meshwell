@@ -21,6 +21,7 @@ def generate_mesh(
     backend: str | None = None,  # deprecated
     _pre_buffered: bool = False,
     _global_physical_names: list[str] | None = None,
+    _emit_only_seam_surfaces: bool = False,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -42,6 +43,10 @@ def generate_mesh(
             Used by the distributed-meshing pipeline (a phase-2 worker meshes
             one subdomain and may carry ResolutionSpecs that reference other
             subdomains' names).
+        _emit_only_seam_surfaces: If True, the output mesh is post-filtered to
+            keep only physical groups whose name starts with ``_seam___``. Used
+            by phase-1 workers in the distributed pipeline; the rest of the
+            mesh is scratch.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -110,5 +115,6 @@ def generate_mesh(
         model=mm,
         output_file=Path(output_mesh) if output_mesh else None,
         _global_physical_names=_global_physical_names,
+        _emit_only_seam_surfaces=_emit_only_seam_surfaces,
         **mesh_kwargs,
     )
