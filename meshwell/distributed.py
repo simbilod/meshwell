@@ -822,6 +822,61 @@ def generate_mesh_distributed(
     keep_bundles: bool = False,
     registry: dict[str, Any] | None = None,
     **mesh_kwargs,
-) -> Any:
-    """Top-level distributed-meshing entrypoint."""
-    raise NotImplementedError("Task 21")
+) -> None:
+    """Top-level distributed-meshing entrypoint.
+
+    Wires up the full distributed pipeline:
+
+      1. ``deserialize`` — accept either already-instantiated entities or
+         their dict form (round-tripped via :func:`meshwell.utils.deserialize`).
+      2. Master-side ``prepare_entities`` — apply the global perturbation
+         buffer ONCE here, on the full pre-clip entity list. Workers will
+         receive ``_pre_buffered=True`` and skip a second buffer pass.
+      3. ``build_subdomain_plan`` — derive volume/interface/junction subdomains.
+      4. ``write_bundles`` — emit per-job bundle directories under ``work_dir``.
+      5. ``run_plan`` — drive phase 1 (seam meshes) then phase 2 (volumes)
+         through the supplied :class:`Executor` (defaults to
+         :class:`SubprocessExecutor`).
+      6. ``stitch_meshes`` — merge volume meshes, weld seam nodes, consolidate
+         physical groups, write ``output_mesh``.
+      7. Optional cleanup — when ``keep_bundles`` is False, ``shutil.rmtree``
+         the working directory.
+
+    The master applies ``prepare_entities`` in-place; the same mutated list
+    is then handed to :func:`write_bundles`, so workers serialize entities
+    that already carry the buffered geometry.
+    """
+    import shutil
+
+    from meshwell.cad_common import prepare_entities
+    from meshwell.utils import deserialize
+
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    if executor is None:
+        executor = SubprocessExecutor()
+
+    entities = deserialize(entities, registry=registry)
+
+    perturbation = mesh_kwargs.get("perturbation", 1e-5)
+    point_tolerance = mesh_kwargs.get("point_tolerance", 1e-3)
+
+    # Apply the global perturbation buffer ONCE here. Workers must NOT
+    # re-buffer; that's enforced inside run_job which always passes
+    # _pre_buffered=True.
+    prepare_entities(entities, perturbation=perturbation)
+
+    plan = build_subdomain_plan(
+        subdomains=subdomains,
+        entities=entities,
+        interface_width=interface_width,
+        perturbation=perturbation,
+        point_tolerance=point_tolerance,
+    )
+    write_bundles(work_dir, plan, entities, mesh_kwargs=mesh_kwargs)
+    run_plan(work_dir, plan, executor=executor)
+    stitch_meshes(work_dir, plan, output_mesh=Path(output_mesh))
+
+    if not keep_bundles:
+        shutil.rmtree(work_dir, ignore_errors=True)

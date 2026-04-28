@@ -836,3 +836,36 @@ def test_stitch_meshes_produces_one_unified_mesh(tmp_path):
     assert "mat" in (m.field_data or {})
     # And it should have at least one tet cell.
     assert any(cb.type == "tetra" for cb in m.cells)
+
+
+def test_generate_mesh_distributed_smoke(tmp_path):
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    out = tmp_path / "out.msh"
+    work = tmp_path / "work"
+    generate_mesh_distributed(
+        entities=[prism],
+        subdomains=sd,
+        output_mesh=out,
+        work_dir=work,
+        interface_width=0.1,
+        executor=InProcessExecutor(),
+        keep_bundles=True,
+        default_characteristic_length=0.3,
+    )
+    m = meshio.read(out)
+    assert "mat" in (m.field_data or {})
