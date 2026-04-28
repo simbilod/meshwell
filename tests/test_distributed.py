@@ -626,6 +626,39 @@ def test_write_bundles_creates_expected_layout(tmp_path):
         assert (d / "mesh_kwargs.json").exists()
 
 
+def test_run_job_executes_volume_bundle(tmp_path):
+    import json
+
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan, run_job, write_bundles
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    write_bundles(
+        tmp_path, plan, [prism], mesh_kwargs={"default_characteristic_length": 0.3}
+    )
+
+    job_dir = tmp_path / "jobs" / "volume_0000"
+    run_job(job_dir)
+    assert (job_dir / "result.msh").exists()
+    res = json.loads((job_dir / "result.json").read_text())
+    assert res["status"] == "ok"
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,

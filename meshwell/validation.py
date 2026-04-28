@@ -33,6 +33,11 @@ def format_physical_name(physical_name: str | tuple[str, ...]) -> tuple[str, ...
     """
     if isinstance(physical_name, str):
         return (physical_name,)
+    if isinstance(physical_name, list):
+        # Tolerate list inputs (e.g., from JSON-roundtripped to_dict where
+        # tuples degrade to lists); normalize back to tuple so downstream
+        # dict-key uses don't blow up with "unhashable type: 'list'".
+        return tuple(physical_name)
     return physical_name
 
 

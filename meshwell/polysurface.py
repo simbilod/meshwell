@@ -70,6 +70,10 @@ class PolySurface(GeometryEntity):
         self.mesh_order = mesh_order
         if isinstance(physical_name, str):
             self.physical_name = (physical_name,)
+        elif isinstance(physical_name, list):
+            # Tolerate list (JSON-roundtripped tuple) so dict-key uses
+            # downstream don't blow up with "unhashable type: 'list'".
+            self.physical_name = tuple(physical_name)
         else:
             self.physical_name = physical_name
         self.mesh_bool = mesh_bool

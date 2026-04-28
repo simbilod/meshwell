@@ -561,8 +561,71 @@ def _entity_within(entity: Any, mask: Polygon, distance: float) -> bool:
 
 
 def run_job(job_dir: Path) -> None:
-    """Worker entrypoint: read a job bundle and dispatch to generate_mesh."""
-    raise NotImplementedError("Task 16")
+    """Worker entrypoint: read a job bundle and dispatch to ``generate_mesh``.
+
+    Loads ``job.json`` + ``manifest.json`` (resolved relative to ``job_dir``
+    using the bundle's ``manifest_ref``), deserializes ``entities.json`` and
+    ``mesh_kwargs.json``, then invokes
+    :func:`meshwell.orchestrator.generate_mesh` with the right per-role
+    extra kwargs (``_pre_buffered`` always; ``_emit_only_seam_surfaces``
+    for seam roles; ``_interface_constraints`` for volume roles). Always
+    writes ``result.json``; re-raises on failure so subprocess executors
+    see a non-zero exit.
+    """
+    import json
+    import time
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.utils import deserialize
+
+    job_dir = Path(job_dir)
+    job = json.loads((job_dir / "job.json").read_text())
+    manifest_ref = job["manifest_ref"]
+    manifest_path = (job_dir / Path(manifest_ref)).resolve()
+    manifest = json.loads(manifest_path.read_text())
+    entities = deserialize(json.loads((job_dir / "entities.json").read_text()))
+    mesh_kwargs = json.loads((job_dir / "mesh_kwargs.json").read_text())
+
+    extra: dict[str, Any] = {
+        "_pre_buffered": True,
+        "_global_physical_names": manifest["physical_names_seen"],
+    }
+    if job["role"] in ("interface", "junction"):
+        extra["_emit_only_seam_surfaces"] = True
+    if job["role"] == "volume":
+        extra["_interface_constraints"] = [
+            job_dir / inp["path"] for inp in job["interface_inputs"]
+        ]
+
+    t0 = time.time()
+    try:
+        generate_mesh(
+            entities=entities,
+            dim=job["dim"],
+            output_mesh=job_dir / "result.msh",
+            **mesh_kwargs,
+            **extra,
+        )
+        status = "ok"
+        err = None
+    except Exception as e:
+        status = "error"
+        err = repr(e)
+
+    (job_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "status": status,
+                "error": err,
+                "elapsed_s": time.time() - t0,
+                "id": job["id"],
+                "role": job["role"],
+            },
+            indent=2,
+        )
+    )
+    if status != "ok":
+        raise RuntimeError(f"run_job failed for {job['id']}: {err}")
 
 
 def cli_main() -> None:
