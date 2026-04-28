@@ -579,6 +579,53 @@ def test_build_subdomain_plan_rejects_uncovered_entities():
         )
 
 
+def test_write_bundles_creates_expected_layout(tmp_path):
+    import json
+
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan, write_bundles
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    write_bundles(
+        work_dir=tmp_path,
+        plan=plan,
+        entities=[prism],
+        mesh_kwargs={"default_characteristic_length": 0.5},
+    )
+    # Manifest exists.
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["version"] == 1
+    assert "volume_0000" in manifest["subdomains"]
+    assert "interface_0000" in manifest["subdomains"]
+    # Phase 1 must contain interface_0000 (a 2x1 grid produces exactly one
+    # pairwise interface and no junctions). Use set-equality so the test
+    # does not depend on list ordering of phase entries.
+    assert set(manifest["phase_order"][0]) == {"interface_0000"}
+    assert sorted(manifest["phase_order"][1]) == ["volume_0000", "volume_0001"]
+    # Per-job files exist.
+    for jid in ["volume_0000", "volume_0001", "interface_0000"]:
+        d = tmp_path / "jobs" / jid
+        assert (d / "job.json").exists()
+        assert (d / "entities.json").exists()
+        assert (d / "subdomain.wkt").exists()
+        assert (d / "mesh_kwargs.json").exists()
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,

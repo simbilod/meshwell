@@ -378,6 +378,188 @@ def build_subdomain_plan(
     )
 
 
+def write_bundles(
+    work_dir: Path,
+    plan: SubdomainPlan,
+    entities: list[Any],
+    mesh_kwargs: dict,
+) -> None:
+    """Write the bundle directory tree for ``plan`` under ``work_dir``.
+
+    Emits ``manifest.json`` plus a per-job directory under ``jobs/<id>/``
+    containing ``job.json``, ``entities.json``, ``subdomain.wkt``, and
+    ``mesh_kwargs.json``. Volume bundles get the ``entities`` clipped to
+    the subdomain footprint; seam (interface/junction) bundles get the
+    clipped entities plus a phantom :class:`PolySurface` per cut polyline
+    so the seam imprint inherits a ``_seam___`` physical name.
+    """
+    import json
+
+    work_dir = Path(work_dir)
+    (work_dir / "jobs").mkdir(parents=True, exist_ok=True)
+
+    # Build manifest
+    subdomains_blob: dict[str, dict] = {}
+    for v in plan.volumes:
+        subdomains_blob[v.id] = {
+            "polygon_wkt": v.polygon.wkt,
+            "neighbors": v.neighbors,
+        }
+    for s in plan.interfaces:
+        subdomains_blob[s.id] = {
+            "polygon_wkt": s.polygon.wkt,
+            "between": s.between,
+            "cut_polylines_wkt": [ls.wkt for ls in s.cut_polylines],
+            "width": s.width,
+        }
+    for s in plan.junctions:
+        subdomains_blob[s.id] = {
+            "polygon_wkt": s.polygon.wkt,
+            "between": s.between,
+            "cut_polylines_wkt": [ls.wkt for ls in s.cut_polylines],
+            "width": s.width,
+        }
+
+    manifest = {
+        "version": 1,
+        "perturbation": plan.perturbation,
+        "point_tolerance": plan.point_tolerance,
+        "physical_names_seen": plan.physical_names_seen,
+        "interface_delimiter": plan.interface_delimiter,
+        "boundary_delimiter": plan.boundary_delimiter,
+        "subdomains": subdomains_blob,
+        "phase_order": [
+            [s.id for s in plan.interfaces] + [s.id for s in plan.junctions],
+            [v.id for v in plan.volumes],
+        ],
+    }
+    (work_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+    # Per-job bundles
+    for v in plan.volumes:
+        _write_volume_bundle(work_dir / "jobs" / v.id, v, entities, mesh_kwargs)
+    for s in plan.interfaces:
+        _write_seam_bundle(
+            work_dir / "jobs" / s.id, s, entities, mesh_kwargs, role="interface"
+        )
+    for s in plan.junctions:
+        _write_seam_bundle(
+            work_dir / "jobs" / s.id, s, entities, mesh_kwargs, role="junction"
+        )
+
+
+def _serialize_entities(entities: list[Any]) -> list[dict]:
+    return [e.to_dict() for e in entities if hasattr(e, "to_dict")]
+
+
+def _write_volume_bundle(
+    job_dir: Path, vol: VolumeRegion, entities: list[Any], mesh_kwargs: dict
+) -> None:
+    import json
+
+    job_dir.mkdir(parents=True, exist_ok=True)
+    clipped = []
+    for ent in entities:
+        c = _clip_entity_to_polygon(ent, vol.polygon)
+        if c is not None:
+            clipped.append(c)
+    (job_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "id": vol.id,
+                "role": "volume",
+                "dim": 3,
+                "interface_inputs": [],  # populated between phase 1 and 2
+                "neighbors": vol.neighbors,
+                "manifest_ref": "../../manifest.json",
+            },
+            indent=2,
+        )
+    )
+    (job_dir / "entities.json").write_text(
+        json.dumps(_serialize_entities(clipped), indent=2)
+    )
+    (job_dir / "subdomain.wkt").write_text(vol.polygon.wkt)
+    (job_dir / "mesh_kwargs.json").write_text(
+        json.dumps(mesh_kwargs, indent=2, default=str)
+    )
+
+
+def _write_seam_bundle(
+    job_dir: Path,
+    slab: Slab,
+    entities: list[Any],
+    mesh_kwargs: dict,
+    role: str,
+) -> None:
+    import json
+
+    from meshwell.polysurface import PolySurface
+
+    job_dir.mkdir(parents=True, exist_ok=True)
+    clipped = []
+    for ent in entities:
+        c = _clip_entity_to_polygon(ent, slab.polygon)
+        if c is not None:
+            clipped.append(c)
+        elif _entity_within(ent, slab.polygon, slab.width) and getattr(
+            ent, "resolutions", None
+        ):
+            clipped.append(_resolution_only_proxy(ent))
+
+    # Add the phantom seam imprint(s) — one PolySurface per cut polyline.
+    # PolySurface produces a single face per polyline (vs PolyPrism, which
+    # would emit two opposite faces of a thin slab). mesh_bool=False keeps
+    # the imprint phantom; downstream filtering picks up the _seam___ tag.
+    for ls in slab.cut_polylines:
+        if len(slab.between) == 2:
+            seam_name = f"_seam___{slab.between[0]}___{slab.between[1]}"
+        else:
+            seam_name = "_seam___" + "___".join(slab.between)
+        # Imprint as a PolySurface stripe of width=point_tolerance straddling
+        # the polyline, tagged keep=False so it is removed at top-dim but its
+        # faces inherit the name.
+        thin = ls.buffer(
+            slab.width * 0.001, single_sided=False, cap_style=2, join_style=2
+        )
+        clipped.append(
+            PolySurface(
+                polygons=thin,
+                physical_name=seam_name,
+                mesh_order=0,
+                mesh_bool=False,
+            )
+        )
+
+    (job_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "id": slab.id,
+                "role": role,
+                "dim": 3,
+                "interface_inputs": [],
+                "neighbors": slab.between,
+                "manifest_ref": "../../manifest.json",
+            },
+            indent=2,
+        )
+    )
+    (job_dir / "entities.json").write_text(
+        json.dumps(_serialize_entities(clipped), indent=2)
+    )
+    (job_dir / "subdomain.wkt").write_text(slab.polygon.wkt)
+    (job_dir / "mesh_kwargs.json").write_text(
+        json.dumps(mesh_kwargs, indent=2, default=str)
+    )
+
+
+def _entity_within(entity: Any, mask: Polygon, distance: float) -> bool:
+    if not hasattr(entity, "polygons"):
+        return False
+    polys = entity.polygons if isinstance(entity.polygons, list) else [entity.polygons]
+    return any(p.distance(mask) <= distance for p in polys)
+
+
 def run_job(job_dir: Path) -> None:
     """Worker entrypoint: read a job bundle and dispatch to generate_mesh."""
     raise NotImplementedError("Task 16")
