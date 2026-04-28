@@ -300,10 +300,57 @@ def build_subdomain_plan(
             volumes[j].neighbors.append(f"volume_{i:04d}")
             iface_idx += 1
 
+    # ---- Junctions: points where >= 3 subdomains meet ----
+    from shapely.geometry import Point
+
+    point_to_volumes: dict[tuple[float, float], set[str]] = {}
+    for i, sd in enumerate(subdomains):
+        # Quantize boundary vertices to point_tolerance grid
+        coords: list[tuple[float, float]] = []
+        rings = [sd.exterior, *list(sd.interiors)]
+        for ring in rings:
+            for x, y in ring.coords:
+                key = (
+                    round(x / point_tolerance) * point_tolerance,
+                    round(y / point_tolerance) * point_tolerance,
+                )
+                coords.append(key)
+        for k in set(coords):
+            point_to_volumes.setdefault(k, set()).add(f"volume_{i:04d}")
+
+    junctions: list[Slab] = []
+    j_idx = 0
+    junction_radius = max(
+        (s.width for s in interfaces),
+        default=interface_width if isinstance(interface_width, (int, float)) else 0,
+    )
+    for (x, y), vols in point_to_volumes.items():
+        if len(vols) < 3:
+            continue
+        jpoint = Point(x, y)
+        touching = [
+            s
+            for s in interfaces
+            if any(jpoint.distance(pl) < point_tolerance for pl in s.cut_polylines)
+        ]
+        cut_lines: list[LineString] = []
+        for s in touching:
+            cut_lines.extend(s.cut_polylines)
+        junctions.append(
+            Slab(
+                id=f"junction_{j_idx:04d}",
+                polygon=jpoint.buffer(junction_radius),
+                between=sorted(vols),
+                cut_polylines=cut_lines,
+                width=junction_radius,
+            )
+        )
+        j_idx += 1
+
     return SubdomainPlan(
         volumes=volumes,
         interfaces=interfaces,
-        junctions=[],  # Task 13
+        junctions=junctions,
         physical_names_seen=list(physical_names_seen),
         perturbation=perturbation,
         point_tolerance=point_tolerance,

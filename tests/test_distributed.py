@@ -514,6 +514,38 @@ def test_build_subdomain_plan_interface_width_dict():
     assert plan2.interfaces[0].width == 0.3
 
 
+def test_build_subdomain_plan_creates_junction_for_2x2_grid():
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan, subdomains_from_grid
+    from meshwell.polyprism import PolyPrism
+
+    sd = subdomains_from_grid((0, 0, 2, 2), nx=2, ny=2)
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    assert len(plan.junctions) == 1
+    j = plan.junctions[0]
+    assert j.id == "junction_0000"
+    # Junction polygon centered on (1, 1), all 4 volumes meet here
+    assert sorted(j.between) == [
+        "volume_0000",
+        "volume_0001",
+        "volume_0002",
+        "volume_0003",
+    ]
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,
