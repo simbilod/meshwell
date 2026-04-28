@@ -143,6 +143,7 @@ class Mesh:
         boundary_delimiter: str,
         resolution_specs: dict,
         interface_delimiter: str = "___",
+        _global_physical_names: list[str] | None = None,
     ) -> None:
         """Apply mesh refinement settings.
 
@@ -150,7 +151,10 @@ class Mesh:
         """
         if background_remeshing_file is None:
             self._apply_entity_refinement(
-                boundary_delimiter, resolution_specs, interface_delimiter
+                boundary_delimiter,
+                resolution_specs,
+                interface_delimiter,
+                _global_physical_names=_global_physical_names,
             )
         else:
             self._apply_background_refinement()
@@ -299,6 +303,7 @@ class Mesh:
         boundary_delimiter: str,
         resolution_specs: dict,
         interface_delimiter: str = "___",
+        _global_physical_names: list[str] | None = None,
     ) -> None:
         """Apply mesh refinement based on entity information.
 
@@ -306,6 +311,11 @@ class Mesh:
             boundary_delimiter: String used to identify boundary entities
             resolution_specs: Resolution specifications
             interface_delimiter: String used to separate names in an interface
+            _global_physical_names: Optional list of physical names that exist
+                across the wider distributed model. ResolutionSpec name refs
+                (``restrict_to`` / ``sharing`` / ``not_sharing``) that match a
+                name in this set but not in the local entity dict are silently
+                no-op'd with a warning, instead of being treated as a typo.
 
         """
         from collections import defaultdict
@@ -348,6 +358,7 @@ class Mesh:
                     boundary_delimiter,
                     constant_collector=constant_collector,
                     tag_to_entity_names=tag_to_entity_names,
+                    global_physical_names=_global_physical_names,
                 )
             )
 
@@ -491,6 +502,7 @@ class Mesh:
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
+        _global_physical_names: list[str] | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -538,6 +550,7 @@ class Mesh:
                 boundary_delimiter=boundary_delimiter,
                 resolution_specs=resolution_specs,
                 interface_delimiter=interface_delimiter,
+                _global_physical_names=_global_physical_names,
             )
             return self.process_mesh(
                 dim=dim,
@@ -598,6 +611,7 @@ def mesh(
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
+    _global_physical_names: list[str] | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -660,6 +674,7 @@ def mesh(
             resolution_specs=resolution_specs,
             gmsh_version=gmsh_version,
             interface_delimiter=interface_delimiter,
+            _global_physical_names=_global_physical_names,
         )
 
         # Save to file if output file provided

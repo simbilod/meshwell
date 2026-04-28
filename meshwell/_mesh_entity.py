@@ -322,14 +322,53 @@ class _MeshEntity:
         boundary_delimiter,
         constant_collector=None,
         tag_to_entity_names=None,
+        global_physical_names=None,
     ):
-        """Adds refinement fields to the model based on base_resolution and resolution info."""
+        """Adds refinement fields to the model based on base_resolution and resolution info.
+
+        Args:
+            all_entities_dict: Mapping of physical name -> entity for entities
+                present in this (local) model.
+            boundary_delimiter: Boundary delimiter used in physical-group names.
+            constant_collector: Optional defaultdict used to batch
+                ``ConstantInField`` specs across entities.
+            tag_to_entity_names: Reverse index (dim, tag) -> set of entity names.
+            global_physical_names: Optional list of physical names known across
+                the wider distributed model. Names in ``ResolutionSpec.restrict_to``
+                / ``sharing`` / ``not_sharing`` that exist in this set but not in
+                ``all_entities_dict`` are silently no-op'd with a warning. Names
+                not in this set preserve existing behavior (silent miss in the
+                current implementation, which still produces an empty match).
+        """
+        import warnings
+
         from meshwell.resolution import ConstantInField
 
         refinement_field_indices = []
+        global_set = set(global_physical_names) if global_physical_names else set()
+        local_names = set(all_entities_dict.keys())
 
         if self.resolutions:
             for resolutionspec in self.resolutions:
+                # Distributed-meshing tolerance: warn (don't raise) when a
+                # ResolutionSpec name ref points at something that exists in the
+                # global model but not in this worker's local entity dict.
+                for attr in ("restrict_to", "sharing", "not_sharing"):
+                    refs = getattr(resolutionspec, attr, None) or []
+                    for name in refs:
+                        if name == boundary_delimiter:
+                            continue
+                        if name in local_names:
+                            continue
+                        if name in global_set:
+                            warnings.warn(
+                                f"ResolutionSpec.{attr} references "
+                                f"'{name}' which exists in the global model "
+                                f"but not in this worker's local entities; "
+                                f"treating as empty match.",
+                                stacklevel=2,
+                            )
+
                 target_dim = resolutionspec.target_dimension
                 if target_dim is None:
                     target_dim = self.dim

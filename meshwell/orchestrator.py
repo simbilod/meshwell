@@ -20,6 +20,7 @@ def generate_mesh(
     registry: dict[str, callable] | None = None,
     backend: str | None = None,  # deprecated
     _pre_buffered: bool = False,
+    _global_physical_names: list[str] | None = None,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -34,6 +35,13 @@ def generate_mesh(
         checkpoint_cad: Optional path to save the CAD state (.xao).
         registry: Optional registry for ``OCC_entity`` function resolution.
         backend: Deprecated; only ``"occ"`` or ``None`` is accepted.
+        _global_physical_names: Optional list of physical names that exist in
+            the wider distributed model. ResolutionSpec name refs that match a
+            name in this set but not in this worker's local entity dict are
+            silently no-op'd with a warning, instead of being treated as a typo.
+            Used by the distributed-meshing pipeline (a phase-2 worker meshes
+            one subdomain and may carry ResolutionSpecs that reference other
+            subdomains' names).
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -101,5 +109,6 @@ def generate_mesh(
         dim=dim,
         model=mm,
         output_file=Path(output_mesh) if output_mesh else None,
+        _global_physical_names=_global_physical_names,
         **mesh_kwargs,
     )

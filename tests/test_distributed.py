@@ -47,3 +47,43 @@ def test_generate_mesh_pre_buffered_flag_skips_buffer(tmp_path):
     )
     # PolyPrism's polygons are still the original (no perturbation buffer).
     assert prism.polygons.equals(original_polys)
+
+
+def test_resolution_spec_unknown_name_in_global_set_is_no_op(tmp_path):
+    """Tolerate unknown ResolutionSpec name refs against global set.
+
+    A ResolutionSpec restrict_to=['B'] with B in _global_physical_names
+    but absent locally should not raise.
+
+    Distributed-meshing motivation: a phase-2 worker meshes ONE subdomain.
+    ResolutionSpecs in that worker may reference physical names that exist
+    in OTHER subdomains but not locally. Without this tolerance, the worker
+    would fail.
+    """
+    import shapely
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.resolution import ConstantInField
+
+    spec = ConstantInField(
+        apply_to="volumes",
+        resolution=0.5,
+        restrict_to=["B"],  # B does NOT exist in this entity list
+    )
+    prism = PolyPrism(
+        polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+
+    # No exception means success.
+    generate_mesh(
+        entities=[prism],
+        dim=3,
+        output_mesh=tmp_path / "out.msh",
+        default_characteristic_length=0.5,
+        resolution_specs={"A": [spec]},
+        _global_physical_names=["A", "B"],  # B is "globally known" but not local
+    )
