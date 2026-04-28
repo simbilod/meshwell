@@ -278,3 +278,27 @@ def test_interface_constraints_seed_volume_seam(tmp_path):
         f"seam was re-meshed: got {vol_tris_in_group} tris on the volume's seam face, "
         f"expected {seam_tris} from the imported seam mesh."
     )
+
+
+def test_distributed_module_imports():
+    from meshwell.distributed import (
+        Executor,
+        Slab,
+        SubdomainPlan,
+        SubprocessExecutor,
+        VolumeRegion,
+        build_subdomain_plan,
+        generate_mesh_distributed,
+        run_job,
+        subdomains_from_grid,
+    )
+
+    assert Slab is not None
+    assert VolumeRegion is not None
+    assert SubdomainPlan is not None
+    assert Executor is not None
+    assert SubprocessExecutor is not None
+    assert callable(generate_mesh_distributed)
+    assert callable(subdomains_from_grid)
+    assert callable(build_subdomain_plan)
+    assert callable(run_job)
