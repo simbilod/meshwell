@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+import shapely
 from shapely.geometry import LineString, Polygon
 
 
@@ -174,6 +175,24 @@ def _resolution_only_proxy(entity: Any) -> Any:
     return proxy
 
 
+def _flatten_to_linestrings(geom) -> list[LineString]:
+    """Flatten a possibly-mixed shapely geometry into its LineString components."""
+    from shapely.geometry import GeometryCollection, MultiLineString
+
+    if geom.is_empty:
+        return []
+    if isinstance(geom, LineString):
+        return [geom]
+    if isinstance(geom, MultiLineString):
+        return list(geom.geoms)
+    if isinstance(geom, GeometryCollection):
+        out: list[LineString] = []
+        for g in geom.geoms:
+            out.extend(_flatten_to_linestrings(g))
+        return out
+    return []
+
+
 def subdomains_from_grid(
     bbox: tuple[float, float, float, float],
     nx: int,
@@ -204,7 +223,7 @@ def subdomains_from_grid(
 def build_subdomain_plan(
     subdomains: list[Polygon],
     entities: list[Any],
-    interface_width,  # noqa: ARG001 — used by Task 12 (interfaces) and Task 13 (junctions)
+    interface_width,
     perturbation: float,
     point_tolerance: float,
 ) -> SubdomainPlan:
@@ -232,9 +251,58 @@ def build_subdomain_plan(
         }
     )
 
+    # ---- Interfaces: pairwise slabs between adjacent subdomains ----
+    interfaces: list[Slab] = []
+    iface_idx = 0
+    if isinstance(interface_width, (int, float)):
+
+        def width_for(_i: int, _j: int):
+            return interface_width
+
+    else:
+
+        def width_for(i: int, j: int):
+            return interface_width.get((min(i, j), max(i, j))) or interface_width.get(
+                (max(i, j), min(i, j))
+            )
+
+    for i in range(len(subdomains)):
+        for j in range(i + 1, len(subdomains)):
+            shared = subdomains[i].boundary.intersection(subdomains[j].boundary)
+            if shared.is_empty:
+                continue
+            polylines = _flatten_to_linestrings(shared)
+            polylines = [ls for ls in polylines if ls.length > point_tolerance]
+            if not polylines:
+                continue
+            w = width_for(i, j)
+            if w is None or w <= 0:
+                raise ValueError(f"interface_width missing for pair ({i}, {j})")
+            # Flat caps so the slab doesn't bulge past the polyline endpoints —
+            # bounds match the test's expectation of (xmin, ymin, xmax, ymax)
+            # tight against the shared boundary segment.
+            slab_polys = [ls.buffer(w / 2, cap_style=2) for ls in polylines]
+            slab = (
+                slab_polys[0]
+                if len(slab_polys) == 1
+                else shapely.unary_union(slab_polys)
+            )
+            interfaces.append(
+                Slab(
+                    id=f"interface_{iface_idx:04d}",
+                    polygon=slab,
+                    between=[f"volume_{i:04d}", f"volume_{j:04d}"],
+                    cut_polylines=polylines,
+                    width=w,
+                )
+            )
+            volumes[i].neighbors.append(f"volume_{j:04d}")
+            volumes[j].neighbors.append(f"volume_{i:04d}")
+            iface_idx += 1
+
     return SubdomainPlan(
         volumes=volumes,
-        interfaces=[],  # Task 12
+        interfaces=interfaces,
         junctions=[],  # Task 13
         physical_names_seen=list(physical_names_seen),
         perturbation=perturbation,

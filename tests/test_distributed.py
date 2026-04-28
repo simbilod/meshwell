@@ -429,6 +429,91 @@ def test_build_subdomain_plan_creates_volume_regions():
     assert plan.physical_names_seen == ["mat"]
 
 
+def test_build_subdomain_plan_creates_interface_slabs():
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    assert len(plan.interfaces) == 1
+    iface = plan.interfaces[0]
+    assert iface.id == "interface_0000"
+    assert sorted(iface.between) == ["volume_0000", "volume_0001"]
+    # Slab is centered on x=1 with half-width 0.05
+    assert iface.polygon.bounds == pytest.approx((0.95, 0.0, 1.05, 1.0), abs=1e-9)
+
+
+def test_build_subdomain_plan_no_interface_for_disjoint_subdomains():
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(2, 0, 3, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 3, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    assert plan.interfaces == []
+
+
+def test_build_subdomain_plan_interface_width_dict():
+    """When interface_width is a dict, look up by (min(i,j), max(i,j))."""
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width={(0, 1): 0.2},
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    assert len(plan.interfaces) == 1
+    assert plan.interfaces[0].width == 0.2
+    # Also accept reversed key
+    plan2 = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width={(1, 0): 0.3},
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    assert plan2.interfaces[0].width == 0.3
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,
