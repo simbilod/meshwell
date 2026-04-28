@@ -92,6 +92,58 @@ def _run_job_in_subprocess(job_dir_str: str) -> dict:
     }
 
 
+def _clip_entity_to_polygon(entity: Any, mask: Polygon) -> Any | None:
+    """Return a copy of ``entity`` whose ``.polygons`` are intersected with ``mask``.
+
+    Returns None if the intersection is empty (entity drops out of this
+    subdomain). Preserves physical_name, mesh_order, mesh_bool, additive,
+    resolutions, and all transformation parameters.
+
+    Supports PolyPrism / PolySurface (anything with a ``.polygons`` attr).
+    OCC_entity is not supported and raises NotImplementedError; per spec
+    risk R7, it must be fully contained in a single subdomain (validated
+    at plan time).
+    """
+    from copy import deepcopy
+
+    if not hasattr(entity, "polygons"):
+        raise NotImplementedError(
+            f"_clip_entity_to_polygon does not support entity type "
+            f"{type(entity).__name__}"
+        )
+
+    polys = entity.polygons
+    if isinstance(polys, list):
+        clipped_list = [p.intersection(mask) for p in polys]
+        clipped_list = [p for p in clipped_list if not p.is_empty]
+        if not clipped_list:
+            return None
+        new_polys = clipped_list
+    else:
+        c = polys.intersection(mask)
+        if c.is_empty:
+            return None
+        new_polys = c
+
+    new = deepcopy(entity)
+    new.polygons = new_polys
+
+    # PolyPrism non-extrude path keeps a precomputed buffered_polygons list;
+    # recompute it for the clipped footprint so downstream CAD sees the
+    # right per-z buffer shapes.
+    if (
+        hasattr(new, "buffers")
+        and hasattr(new, "extrude")
+        and not new.extrude
+        and hasattr(new, "_get_buffered_polygons")
+    ):
+        # _get_buffered_polygons expects an iterable of polygons
+        polys_iter = new_polys if isinstance(new_polys, list) else [new_polys]
+        new.buffered_polygons = new._get_buffered_polygons(polys_iter, new.buffers)
+
+    return new
+
+
 def subdomains_from_grid(
     bbox: tuple[float, float, float, float],
     nx: int,

@@ -307,6 +307,75 @@ def test_subdomains_from_grid_validates_inputs():
         subdomains_from_grid((1, 0, 0, 1), nx=1, ny=1)  # invalid xmax<xmin
 
 
+def test_clip_polyprism_to_mask_returns_clipped_copy():
+    import shapely
+
+    from meshwell.distributed import _clip_entity_to_polygon
+    from meshwell.polyprism import PolyPrism
+
+    p = shapely.Polygon([(0, 0), (10, 0), (10, 1), (0, 1)])
+    prism = PolyPrism(
+        polygons=p,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+    mask = shapely.box(0, 0, 5, 1)
+
+    clipped = _clip_entity_to_polygon(prism, mask)
+    assert clipped is not None
+    # physical_name format normalization: meshwell turns "A" into ("A",)
+    assert clipped.physical_name == ("A",) or clipped.physical_name == "A"
+    assert clipped.mesh_order == 1
+    # The clipped polygons should be a list with one box(0,0,5,1).
+    polys = (
+        clipped.polygons if isinstance(clipped.polygons, list) else [clipped.polygons]
+    )
+    # Look at the first geometry; it might be wrapped in MultiPolygon.geoms
+    first = polys[0]
+    if hasattr(first, "geoms"):
+        first = next(iter(first.geoms))
+    assert first.bounds == pytest.approx((0, 0, 5, 1), abs=1e-9)
+
+
+def test_clip_polyprism_returns_none_when_disjoint():
+    import shapely
+
+    from meshwell.distributed import _clip_entity_to_polygon
+    from meshwell.polyprism import PolyPrism
+
+    p = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    prism = PolyPrism(
+        polygons=p,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+    mask = shapely.box(10, 10, 11, 11)
+    assert _clip_entity_to_polygon(prism, mask) is None
+
+
+def test_clip_polysurface_to_mask():
+    import shapely
+
+    from meshwell.distributed import _clip_entity_to_polygon
+    from meshwell.polysurface import PolySurface
+
+    p = shapely.Polygon([(0, 0), (10, 0), (10, 1), (0, 1)])
+    surf = PolySurface(polygons=p, physical_name="A", mesh_order=1)
+    mask = shapely.box(0, 0, 5, 1)
+
+    clipped = _clip_entity_to_polygon(surf, mask)
+    assert clipped is not None
+    polys = (
+        clipped.polygons if isinstance(clipped.polygons, list) else [clipped.polygons]
+    )
+    first = polys[0]
+    if hasattr(first, "geoms"):
+        first = next(iter(first.geoms))
+    assert first.bounds == pytest.approx((0, 0, 5, 1), abs=1e-9)
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,
