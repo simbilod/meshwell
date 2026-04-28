@@ -310,6 +310,7 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        skip_buffer: bool = False,
     ) -> list[OCCLabeledEntity]:
         """Instantiate, sequentially cut, then fragment all entities.
 
@@ -335,7 +336,9 @@ class CAD_OCC:
 
         from meshwell.cad_common import prepare_entities
 
-        prepare_entities(entities_list, perturbation=self.perturbation)
+        prepare_entities(
+            entities_list, perturbation=self.perturbation, skip_buffer=skip_buffer
+        )
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))
@@ -418,6 +421,7 @@ def cad_occ(
     progress_bars: bool = False,
     fuzzy_value: float | None = None,
     perturbation: float | None = None,
+    skip_buffer: bool = False,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 
@@ -432,4 +436,6 @@ def cad_occ(
         fuzzy_value=fuzzy_value,
         perturbation=perturbation,
     )
-    return processor.process_entities(entities_list, progress_bars=progress_bars)
+    return processor.process_entities(
+        entities_list, progress_bars=progress_bars, skip_buffer=skip_buffer
+    )

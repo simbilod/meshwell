@@ -19,6 +19,7 @@ def generate_mesh(
     checkpoint_cad: Path | str | None = None,
     registry: dict[str, callable] | None = None,
     backend: str | None = None,  # deprecated
+    _pre_buffered: bool = False,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -72,6 +73,7 @@ def generate_mesh(
         cad_kwargs["canonicalize_topology"] = mesh_kwargs.pop("canonicalize_topology")
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     cad_kwargs["progress_bars"] = progress_bars
+    cad_kwargs["skip_buffer"] = _pre_buffered
 
     occ_entities = cad_occ(entities, **cad_kwargs)
 
