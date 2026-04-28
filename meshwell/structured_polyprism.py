@@ -477,13 +477,22 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     tol = model_manager.point_tolerance or 1e-9
     _validate_slab_layer_mating(slabs, tol)
 
-    # Step 1: mesh all 2D OCC faces so we can read their triangulations.
-    gmsh.model.mesh.generate(2)
-
     # Process slabs bottom-up so when slab B sits on top of slab A and
     # they share a horizontal face, A has already overridden the shared
     # face's mesh; B reads that overridden mesh as its own bottom.
     sorted_slabs = sorted(slabs, key=lambda s: (s.zlo, s.zhi))
+
+    # Apply lateral transfinite hints BEFORE 2D meshing so the void's
+    # lateral OCC faces are meshed as structured grids whose nodes align
+    # with the structured wedges' lateral edges. After mesh.generate(3),
+    # the (now-coincident) lateral nodes on either side of each lateral
+    # interface are merged into shared tags via removeDuplicateNodes
+    # (called from process_mesh).
+    for slab in sorted_slabs:
+        _apply_lateral_transfinite_hints(slab, tol)
+
+    # Step 1: mesh all 2D OCC faces so we can read their triangulations.
+    gmsh.model.mesh.generate(2)
 
     # Collect (physical_name -> list of 3D volume tags) across all slabs
     # so we can emit one physical group per name at the end. Slabs that
@@ -511,6 +520,123 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
             continue
         pg = gmsh.model.addPhysicalGroup(3, vols)
         gmsh.model.setPhysicalName(3, pg, name)
+
+
+def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
+    """Force lateral OCC faces of the slab void to mesh as structured grids.
+
+    For each OCC face whose z-extent spans ``[slab.zlo, slab.zhi]`` (within
+    ``tol``) and whose xy-bounding-box intersects the slab footprint
+    boundary (i.e. it is a lateral face of the void), set every fully
+    vertical bounding edge to ``n_layers + 1`` nodes via
+    ``setTransfiniteCurve`` and mark the face itself as
+    ``setTransfiniteSurface`` so gmsh meshes it as a structured grid.
+
+    The grid's rows are layer z-positions (matching the structured wedges'
+    layer 0..n_layers nodes); its columns inherit the polygon edge's 1D
+    mesh from the bottom face (shared OCC edge topology), so the resulting
+    lateral nodes coincide positionally with the wedges' lateral edge
+    nodes. ``removeDuplicateNodes`` (called once after ``mesh.generate(3)``)
+    fuses the coincident pairs into shared tags.
+
+    Silently no-ops when no matching OCC faces exist (e.g. isolated slab
+    handled by the geo-fallback path), or when an individual transfinite
+    call fails (logs at ``warning`` and continues).
+    """
+    import logging
+
+    from shapely.geometry import box as sh_box
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+
+    n_layers = slab.n_layers
+    occ_faces = gmsh.model.occ.getEntities(2)
+    boundary = slab.footprint.boundary
+
+    for dim, ftag in occ_faces:
+        if dim != 2:
+            continue
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, ftag)
+        except Exception as exc:
+            logger.debug("getBoundingBox failed for face %d: %s", ftag, exc)
+            continue
+        # Lateral face: spans full slab z-range.
+        if abs(zmin - slab.zlo) > tol or abs(zmax - slab.zhi) > tol:
+            continue
+        if abs(zmax - zmin) < tol:
+            continue  # horizontal face (bottom/top)
+        # xy-bbox must touch the slab footprint boundary.
+        if xmax - xmin < tol and ymax - ymin < tol:
+            continue
+        face_xy_box = sh_box(xmin, ymin, xmax, ymax)
+        try:
+            if not boundary.intersects(face_xy_box):
+                continue
+        except Exception as exc:
+            logger.debug(
+                "shapely boundary.intersects failed for face %d: %s", ftag, exc
+            )
+            continue
+
+        # Find vertical edges of this face.
+        try:
+            boundary_curves = gmsh.model.getBoundary(
+                [(2, ftag)],
+                oriented=False,
+                recursive=False,
+            )
+        except Exception as exc:
+            logger.debug(
+                "getBoundary failed for face %d (slab %s): %s",
+                ftag,
+                slab.physical_name,
+                exc,
+            )
+            continue
+        for cdim, ctag in boundary_curves:
+            if cdim != 1:
+                continue
+            try:
+                (
+                    cxmin,
+                    cymin,
+                    czmin,
+                    cxmax,
+                    cymax,
+                    czmax,
+                ) = gmsh.model.occ.getBoundingBox(1, ctag)
+            except Exception as exc:
+                logger.debug("getBoundingBox failed for curve %d: %s", ctag, exc)
+                continue
+            if (
+                abs(czmin - slab.zlo) < tol
+                and abs(czmax - slab.zhi) < tol
+                and abs(cxmax - cxmin) < tol
+                and abs(cymax - cymin) < tol
+            ):
+                try:
+                    gmsh.model.mesh.setTransfiniteCurve(ctag, n_layers + 1)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to set transfinite on vertical edge %d for "
+                        "slab %s: %s",
+                        ctag,
+                        slab.physical_name,
+                        exc,
+                    )
+        # Mark the lateral face as transfinite.
+        try:
+            gmsh.model.mesh.setTransfiniteSurface(ftag)
+        except Exception as exc:
+            logger.warning(
+                "Failed to set transfinite on lateral face %d for slab %s: %s",
+                ftag,
+                slab.physical_name,
+                exc,
+            )
 
 
 def _build_one_slab_conformal(slab: Slab, tol: float) -> int | None:

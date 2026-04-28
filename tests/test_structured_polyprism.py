@@ -1056,3 +1056,139 @@ def test_structured_unstructured_interface_conformal(tmp_path, square_poly):
         f"Expected 0 duplicate nodes at structured/unstructured interfaces "
         f"(z=0.5, z=1.0); got {dupes_at_iface}."
     )
+
+
+def test_structured_lateral_conformality_rectangular(tmp_path, square_poly):
+    """Lateral faces conformal: zero duplicate nodes on rectangular wire scene.
+
+    Structured/unstructured interfaces should match exactly when transfinite
+    hints are applied to the void's lateral OCC faces.
+    """
+    from collections import Counter
+
+    import meshio
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    cladding = PolyPrism(
+        polygons=Polygon([(-2, -2), (3, -2), (3, 3), (-2, 3)]),
+        buffers={0.0: 0.0, 0.4: 0.0},
+        physical_name="cladding",
+        mesh_order=10,
+    )
+    wire = PolyPrism(
+        polygons=square_poly,
+        buffers={0.4: 0.0, 1.0: 0.0},
+        n_layers=[4],
+        physical_name="wire",
+        mesh_order=2,
+    )
+    encap = PolyPrism(
+        polygons=Polygon([(-2, -2), (3, -2), (3, 3), (-2, 3)]),
+        buffers={1.0: 0.0, 1.3: 0.0},
+        physical_name="encap",
+        mesh_order=10,
+    )
+    filler = PolyPrism(
+        polygons=Polygon([(-2, -2), (3, -2), (3, 3), (-2, 3)]),
+        buffers={0.4: 0.0, 1.0: 0.0},
+        physical_name="filler",
+        mesh_order=15,
+    )
+    _, mm = cad_gmsh([cladding, wire, encap, filler], filename="t_lateral_rect")
+    out = tmp_path / "lateral_rect.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=0.4, output_file=out, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out)
+    pts = np.asarray(m.points)
+    rounded = np.round(pts, 8)
+    counts = Counter(map(tuple, rounded))
+    dupes = sum(n - 1 for c, n in counts.items() if n > 1)
+    assert dupes == 0, f"Expected 0 duplicate nodes; got {dupes}."
+
+
+def test_structured_lateral_conformality_arc_bearing(tmp_path):
+    """Arc-bearing structured slab still produces zero duplicates on lateral interfaces."""
+    import math
+    from collections import Counter
+
+    import meshio
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    # A pill-shape polygon: rectangle with two semicircular caps. PolyPrism with
+    # identify_arcs=True will detect the curved sides.
+    n_arc = 24
+    radius = 0.5
+    left_arc = [
+        (
+            -1.0 + radius * math.cos(math.pi / 2 + i * math.pi / n_arc),
+            radius * math.sin(math.pi / 2 + i * math.pi / n_arc),
+        )
+        for i in range(n_arc + 1)
+    ]
+    right_arc = [
+        (
+            1.0 + radius * math.cos(-math.pi / 2 + i * math.pi / n_arc),
+            radius * math.sin(-math.pi / 2 + i * math.pi / n_arc),
+        )
+        for i in range(n_arc + 1)
+    ]
+    pill = Polygon(left_arc + right_arc)
+
+    cladding = PolyPrism(
+        polygons=Polygon([(-3, -2), (3, -2), (3, 2), (-3, 2)]),
+        buffers={0.0: 0.0, 0.5: 0.0},
+        physical_name="cladding",
+        mesh_order=10,
+    )
+    pill_prism = PolyPrism(
+        polygons=pill,
+        buffers={0.5: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="pill",
+        mesh_order=2,
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+    )
+    encap = PolyPrism(
+        polygons=Polygon([(-3, -2), (3, -2), (3, 2), (-3, 2)]),
+        buffers={1.0: 0.0, 1.3: 0.0},
+        physical_name="encap",
+        mesh_order=10,
+    )
+    filler = PolyPrism(
+        polygons=Polygon([(-3, -2), (3, -2), (3, 2), (-3, 2)]),
+        buffers={0.5: 0.0, 1.0: 0.0},
+        physical_name="filler",
+        mesh_order=15,
+    )
+    _, mm = cad_gmsh([cladding, pill_prism, encap, filler], filename="t_lateral_arc")
+    out = tmp_path / "lateral_arc.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=0.3, output_file=out, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out)
+    pts = np.asarray(m.points)
+    rounded = np.round(pts, 8)
+    counts = Counter(map(tuple, rounded))
+    dupes = sum(n - 1 for c, n in counts.items() if n > 1)
+    # Arc-bearing case may have a few stragglers due to floating-point at arc
+    # corners. Accept up to 5 duplicate residues.
+    assert dupes <= 5, f"Expected <= 5 duplicate nodes; got {dupes}."

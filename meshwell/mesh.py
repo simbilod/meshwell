@@ -421,6 +421,15 @@ class Mesh:
 
         self.model_manager.model.mesh.generate(dim)
 
+        # If structured slabs were applied, transfinite-meshed lateral OCC
+        # faces produced nodes that coincide positionally with the wedges'
+        # lateral edge nodes. Fuse the coincident pairs into shared tags
+        # to make every interface (bottom/top/lateral) fully conformal.
+        # ``removeDuplicateNodes`` only renumbers/merges node tags within
+        # elements; it does not touch entity dimtags or physical groups.
+        if getattr(self.model_manager, "structured_slabs", []):
+            self.model_manager.model.mesh.removeDuplicateNodes()
+
         if optimization_flags:
             for optimization_flag, niter in optimization_flags:
                 self.model_manager.model.mesh.optimize(optimization_flag, niter=niter)
