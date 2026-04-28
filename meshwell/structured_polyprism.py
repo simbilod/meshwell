@@ -21,6 +21,7 @@ keeps each branch in one place and lets the rest of meshwell dispatch via
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -467,19 +468,38 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     tol = model_manager.point_tolerance or 1e-9
     _validate_slab_layer_mating(slabs, tol)
 
+    # Collect (physical_name -> list of geo volume tags) across all slabs so
+    # we can emit one physical group per name at the end. Without this,
+    # slabs that share a physical_name (e.g. a single structured PolyPrism
+    # split into multiple sub-slabs by the cascade) would each add their
+    # own gmsh physical group with the same name. Downstream readers like
+    # meshio key field_data by name, so duplicate-named groups silently
+    # collide and only one survives -- the other slab's cells appear
+    # untagged in the output.
+    volumes_by_name: dict[str, list[int]] = defaultdict(list)
     for slab in slabs:
-        _apply_one_slab(slab, tol)
+        vol_tags = _apply_one_slab(slab, tol)
+        for name in slab.physical_name:
+            volumes_by_name[name].extend(vol_tags)
 
     gmsh.model.geo.synchronize()
 
+    for name, vols in volumes_by_name.items():
+        if not vols:
+            continue
+        pg = gmsh.model.addPhysicalGroup(3, vols)
+        gmsh.model.setPhysicalName(3, pg, name)
 
-def _apply_one_slab(slab: Slab, tol: float) -> None:
+
+def _apply_one_slab(slab: Slab, tol: float) -> list[int]:
+    """Build geo replicas for each polygon piece of ``slab``; return their tags."""
     import gmsh
 
     polys = (
         slab.footprint.geoms if hasattr(slab.footprint, "geoms") else [slab.footprint]
     )
     height = slab.zhi - slab.zlo
+    volume_tags: list[int] = []
     for poly in polys:
         loops = [_geo_curve_loop(list(poly.exterior.coords)[:-1], slab.zlo)]
         loops.extend(
@@ -512,9 +532,9 @@ def _apply_one_slab(slab: Slab, tol: float) -> None:
             tol=tol,
         )
 
-        for name in slab.physical_name:
-            pg = gmsh.model.addPhysicalGroup(3, [volume_dt[1]])
-            gmsh.model.setPhysicalName(3, pg, name)
+        volume_tags.append(volume_dt[1])
+
+    return volume_tags
 
 
 def _geo_curve_loop(coords, z: float) -> int:
