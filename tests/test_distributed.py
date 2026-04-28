@@ -280,6 +280,33 @@ def test_interface_constraints_seed_volume_seam(tmp_path):
     )
 
 
+def test_subdomains_from_grid_2x2():
+    from shapely.geometry import box
+
+    from meshwell.distributed import subdomains_from_grid
+
+    polys = subdomains_from_grid((0, 0, 2, 2), nx=2, ny=2)
+    assert len(polys) == 4
+    expected = {
+        box(0, 0, 1, 1).wkt,
+        box(1, 0, 2, 1).wkt,
+        box(0, 1, 1, 2).wkt,
+        box(1, 1, 2, 2).wkt,
+    }
+    assert {p.wkt for p in polys} == expected
+
+
+def test_subdomains_from_grid_validates_inputs():
+    import pytest
+
+    from meshwell.distributed import subdomains_from_grid
+
+    with pytest.raises(ValueError, match=">="):
+        subdomains_from_grid((0, 0, 1, 1), nx=0, ny=1)
+    with pytest.raises(ValueError, match="bbox"):
+        subdomains_from_grid((1, 0, 0, 1), nx=1, ny=1)  # invalid xmax<xmin
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,

@@ -98,7 +98,25 @@ def subdomains_from_grid(
     ny: int,
 ) -> list[Polygon]:
     """Helper: emit a regular nx-by-ny grid of subdomain polygons."""
-    raise NotImplementedError("Task 7")
+    from shapely.geometry import box as _box
+
+    if nx < 1 or ny < 1:
+        raise ValueError("nx and ny must be >= 1")
+    xmin, ymin, xmax, ymax = bbox
+    if xmax <= xmin or ymax <= ymin:
+        raise ValueError(f"invalid bbox: {bbox}")
+    dx = (xmax - xmin) / nx
+    dy = (ymax - ymin) / ny
+    return [
+        _box(
+            xmin + i * dx,
+            ymin + j * dy,
+            xmin + (i + 1) * dx,
+            ymin + (j + 1) * dy,
+        )
+        for i in range(nx)
+        for j in range(ny)
+    ]
 
 
 def build_subdomain_plan(
