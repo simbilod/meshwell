@@ -144,6 +144,36 @@ def _clip_entity_to_polygon(entity: Any, mask: Polygon) -> Any | None:
     return new
 
 
+def _resolution_only_proxy(entity: Any) -> Any:
+    """Wrap ``entity`` so it contributes no geometry but keeps its resolutions.
+
+    Used by phase-1 bundles for entities that sit near (but do not intersect)
+    a slab whose ResolutionSpecs may still affect the seam mesh sizing. The
+    proxy's ``instanciate_occ`` returns an empty TopoDS_Compound so no CAD
+    fragment is generated; the resolutions list rides along and gets
+    consumed by the worker's resolver.
+    """
+    from copy import deepcopy
+
+    proxy = deepcopy(entity)
+    proxy.mesh_bool = False
+
+    def _empty_occ_shape(_self=proxy):
+        from OCP.BRep import BRep_Builder
+        from OCP.TopoDS import TopoDS_Compound
+
+        cb = BRep_Builder()
+        c = TopoDS_Compound()
+        cb.MakeCompound(c)
+        return c
+
+    proxy.instanciate_occ = _empty_occ_shape
+    # Also stub the gmsh-backend instanciate so the worker doesn't try to
+    # build geometry there either.
+    proxy.instanciate = lambda _cad_model: []
+    return proxy
+
+
 def subdomains_from_grid(
     bbox: tuple[float, float, float, float],
     nx: int,

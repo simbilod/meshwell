@@ -376,6 +376,34 @@ def test_clip_polysurface_to_mask():
     assert first.bounds == pytest.approx((0, 0, 5, 1), abs=1e-9)
 
 
+def test_resolution_only_proxy_contributes_no_geometry():
+    import shapely
+
+    from meshwell.distributed import _resolution_only_proxy
+    from meshwell.polyprism import PolyPrism
+
+    prism = PolyPrism(
+        polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+    prism.resolutions = ["sentinel"]
+
+    proxy = _resolution_only_proxy(prism)
+    assert proxy.mesh_bool is False
+    assert proxy.resolutions == ["sentinel"]
+    # instanciate_occ returns an empty TopoDS_Compound
+    shape = proxy.instanciate_occ()
+    from OCP.TopoDS import TopoDS_Compound
+
+    assert isinstance(shape, TopoDS_Compound)
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    assert not TopExp_Explorer(shape, TopAbs_SOLID).More()
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,
