@@ -76,6 +76,24 @@ class SubprocessExecutor:
         return self._pool.submit(_run_job_in_subprocess, str(job_dir))
 
 
+class InProcessExecutor:
+    """Synchronous executor: runs each job in the calling process.
+
+    Used by tests and for debugging — bypasses the subprocess + CLI hop.
+    The returned :class:`Future` is already resolved when ``submit`` returns.
+    """
+
+    def submit(self, job_dir: Path) -> Future:
+        """Run the job synchronously and return an already-resolved Future."""
+        f: Future = Future()
+        try:
+            run_job(Path(job_dir))
+            f.set_result({"returncode": 0, "job_dir": str(job_dir)})
+        except Exception as e:
+            f.set_exception(e)
+        return f
+
+
 def _run_job_in_subprocess(job_dir_str: str) -> dict:
     import subprocess
 

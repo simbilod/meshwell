@@ -716,3 +716,40 @@ def test_distributed_module_imports():
     assert callable(subdomains_from_grid)
     assert callable(build_subdomain_plan)
     assert callable(run_job)
+
+
+def test_in_process_executor_runs_jobs_synchronously(tmp_path):
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        build_subdomain_plan,
+        run_job,
+        write_bundles,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.1,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    write_bundles(
+        tmp_path, plan, [prism], mesh_kwargs={"default_characteristic_length": 0.3}
+    )
+
+    ex = InProcessExecutor()
+    fut = ex.submit(tmp_path / "jobs" / "volume_0000")
+    fut.result()  # blocks
+    assert (tmp_path / "jobs" / "volume_0000" / "result.msh").exists()
+    # silence unused import warning
+    assert callable(run_job)
