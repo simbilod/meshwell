@@ -204,12 +204,42 @@ def subdomains_from_grid(
 def build_subdomain_plan(
     subdomains: list[Polygon],
     entities: list[Any],
-    interface_width,
+    interface_width,  # noqa: ARG001 — used by Task 12 (interfaces) and Task 13 (junctions)
     perturbation: float,
     point_tolerance: float,
 ) -> SubdomainPlan:
     """Build the volume + interface + junction plan from user-supplied subdomains."""
-    raise NotImplementedError("Tasks 11-14")
+    if not subdomains:
+        raise ValueError("subdomains must be non-empty")
+    for i, sd in enumerate(subdomains):
+        if not sd.is_valid:
+            raise ValueError(f"subdomain {i} is not valid: {sd.wkt}")
+
+    volumes = [
+        VolumeRegion(id=f"volume_{i:04d}", polygon=sd, neighbors=[])
+        for i, sd in enumerate(subdomains)
+    ]
+    physical_names_seen = sorted(
+        {
+            n if isinstance(n, str) else n[0]
+            for ent in entities
+            if hasattr(ent, "physical_name") and ent.physical_name
+            for n in (
+                (ent.physical_name,)
+                if isinstance(ent.physical_name, str)
+                else ent.physical_name
+            )
+        }
+    )
+
+    return SubdomainPlan(
+        volumes=volumes,
+        interfaces=[],  # Task 12
+        junctions=[],  # Task 13
+        physical_names_seen=list(physical_names_seen),
+        perturbation=perturbation,
+        point_tolerance=point_tolerance,
+    )
 
 
 def run_job(job_dir: Path) -> None:

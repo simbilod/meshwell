@@ -404,6 +404,31 @@ def test_resolution_only_proxy_contributes_no_geometry():
     assert not TopExp_Explorer(shape, TopAbs_SOLID).More()
 
 
+def test_build_subdomain_plan_creates_volume_regions():
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        interface_width=0.05,
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    assert [v.id for v in plan.volumes] == ["volume_0000", "volume_0001"]
+    assert plan.volumes[0].polygon.equals(sd[0])
+    assert plan.physical_names_seen == ["mat"]
+
+
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,
