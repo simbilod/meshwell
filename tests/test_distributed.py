@@ -982,3 +982,50 @@ def test_distributed_matches_serial_single_material_2x1(tmp_path):
         n for n in (d.field_data or {}) if n.startswith("_seam___")
     }
     assert serial_names == dist_names
+
+
+def test_distributed_two_materials_shared_interface(tmp_path):
+    """Spec test 2: silicon and oxide abut at x=1.
+
+    The silicon___oxide interface group exists in the merged mesh.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    si = PolyPrism(
+        polygons=shapely.box(0, 0, 1, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="silicon",
+        mesh_order=1,
+    )
+    ox = PolyPrism(
+        polygons=shapely.box(1, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="oxide",
+        mesh_order=2,
+    )
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=[si, ox],
+        subdomains=[shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)],
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        interface_width=0.1,
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.3,
+    )
+    m = meshio.read(out)
+    names = set(m.field_data or {})
+    # Material-material interface is named with the existing meshwell convention.
+    assert "silicon" in names
+    assert "oxide" in names
+    interfaces = {n for n in names if "___" in n and not n.startswith("_seam___")}
+    assert any(
+        "silicon" in i and "oxide" in i for i in interfaces
+    ), f"missing silicon/oxide interface among {interfaces}"

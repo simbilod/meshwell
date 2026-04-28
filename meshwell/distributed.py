@@ -801,66 +801,230 @@ def stitch_meshes(
     plan: SubdomainPlan,
     output_mesh: Path,
 ) -> None:
-    """Merge all ``volume_*/result.msh`` files into one unified ``.msh``.
+    """Concatenate all volume_*.msh files into one unified mesh.
+
+    Uses meshio so that physical-group names from each file's field_data
+    are preserved and consolidated by name. Tag IDs are remapped per-file
+    to avoid collisions; consolidated groups are re-numbered with fresh
+    monotonic tags.
+
+    The previous implementation used ``gmsh.merge`` + ``getPhysicalName``,
+    which collides physical-group tag IDs across per-volume .msh files —
+    only the first file's name survives for any given (dim, tag), losing
+    every subsequent material name. meshio gives us per-file ``field_data``
+    keyed by name, which we can consolidate cleanly.
 
     Steps:
-      1. Initialize a fresh gmsh model named ``stitched``.
-      2. ``gmsh.merge`` each ``volume_*/result.msh`` from ``work_dir/jobs``.
-      3. ``removeDuplicateNodes`` at half the plan's ``point_tolerance`` to
-         weld matching seam nodes from neighbouring volumes.
-      4. Walk dim-0/1/2/3 physical groups, group by name, drop duplicates,
-         re-add a single consolidated group per name.
-      5. Write the result to ``output_mesh``.
-
-    GMSH ownership: this function calls :func:`gmsh.initialize` only if
-    gmsh is not already initialized, and pairs that with a corresponding
-    :func:`gmsh.finalize` in the ``finally`` block. If gmsh is already
-    initialized externally (e.g. by an enclosing test fixture), we leave
-    it that way and just clear the model.
+      1. Read each volume_*.msh with meshio.
+      2. Track each file's (name -> (tag, dim)) mapping for re-tagging.
+      3. Concatenate points and cells across files, offsetting node tags
+         per-file to avoid collisions.
+      4. Build a unified field_data: {name: [new_tag, dim]} where each
+         unique (name, dim) combination gets one consolidated tag.
+      5. Build unified cell_data['gmsh:physical'] using the new tags.
+      6. Dedup duplicate nodes by coordinate within point_tolerance / 2.
+      7. Write to output_mesh as gmsh22 (gmsh4 writer drops field_data).
     """
-    import gmsh
+    import meshio
+    import numpy as np
 
     work_dir = Path(work_dir)
     output_mesh = Path(output_mesh)
 
-    we_initialized = False
-    if not gmsh.is_initialized():
-        gmsh.initialize()
-        we_initialized = True
-    try:
-        gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.clear()
-        gmsh.model.add("stitched")
-        for v in plan.volumes:
-            path = work_dir / "jobs" / v.id / "result.msh"
-            gmsh.merge(str(path))
+    # Step 1+2: read and capture per-file name tables.
+    files = []
+    for v in plan.volumes:
+        path = work_dir / "jobs" / v.id / "result.msh"
+        if not path.exists():
+            continue
+        m = meshio.read(path)
+        files.append((v.id, m))
 
-        # Remove duplicate nodes within tolerance.
-        gmsh.option.setNumber("Geometry.Tolerance", plan.point_tolerance / 2)
-        gmsh.model.mesh.removeDuplicateNodes()
+    if not files:
+        raise RuntimeError(f"No volume meshes found under {work_dir}/jobs/")
 
-        # Consolidate physical groups by name (all dims).
-        for dim in (3, 2, 1, 0):
-            pgs = list(gmsh.model.getPhysicalGroups(dim))
-            by_name: dict[str, list[int]] = {}
-            for d, tag in pgs:
-                name = gmsh.model.getPhysicalName(d, tag)
-                by_name.setdefault(name, []).extend(
-                    int(e) for e in gmsh.model.getEntitiesForPhysicalGroup(d, tag)
+    # Identify each volume's local materials (dim-3 physical groups whose name
+    # is neither a seam, nor a boundary "X___None", nor a material-material
+    # interface "A___B"). We use these to rewrite the cross-volume seam
+    # group names from "_seam___volume_0000___volume_0001" into the
+    # material-aware "matA___matB" form expected by downstream consumers.
+    delim = plan.interface_delimiter
+
+    def _local_materials(mesh) -> list[str]:
+        mats: list[str] = []
+        for name, arr in (mesh.field_data or {}).items():
+            dim = int(arr[1])
+            if dim != 3:
+                continue
+            if name.startswith("_seam___"):
+                continue
+            if delim in name:
+                # Interface-style names ("A___B" or "A___None") are not
+                # raw materials; materials are bare names.
+                continue
+            mats.append(name)
+        return mats
+
+    vol_materials: dict[str, list[str]] = {vid: _local_materials(m) for vid, m in files}
+
+    # Build a seam-name rewrite table: any field_data key matching
+    # "_seam___<volA>___<volB>" gets a sibling material-aware name (or
+    # several, if a volume hosts multiple materials at the seam).
+    seam_renames: dict[str, list[str]] = {}
+    for s in plan.interfaces + plan.junctions:
+        if len(s.between) < 2:
+            continue
+        seam_key = "_seam___" + "___".join(s.between)
+        # Collect the cartesian product of materials across the involved
+        # volumes; for the common 2-volume interface case this reduces
+        # to one pair "matA___matB". Same-material seams (mat appearing on
+        # both sides) collapse to a single material name (no interface).
+        per_vol_mats = [vol_materials.get(v, []) for v in s.between]
+        if not all(per_vol_mats):
+            continue
+        # For pairwise interfaces, build "A___B" names; for junctions
+        # involving 3+ volumes, build the fully-delimited form.
+        from itertools import product
+
+        names_out: list[str] = []
+        for combo in product(*per_vol_mats):
+            unique = []
+            for c in combo:
+                if c not in unique:
+                    unique.append(c)
+            if len(unique) == 1:
+                # Same material on both sides: not an interface; skip.
+                continue
+            names_out.append(delim.join(unique))
+        if names_out:
+            # de-dup while preserving order
+            seen: set[str] = set()
+            dedup: list[str] = []
+            for n in names_out:
+                if n not in seen:
+                    seen.add(n)
+                    dedup.append(n)
+            seam_renames[seam_key] = dedup
+
+    # Step 3: concatenate points; track per-file node-index offsets.
+    all_points = []
+    point_offsets = []
+    cur_offset = 0
+    for _vid, m in files:
+        all_points.append(m.points)
+        point_offsets.append(cur_offset)
+        cur_offset += m.points.shape[0]
+    points_concat = np.vstack(all_points) if all_points else np.zeros((0, 3))
+
+    # Step 4: build the unified field_data.
+    # Each (name, dim) combination -> one new tag (per-dim monotonic).
+    # If a name matches a seam-rename key, emit ALL of the rewritten names
+    # (one per material pair) sharing the same per-cell tag remap.
+    name_dim_to_new_tag: dict[tuple[str, int], int] = {}
+    next_tag_per_dim: dict[int, int] = {}
+
+    def _names_for(name: str) -> list[str]:
+        if seam_renames.get(name):
+            # Replace the raw _seam___ key with material-aware names.
+            return seam_renames[name]
+        return [name]
+
+    for _vid, m in files:
+        for name, arr in (m.field_data or {}).items():
+            dim = int(arr[1])
+            for emitted in _names_for(name):
+                key = (emitted, dim)
+                if key not in name_dim_to_new_tag:
+                    next_tag_per_dim.setdefault(dim, 0)
+                    next_tag_per_dim[dim] += 1
+                    name_dim_to_new_tag[key] = next_tag_per_dim[dim]
+
+    field_data = {
+        name: np.array([new_tag, dim])
+        for (name, dim), new_tag in name_dim_to_new_tag.items()
+    }
+
+    # Step 5: concatenate cells; remap old (dim, tag) -> new tag using each
+    # file's own field_data lookup table.
+    type_to_dim = {
+        "vertex": 0,
+        "line": 1,
+        "line3": 1,
+        "triangle": 2,
+        "triangle6": 2,
+        "quad": 2,
+        "quad9": 2,
+        "tetra": 3,
+        "tetra10": 3,
+        "hexahedron": 3,
+        "wedge": 3,
+        "pyramid": 3,
+    }
+
+    cell_blocks: list[meshio.CellBlock] = []
+    cell_data_phys: list[np.ndarray] = []
+
+    for file_idx, (_vid, m) in enumerate(files):
+        offset = point_offsets[file_idx]
+        per_file_oldtag_to_new: dict[tuple[int, int], int] = {}
+        for name, arr in (m.field_data or {}).items():
+            tag, dim = int(arr[0]), int(arr[1])
+            # When a seam name is rewritten to multiple material-aware
+            # names, the cells get tagged with the first emitted name's
+            # consolidated tag. (For the common 2-volume case this is
+            # the only emitted name.)
+            emitted_first = _names_for(name)[0] if _names_for(name) else name
+            per_file_oldtag_to_new[(dim, tag)] = name_dim_to_new_tag[
+                (emitted_first, dim)
+            ]
+
+        gmsh_phys = m.cell_data.get("gmsh:physical") if m.cell_data else None
+        for block_idx, block in enumerate(m.cells):
+            new_data = block.data + offset
+            cell_blocks.append(meshio.CellBlock(block.type, new_data))
+
+            dim = type_to_dim.get(block.type, -1)
+            old_phys = (
+                gmsh_phys[block_idx]
+                if gmsh_phys is not None and block_idx < len(gmsh_phys)
+                else None
+            )
+            if old_phys is None:
+                cell_data_phys.append(np.zeros(len(new_data), dtype=np.int32))
+            else:
+                remapped = np.array(
+                    [per_file_oldtag_to_new.get((dim, int(t)), 0) for t in old_phys],
+                    dtype=np.int32,
                 )
-            # Drop original groups.
-            for d, tag in pgs:
-                gmsh.model.removePhysicalGroups([(d, tag)])
-            # Re-add consolidated.
-            for name, ents in by_name.items():
-                if not ents:
-                    continue
-                gmsh.model.addPhysicalGroup(dim, list(set(ents)), name=name)
+                cell_data_phys.append(remapped)
 
-        gmsh.write(str(output_mesh))
-    finally:
-        if we_initialized and gmsh.is_initialized():
-            gmsh.finalize()
+    # Step 6: dedup nodes by coordinate (within point_tolerance / 2).
+    # Use a simple bucketed approach: round coords to tolerance, group identical keys.
+    tol = max(plan.point_tolerance / 2.0, 1e-12)
+    quantized = np.round(points_concat / tol).astype(np.int64)
+    keys = [tuple(row) for row in quantized]
+    canonical: dict[tuple, int] = {}
+    remap = np.empty(points_concat.shape[0], dtype=np.int64)
+    new_points: list = []
+    for i, k in enumerate(keys):
+        if k not in canonical:
+            canonical[k] = len(new_points)
+            new_points.append(points_concat[i])
+        remap[i] = canonical[k]
+    points_dedup = np.array(new_points) if new_points else np.zeros((0, 3))
+
+    new_cell_blocks = [
+        meshio.CellBlock(block.type, remap[block.data]) for block in cell_blocks
+    ]
+
+    # Step 7: write. gmsh22 because meshio's gmsh4 writer drops field_data.
+    out = meshio.Mesh(
+        points=points_dedup,
+        cells=new_cell_blocks,
+        cell_data={"gmsh:physical": cell_data_phys},
+        field_data=field_data,
+    )
+    meshio.write(output_mesh, out, file_format="gmsh22")
 
 
 def cli_main() -> None:
