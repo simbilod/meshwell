@@ -1,6 +1,9 @@
 """Tests for the distributed-meshing pipeline."""
 from __future__ import annotations
 
+import warnings
+
+import pytest
 import shapely
 
 from meshwell.cad_common import prepare_entities
@@ -78,12 +81,59 @@ def test_resolution_spec_unknown_name_in_global_set_is_no_op(tmp_path):
         mesh_order=1,
     )
 
-    # No exception means success.
-    generate_mesh(
-        entities=[prism],
-        dim=3,
-        output_mesh=tmp_path / "out.msh",
-        default_characteristic_length=0.5,
-        resolution_specs={"A": [spec]},
-        _global_physical_names=["A", "B"],  # B is "globally known" but not local
+    # With _global_physical_names supplied, the reference to 'B' should
+    # emit a UserWarning mentioning the global tolerance behavior, and
+    # the message should include the entity's physical_name plus the
+    # offending spec attr/name (so multi-entity runs are debuggable).
+    with pytest.warns(UserWarning, match="globally") as wrec:
+        generate_mesh(
+            entities=[prism],
+            dim=3,
+            output_mesh=tmp_path / "out.msh",
+            default_characteristic_length=0.5,
+            resolution_specs={"A": [spec]},
+            _global_physical_names=["A", "B"],  # B is "globally known" but not local
+        )
+    msgs = [str(w.message) for w in wrec.list]
+    assert any(
+        "entity='A'" in m and "spec_attr='restrict_to'" in m and "name='B'" in m
+        for m in msgs
+    ), f"warning text missing entity/attr/name details; got: {msgs}"
+
+
+def test_resolution_spec_unknown_name_without_global_set_is_silent(tmp_path):
+    """Legacy behavior: without _global_physical_names, no warning fires.
+
+    Tightens the contract: the new warning must be gated on the caller
+    explicitly opting into the distributed code path by passing
+    _global_physical_names. Otherwise the old silent no-op stands.
+    """
+    import shapely
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.resolution import ConstantInField
+
+    spec = ConstantInField(
+        apply_to="volumes",
+        resolution=0.5,
+        restrict_to=["B"],
     )
+    prism = PolyPrism(
+        polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+
+    # Promote UserWarning -> error so an unexpected warning fails the test.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        generate_mesh(
+            entities=[prism],
+            dim=3,
+            output_mesh=tmp_path / "out.msh",
+            default_characteristic_length=0.5,
+            resolution_specs={"A": [spec]},
+            # _global_physical_names intentionally omitted
+        )

@@ -340,8 +340,6 @@ class _MeshEntity:
                 not in this set preserve existing behavior (silent miss in the
                 current implementation, which still produces an empty match).
         """
-        import warnings
-
         from meshwell.resolution import ConstantInField
 
         refinement_field_indices = []
@@ -362,10 +360,11 @@ class _MeshEntity:
                             continue
                         if name in global_set:
                             warnings.warn(
-                                f"ResolutionSpec.{attr} references "
-                                f"'{name}' which exists in the global model "
-                                f"but not in this worker's local entities; "
-                                f"treating as empty match.",
+                                f"ResolutionSpec references a name known "
+                                f"globally but not local to this worker; "
+                                f"treating as empty match "
+                                f"(entity={self.physical_name!r}, "
+                                f"spec_attr={attr!r}, name={name!r}).",
                                 stacklevel=2,
                             )
 
