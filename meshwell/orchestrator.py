@@ -22,6 +22,7 @@ def generate_mesh(
     _pre_buffered: bool = False,
     _global_physical_names: list[str] | None = None,
     _emit_only_seam_surfaces: bool = False,
+    _interface_constraints: list | None = None,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -47,6 +48,10 @@ def generate_mesh(
             keep only physical groups whose name starts with ``_seam___``. Used
             by phase-1 workers in the distributed pipeline; the rest of the
             mesh is scratch.
+        _interface_constraints: Optional list of paths to seam ``.msh`` files.
+            Each file is used to seed a matching OCC face's mesh via the
+            parametric ``addNodes`` recipe (preserves the seam's triangulation
+            verbatim). Used by phase-2 workers in the distributed pipeline.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -116,5 +121,6 @@ def generate_mesh(
         output_file=Path(output_mesh) if output_mesh else None,
         _global_physical_names=_global_physical_names,
         _emit_only_seam_surfaces=_emit_only_seam_surfaces,
+        _interface_constraints=_interface_constraints,
         **mesh_kwargs,
     )

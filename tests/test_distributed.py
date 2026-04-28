@@ -191,3 +191,90 @@ def test_emit_only_seam_surfaces_filters_output(tmp_path):
     assert any(
         n.startswith("_seam___") for n in field_names
     ), f"no seam groups in output: {field_names}"
+
+
+def test_interface_constraints_seed_volume_seam(tmp_path):
+    """Seed an OCC face's mesh from an imported seam ``.msh``.
+
+    A volume meshed with ``_interface_constraints`` has its seam face nodes
+    drawn verbatim from the imported mesh (parametric OCC seeding via
+    ``addNodes``).
+    """
+    import meshio
+    import shapely
+
+    # ----- Phase 1 simulation: build a coherent planar seam mesh at x=1 -----
+    # NOTE: the originally specified phase-1 simulation
+    # (PolyPrism slab + _emit_only_seam_surfaces) emits the slab's TWO opposite
+    # face triangulations (front + back of the thin slab), not a single
+    # coherent surface mesh — which makes the slab unsuitable as input to the
+    # parametric-seeding helper. We instead synthesize a clean planar seam .msh
+    # directly via gmsh's geo kernel, matching what a properly-engineered
+    # phase-1 worker is expected to produce.
+    import gmsh
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    seam_path = tmp_path / "seam.msh"
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("seam")
+        pts = [
+            gmsh.model.geo.addPoint(1, 0, 0, 0.2),
+            gmsh.model.geo.addPoint(1, 1, 0, 0.2),
+            gmsh.model.geo.addPoint(1, 1, 1, 0.2),
+            gmsh.model.geo.addPoint(1, 0, 1, 0.2),
+        ]
+        lines = [gmsh.model.geo.addLine(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+        loop = gmsh.model.geo.addCurveLoop(lines)
+        surf = gmsh.model.geo.addPlaneSurface([loop])
+        gmsh.model.geo.synchronize()
+        gmsh.model.addPhysicalGroup(2, [surf], name="_seam___A___B")
+        gmsh.model.mesh.generate(2)
+        gmsh.write(str(seam_path))
+    finally:
+        gmsh.finalize()
+    # Sanity: the seam .msh has the _seam___A___B physical group.
+    s = meshio.read(seam_path)
+    assert "_seam___A___B" in (
+        s.field_data or {}
+    ), f"phase-1 setup failed; got groups {list((s.field_data or {}).keys())}"
+
+    # ----- Phase 2: mesh a volume whose right face (x=1) must conform -----
+    out = tmp_path / "vol.msh"
+    a = PolyPrism(
+        polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+    generate_mesh(
+        entities=[a],
+        dim=3,
+        output_mesh=out,
+        default_characteristic_length=0.5,  # NB: coarser than the seam (0.2)
+        _interface_constraints=[seam_path],
+    )
+    m = meshio.read(out)
+    # The seam physical group should be present in the volume mesh too.
+    assert "_seam___A___B" in (
+        m.field_data or {}
+    ), f"seam group not in volume output; got {list((m.field_data or {}).keys())}"
+    # Element count on the seam face should match the seam .msh.
+    # (sanity: the face was seeded, not re-meshed at coarser sizing)
+    seam_tris = sum(cb.data.shape[0] for cb in s.cells if cb.type == "triangle")
+    vol_tag, _vol_dim = (m.field_data or {})["_seam___A___B"]
+    vol_tris_in_group = 0
+    for i, cb in enumerate(m.cells):
+        if cb.type != "triangle":
+            continue
+        gmsh_phys = m.cell_data["gmsh:physical"][i]
+        import numpy as np
+
+        mask = np.asarray(gmsh_phys) == int(vol_tag)
+        vol_tris_in_group += int(mask.sum())
+    assert vol_tris_in_group == seam_tris, (
+        f"seam was re-meshed: got {vol_tris_in_group} tris on the volume's seam face, "
+        f"expected {seam_tris} from the imported seam mesh."
+    )
