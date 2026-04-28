@@ -355,6 +355,28 @@ def test_clip_polyprism_returns_none_when_disjoint():
     assert _clip_entity_to_polygon(prism, mask) is None
 
 
+def test_clip_drops_slivers_below_area_threshold():
+    import shapely
+
+    from meshwell.distributed import _clip_entity_to_polygon
+    from meshwell.polyprism import PolyPrism
+
+    # A polygon that intersects the mask only as a 1e-6-wide sliver.
+    p = shapely.Polygon([(0, 0), (1.000001, 0), (1.000001, 1), (0, 1)])
+    prism = PolyPrism(
+        polygons=p,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+    )
+    # Mask covers x in [1, 2] — only a 1e-6 wide sliver of the prism.
+    mask = shapely.box(1, 0, 2, 1)
+    # With default point_tolerance=1e-3, sliver area (~1e-6) is below 1e-6
+    # threshold → returned None.
+    result = _clip_entity_to_polygon(prism, mask, point_tolerance=1e-3)
+    assert result is None, f"sliver should be dropped, got {result}"
+
+
 def test_clip_polysurface_to_mask():
     import shapely
 

@@ -111,7 +111,9 @@ def _run_job_in_subprocess(job_dir_str: str) -> dict:
     }
 
 
-def _clip_entity_to_polygon(entity: Any, mask: Polygon) -> Any | None:
+def _clip_entity_to_polygon(
+    entity: Any, mask: Polygon, point_tolerance: float = 1e-3
+) -> Any | None:
     """Return a copy of ``entity`` whose ``.polygons`` are intersected with ``mask``.
 
     Returns None if the intersection is empty (entity drops out of this
@@ -122,6 +124,14 @@ def _clip_entity_to_polygon(entity: Any, mask: Polygon) -> Any | None:
     OCC_entity is not supported and raises NotImplementedError; per spec
     risk R7, it must be fully contained in a single subdomain (validated
     at plan time).
+
+    ``point_tolerance`` is used as an area threshold: any clipped polygon
+    whose area is below ``point_tolerance ** 2`` is discarded as a
+    sub-tolerance sliver (typically arising from the master-side
+    perturbation buffer crossing subdomain boundaries). These crumbs
+    would otherwise snap to degenerate polygons under PolyPrism's
+    ``set_precision(grid_size=point_tolerance)`` and erase legitimate
+    materials in the receiving subdomain.
     """
     from copy import deepcopy
 
@@ -131,16 +141,20 @@ def _clip_entity_to_polygon(entity: Any, mask: Polygon) -> Any | None:
             f"{type(entity).__name__}"
         )
 
+    area_threshold = point_tolerance * point_tolerance
+
     polys = entity.polygons
     if isinstance(polys, list):
         clipped_list = [p.intersection(mask) for p in polys]
-        clipped_list = [p for p in clipped_list if not p.is_empty]
+        clipped_list = [
+            p for p in clipped_list if not p.is_empty and p.area >= area_threshold
+        ]
         if not clipped_list:
             return None
         new_polys = clipped_list
     else:
         c = polys.intersection(mask)
-        if c.is_empty:
+        if c.is_empty or c.area < area_threshold:
             return None
         new_polys = c
 
@@ -455,14 +469,30 @@ def write_bundles(
 
     # Per-job bundles
     for v in plan.volumes:
-        _write_volume_bundle(work_dir / "jobs" / v.id, v, entities, mesh_kwargs)
+        _write_volume_bundle(
+            work_dir / "jobs" / v.id,
+            v,
+            entities,
+            mesh_kwargs,
+            point_tolerance=plan.point_tolerance,
+        )
     for s in plan.interfaces:
         _write_seam_bundle(
-            work_dir / "jobs" / s.id, s, entities, mesh_kwargs, role="interface"
+            work_dir / "jobs" / s.id,
+            s,
+            entities,
+            mesh_kwargs,
+            role="interface",
+            point_tolerance=plan.point_tolerance,
         )
     for s in plan.junctions:
         _write_seam_bundle(
-            work_dir / "jobs" / s.id, s, entities, mesh_kwargs, role="junction"
+            work_dir / "jobs" / s.id,
+            s,
+            entities,
+            mesh_kwargs,
+            role="junction",
+            point_tolerance=plan.point_tolerance,
         )
 
 
@@ -471,14 +501,18 @@ def _serialize_entities(entities: list[Any]) -> list[dict]:
 
 
 def _write_volume_bundle(
-    job_dir: Path, vol: VolumeRegion, entities: list[Any], mesh_kwargs: dict
+    job_dir: Path,
+    vol: VolumeRegion,
+    entities: list[Any],
+    mesh_kwargs: dict,
+    point_tolerance: float = 1e-3,
 ) -> None:
     import json
 
     job_dir.mkdir(parents=True, exist_ok=True)
     clipped = []
     for ent in entities:
-        c = _clip_entity_to_polygon(ent, vol.polygon)
+        c = _clip_entity_to_polygon(ent, vol.polygon, point_tolerance=point_tolerance)
         if c is not None:
             clipped.append(c)
     (job_dir / "job.json").write_text(
@@ -509,6 +543,7 @@ def _write_seam_bundle(
     entities: list[Any],
     mesh_kwargs: dict,
     role: str,
+    point_tolerance: float = 1e-3,
 ) -> None:
     import json
 
@@ -517,7 +552,7 @@ def _write_seam_bundle(
     job_dir.mkdir(parents=True, exist_ok=True)
     clipped = []
     for ent in entities:
-        c = _clip_entity_to_polygon(ent, slab.polygon)
+        c = _clip_entity_to_polygon(ent, slab.polygon, point_tolerance=point_tolerance)
         if c is not None:
             clipped.append(c)
         elif _entity_within(ent, slab.polygon, slab.width) and getattr(
@@ -534,12 +569,15 @@ def _write_seam_bundle(
             seam_name = f"_seam___{slab.between[0]}___{slab.between[1]}"
         else:
             seam_name = "_seam___" + "___".join(slab.between)
-        # Imprint as a PolySurface stripe of width=point_tolerance straddling
-        # the polyline, tagged keep=False so it is removed at top-dim but its
-        # faces inherit the name.
-        thin = ls.buffer(
-            slab.width * 0.001, single_sided=False, cap_style=2, join_style=2
-        )
+        # Imprint as a PolySurface stripe straddling the polyline, tagged
+        # keep=False so it is removed at top-dim but its faces inherit the
+        # name. The stripe half-width must stay strictly above
+        # ``point_tolerance`` so PolySurface's
+        # ``set_precision(grid_size=point_tolerance, mode='pointwise')``
+        # does not snap it to a degenerate polygon (which would yield an
+        # empty seam mesh in phase 1).
+        stripe_width = max(slab.width * 0.001, point_tolerance * 2.0)
+        thin = ls.buffer(stripe_width, single_sided=False, cap_style=2, join_style=2)
         clipped.append(
             PolySurface(
                 polygons=thin,
