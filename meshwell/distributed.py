@@ -234,6 +234,27 @@ def build_subdomain_plan(
         if not sd.is_valid:
             raise ValueError(f"subdomain {i} is not valid: {sd.wkt}")
 
+    # Coverage validation: every polygon-bearing entity must lie within
+    # `point_tolerance` of the subdomain union. Fail fast before doing any work.
+    union_sd = shapely.unary_union(subdomains)
+    union_ent = shapely.unary_union(
+        [
+            p
+            for ent in entities
+            if hasattr(ent, "polygons")
+            for p in (
+                ent.polygons if isinstance(ent.polygons, list) else [ent.polygons]
+            )
+        ]
+    )
+    if not union_ent.is_empty:
+        missing = union_ent.difference(union_sd.buffer(point_tolerance))
+        if not missing.is_empty:
+            raise ValueError(
+                f"not covered: entity polygons not covered by subdomain union: "
+                f"{missing.wkt[:200]}"
+            )
+
     volumes = [
         VolumeRegion(id=f"volume_{i:04d}", polygon=sd, neighbors=[])
         for i, sd in enumerate(subdomains)

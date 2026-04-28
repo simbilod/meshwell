@@ -463,16 +463,25 @@ def test_build_subdomain_plan_no_interface_for_disjoint_subdomains():
     from meshwell.distributed import build_subdomain_plan
     from meshwell.polyprism import PolyPrism
 
+    # Two disjoint subdomains, each covered by its own entity. Coverage check
+    # (Task 14) requires every entity polygon to lie within the subdomain
+    # union, so we use one prism per subdomain rather than one spanning prism.
     sd = [shapely.box(0, 0, 1, 1), shapely.box(2, 0, 3, 1)]
-    prism = PolyPrism(
-        polygons=shapely.box(0, 0, 3, 1),
+    prism_a = PolyPrism(
+        polygons=shapely.box(0, 0, 1, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    prism_b = PolyPrism(
+        polygons=shapely.box(2, 0, 3, 1),
         buffers={0.0: 0.0, 1.0: 0.0},
         physical_name="mat",
         mesh_order=1,
     )
     plan = build_subdomain_plan(
         subdomains=sd,
-        entities=[prism],
+        entities=[prism_a, prism_b],
         interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
@@ -544,6 +553,30 @@ def test_build_subdomain_plan_creates_junction_for_2x2_grid():
         "volume_0002",
         "volume_0003",
     ]
+
+
+def test_build_subdomain_plan_rejects_uncovered_entities():
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan
+    from meshwell.polyprism import PolyPrism
+
+    # Subdomain covers only x in [0, 1] but entity extends to x=2
+    sd = [shapely.box(0, 0, 1, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    with pytest.raises(ValueError, match="not covered"):
+        build_subdomain_plan(
+            subdomains=sd,
+            entities=[prism],
+            interface_width=0.1,
+            perturbation=1e-5,
+            point_tolerance=1e-3,
+        )
 
 
 def test_distributed_module_imports():
