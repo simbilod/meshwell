@@ -727,6 +727,73 @@ def run_plan(work_dir: Path, plan: SubdomainPlan, executor: Executor) -> None:
         raise RuntimeError(f"Phase 2 failures: {failures}")
 
 
+def stitch_meshes(
+    work_dir: Path,
+    plan: SubdomainPlan,
+    output_mesh: Path,
+) -> None:
+    """Merge all ``volume_*/result.msh`` files into one unified ``.msh``.
+
+    Steps:
+      1. Initialize a fresh gmsh model named ``stitched``.
+      2. ``gmsh.merge`` each ``volume_*/result.msh`` from ``work_dir/jobs``.
+      3. ``removeDuplicateNodes`` at half the plan's ``point_tolerance`` to
+         weld matching seam nodes from neighbouring volumes.
+      4. Walk dim-0/1/2/3 physical groups, group by name, drop duplicates,
+         re-add a single consolidated group per name.
+      5. Write the result to ``output_mesh``.
+
+    GMSH ownership: this function calls :func:`gmsh.initialize` only if
+    gmsh is not already initialized, and pairs that with a corresponding
+    :func:`gmsh.finalize` in the ``finally`` block. If gmsh is already
+    initialized externally (e.g. by an enclosing test fixture), we leave
+    it that way and just clear the model.
+    """
+    import gmsh
+
+    work_dir = Path(work_dir)
+    output_mesh = Path(output_mesh)
+
+    we_initialized = False
+    if not gmsh.is_initialized():
+        gmsh.initialize()
+        we_initialized = True
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.clear()
+        gmsh.model.add("stitched")
+        for v in plan.volumes:
+            path = work_dir / "jobs" / v.id / "result.msh"
+            gmsh.merge(str(path))
+
+        # Remove duplicate nodes within tolerance.
+        gmsh.option.setNumber("Geometry.Tolerance", plan.point_tolerance / 2)
+        gmsh.model.mesh.removeDuplicateNodes()
+
+        # Consolidate physical groups by name (all dims).
+        for dim in (3, 2, 1, 0):
+            pgs = list(gmsh.model.getPhysicalGroups(dim))
+            by_name: dict[str, list[int]] = {}
+            for d, tag in pgs:
+                name = gmsh.model.getPhysicalName(d, tag)
+                by_name.setdefault(name, []).extend(
+                    int(e) for e in gmsh.model.getEntitiesForPhysicalGroup(d, tag)
+                )
+            # Drop original groups.
+            for d, tag in pgs:
+                gmsh.model.removePhysicalGroups([(d, tag)])
+            # Re-add consolidated.
+            for name, ents in by_name.items():
+                if not ents:
+                    continue
+                gmsh.model.addPhysicalGroup(dim, list(set(ents)), name=name)
+
+        gmsh.write(str(output_mesh))
+    finally:
+        if we_initialized and gmsh.is_initialized():
+            gmsh.finalize()
+
+
 def cli_main() -> None:
     """``meshwell`` CLI entrypoint.
 
