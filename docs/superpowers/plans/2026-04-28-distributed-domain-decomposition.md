@@ -592,12 +592,20 @@ git commit -m "feat(mesh): _emit_only_seam_surfaces filters output to _seam___ g
 
 ---
 
-## Task 5: `_interface_constraints` — merge + embed
+## Task 5: `_interface_constraints` — parametric OCC face seeding
 
-Phase-2 workers must `gmsh.merge` each interface `result.msh` and `embed` the imported discrete entity into the matching OCC face.
+Phase-2 workers must seed the matching OCC face's mesh from each interface `.msh` using the parametric-overload recipe validated in `tests/test_distributed_spike.py::test_occ_face_parametric_seed_from_discrete` (the R3 spike). Naive `merge + embed` does NOT work — see the spike file for the full investigation. The working recipe is:
+
+1. Read seam .msh: nodes (xyz), triangles (3-node-tag tuples), boundary edge structure (which seam nodes lie on each side of the seam quad).
+2. Locate the matching OCC face by physical-name discipline (`_seam___volume_i___volume_j`) plus bbox + plane fit.
+3. For each OCC corner point: `addNodes(0, pt, [tag], [x,y,z])`.
+4. For each OCC boundary edge: compute `t = getParametrization(1, edge, xyz)`, then `addNodes(1, edge, tags, xyz, parametricCoord=t)`, then `addElementsByType(edge, 1, line_tags, chained_node_tags)`.
+5. For the OCC face: compute `(u,v) = getParametrization(2, face, xyz)` for interior nodes, `addNodes(2, face, tags, xyz, parametricCoord=uv)`, then `addElementsByType(face, 2, tri_tags, triangle_node_tags)`.
+6. Set `gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)`.
+7. `mesh.generate(3)` ONCE — do **not** precede with `generate(1)` or `generate(2)`; sequential calls wipe higher-dim elements before re-running.
 
 **Files:**
-- Modify: `meshwell/mesh.py` (add `_embed_imported_seam_into_occ_face` helper, wire `_interface_constraints` kwarg)
+- Modify: `meshwell/mesh.py` (add `_seed_occ_face_from_seam` helper, wire `_interface_constraints` kwarg)
 - Modify: `meshwell/orchestrator.py` (forward the kwarg)
 - Test: `tests/test_distributed.py`
 
@@ -654,75 +662,39 @@ def test_interface_constraints_embed_seam_into_volume(tmp_path):
 Run: `pytest tests/test_distributed.py::test_interface_constraints_embed_seam_into_volume -v`
 Expected: FAIL with unexpected kwarg.
 
-- [ ] **Step 3: Implement `_embed_imported_seam_into_occ_face`**
+- [ ] **Step 3: Implement `_seed_occ_face_from_seam`**
 
-In `meshwell/mesh.py`, add at module scope:
+In `meshwell/mesh.py`, add at module scope. The structure mirrors the spike test. Refer to `tests/test_distributed_spike.py::test_occ_face_parametric_seed_from_discrete` for the working pattern; the helper here generalizes it for an arbitrary OCC face matching an arbitrary seam .msh.
 
 ```python
-def _embed_imported_seam_into_occ_face(seam_path: Path) -> None:
-    """Merge a seam .msh into the current gmsh model and embed each imported
-    discrete 2D entity into the matching OCC face.
+def _seed_occ_face_from_seam(seam_path: Path, point_tolerance: float = 1e-6) -> None:
+    """Seed the matching OCC face's mesh from an interface .msh.
 
-    Match rule: an OCC face matches a discrete face if their bounding boxes
-    overlap within point_tolerance and they are co-planar (same plane equation
-    within point_tolerance). The seam's physical-group name '_seam___A___B'
-    is added to the OCC face as well so it survives final glue.
+    Recipe (validated by tests/test_distributed_spike.py):
+      1. Read seam mesh into a temporary gmsh model; capture
+         (node_tag -> xyz), triangles, and per-boundary-edge node lists.
+      2. Locate the OCC face in the *current* model by:
+           - physical group name (must match the seam's '_seam___..' name)
+           - failing that, by bbox + planar-fit match within point_tolerance.
+      3. For each OCC corner point: addNodes(0, ...).
+      4. For each OCC boundary edge: addNodes(1, ..., parametricCoord=t)
+         (t from getParametrization), then addElementsByType(edge, 1, ...).
+      5. For the OCC face: addNodes(2, ..., parametricCoord=uv)
+         (uv from getParametrization), then addElementsByType(face, 2, ...).
+      6. Add the seam's physical group to the OCC face so it survives glue.
+
+    DO NOT call gmsh.merge or gmsh.model.mesh.embed here — the spike showed
+    these don't work. addNodes(parametric) + addElementsByType is the only
+    path that gmsh's OCC mesher honors.
     """
-    pre_2d = {tag for dim, tag in gmsh.model.getEntities(2)}
-    pre_occ_faces = list(gmsh.model.getEntities(2))
-    gmsh.merge(str(seam_path))
-    post_2d = {tag for dim, tag in gmsh.model.getEntities(2)}
-    imported_tags = sorted(post_2d - pre_2d)
-    if not imported_tags:
-        return
-
-    # Inventory imported group names.
-    pgs = gmsh.model.getPhysicalGroups(2)
-    imp_groups = {}
-    for dim, tag in pgs:
-        name = gmsh.model.getPhysicalName(dim, tag)
-        if not name.startswith("_seam___"):
-            continue
-        ents = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
-        for e in ents:
-            if int(e) in imported_tags:
-                imp_groups.setdefault(name, []).append(int(e))
-
-    # For each imported entity, find the matching OCC face by bbox + plane.
-    import numpy as np
-    for imp_tag in imported_tags:
-        bb_imp = gmsh.model.getBoundingBox(2, imp_tag)
-        best = None
-        for dim, occ_tag in pre_occ_faces:
-            if dim != 2:
-                continue
-            bb_occ = gmsh.model.getBoundingBox(2, occ_tag)
-            if not _bboxes_close(bb_imp, bb_occ, tol=1e-6):
-                continue
-            best = occ_tag
-            break
-        if best is None:
-            continue
-        gmsh.model.mesh.embed(2, [imp_tag], 2, best)
-        # Re-tag the OCC face with the seam physical group too.
-        for name, ents in imp_groups.items():
-            if imp_tag in ents:
-                # Find or create an OCC-side group with the same name.
-                existing = [
-                    t for d, t in gmsh.model.getPhysicalGroups(2)
-                    if gmsh.model.getPhysicalName(d, t) == name
-                ]
-                if existing:
-                    pg_tag = existing[0]
-                    cur = list(gmsh.model.getEntitiesForPhysicalGroup(2, pg_tag))
-                    gmsh.model.removePhysicalGroups([(2, pg_tag)])
-                    gmsh.model.addPhysicalGroup(2, list(set(cur + [best])), name=name)
-                else:
-                    gmsh.model.addPhysicalGroup(2, [best], name=name)
-
-
-def _bboxes_close(b1, b2, tol):
-    return all(abs(a - b) <= tol for a, b in zip(b1, b2))
+    # See tests/test_distributed_spike.py::test_occ_face_parametric_seed_from_discrete
+    # for a fully worked reference. Implementation mirrors steps 1-9 there,
+    # with the seam-mesh capture done by reading seam_path into a scratch
+    # gmsh model first, then transferring to the active model. After the
+    # capture, gmsh.model.remove() the scratch model before seeding.
+    raise NotImplementedError(
+        "Implement following the recipe in the spike test"
+    )
 ```
 
 In the `mesh()` function, accept `_interface_constraints: list[Path] | None = None`. After the OCC CAD load + synchronize but before `mesh.generate(dim)`:
@@ -730,9 +702,12 @@ In the `mesh()` function, accept `_interface_constraints: list[Path] | None = No
 ```python
 if _interface_constraints:
     for path in _interface_constraints:
-        _embed_imported_seam_into_occ_face(Path(path))
+        _seed_occ_face_from_seam(Path(path))
+    gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
     self.model_manager.sync_model()
 ```
+
+**CRITICAL:** the existing `mesh()` flow may call `gmsh.model.mesh.generate(2)` before `generate(3)` — find this and confirm it's NOT in the path that runs when `_interface_constraints` is set. If it is, gate the precursor call behind `if not _interface_constraints:` because sequential generate() calls wipe the seeded mesh per the spike finding.
 
 In `meshwell/orchestrator.py`, accept and forward `_interface_constraints` like the other private kwargs.
 

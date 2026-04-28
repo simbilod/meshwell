@@ -461,22 +461,65 @@ do not appear in `result.msh`.
 ### `_interface_constraints: list[Path] = []`
 
 In `meshwell/mesh.py`, after CAD load and synchronize, before
-`mesh.generate(dim=3)`:
+`mesh.generate(dim=3)`: for each interface `.msh`, **seed** the mesh of
+the matching OCC face directly via `gmsh.model.mesh.addNodes` with the
+parametric overload, then add `Triangle` elements via
+`addElementsByType`. With `Mesh.MeshOnlyEmpty=1` set, `mesh.generate(3)`
+preserves the seeded surface mesh while meshing the rest.
+
+This is the recipe validated by the R3 spike at
+`tests/test_distributed_spike.py::test_occ_face_parametric_seed_from_discrete`.
+A naive `gmsh.merge` + `gmsh.model.mesh.embed` does **not** work
+(documented at length in the spike file): `gmsh.merge` attaches by
+tag collision rather than introducing new model entities, and OCC
+faces require parametric `(u, v)` coordinates on every attached node,
+which `merge` does not provide.
 
 ```python
+def _seed_occ_face_from_seam(path: Path) -> None:
+    """Read seam .msh, locate the matching OCC face, seed its mesh.
+
+    Steps for each seam:
+      1. Read nodes + triangles + boundary structure from the .msh.
+      2. Find the OCC face whose bbox + plane match the seam's, and
+         identify its OCC corner points + boundary edges.
+      3. addNodes(0, pt, ...) for each OCC corner with the seam's matching corner xyz.
+      4. For each OCC boundary edge:
+           t = getParametrization(1, edge, xyz_of_seam_boundary_nodes_on_this_edge)
+           addNodes(1, edge, tags, xyz, parametricCoord=t)
+           addElementsByType(edge, 1, ..., chained_node_tags)  # Line elements
+      5. For the OCC face:
+           uv = getParametrization(2, face, xyz_of_interior_seam_nodes)
+           addNodes(2, face, tags, xyz, parametricCoord=uv)
+           addElementsByType(face, 2, ..., triangle_node_tags)
+      6. Tag the OCC face with the seam's '_seam___volume_i___volume_j'
+         physical group so it survives final glue.
+    """
+
+# In mesh():
 for path in _interface_constraints:
-    gmsh.merge(str(path))
-    # Imported entities show up as discrete entities in gmsh.
-    # For each imported 2D discrete entity, locate the matching OCC
-    # face by physical name + bbox + planar-equation match.
-    # Then gmsh.model.mesh.embed(2, [discrete_2d_tag], 2, occ_face_tag)
-    # forces the OCC face's mesh to honor the imported nodes.
-    _embed_imported_seam_into_occ_face(...)
+    _seed_occ_face_from_seam(Path(path))
+gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
+self.model_manager.sync_model()
+# mesh.generate(3) is then called as usual. It must NOT be preceded
+# by mesh.generate(1) or mesh.generate(2) — those wipe the seeded
+# higher-dim elements before re-running.
 ```
 
-The matching helper `_embed_imported_seam_into_occ_face` lives in
-`meshwell/mesh.py`. It uses the same physical name discipline (interface
-name = `lhs___rhs` ordered alphabetically) so both phases agree.
+**Critical operational rules** (from the spike):
+- Always pass `parametricCoord=` to `addNodes` for OCC entities at
+  dim 1 and dim 2. A bare `(x,y,z)` injection looks like it works
+  but gmsh silently rejects or ignores the nodes during meshing.
+- Set `Mesh.MeshOnlyEmpty=1` before `generate(3)`.
+- Do **not** call `gmsh.model.mesh.generate(1)` or `generate(2)`
+  before `generate(3)` — sequential calls wipe higher-dim elements
+  first and destroy the seed.
+
+The matching helper `_seed_occ_face_from_seam` lives in
+`meshwell/mesh.py`. The OCC face is located by physical name
+(`_seam___volume_i___volume_j`) plus bbox + plane fit; the seam's
+nodes are matched to the OCC face's corner points by `(x, y, z)`
+within `point_tolerance`.
 
 ### `_global_physical_names: list[str]`
 
@@ -638,15 +681,15 @@ all be present in both).
   nodes and the locally-computed size field at the seam, and warn.
   Auto-derivation of `interface_width` is deferred (see Out of Scope).
 
-- **R3: `gmsh.model.mesh.embed` from a `gmsh.merge`-imported discrete
-  entity into an OCC face may behave inconsistently** (same risk
-  flagged in the structured-polyprism design).
-  **Mitigation:** build a minimal repro early. Fallback: bypass embed
-  and inject node positions directly via `gmsh.model.mesh.setNodes` on
-  the OCC face's boundary points, then let gmsh mesh the face with
-  those points fixed. A second fallback is to remove the OCC seam face
-  entirely and replace it with the imported discrete face (analogous
-  to the structured-polyprism phantom-removal trick).
+- **R3: ~~`gmsh.model.mesh.embed` ...~~ RESOLVED.** Investigated via
+  `tests/test_distributed_spike.py`. The naive `merge + embed` path
+  is genuinely broken (`gmsh.merge` attaches by tag collision, and
+  OCC requires parametric `(u, v)` on attached nodes). The working
+  recipe is `addNodes` with the parametric overload + `addElementsByType`
+  + `Mesh.MeshOnlyEmpty=1` + a single `generate(3)` call (no precursor
+  `generate(1)/(2)` calls). See `_interface_constraints` section above
+  for the full recipe. The spike test pins this behavior so a future
+  gmsh upgrade that breaks it gets caught.
 
 - **R4: Polygon spans a subdomain boundary at a sharp feature** (e.g. a
   thin rectangle whose long axis crosses a cut), creating a sliver
