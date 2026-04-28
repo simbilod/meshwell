@@ -191,6 +191,17 @@ convention = "google"
     "D103"
 ]
 "tests/**/*.py" = ["S101", "D100", "D102", "D103"]
+"tests/test_distributed_spike.py" = [
+    "S101",
+    "D100",
+    "D102",
+    "D103",
+    "D205",   # spike file: docstrings are exploratory
+    "SIM222", # spike file: debug `or True` retained for context
+    "PT018",  # spike file: combined assertion retained for context
+    "ARG001", # spike file: tmp_path kept for fixture parity
+    "B007",   # spike file: loop variables retained for readability
+]
 
 [tool.setuptools.package-data]
 mypkg = ["*.csv", "*.yaml"]
