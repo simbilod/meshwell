@@ -8,16 +8,17 @@ This module hosts everything that is structured-specific:
   remains true), but with the structured-mode validation rules.
 * :class:`Slab` -- one pairwise-disjoint piece of a structured prism after
   the cascade.
-
-Future tasks will add ``expand_slabs_for_entity``, ``resolve_structured_slabs``,
-``_StructuredPhantom``, and ``apply_structured_slabs``. They all live in this
-module to keep the structured pipeline co-located.
-
-Why a private subclass rather than a flag on ``PolyPrism``: structured-mode
-behavior diverges in three places (validation, ``mesh_bool`` semantics,
-``instanciate``-time replacement by ``_StructuredPhantom``); a subclass
-keeps each branch in one place and lets the rest of meshwell dispatch via
-``isinstance``.
+* :class:`_StructuredPhantom` -- CAD-stage proxy that punches a void in
+  the OCC fragmentation and is removed so neighbors own the void's faces.
+* :func:`apply_structured_slabs` -- the conformal v2 mesh-stage refill.
+  Runs ``mesh.generate(2)`` first to give every OCC face a 2D mesh, then
+  for each slab builds a layered wedge mesh into a discrete 3D entity.
+  Layer 0 reuses the bottom OCC face's existing node tags so the slab is
+  conformal at z=zlo by construction; the top OCC face's mesh is then
+  overridden with the translated triangulation so the slab is conformal
+  at z=zhi too. When a slab has no OCC neighbor on either face (e.g. an
+  isolated single-prism scene) we fall back to a geo-kernel extrude that
+  ``mesh.generate(3)`` will pick up afterwards.
 """
 from __future__ import annotations
 
@@ -444,21 +445,29 @@ def _validate_slab_layer_mating(slabs: list[Slab], tol: float) -> None:
 
 
 def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
-    """Reinstantiate each ``Slab`` in the gmsh geo kernel as a structured layered volume.
+    """Build conformal layered meshes for each ``Slab`` in the gmsh model.
 
-    Pipeline per slab:
-      1. Build the bottom-face polygon in the geo kernel using the slab
-         footprint's vertex coordinates at z = ``slab.zlo``.
-      2. Call ``geo.extrude`` with ``numElements=[n_layers]``,
-         ``heights=[1.0]`` and ``recombine=slab.recombine``.
-      3. ``geo.synchronize()``.
-      4. Find OCC neighbor faces coincident with the geo replica's
-         bottom / top. For each match, ``mesh.embed`` the geo face into
-         the OCC face so nodes mate across kernels.
-      5. Tag the geo volume with the slab's ``physical_name``.
+    Conformal v2 pipeline:
 
-    No OCC face is ever removed -- the void's bounding faces are owned
-    by neighbor volumes and must remain in place.
+    1. ``mesh.generate(2)`` -- gives every OCC face (including the void's
+       bottom/top, owned by neighbors) a triangulated 2D mesh.
+    2. For each slab, ``_build_one_slab_conformal`` finds the bottom
+       (``zlo``) and top (``zhi``) OCC faces, reads the bottom face's
+       2D mesh, and constructs a wedge-element layered mesh in a fresh
+       discrete 3D entity. Layer 0 reuses the bottom face's existing
+       node tags so the slab is conformal at ``zlo`` by construction;
+       the top OCC face's mesh is then overridden with the translated
+       triangulation so the slab is conformal at ``zhi`` too.
+    3. When a slab has no OCC neighbor on either face (isolated single-
+       prism scene), fall back to ``_build_one_slab_geo_fallback`` which
+       reuses the v1 geo-kernel extrude. ``mesh.generate(3)`` will pick
+       it up afterwards.
+    4. Set ``Mesh.MeshOnlyEmpty = 1`` so the subsequent ``mesh.generate(3)``
+       does not retouch entities we've already populated.
+
+    Side-face conformality (the slab's vertical faces vs OCC neighbor
+    side faces) is not addressed in this iteration; gmsh will mesh those
+    lateral neighbor faces independently.
     """
     import gmsh
 
@@ -468,22 +477,35 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     tol = model_manager.point_tolerance or 1e-9
     _validate_slab_layer_mating(slabs, tol)
 
-    # Collect (physical_name -> list of geo volume tags) across all slabs so
-    # we can emit one physical group per name at the end. Without this,
-    # slabs that share a physical_name (e.g. a single structured PolyPrism
-    # split into multiple sub-slabs by the cascade) would each add their
-    # own gmsh physical group with the same name. Downstream readers like
-    # meshio key field_data by name, so duplicate-named groups silently
-    # collide and only one survives -- the other slab's cells appear
-    # untagged in the output.
+    # Step 1: mesh all 2D OCC faces so we can read their triangulations.
+    gmsh.model.mesh.generate(2)
+
+    # Process slabs bottom-up so when slab B sits on top of slab A and
+    # they share a horizontal face, A has already overridden the shared
+    # face's mesh; B reads that overridden mesh as its own bottom.
+    sorted_slabs = sorted(slabs, key=lambda s: (s.zlo, s.zhi))
+
+    # Collect (physical_name -> list of 3D volume tags) across all slabs
+    # so we can emit one physical group per name at the end. Slabs that
+    # share a physical_name (e.g. a single structured PolyPrism split into
+    # multiple sub-slabs by the cascade) must collapse to one group.
     volumes_by_name: dict[str, list[int]] = defaultdict(list)
-    for slab in slabs:
-        vol_tags = _apply_one_slab(slab, tol)
+    geo_fallback_used = False
+    for slab in sorted_slabs:
+        result = _build_one_slab_conformal(slab, tol)
+        if result is None:
+            # No OCC neighbor on bottom or top -- fall back to geo extrude.
+            vol_tags, used_geo = _build_one_slab_geo_fallback(slab, tol)
+            geo_fallback_used = geo_fallback_used or used_geo
+        else:
+            vol_tags = [result]
         for name in slab.physical_name:
             volumes_by_name[name].extend(vol_tags)
 
-    gmsh.model.geo.synchronize()
+    if geo_fallback_used:
+        gmsh.model.geo.synchronize()
 
+    # Emit one physical group per name.
     for name, vols in volumes_by_name.items():
         if not vols:
             continue
@@ -491,8 +513,249 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
         gmsh.model.setPhysicalName(3, pg, name)
 
 
-def _apply_one_slab(slab: Slab, tol: float) -> list[int]:
-    """Build geo replicas for each polygon piece of ``slab``; return their tags."""
+def _build_one_slab_conformal(slab: Slab, tol: float) -> int | None:
+    """Build a discrete 3D entity for ``slab`` with conformal bottom/top.
+
+    Returns the discrete-volume tag, or ``None`` when neither the bottom
+    nor the top OCC face was found (caller should use the geo-fallback).
+    """
+    import logging
+
+    import numpy as np
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+
+    occ_faces = gmsh.model.occ.getEntities(2)
+    bottom_face = _find_occ_face_for_slab(occ_faces, slab, slab.zlo, tol)
+    top_face = _find_occ_face_for_slab(occ_faces, slab, slab.zhi, tol)
+
+    if bottom_face is None or top_face is None:
+        return None
+
+    # Read bottom face's 2D mesh (interior + boundary nodes).
+    node_tags, coord, _ = gmsh.model.mesh.getNodes(2, bottom_face, includeBoundary=True)
+    if len(node_tags) == 0:
+        logger.warning(
+            "Bottom OCC face %d for slab %s at z=%g has no 2D mesh nodes; "
+            "skipping conformal build for this slab.",
+            bottom_face,
+            slab.physical_name,
+            slab.zlo,
+        )
+        return None
+    coord = np.asarray(coord, dtype=float).reshape(-1, 3)
+    node_tags = np.asarray(node_tags, dtype=np.uint64)
+
+    # Identify which bottom-face nodes lie on the bounding curves (1D
+    # entities). For those, layer n must reuse the corresponding top-face
+    # boundary curve's existing node tags rather than creating new ones,
+    # otherwise we duplicate the 1D-curve nodes that the surrounding OCC
+    # face also owns.
+    # Boundary-only nodes: exclude (dim=2) interior nodes.
+    bottom_iface_nodes, _, _ = gmsh.model.mesh.getNodes(
+        2, bottom_face, includeBoundary=False
+    )
+    interior_set = {int(t) for t in bottom_iface_nodes}
+    is_boundary = np.array(
+        [int(t) not in interior_set for t in node_tags.tolist()], dtype=bool
+    )
+
+    # Build a mapping from bottom-boundary xy -> top-face boundary node tag,
+    # by collecting all nodes on top_face's boundary curves at z=zhi.
+    top_boundary_lookup: dict[tuple[float, float], int] = {}
+    # Get curves bounding top_face.
+    top_curves = gmsh.model.getBoundary(
+        [(2, top_face)], oriented=False, recursive=False
+    )
+    # Collect 1D nodes on each bounding curve of top_face. includeBoundary=True
+    # also picks up the 0D vertex nodes shared between adjacent curves.
+    snap = max(tol, 1e-9)
+    for cdim, ctag in top_curves:
+        if cdim != 1:
+            continue
+        try:
+            tnt, tcd, _ = gmsh.model.mesh.getNodes(1, ctag, includeBoundary=True)
+        except Exception as exc:
+            logger.debug("Skipping top-face curve %d (no 1D mesh nodes): %s", ctag, exc)
+            continue
+        tcd = np.asarray(tcd, dtype=float).reshape(-1, 3)
+        for i, tag in enumerate(tnt):
+            x, y = tcd[i, 0], tcd[i, 1]
+            key = (round(x / snap), round(y / snap))
+            top_boundary_lookup[key] = int(tag)
+
+    elem_types, _, elem_node_tags = gmsh.model.mesh.getElements(2, bottom_face)
+    tri_nodes_flat: np.ndarray | None = None
+    for et, en in zip(elem_types, elem_node_tags):
+        if int(et) == 2:  # triangle
+            tri_nodes_flat = np.asarray(en, dtype=np.uint64)
+            break
+    if tri_nodes_flat is None or tri_nodes_flat.size == 0:
+        logger.warning(
+            "Bottom OCC face %d for slab %s at z=%g has no triangles; "
+            "skipping conformal build for this slab.",
+            bottom_face,
+            slab.physical_name,
+            slab.zlo,
+        )
+        return None
+    triangles = tri_nodes_flat.reshape(-1, 3)
+
+    # tag -> index in coord array
+    tag_to_idx = {int(t): i for i, t in enumerate(node_tags.tolist())}
+    n_nodes = len(node_tags)
+    n_layers = slab.n_layers
+
+    # Build per-layer node tags: layers[i] is a numpy array of length
+    # n_nodes giving the gmsh node tag for column j at layer i.
+    # Layer 0 reuses bottom's existing tags.
+    layers: list[np.ndarray] = [node_tags.copy()]
+
+    next_node_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+    new_layer_tags: list[np.ndarray] = []  # tags for layers 1..n_layers
+    new_layer_coords: list[np.ndarray] = []  # coords for layers 1..n_layers
+    height = slab.zhi - slab.zlo
+    for i in range(1, n_layers + 1):
+        # Linear interpolation from zlo to zhi.
+        z_i = slab.zlo + height * (i / n_layers)
+        coords_i = coord.copy()
+        coords_i[:, 2] = z_i
+        is_top_layer = i == n_layers
+        tags_i = np.empty(n_nodes, dtype=np.uint64)
+        for j in range(n_nodes):
+            if is_top_layer and is_boundary[j]:
+                # Reuse the existing top-face 1D-curve node at this xy.
+                key = (
+                    round(coord[j, 0] / snap),
+                    round(coord[j, 1] / snap),
+                )
+                tag = top_boundary_lookup.get(key)
+                if tag is None:
+                    # No matching top boundary node; allocate a new tag
+                    # (this happens when bottom and top boundaries don't
+                    # align, e.g. tapered/snap-perturbed geometries).
+                    tag = next_node_tag
+                    next_node_tag += 1
+                tags_i[j] = tag
+            else:
+                tags_i[j] = next_node_tag
+                next_node_tag += 1
+        layers.append(tags_i)
+        new_layer_tags.append(tags_i)
+        new_layer_coords.append(coords_i)
+
+    # Create the discrete volume. We deliberately do NOT pass a boundary
+    # list -- declaring [bottom_face, top_face] as the boundary makes
+    # gmsh's 3D mesher think the discrete volume is bounded by ONLY
+    # those faces (so it tries to "fill" the volume between them with
+    # tets generated from the neighbor side, which conflicts with our
+    # wedges and triggers a PLC error). Leaving the discrete entity
+    # topologically free lets us deposit a closed wedge mesh into it
+    # without gmsh attempting to remesh it later (we also set
+    # Mesh.MeshOnlyEmpty=1 on the way out).
+    vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
+
+    # Add interior layer nodes (layers 1..n_layers-1) to the discrete
+    # volume. We must skip nodes whose tag already exists (e.g. matched
+    # top-boundary tags reused by layer n -- but layer n is added to
+    # top_face below, not here, so for layers 1..n-1 every tag is fresh).
+    if n_layers >= 2:
+        interior_tags = np.concatenate(new_layer_tags[:-1])
+        interior_coords = np.concatenate(new_layer_coords[:-1])
+        gmsh.model.mesh.addNodes(
+            3,
+            vol_tag,
+            interior_tags.tolist(),
+            interior_coords.reshape(-1).tolist(),
+        )
+
+    # Override top face: clear its 2D mesh (NOT its 1D bounding curves --
+    # those are shared with surrounding OCC faces) and add only the new
+    # interior nodes plus triangles with the bottom's connectivity. The
+    # boundary nodes already live on the 1D curves and are reused via
+    # top_boundary_lookup above.
+    top_layer_tags = new_layer_tags[-1]
+    top_layer_coords = new_layer_coords[-1]
+
+    try:
+        gmsh.model.mesh.clear([(2, top_face)])
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "mesh.clear failed for top face %d (slab %s): %s",
+            top_face,
+            slab.physical_name,
+            exc,
+        )
+
+    interior_mask = ~is_boundary
+    if interior_mask.any():
+        gmsh.model.mesh.addNodes(
+            2,
+            top_face,
+            top_layer_tags[interior_mask].tolist(),
+            top_layer_coords[interior_mask].reshape(-1).tolist(),
+        )
+
+    # Build top-face triangles by remapping each bottom-triangle node tag
+    # via tag_to_idx -> top_layer_tags[idx].
+    top_tri_nodes = np.empty_like(triangles, dtype=np.uint64)
+    for r in range(triangles.shape[0]):
+        for c in range(3):
+            top_tri_nodes[r, c] = top_layer_tags[tag_to_idx[int(triangles[r, c])]]
+
+    next_elem_tag = int(gmsh.model.mesh.getMaxElementTag()) + 1
+    n_tri = triangles.shape[0]
+    top_tri_tags = np.arange(next_elem_tag, next_elem_tag + n_tri, dtype=np.uint64)
+    next_elem_tag += n_tri
+    gmsh.model.mesh.addElements(
+        2,
+        top_face,
+        [2],  # triangle type
+        [top_tri_tags.tolist()],
+        [top_tri_nodes.reshape(-1).tolist()],
+    )
+
+    # Build wedges: for each bottom triangle (a, b, c) and each layer
+    # i in 0..n_layers-1, wedge nodes are
+    # [layers[i][a_idx], layers[i][b_idx], layers[i][c_idx],
+    #  layers[i+1][a_idx], layers[i+1][b_idx], layers[i+1][c_idx]].
+    # We build idx triplets once and index into each layer's tag array.
+    tri_indices = np.empty_like(triangles, dtype=np.int64)
+    for r in range(triangles.shape[0]):
+        for c in range(3):
+            tri_indices[r, c] = tag_to_idx[int(triangles[r, c])]
+
+    wedge_node_lists: list[np.ndarray] = []
+    for i in range(n_layers):
+        lo_tags = layers[i][tri_indices]  # shape (n_tri, 3)
+        hi_tags = layers[i + 1][tri_indices]
+        # interleave: 6 nodes per wedge in [lo3 | hi3] order
+        block = np.concatenate([lo_tags, hi_tags], axis=1)  # shape (n_tri, 6)
+        wedge_node_lists.append(block.reshape(-1))
+    wedge_nodes_flat = np.concatenate(wedge_node_lists)
+    n_wedges = n_tri * n_layers
+    wedge_tags = np.arange(next_elem_tag, next_elem_tag + n_wedges, dtype=np.uint64)
+
+    gmsh.model.mesh.addElements(
+        3,
+        vol_tag,
+        [6],  # wedge type
+        [wedge_tags.tolist()],
+        [wedge_nodes_flat.tolist()],
+    )
+
+    return vol_tag
+
+
+def _build_one_slab_geo_fallback(slab: Slab, tol: float) -> tuple[list[int], bool]:
+    """Build geo-kernel replicas (the v1 path) for slabs with no OCC neighbors.
+
+    Returns (volume_tags, used_flag) where used_flag is True if any geo
+    work was actually done (caller uses it to decide whether to call
+    ``geo.synchronize`` afterwards).
+    """
     import gmsh
 
     polys = (
@@ -517,24 +780,22 @@ def _apply_one_slab(slab: Slab, tol: float) -> list[int]:
             heights=[1.0],
             recombine=slab.recombine,
         )
-        # extruded layout per gmsh docs: [(2, top_surface), (3, volume), (2, lateral_0), (2, lateral_1), ...]
-        top_dt = next(dt for dt in extruded if dt[0] == 2)
+        # extruded layout: [(2, top), (3, vol), (2, side_0), (2, side_1), ...]
         volume_dt = next(dt for dt in extruded if dt[0] == 3)
-        side_dts = [dt for dt in extruded if dt[0] == 2 and dt != top_dt]
+        volume_tags.append(volume_dt[1])
 
         gmsh.model.geo.synchronize()
 
+        # If any OCC neighbors do exist (e.g. only one of bottom/top is
+        # missing), still try to embed the geo face into them so the
+        # available shared face is at least mated kernel-to-kernel.
         _embed_geo_into_occ_neighbors(
             geo_bottom=bottom_surface,
-            geo_top=top_dt[1],
-            geo_sides=[dt[1] for dt in side_dts],
+            geo_top=next(dt for dt in extruded if dt[0] == 2)[1],
             slab=slab,
             tol=tol,
         )
-
-        volume_tags.append(volume_dt[1])
-
-    return volume_tags
+    return volume_tags, True
 
 
 def _geo_curve_loop(coords, z: float) -> int:
@@ -550,15 +811,13 @@ def _geo_curve_loop(coords, z: float) -> int:
 def _embed_geo_into_occ_neighbors(
     geo_bottom: int,
     geo_top: int,
-    geo_sides: list[int],  # noqa: ARG001 - lateral embedding deferred
     slab: Slab,
     tol: float,
 ) -> None:
-    """Embed bottom/top geo faces into any coincident OCC neighbor faces.
+    """Best-effort embed for geo-fallback path when one OCC face exists.
 
-    Lateral side embedding is intricate (geo sides are rectangles, OCC
-    lateral faces may be polygons). Defer to v2; v1 focuses on bottom/top
-    mating, which covers the t3-style stack-of-films use case.
+    Lateral side embedding is intricate and out of scope; we only mate
+    the bottom/top faces.
     """
     import logging
 
@@ -576,10 +835,6 @@ def _embed_geo_into_occ_neighbors(
         try:
             gmsh.model.mesh.embed(2, [geo_face_tag], 2, match)
         except Exception as exc:
-            # Embed can fail if the geo face is not strictly contained in
-            # the OCC face. Non-fatal in v1 -- gmsh will mesh the void
-            # independently and the resulting mesh may be non-conformal
-            # at the shared face. Warn so users can spot the problem.
             logger.warning(
                 "Failed to embed structured-slab geo face %d into OCC face %d "
                 "for slab %s at z=%g: %s. Mesh may be non-conformal at this "
@@ -590,6 +845,60 @@ def _embed_geo_into_occ_neighbors(
                 expected_z,
                 exc,
             )
+
+
+def _find_occ_face_for_slab(
+    candidates, slab: Slab, target_z: float, tol: float
+) -> int | None:
+    """Return tag of an OCC face bounding the slab at ``target_z``.
+
+    The matched face must lie at z = ``target_z`` (within ``tol``) AND its
+    xy bounding box must sit substantially inside the slab footprint.
+    Stricter than :func:`_find_occ_face_at_z`: verifies the face actually
+    bounds *this* slab's void rather than some unrelated z-coplanar OCC
+    face elsewhere in the scene.
+    """
+    from shapely.geometry import box
+
+    import gmsh
+
+    fp = slab.footprint
+    fp_area = fp.area
+    if fp_area <= 0:
+        return None
+    best_tag: int | None = None
+    best_score = -float("inf")
+    # Require >= 50% of the face's bbox area to lie inside the slab footprint.
+    # Stricter than "any overlap" -- prevents picking a neighbor's coplanar
+    # face whose edge merely touches the slab footprint along one boundary.
+    for dim, tag in candidates:
+        if dim != 2:
+            continue
+        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, tag)
+        if abs(zmin - zmax) > tol:
+            continue
+        z_face = 0.5 * (zmin + zmax)
+        if abs(z_face - target_z) > tol:
+            continue
+        face_box = box(xmin, ymin, xmax, ymax)
+        face_box_area = face_box.area
+        if face_box_area <= 0:
+            continue
+        inter = fp.intersection(face_box)
+        if inter.is_empty:
+            continue
+        # Require the face bbox to be substantially inside the slab footprint.
+        # A neighbor face that merely shares an edge yields inter.area ~ 0
+        # relative to its own bbox area, so the ratio filters it out.
+        coverage = inter.area / face_box_area
+        if coverage < 0.5:
+            continue
+        # Prefer the face whose footprint best fills the slab footprint.
+        score = inter.area / fp_area
+        if score > best_score:
+            best_score = score
+            best_tag = tag
+    return best_tag
 
 
 def _find_occ_face_at_z(candidates, target_z: float, tol: float) -> int | None:

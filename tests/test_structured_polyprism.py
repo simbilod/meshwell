@@ -989,3 +989,70 @@ def test_recombine_true_produces_wedge_or_hex_elements(tmp_path, square_poly):
     m = meshio.read(out_msh)
     cell_types = {b.type for b in m.cells}
     assert cell_types & {"wedge", "hexahedron"}, cell_types
+
+
+def test_structured_unstructured_interface_conformal(tmp_path, square_poly):
+    """Bottom and top of a structured slab share nodes with OCC neighbors.
+
+    The conformal v2 path builds the structured slab as a discrete-entity
+    layered mesh whose layer-0 nodes ARE the bottom OCC face's existing
+    node tags, and whose layer-n triangulation OVERRIDES the top OCC
+    face's mesh. Both interfaces should therefore have zero duplicate
+    (coincident-but-distinct) nodes after gmsh writes the mesh out.
+    """
+    from collections import Counter
+
+    import meshio
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_gmsh import cad_gmsh
+    from meshwell.mesh import mesh as mesh_fn
+    from meshwell.polyprism import PolyPrism
+
+    sub = PolyPrism(
+        polygons=Polygon([(-1, -1), (2, -1), (2, 2), (-1, 2)]),
+        buffers={0.0: 0.0, 0.5: 0.0},
+        physical_name="sub",
+        mesh_order=10,
+    )
+    structured = PolyPrism(
+        polygons=square_poly,
+        buffers={0.5: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+        mesh_order=2,
+    )
+    cap = PolyPrism(
+        polygons=Polygon([(-1, -1), (2, -1), (2, 2), (-1, 2)]),
+        buffers={1.0: 0.0, 1.3: 0.0},
+        physical_name="cap",
+        mesh_order=10,
+    )
+    _, mm = cad_gmsh([sub, structured, cap], filename="t_conformal")
+    out = tmp_path / "conformal.msh"
+    try:
+        mesh_fn(dim=3, default_characteristic_length=0.4, output_file=out, model=mm)
+    except Exception:
+        mm.finalize()
+        raise
+
+    m = meshio.read(out)
+    pts = np.asarray(m.points)
+    rounded = np.round(pts, 8)
+    counts = Counter(map(tuple, rounded))
+
+    # Count duplicate nodes ONLY at the structured/unstructured interface
+    # planes. z=0.5 (sub <-> structured) and z=1.0 (structured <-> cap).
+    dupes_at_iface = 0
+    for c, n in counts.items():
+        if n > 1 and abs(c[2] - 0.5) < 1e-6:
+            dupes_at_iface += n - 1
+        if n > 1 and abs(c[2] - 1.0) < 1e-6:
+            dupes_at_iface += n - 1
+    # In the v1 (geo-extrude) impl, this would be ~50-200 duplicates.
+    # In v2 (conformal), it should be 0.
+    assert dupes_at_iface == 0, (
+        f"Expected 0 duplicate nodes at structured/unstructured interfaces "
+        f"(z=0.5, z=1.0); got {dupes_at_iface}."
+    )
