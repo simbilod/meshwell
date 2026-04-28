@@ -709,3 +709,239 @@ def test_embed_with_create_topology(tmp_path):
     gmsh.model.mesh.generate(3)
     nodes_top = gmsh.model.mesh.getNodes(2, top_face, includeBoundary=True)
     assert len(nodes_top[0]) > 0
+
+
+def test_occ_face_parametric_seed_from_discrete(tmp_path):
+    """Seed an OCC face's mesh from imported discrete data using the
+    parametric (u,v) / t overloads of addNodes, and Mesh.MeshOnlyEmpty=1
+    to prevent gmsh from re-meshing.
+    """
+    import numpy as np
+
+    # --- Step 1: build seam mesh and capture data ---
+    gmsh.model.add("seam_capture")
+    pts = [
+        gmsh.model.geo.addPoint(0, 0, 1, 0.2),
+        gmsh.model.geo.addPoint(1, 0, 1, 0.2),
+        gmsh.model.geo.addPoint(1, 1, 1, 0.2),
+        gmsh.model.geo.addPoint(0, 1, 1, 0.2),
+    ]
+    lines = [gmsh.model.geo.addLine(pts[i], pts[(i + 1) % 4]) for i in range(4)]
+    loop = gmsh.model.geo.addCurveLoop(lines)
+    surf = gmsh.model.geo.addPlaneSurface([loop])
+    gmsh.model.geo.synchronize()
+    gmsh.model.mesh.generate(2)
+
+    seam_node_tags, seam_node_coords, _ = gmsh.model.mesh.getNodes(
+        2, surf, includeBoundary=True
+    )
+    seam_xyz = np.array(seam_node_coords).reshape(-1, 3)
+    seam_node_tag_to_xyz = {
+        int(t): tuple(seam_xyz[i]) for i, t in enumerate(seam_node_tags)
+    }
+    seam_elem_types, _seam_elem_tags, seam_elem_node_tags = gmsh.model.mesh.getElements(
+        2, surf
+    )
+    assert 2 in seam_elem_types, "seam should have triangles"
+    tri_idx = list(seam_elem_types).index(2)
+    seam_triangles = np.array(seam_elem_node_tags[tri_idx], dtype=int).reshape(-1, 3)
+    expected_n_tris = seam_triangles.shape[0]
+
+    edge_predicates = {
+        0: lambda _x, y: abs(y - 0.0) < 1e-9,
+        1: lambda x, _y: abs(x - 1.0) < 1e-9,
+        2: lambda _x, y: abs(y - 1.0) < 1e-9,
+        3: lambda x, _y: abs(x - 0.0) < 1e-9,
+    }
+    seam_boundary_per_edge = {}
+    for edge_idx, pred in edge_predicates.items():
+        nodes_on_edge = []
+        for tag, (x, y, z) in seam_node_tag_to_xyz.items():
+            if pred(x, y):
+                nodes_on_edge.append((tag, (x, y, z)))
+        seam_boundary_per_edge[edge_idx] = nodes_on_edge
+
+    gmsh.model.remove()
+
+    # --- Step 2: build OCC box ---
+    gmsh.model.add("box_seed")
+    gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+    gmsh.model.occ.synchronize()
+
+    # --- Step 3: locate OCC top face, edges, corner points ---
+    top_face = None
+    for dim, tag in gmsh.model.getEntities(2):
+        bb = gmsh.model.getBoundingBox(dim, tag)
+        if abs(bb[2] - 1.0) < 1e-6 and abs(bb[5] - 1.0) < 1e-6:
+            top_face = tag
+            break
+    assert top_face is not None, "OCC top face not found"
+
+    top_edges_dimtags = gmsh.model.getBoundary(
+        [(2, top_face)], oriented=False, recursive=False
+    )
+    top_edges = [t for d, t in top_edges_dimtags if d == 1]
+    assert len(top_edges) == 4, f"expected 4 boundary edges, got {len(top_edges)}"
+
+    top_pts_dimtags = gmsh.model.getBoundary(
+        [(2, top_face)], oriented=False, recursive=True
+    )
+    top_pts = sorted({t for d, t in top_pts_dimtags if d == 0})
+    assert len(top_pts) == 4, f"expected 4 corner points, got {len(top_pts)}"
+
+    def classify_edge(edge_tag):
+        bb = gmsh.model.getBoundingBox(1, edge_tag)
+        if abs(bb[1] - 0.0) < 1e-6 and abs(bb[4] - 0.0) < 1e-6:
+            return 0
+        if abs(bb[0] - 1.0) < 1e-6 and abs(bb[3] - 1.0) < 1e-6:
+            return 1
+        if abs(bb[1] - 1.0) < 1e-6 and abs(bb[4] - 1.0) < 1e-6:
+            return 2
+        if abs(bb[0] - 0.0) < 1e-6 and abs(bb[3] - 0.0) < 1e-6:
+            return 3
+        return -1
+
+    # --- Step 4: inject corner nodes ---
+    next_node_tag = max(seam_node_tag_to_xyz) + 1000
+    seam_to_occ_node_tag = {}
+    occ_corner_node_tag = {}
+    for pt_tag in top_pts:
+        bb = gmsh.model.getBoundingBox(0, pt_tag)
+        x_pt, y_pt, z_pt = bb[0], bb[1], bb[2]
+        match = None
+        for stag, (sx, sy, sz) in seam_node_tag_to_xyz.items():
+            if (
+                abs(sx - x_pt) < 1e-6
+                and abs(sy - y_pt) < 1e-6
+                and abs(sz - z_pt) < 1e-6
+            ):
+                n_edges = sum(
+                    1
+                    for ei, ns in seam_boundary_per_edge.items()
+                    if any(t == stag for t, _ in ns)
+                )
+                if n_edges >= 2:
+                    match = stag
+                    break
+        assert (
+            match is not None
+        ), f"no seam corner for OCC point {pt_tag} at ({x_pt},{y_pt},{z_pt})"
+        new_tag = next_node_tag
+        next_node_tag += 1
+        seam_to_occ_node_tag[match] = new_tag
+        occ_corner_node_tag[pt_tag] = new_tag
+        gmsh.model.mesh.addNodes(0, pt_tag, [new_tag], [x_pt, y_pt, z_pt])
+
+    # --- Step 5: inject seam-boundary nodes onto OCC edges ---
+    for edge_tag in top_edges:
+        side = classify_edge(edge_tag)
+        seam_nodes_here = seam_boundary_per_edge[side]
+        interior = [
+            (stag, xyz)
+            for stag, xyz in seam_nodes_here
+            if stag not in seam_to_occ_node_tag
+        ]
+        edge_endpoints = gmsh.model.getBoundary(
+            [(1, edge_tag)], oriented=False, recursive=False
+        )
+        endpoint_pt_tags = [t for d, t in edge_endpoints if d == 0]
+        endpoint_node_tags = [occ_corner_node_tag[p] for p in endpoint_pt_tags]
+        endpoint_xyz = []
+        for p in endpoint_pt_tags:
+            bb = gmsh.model.getBoundingBox(0, p)
+            endpoint_xyz.extend([bb[0], bb[1], bb[2]])
+        endpoint_t = gmsh.model.getParametrization(1, edge_tag, endpoint_xyz)
+        if endpoint_t[0] < endpoint_t[1]:
+            start_node, end_node = endpoint_node_tags
+        else:
+            end_node, start_node = endpoint_node_tags
+
+        new_node_tags = []
+        if interior:
+            flat_xyz = [c for _, xyz in interior for c in xyz]
+            params = gmsh.model.getParametrization(1, edge_tag, flat_xyz)
+            order = sorted(range(len(interior)), key=lambda i: params[i])
+            ordered_seam_tags = [interior[i][0] for i in order]
+            ordered_xyz = [interior[i][1] for i in order]
+            ordered_t = [params[i] for i in order]
+            flat_coords = []
+            for stag, xyz in zip(ordered_seam_tags, ordered_xyz):
+                new_tag = next_node_tag
+                next_node_tag += 1
+                seam_to_occ_node_tag[stag] = new_tag
+                new_node_tags.append(new_tag)
+                flat_coords.extend(xyz)
+            gmsh.model.mesh.addNodes(1, edge_tag, new_node_tags, flat_coords, ordered_t)
+
+        chain = [start_node, *new_node_tags, end_node]
+        line_node_tags = []
+        for i in range(len(chain) - 1):
+            line_node_tags.extend([chain[i], chain[i + 1]])
+        n_segments = len(chain) - 1
+        line_elem_tags = list(range(next_node_tag, next_node_tag + n_segments))
+        next_node_tag += n_segments
+        gmsh.model.mesh.addElementsByType(edge_tag, 1, line_elem_tags, line_node_tags)
+
+    # --- Step 6: inject ALL remaining seam nodes onto OCC top face ---
+    interior_seam = [
+        (stag, xyz)
+        for stag, xyz in seam_node_tag_to_xyz.items()
+        if stag not in seam_to_occ_node_tag
+    ]
+    if interior_seam:
+        flat_xyz = [c for _, xyz in interior_seam for c in xyz]
+        params_uv = gmsh.model.getParametrization(2, top_face, flat_xyz)
+        new_tags = []
+        flat_coords = []
+        for stag, xyz in interior_seam:
+            new_tag = next_node_tag
+            next_node_tag += 1
+            seam_to_occ_node_tag[stag] = new_tag
+            new_tags.append(new_tag)
+            flat_coords.extend(xyz)
+        gmsh.model.mesh.addNodes(2, top_face, new_tags, flat_coords, params_uv)
+
+    occ_triangle_node_tags = []
+    for tri in seam_triangles:
+        for stag in tri:
+            occ_tag = seam_to_occ_node_tag.get(int(stag))
+            assert occ_tag is not None, f"missing occ tag for seam node {stag}"
+            occ_triangle_node_tags.append(occ_tag)
+    n_tris = len(seam_triangles)
+    tri_elem_tags = list(range(next_node_tag, next_node_tag + n_tris))
+    next_node_tag += n_tris
+    gmsh.model.mesh.addElementsByType(
+        top_face, 2, tri_elem_tags, occ_triangle_node_tags
+    )
+
+    # --- Diagnostic: count BEFORE generate ---
+    _, etags2_pre, _ = gmsh.model.mesh.getElements(2, top_face)
+    pre_tris = sum(len(t) for t in etags2_pre)
+    print(
+        f"BEFORE generate(3): top face has {pre_tris} tris (expected {expected_n_tris})"
+    )
+
+    # --- Step 7: configure gmsh to NOT re-mesh seeded entities ---
+    # CRITICAL FINDING: do NOT call generate(1) or generate(2) before generate(3),
+    # since each generate(N) wipes elements at all dims <= N before re-meshing.
+    # Calling generate(3) directly with MeshOnlyEmpty=1 preserves seeded elements.
+    gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
+
+    # --- Step 8: 3D mesh ---
+    gmsh.model.mesh.generate(3)
+
+    # --- Step 9: verify ---
+    _, etags2, _ = gmsh.model.mesh.getElements(2, top_face)
+    actual_tris = sum(len(t) for t in etags2)
+    print(
+        f"AFTER  generate(3): top face has {actual_tris} tris (expected {expected_n_tris})"
+    )
+
+    _, etags3, _ = gmsh.model.mesh.getElements(3)
+    n_tets = sum(len(t) for t in etags3)
+    print(f"Volume: {n_tets} tets")
+
+    assert (
+        actual_tris == expected_n_tris
+    ), f"OCC top face was re-meshed: got {actual_tris} tris, expected {expected_n_tris}"
+    assert n_tets > 0, "no tetrahedra generated in the volume"
