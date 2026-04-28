@@ -42,8 +42,8 @@ dev = [
 [tool.setuptools.packages]
 find = {}
 
-# [project.scripts]
-# meshwell = "meshwell.cli:cli"
+[project.scripts]
+meshwell = "meshwell.distributed:cli_main"
 
 [tool.black]
 exclude = '''  # Specify the files/dirs that should be ignored by the black formatter

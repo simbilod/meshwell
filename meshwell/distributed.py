@@ -629,8 +629,21 @@ def run_job(job_dir: Path) -> None:
 
 
 def cli_main() -> None:
-    """`meshwell run-job <dir>` CLI entrypoint."""
-    raise NotImplementedError("Task 17")
+    """``meshwell`` CLI entrypoint.
+
+    Subcommands:
+        run-job <job_dir>: invoke :func:`run_job` on a single bundle.
+    """
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(prog="meshwell")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    rj = sub.add_parser("run-job", help="Execute a single distributed job bundle")
+    rj.add_argument("job_dir", type=Path)
+    args = parser.parse_args(sys.argv[1:])
+    if args.cmd == "run-job":
+        run_job(args.job_dir)
 
 
 def generate_mesh_distributed(
