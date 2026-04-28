@@ -869,3 +869,55 @@ def test_generate_mesh_distributed_smoke(tmp_path):
     )
     m = meshio.read(out)
     assert "mat" in (m.field_data or {})
+
+
+def test_distributed_matches_serial_single_material_2x1(tmp_path):
+    """Spec test 1: single-material PolyPrism spanning two subdomains.
+
+    Distributed output's physical-group inventory must match the serial run.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+        subdomains_from_grid,
+    )
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    def make_prism():
+        return PolyPrism(
+            polygons=shapely.box(0, 0, 2, 1),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="mat",
+            mesh_order=1,
+        )
+
+    serial_out = tmp_path / "serial.msh"
+    generate_mesh(
+        entities=[make_prism()],
+        dim=3,
+        output_mesh=serial_out,
+        default_characteristic_length=0.3,
+    )
+    s = meshio.read(serial_out)
+
+    dist_out = tmp_path / "dist.msh"
+    generate_mesh_distributed(
+        entities=[make_prism()],
+        subdomains=subdomains_from_grid((0, 0, 2, 1), nx=2, ny=1),
+        output_mesh=dist_out,
+        work_dir=tmp_path / "work",
+        interface_width=0.1,
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.3,
+    )
+    d = meshio.read(dist_out)
+
+    serial_names = set(s.field_data or {})
+    dist_names = set(d.field_data or {}) - {
+        n for n in (d.field_data or {}) if n.startswith("_seam___")
+    }
+    assert serial_names == dist_names
