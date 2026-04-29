@@ -1057,6 +1057,59 @@ def test_name_to_tag_is_deterministic():
     assert 1 <= tag < 2**31
 
 
+def test_distributed_multi_material_stack_drops_all_seam_groups(tmp_path):
+    """Two tiles, each with the same 4-material vertical stack, share a seam.
+
+    All 4 materials appear on both sides of the cut, so every seam-tagged
+    face pairs with a same-material twin from the other tile. The
+    consolidation pass must drop ALL seam groups and emit no multi-way
+    concatenated names like ``cladding___ridge___slab___substrate``.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    full = shapely.box(0, 0, 2, 1)
+    materials = []
+    for name, z_lo, z_hi, mo in [
+        ("substrate", 0.0, 0.3, 4),
+        ("slab", 0.3, 0.45, 3),
+        ("ridge", 0.45, 0.7, 1),
+        ("cladding", 0.7, 1.0, 2),
+    ]:
+        materials.append(
+            PolyPrism(
+                polygons=full,
+                buffers={z_lo: 0.0, z_hi: 0.0},
+                physical_name=name,
+                mesh_order=mo,
+            )
+        )
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=materials,
+        subdomains=[shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)],
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.3,
+    )
+    m = meshio.read(out)
+    names = set((m.field_data or {}))
+    # All 4 materials present.
+    for mat in ("substrate", "slab", "ridge", "cladding"):
+        assert mat in names, f"missing material {mat!r}; got {names}"
+    # No seam groups remain.
+    assert not any("___seam_" in n for n in names), names
+    # No multi-way concatenations like "cladding___ridge___slab___substrate".
+    assert not any(n.count("___") >= 3 for n in names), names
+
+
 def test_generate_mesh_hashed_physical_tags(tmp_path):
     """Hashed physical-group tags are stable across independent meshwell runs.
 

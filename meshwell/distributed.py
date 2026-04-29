@@ -617,59 +617,145 @@ def run_plan(work_dir: Path, plan: SubdomainPlan, executor: Executor) -> None:
 def _consolidate_seam_groups() -> None:
     """Fold per-tile ``___seam_i_j`` groups into v1 ``A___B`` (or drop).
 
-    Walks merged-model 2D physical groups; renames groups whose name
-    matches ``<material>___seam_<i>_<j>`` based on which materials
-    contributed faces to seam ``(i, j)``:
+    Pairs coincident triangle elements (same node-tag set after
+    ``removeDuplicateNodes`` welded coincident nodes) across the two
+    tiles' ``<material>___seam_<i>_<j>`` physical groups. For each
+    paired triangle:
 
-      * single material on both sides: drop the groups (invisible
-        interior face — same material, no need to tag the cut)
-      * multiple materials: union all their entities into a single new
-        group named ``<A>___<B>`` (alphabetical) and drop the per-
-        material seam groups.
+      * same material on both sides: drop — invisible interior face.
+      * different materials A != B: collect into a new dim-2 discrete
+        entity tagged ``min(A,B)___max(A,B)``.
 
-    True outer ``<material>___None`` groups (which the worker leaves
-    untouched on tiles that have a non-seam outer wall) survive
-    unchanged.
+    Why operate at element granularity: ``gmsh.merge`` consolidates
+    entities by tag, so two geometrically-different per-tile faces
+    that happened to share a CAD tag end up unioned into ONE merged
+    entity. An entity-level pairing therefore can't tell which
+    triangles came from the actual seam vs. from the over-detected
+    outer wall (the upstream ``_retag_subdomain_seams`` bbox check
+    flags any wall whose bbox kisses the seam line, including
+    floor/ceiling/sidewall faces). At the triangle level, only the
+    actual coincident faces show up as duplicate-node-set pairs.
+
+    The resulting ``A___B`` interface is materialised as a discrete
+    surface entity carrying ONE copy of each duplicated triangle (the
+    other copy stays on its original entity, which keeps its
+    ``<material>___None`` tag where appropriate). All ``___seam_i_j``
+    physical groups are dropped after pairing, regardless of outcome.
     """
     import re
 
     import gmsh
 
     pat = re.compile(r"^(.+)___seam_(\d+)_(\d+)$")
-    by_seam: dict[tuple[int, int], list[tuple[int, str]]] = {}
+
+    # 1) Inventory ___seam_i_j physical groups and their entities.
+    seam_groups: list[tuple[int, str, tuple[int, int]]] = []  # (tag, mat, ij)
+    seam_entity_to_groups: dict[int, list[tuple[str, tuple[int, int]]]] = {}
     for _d, tag in gmsh.model.getPhysicalGroups(2):
         name = gmsh.model.getPhysicalName(2, tag)
         m = pat.match(name)
         if not m:
             continue
         material, i, j = m.group(1), int(m.group(2)), int(m.group(3))
-        by_seam.setdefault((i, j), []).append((tag, material))
+        seam_groups.append((tag, material, (i, j)))
+        for ent in gmsh.model.getEntitiesForPhysicalGroup(2, tag):
+            seam_entity_to_groups.setdefault(int(ent), []).append((material, (i, j)))
 
-    # Two seams between different (i,j) pairs can produce the same A___B
-    # name (e.g. multiple silicon-oxide seams across a 3x3 grid). Bucket
-    # all entities by final name first, then add each name once.
-    new_groups: dict[str, set[int]] = {}
-    for group_list in by_seam.values():
-        materials = sorted({mat for _, mat in group_list})
-        all_ents: list[int] = []
-        for tag, _ in group_list:
-            all_ents.extend(
-                int(e) for e in gmsh.model.getEntitiesForPhysicalGroup(2, tag)
-            )
-        for tag, _ in group_list:
-            gmsh.model.removePhysicalGroups([(2, tag)])
-        if len(materials) == 1:
-            # interior face — drop entirely
+    if not seam_groups:
+        return
+
+    # 2) Walk every triangle on every seam-tagged entity; key by node-set.
+    #    For each triangle, record (entity, elem_tag, node-tags-tuple) and
+    #    the material(s) the owning entity was tagged with at each seam.
+    TRI_TYPE = 2  # gmsh element type for 3-node triangles
+    tri_owners: dict[frozenset[int], list[tuple[int, int, tuple[int, int, int]]]] = {}
+    for ent in seam_entity_to_groups:
+        try:
+            types, tags, node_tags = gmsh.model.mesh.getElements(2, ent)
+        except Exception:  # noqa: S112
+            # Empty entities (no elements) raise; skip them.
             continue
-        new_name = "___".join(materials)
-        new_groups.setdefault(new_name, set()).update(all_ents)
+        for tp, tg_arr, nt_arr in zip(types, tags, node_tags):
+            if tp != TRI_TYPE:
+                continue
+            for k in range(len(tg_arr)):
+                a, b, c = (
+                    int(nt_arr[3 * k]),
+                    int(nt_arr[3 * k + 1]),
+                    int(nt_arr[3 * k + 2]),
+                )
+                key = frozenset((a, b, c))
+                tri_owners.setdefault(key, []).append((ent, int(tg_arr[k]), (a, b, c)))
 
-    for new_name, ents in new_groups.items():
+    # 3) For each pair of coincident triangles, infer the (material_a,
+    #    material_b) cross-tile relationship at the relevant seam.
+    #    Same material -> drop. Different -> collect for A___B group.
+    new_group_tris: dict[str, list[tuple[tuple[int, int, int], int]]] = {}
+    # value entries: (node-tags-tuple, source-entity)
+
+    for owners in tri_owners.values():
+        if len(owners) < 2:
+            continue
+        # Pick the first two distinct-entity owners. (For meshwell-
+        # generated tiles, exactly two coincident triangles is the norm.)
+        seen_ents: list[tuple[int, int, tuple[int, int, int]]] = []
+        for o in owners:
+            if not seen_ents or o[0] != seen_ents[-1][0]:
+                seen_ents.append(o)
+            if len(seen_ents) == 2:
+                break
+        if len(seen_ents) < 2:
+            continue
+        ent_a, _tag_a, nt_a = seen_ents[0]
+        ent_b, _tag_b, _nt_b = seen_ents[1]
+
+        # Find a (i, j) seam common to both entities; the matching
+        # materials at that seam are our pair.
+        groups_a = seam_entity_to_groups.get(ent_a, [])
+        groups_b = seam_entity_to_groups.get(ent_b, [])
+        common_seams = {ij for _, ij in groups_a} & {ij for _, ij in groups_b}
+        if not common_seams:
+            continue
+        for ij in common_seams:
+            mats_a = sorted({m for m, jj in groups_a if jj == ij})
+            mats_b = sorted({m for m, jj in groups_b if jj == ij})
+            # Pick representative materials for each side. If multiple,
+            # prefer one that's unique to that side (to avoid
+            # symmetric same-material noise from the upstream over-
+            # detector).
+            mat_a = next((m for m in mats_a if m not in mats_b), mats_a[0])
+            mat_b = next((m for m in mats_b if m not in mats_a), mats_b[0])
+            if mat_a == mat_b:
+                # invisible interior face — drop.
+                break
+            final_name = "___".join(sorted([mat_a, mat_b]))
+            new_group_tris.setdefault(final_name, []).append((nt_a, ent_a))
+            break
+
+    # 4) Drop all ___seam_i_j physical groups (entities themselves stay,
+    #    and so do their ___None tags where set by the worker).
+    import contextlib
+
+    for tag, _mat, _ij in seam_groups:
+        with contextlib.suppress(Exception):
+            gmsh.model.removePhysicalGroups([(2, tag)])
+
+    # 5) Emit each A___B as a fresh discrete dim-2 entity carrying the
+    #    paired triangles; assign it to a new physical group.
+    for final_name, tris in new_group_tris.items():
+        if not tris:
+            continue
+        disc = gmsh.model.addDiscreteEntity(2)
+        flat_nodes: list[int] = []
+        for nt, _src in tris:
+            flat_nodes.extend(nt)
+        # Empty elementTags → gmsh assigns fresh tags.
+        gmsh.model.mesh.addElementsByType(disc, TRI_TYPE, [], flat_nodes)
         gmsh.model.addPhysicalGroup(
             2,
-            sorted(ents),
-            tag=_name_to_tag(new_name, 2),
-            name=new_name,
+            [disc],
+            tag=_name_to_tag(final_name, 2),
+            name=final_name,
         )
 
 
