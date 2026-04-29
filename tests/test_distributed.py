@@ -667,9 +667,15 @@ def test_distributed_matches_serial_single_material_2x1(tmp_path):
 
 
 @pytest.mark.skip(
-    reason="awaiting Task 4: cross-material interface naming relied on the "
-    "v1 seam-mesh-then-seed pipeline removed in Task 3; v2 will reintroduce "
-    "via hashed-tag gmsh.merge"
+    reason="awaiting Task 6: with one material per subdomain, each worker "
+    "emits its own boundary group ('silicon___None' / 'oxide___None') for "
+    "the shared face at x=1. gmsh.merge welds the coincident nodes via "
+    "removeDuplicateNodes but does not synthesize a 'silicon___oxide' "
+    "interface group — the two boundary face elements stay tagged with "
+    "their per-tile boundary name. Cross-material interface naming requires "
+    "a post-merge pass that detects coincident face cells from differently-"
+    "named boundary groups and re-tags them under the meshwell A___B "
+    "convention; that pass is the scope of Task 6."
 )
 def test_distributed_two_materials_shared_interface(tmp_path):
     """Spec test 2: silicon and oxide abut at x=1.

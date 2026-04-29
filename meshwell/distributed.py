@@ -1,10 +1,11 @@
 """Distributed domain-decomposition pipeline for meshwell (v2, single-phase).
 
 Splits an input scene into per-subdomain CAD + mesh jobs (file-based bundles)
-and stitches the resulting .msh files into one final mesh. Workers emit
-``_hashed_physical_tags=True`` so all per-subdomain .msh files agree on the
-integer tag of each physical-group name (a prerequisite for the gmsh.merge
-based stitch in Task 5).
+and stitches the resulting .msh files into one final mesh via gmsh.merge.
+Workers emit ``_hashed_physical_tags=True`` so all per-subdomain .msh files
+agree on which integer tag represents each physical-group name; gmsh.merge
+then auto-unions entities with matching (dim, tag) under the shared name and
+``removeDuplicateNodes`` welds coincident nodes at shared faces.
 
 See docs/superpowers/specs/2026-04-28-distributed-domain-decomposition-design.md
 and the empirical merge spike at tests/test_merge_spike.py.
@@ -472,149 +473,37 @@ def stitch_meshes(
     plan: SubdomainPlan,
     output_mesh: Path,
 ) -> None:
-    """Concatenate all volume_*.msh files into one unified mesh.
+    """Stitch per-volume .msh files via ``gmsh.merge``.
 
-    Uses meshio so that physical-group names from each file's field_data
-    are preserved and consolidated by name. Tag IDs are remapped per-file
-    to avoid collisions; consolidated groups are re-numbered with fresh
-    monotonic tags.
-
-    The previous implementation used ``gmsh.merge`` + ``getPhysicalName``,
-    which collides physical-group tag IDs across per-volume .msh files —
-    only the first file's name survives for any given (dim, tag), losing
-    every subsequent material name. meshio gives us per-file ``field_data``
-    keyed by name, which we can consolidate cleanly.
-
-    Steps:
-      1. Read each volume_*.msh with meshio.
-      2. Track each file's (name -> (tag, dim)) mapping for re-tagging.
-      3. Concatenate points and cells across files, offsetting node tags
-         per-file to avoid collisions.
-      4. Build a unified field_data: {name: [new_tag, dim]} where each
-         unique (name, dim) combination gets one consolidated tag.
-      5. Build unified cell_data['gmsh:physical'] using the new tags.
-      6. Dedup duplicate nodes by coordinate within point_tolerance / 2.
-      7. Write to output_mesh as gmsh22 (gmsh4 writer drops field_data).
+    Each worker .msh was written with hashed physical-group tags
+    (``_hashed_physical_tags=True``), so e.g. 'silicon' has the same
+    integer tag in every per-volume file. ``gmsh.merge`` auto-unions
+    entities that share a (dim, tag) under the common name, and
+    ``removeDuplicateNodes`` welds coincident nodes at shared faces
+    (conformal-by-construction when adjacent tiles share characteristic
+    length, per the empirical spike at tests/test_merge_spike.py).
     """
-    import meshio
-    import numpy as np
+    import gmsh
 
     work_dir = Path(work_dir)
     output_mesh = Path(output_mesh)
 
-    files = []
-    for v in plan.volumes:
-        path = work_dir / "jobs" / v.id / "result.msh"
-        if not path.exists():
-            continue
-        m = meshio.read(path)
-        files.append((v.id, m))
-
-    if not files:
-        raise RuntimeError(f"No volume meshes found under {work_dir}/jobs/")
-
-    # Concatenate points; track per-file node-index offsets.
-    all_points = []
-    point_offsets = []
-    cur_offset = 0
-    for _vid, m in files:
-        all_points.append(m.points)
-        point_offsets.append(cur_offset)
-        cur_offset += m.points.shape[0]
-    points_concat = np.vstack(all_points) if all_points else np.zeros((0, 3))
-
-    # Build the unified field_data: each (name, dim) -> one new tag
-    # (per-dim monotonic).
-    name_dim_to_new_tag: dict[tuple[str, int], int] = {}
-    next_tag_per_dim: dict[int, int] = {}
-    for _vid, m in files:
-        for name, arr in (m.field_data or {}).items():
-            dim = int(arr[1])
-            key = (name, dim)
-            if key not in name_dim_to_new_tag:
-                next_tag_per_dim.setdefault(dim, 0)
-                next_tag_per_dim[dim] += 1
-                name_dim_to_new_tag[key] = next_tag_per_dim[dim]
-
-    field_data = {
-        name: np.array([new_tag, dim])
-        for (name, dim), new_tag in name_dim_to_new_tag.items()
-    }
-
-    # Concatenate cells; remap (dim, old_tag) -> new tag using each
-    # file's own field_data lookup table.
-    type_to_dim = {
-        "vertex": 0,
-        "line": 1,
-        "line3": 1,
-        "triangle": 2,
-        "triangle6": 2,
-        "quad": 2,
-        "quad9": 2,
-        "tetra": 3,
-        "tetra10": 3,
-        "hexahedron": 3,
-        "wedge": 3,
-        "pyramid": 3,
-    }
-
-    cell_blocks: list[meshio.CellBlock] = []
-    cell_data_phys: list[np.ndarray] = []
-
-    for file_idx, (_vid, m) in enumerate(files):
-        offset = point_offsets[file_idx]
-        per_file_oldtag_to_new: dict[tuple[int, int], int] = {}
-        for name, arr in (m.field_data or {}).items():
-            tag, dim = int(arr[0]), int(arr[1])
-            per_file_oldtag_to_new[(dim, tag)] = name_dim_to_new_tag[(name, dim)]
-
-        gmsh_phys = m.cell_data.get("gmsh:physical") if m.cell_data else None
-        for block_idx, block in enumerate(m.cells):
-            new_data = block.data + offset
-            cell_blocks.append(meshio.CellBlock(block.type, new_data))
-
-            dim = type_to_dim.get(block.type, -1)
-            old_phys = (
-                gmsh_phys[block_idx]
-                if gmsh_phys is not None and block_idx < len(gmsh_phys)
-                else None
-            )
-            if old_phys is None:
-                cell_data_phys.append(np.zeros(len(new_data), dtype=np.int32))
-            else:
-                remapped = np.array(
-                    [per_file_oldtag_to_new.get((dim, int(t)), 0) for t in old_phys],
-                    dtype=np.int32,
-                )
-                cell_data_phys.append(remapped)
-
-    # Dedup nodes by coordinate (within point_tolerance / 2). Bucketed:
-    # round coords to tolerance, group identical keys.
-    tol = max(plan.point_tolerance / 2.0, 1e-12)
-    quantized = np.round(points_concat / tol).astype(np.int64)
-    keys = [tuple(row) for row in quantized]
-    canonical: dict[tuple, int] = {}
-    remap = np.empty(points_concat.shape[0], dtype=np.int64)
-    new_points: list = []
-    for i, k in enumerate(keys):
-        if k not in canonical:
-            canonical[k] = len(new_points)
-            new_points.append(points_concat[i])
-        remap[i] = canonical[k]
-    points_dedup = np.array(new_points) if new_points else np.zeros((0, 3))
-
-    new_cell_blocks = [
-        meshio.CellBlock(block.type, remap[block.data]) for block in cell_blocks
-    ]
-
-    # gmsh22 because meshio's gmsh4 writer drops field_data.
-    out = meshio.Mesh(
-        points=points_dedup,
-        cells=new_cell_blocks,
-        cell_data={"gmsh:physical": cell_data_phys},
-        field_data=field_data,
-    )
-    meshio.write(output_mesh, out, file_format="gmsh22")
+    owns_gmsh = not gmsh.is_initialized()
+    if owns_gmsh:
+        gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("stitched")
+        for v in plan.volumes:
+            path = work_dir / "jobs" / v.id / "result.msh"
+            if path.exists():
+                gmsh.merge(str(path))
+        gmsh.option.setNumber("Geometry.Tolerance", plan.point_tolerance / 2)
+        gmsh.model.mesh.removeDuplicateNodes()
+        gmsh.write(str(output_mesh))
+    finally:
+        if owns_gmsh:
+            gmsh.finalize()
 
 
 def cli_main() -> None:
