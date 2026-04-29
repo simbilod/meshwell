@@ -21,8 +21,6 @@ def generate_mesh(
     backend: str | None = None,  # deprecated
     _pre_buffered: bool = False,
     _global_physical_names: list[str] | None = None,
-    _emit_only_seam_surfaces: bool = False,
-    _interface_constraints: list | None = None,
     _hashed_physical_tags: bool = False,
     **mesh_kwargs,
 ) -> Any:
@@ -45,14 +43,6 @@ def generate_mesh(
             Used by the distributed-meshing pipeline (a phase-2 worker meshes
             one subdomain and may carry ResolutionSpecs that reference other
             subdomains' names).
-        _emit_only_seam_surfaces: If True, the output mesh is post-filtered to
-            keep only physical groups whose name starts with ``_seam___``. Used
-            by phase-1 workers in the distributed pipeline; the rest of the
-            mesh is scratch.
-        _interface_constraints: Optional list of paths to seam ``.msh`` files.
-            Each file is used to seed a matching OCC face's mesh via the
-            parametric ``addNodes`` recipe (preserves the seam's triangulation
-            verbatim). Used by phase-2 workers in the distributed pipeline.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -121,8 +111,6 @@ def generate_mesh(
         model=mm,
         output_file=Path(output_mesh) if output_mesh else None,
         _global_physical_names=_global_physical_names,
-        _emit_only_seam_surfaces=_emit_only_seam_surfaces,
-        _interface_constraints=_interface_constraints,
         _hashed_physical_tags=_hashed_physical_tags,
         **mesh_kwargs,
     )

@@ -672,10 +672,8 @@ def run_job(job_dir: Path) -> None:
     using the bundle's ``manifest_ref``), deserializes ``entities.json`` and
     ``mesh_kwargs.json``, then invokes
     :func:`meshwell.orchestrator.generate_mesh` with the right per-role
-    extra kwargs (``_pre_buffered`` always; ``_emit_only_seam_surfaces``
-    for seam roles; ``_interface_constraints`` for volume roles). Always
-    writes ``result.json``; re-raises on failure so subprocess executors
-    see a non-zero exit.
+    extra kwargs (``_pre_buffered`` always). Always writes ``result.json``;
+    re-raises on failure so subprocess executors see a non-zero exit.
     """
     import json
     import time
@@ -695,12 +693,6 @@ def run_job(job_dir: Path) -> None:
         "_pre_buffered": True,
         "_global_physical_names": manifest["physical_names_seen"],
     }
-    if job["role"] in ("interface", "junction"):
-        extra["_emit_only_seam_surfaces"] = True
-    if job["role"] == "volume":
-        extra["_interface_constraints"] = [
-            job_dir / inp["path"] for inp in job["interface_inputs"]
-        ]
 
     t0 = time.time()
     try:
