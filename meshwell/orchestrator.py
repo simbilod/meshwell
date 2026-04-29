@@ -23,6 +23,7 @@ def generate_mesh(
     _global_physical_names: list[str] | None = None,
     _emit_only_seam_surfaces: bool = False,
     _interface_constraints: list | None = None,
+    _hashed_physical_tags: bool = False,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -122,5 +123,6 @@ def generate_mesh(
         _global_physical_names=_global_physical_names,
         _emit_only_seam_surfaces=_emit_only_seam_surfaces,
         _interface_constraints=_interface_constraints,
+        _hashed_physical_tags=_hashed_physical_tags,
         **mesh_kwargs,
     )

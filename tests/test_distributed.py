@@ -1085,3 +1085,43 @@ def test_name_to_tag_is_deterministic():
     # Tag is positive int32-safe
     tag = _name_to_tag("anything", 3)
     assert 1 <= tag < 2**31
+
+
+def test_generate_mesh_hashed_physical_tags(tmp_path):
+    """Hashed physical-group tags are stable across independent meshwell runs.
+
+    Two runs with the same physical_name produce .msh files where the
+    physical-group tag is identical.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import _name_to_tag
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    def _emit(out_path, x_offset):
+        prism = PolyPrism(
+            polygons=shapely.box(x_offset, 0, x_offset + 1, 1),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="silicon",
+            mesh_order=1,
+        )
+        generate_mesh(
+            entities=[prism],
+            dim=3,
+            output_mesh=out_path,
+            default_characteristic_length=0.5,
+            _hashed_physical_tags=True,
+        )
+
+    out_a = tmp_path / "a.msh"
+    out_b = tmp_path / "b.msh"
+    _emit(out_a, 0.0)
+    _emit(out_b, 5.0)
+
+    ma = meshio.read(out_a)
+    mb = meshio.read(out_b)
+    silicon_a = int((ma.field_data or {})["silicon"][0])
+    silicon_b = int((mb.field_data or {})["silicon"][0])
+    assert silicon_a == silicon_b == _name_to_tag("silicon", 3)

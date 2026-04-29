@@ -36,6 +36,30 @@ def _pair_algos(
     ]
 
 
+def _retag_physical_groups_with_hash(name_to_tag) -> None:
+    """Replace all auto-generated physical-group tags with hash-derived ones.
+
+    Walks every dim's physical groups, captures (dim, tag, name, entities),
+    removes them, then re-adds each with tag=name_to_tag(name, dim).
+
+    The two-pass remove-then-readd is necessary because attempting to add
+    a group with a new tag while the old one still occupies its (dim, tag)
+    slot raises in gmsh.
+    """
+    snapshots = []
+    for dim in (3, 2, 1, 0):
+        for d, tag in list(gmsh.model.getPhysicalGroups(dim)):
+            name = gmsh.model.getPhysicalName(d, tag)
+            ents = list(gmsh.model.getEntitiesForPhysicalGroup(d, tag))
+            snapshots.append((d, tag, name, ents))
+    for d, tag, _name, _ents in snapshots:
+        gmsh.model.removePhysicalGroups([(d, tag)])
+    for d, _old, name, ents in snapshots:
+        if not name:
+            continue
+        gmsh.model.addPhysicalGroup(d, ents, tag=name_to_tag(name, d), name=name)
+
+
 def _filter_msh_to_seam_groups(msh_path):
     """Rewrite msh_path keeping only physical groups whose name starts with '_seam___'.
 
@@ -1295,6 +1319,7 @@ def mesh(
     _global_physical_names: list[str] | None = None,
     _emit_only_seam_surfaces: bool = False,
     _interface_constraints: list | None = None,
+    _hashed_physical_tags: bool = False,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -1379,6 +1404,10 @@ def mesh(
 
         # Save to file if output file provided
         if output_file is not None:
+            if _hashed_physical_tags:
+                from meshwell.distributed import _name_to_tag
+
+                _retag_physical_groups_with_hash(_name_to_tag)
             mesh_generator.save_to_file(output_file)
             if _emit_only_seam_surfaces:
                 _filter_msh_to_seam_groups(output_file)
