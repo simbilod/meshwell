@@ -1029,3 +1029,45 @@ def test_distributed_two_materials_shared_interface(tmp_path):
     assert any(
         "silicon" in i and "oxide" in i for i in interfaces
     ), f"missing silicon/oxide interface among {interfaces}"
+
+
+# Spec tests 3 (2x2 with junction) and 10 (single material across 4 tiles)
+# are NOT included as runnable tests in v1. Both hit the corner-tile
+# limitation documented in the spec's "Out (v1 limitation)" section AND in
+# docs/distributed.md: any volume that imports 2+ adjacent seam meshes
+# whose boundary edges meet at a corner causes gmsh's generate(3) to enter
+# an infinite recovery loop trying (and failing) to close the 1D mesh.
+# The behavior is a hang, not a clean RuntimeError, so it cannot be
+# pytest.raises'd cleanly. They will be re-introduced as positive
+# assertions once v2 implements shared-edge node reconciliation across
+# multiple seam imports.
+
+
+def test_distributed_rejects_uncovered_subdomains(tmp_path):
+    """Spec test 7: subdomains not covering entity union -> clean ValueError."""
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    with pytest.raises(ValueError, match="not covered"):
+        generate_mesh_distributed(
+            entities=[prism],
+            subdomains=[shapely.box(0, 0, 1, 1)],  # x=[1,2] uncovered
+            output_mesh=tmp_path / "out.msh",
+            work_dir=tmp_path / "work",
+            interface_width=0.1,
+            executor=InProcessExecutor(),
+        )
+
+
+# (Spec test 10 also omitted — see comment block above.)
