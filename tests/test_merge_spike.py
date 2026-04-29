@@ -526,6 +526,123 @@ def test_2x1_mismatched_lc_breaks_conformity(tmp_path):
     )
 
 
+# --------------------------------------------------------------------------
+# Hash-based deterministic tag assignment: rescues gmsh.merge?
+# --------------------------------------------------------------------------
+
+
+def _name_to_tag(name: str, dim: int, tag_space: int = 1_000_000) -> int:
+    """Deterministic positive integer tag from a (dim, name) pair.
+
+    Uses Python's hashlib (stable across processes / runs, unlike built-in
+    hash() which is salted). Tags fit in int32 and are >= 1.
+    """
+    import hashlib
+
+    h = hashlib.sha1(f"{dim}:{name}".encode(), usedforsecurity=False).digest()
+    n = int.from_bytes(h[:4], "big") % tag_space
+    return max(1, n)
+
+
+def _build_box_msh_with_hashed_tag(
+    path: Path,
+    bbox: tuple[float, float, float, float, float, float],
+    name: str,
+    lc: float,
+) -> None:
+    """Same as _build_box_msh but uses a hash-derived physical-group tag."""
+    gmsh.model.add(f"box_{name}")
+    xmin, ymin, zmin, xmax, ymax, zmax = bbox
+    gmsh.model.occ.addBox(xmin, ymin, zmin, xmax - xmin, ymax - ymin, zmax - zmin)
+    gmsh.model.occ.synchronize()
+    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", lc)
+    gmsh.option.setNumber("Mesh.CharacteristicLengthMin", lc)
+    vols = [t for d, t in gmsh.model.getEntities(3)]
+    tag = _name_to_tag(name, dim=3)
+    gmsh.model.addPhysicalGroup(3, vols, tag=tag, name=name)
+    gmsh.model.mesh.generate(3)
+    gmsh.write(str(path))
+    gmsh.model.remove()
+
+
+def test_2x1_distinct_materials_via_gmsh_merge_with_hashed_tags(tmp_path):
+    """Hash-based tag IDs eliminate gmsh.merge collisions for distinct names.
+
+    Each file uses a DIFFERENT name; we expect both to survive the merge.
+    """
+    lc = 0.5
+    paths = []
+    for i, name in enumerate(["silicon", "oxide"]):
+        p = tmp_path / f"tile_{name}.msh"
+        _build_box_msh_with_hashed_tag(p, bbox=(i, 0, 0, i + 1, 1, 1), name=name, lc=lc)
+        paths.append(p)
+    res = _gmsh_merge_strategy(paths, dedup_tol=lc / 100)
+    print(
+        "\n2x1 hashed-tag distinct materials:",
+        {k: v for k, v in res.items() if k != "physical_groups"},
+    )
+    names = set(res["physical_group_names"])
+    assert "silicon" in names, names
+    assert "oxide" in names, names
+
+
+def test_3x3_same_material_via_gmsh_merge_with_hashed_tags(tmp_path):
+    """3x3 tiles all named 'mat' consolidate to one group via shared hashed tag.
+
+    All 9 tile entities should land under one physical group with one tag.
+    """
+    lc = 0.5
+    paths = []
+    for i in range(3):
+        for j in range(3):
+            p = tmp_path / f"tile_{i}_{j}.msh"
+            _build_box_msh_with_hashed_tag(
+                p, bbox=(i, j, 0, i + 1, j + 1, 1), name="mat", lc=lc
+            )
+            paths.append(p)
+    res = _gmsh_merge_strategy(paths, dedup_tol=lc / 100)
+    print(
+        "\n3x3 hashed-tag same material:",
+        {k: v for k, v in res.items() if k != "physical_groups"},
+    )
+    names = set(res["physical_group_names"])
+    assert names == {"mat"}, names
+    # Single consolidated group.
+    assert len(res["physical_groups"]["mat"]) == 1
+    # Entities under that group: should be all 9 volumes (post-merge).
+    pgs = res["physical_groups"]["mat"]  # [(dim, tag), ...]
+    dim, tag = pgs[0]
+    ents = gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
+    print(f"  consolidated group (dim={dim}, tag={tag}) has {len(ents)} entities")
+    assert len(ents) == 9, f"expected 9 entities under 'mat', got {len(ents)}"
+
+
+def test_3x3_mixed_materials_via_gmsh_merge_with_hashed_tags(tmp_path):
+    """3x3 tiles alternating silicon/oxide consolidate by name across tiles.
+
+    All 9 tiles' contributions land under exactly two physical groups.
+    """
+    lc = 0.5
+    paths = []
+    expected_names = set()
+    for i in range(3):
+        for j in range(3):
+            name = "silicon" if (i + j) % 2 == 0 else "oxide"
+            expected_names.add(name)
+            p = tmp_path / f"tile_{i}_{j}.msh"
+            _build_box_msh_with_hashed_tag(
+                p, bbox=(i, j, 0, i + 1, j + 1, 1), name=name, lc=lc
+            )
+            paths.append(p)
+    res = _gmsh_merge_strategy(paths, dedup_tol=lc / 100)
+    print(
+        "\n3x3 hashed-tag mixed materials:",
+        {k: v for k, v in res.items() if k != "physical_groups"},
+    )
+    names = set(res["physical_group_names"])
+    assert names == expected_names, f"got {names}, expected {expected_names}"
+
+
 def test_2x1_tile_meshed_with_internal_polygon_material(tmp_path):
     """Each tile contains a circular sub-region (different material).
 
