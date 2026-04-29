@@ -614,6 +614,65 @@ def run_plan(work_dir: Path, plan: SubdomainPlan, executor: Executor) -> None:
         raise RuntimeError(f"Job failures: {failures}")
 
 
+def _consolidate_seam_groups() -> None:
+    """Fold per-tile ``___seam_i_j`` groups into v1 ``A___B`` (or drop).
+
+    Walks merged-model 2D physical groups; renames groups whose name
+    matches ``<material>___seam_<i>_<j>`` based on which materials
+    contributed faces to seam ``(i, j)``:
+
+      * single material on both sides: drop the groups (invisible
+        interior face — same material, no need to tag the cut)
+      * multiple materials: union all their entities into a single new
+        group named ``<A>___<B>`` (alphabetical) and drop the per-
+        material seam groups.
+
+    True outer ``<material>___None`` groups (which the worker leaves
+    untouched on tiles that have a non-seam outer wall) survive
+    unchanged.
+    """
+    import re
+
+    import gmsh
+
+    pat = re.compile(r"^(.+)___seam_(\d+)_(\d+)$")
+    by_seam: dict[tuple[int, int], list[tuple[int, str]]] = {}
+    for _d, tag in gmsh.model.getPhysicalGroups(2):
+        name = gmsh.model.getPhysicalName(2, tag)
+        m = pat.match(name)
+        if not m:
+            continue
+        material, i, j = m.group(1), int(m.group(2)), int(m.group(3))
+        by_seam.setdefault((i, j), []).append((tag, material))
+
+    # Two seams between different (i,j) pairs can produce the same A___B
+    # name (e.g. multiple silicon-oxide seams across a 3x3 grid). Bucket
+    # all entities by final name first, then add each name once.
+    new_groups: dict[str, set[int]] = {}
+    for group_list in by_seam.values():
+        materials = sorted({mat for _, mat in group_list})
+        all_ents: list[int] = []
+        for tag, _ in group_list:
+            all_ents.extend(
+                int(e) for e in gmsh.model.getEntitiesForPhysicalGroup(2, tag)
+            )
+        for tag, _ in group_list:
+            gmsh.model.removePhysicalGroups([(2, tag)])
+        if len(materials) == 1:
+            # interior face — drop entirely
+            continue
+        new_name = "___".join(materials)
+        new_groups.setdefault(new_name, set()).update(all_ents)
+
+    for new_name, ents in new_groups.items():
+        gmsh.model.addPhysicalGroup(
+            2,
+            sorted(ents),
+            tag=_name_to_tag(new_name, 2),
+            name=new_name,
+        )
+
+
 def stitch_meshes(
     work_dir: Path,
     plan: SubdomainPlan,
@@ -628,6 +687,11 @@ def stitch_meshes(
     ``removeDuplicateNodes`` welds coincident nodes at shared faces
     (conformal-by-construction when adjacent tiles share characteristic
     length, per the empirical spike at tests/test_merge_spike.py).
+
+    After dedup, :func:`_consolidate_seam_groups` folds the per-tile
+    ``<material>___seam_<i>_<j>`` markings into the v1 convention:
+    different materials become ``A___B``; same material both sides
+    drops out as an invisible interior face.
     """
     import gmsh
 
@@ -646,6 +710,7 @@ def stitch_meshes(
                 gmsh.merge(str(path))
         gmsh.option.setNumber("Geometry.Tolerance", plan.point_tolerance / 2)
         gmsh.model.mesh.removeDuplicateNodes()
+        _consolidate_seam_groups()
         gmsh.write(str(output_mesh))
     finally:
         if owns_gmsh:

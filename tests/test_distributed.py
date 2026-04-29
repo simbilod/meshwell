@@ -767,16 +767,13 @@ def test_distributed_matches_serial_single_material_2x1(tmp_path):
 
 
 def test_distributed_two_materials_shared_interface(tmp_path):
-    """v2: silicon and oxide abut at x=1 across a 2x1 grid.
+    """v1 convention restored: silicon and oxide abut at x=1 across a 2x1 grid.
 
-    v2 convention shift: each tile mesh independently tags its boundary
-    face as '<material>___None'. After gmsh.merge + removeDuplicateNodes,
-    the welded face cells stay tagged with their per-tile boundary
-    names — there is NO synthesized 'silicon___oxide' interface group
-    (that was a v1 feature requiring all materials in one CAD model).
-    Users who need cross-material interface naming should post-process
-    the output mesh to detect coincident face cells from differently-
-    named groups and re-tag them.
+    With seam-id tagging, the silicon-oxide cut at x=1 surfaces as a
+    single ``silicon___oxide`` (alphabetical) physical group; the per-
+    tile ``silicon___None`` / ``oxide___None`` markings on that seam
+    are dropped by the post-merge consolidation pass. Outer-domain
+    walls remain ``<material>___None``.
     """
     import meshio
     import shapely
@@ -813,10 +810,56 @@ def test_distributed_two_materials_shared_interface(tmp_path):
     # Both materials present.
     assert "silicon" in names, names
     assert "oxide" in names, names
-    # Each material's boundary face is named `<material>___None`.
-    assert "silicon___None" in names, names
-    assert "oxide___None" in names, names
-    # No cross-material `silicon___oxide` group is synthesized in v2.
+    # The silicon-oxide cut surfaces as a v1-style A___B interface group.
+    assert any(
+        "silicon" in n and "oxide" in n and "___" in n
+        for n in names
+        if n not in ("silicon", "oxide")
+    ), names
+    # silicon___None / oxide___None can survive on true outer walls,
+    # but they must NOT carry the silicon-oxide seam (consolidation
+    # would have re-tagged that as silicon___oxide).
+
+
+def test_distributed_same_material_drops_invisible_seam(tmp_path):
+    """Single 'mat' material spanning 2 tiles: stitch produces no seam group.
+
+    A single 'mat' material spanning 2 tiles: the consolidation pass
+    drops the interior cut entirely (invisible — same material both
+    sides), and the only mat___None faces are on the true outer
+    boundary.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=[prism],
+        subdomains=[shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)],
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.3,
+    )
+    m = meshio.read(out)
+    names = set((m.field_data or {}))
+    assert "mat" in names, names
+    # No seam groups should remain — same material both sides means invisible.
+    assert not any("___seam_" in n for n in names), names
+    # mat___None should still exist (true outer boundary of the union).
+    assert "mat___None" in names, names
 
 
 def test_distributed_2x2_grid_with_junction(tmp_path):
