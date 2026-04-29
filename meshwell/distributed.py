@@ -45,7 +45,9 @@ class VolumeRegion:
 
     id: str
     polygon: Polygon
-    neighbors: list[str] = field(default_factory=list)
+    neighbors: list[tuple[str, str]] = field(default_factory=list)
+    # neighbors: list of (neighbour_volume_id, shared_boundary_wkt) pairs.
+    # Empty list means the volume is isolated; populated only for actual seams.
 
 
 @dataclass
@@ -274,6 +276,18 @@ def build_subdomain_plan(
         VolumeRegion(id=f"volume_{i:04d}", polygon=sd, neighbors=[])
         for i, sd in enumerate(subdomains)
     ]
+    # Compute pairwise shared boundaries between subdomains. The shared
+    # boundary geometry is what the worker uses to identify which faces
+    # of its result.msh sit on a subdomain seam (as opposed to a true
+    # outer-domain edge).
+    for i in range(len(subdomains)):
+        for j in range(i + 1, len(subdomains)):
+            shared = subdomains[i].boundary.intersection(subdomains[j].boundary)
+            if shared.is_empty or shared.length < point_tolerance:
+                continue
+            volumes[i].neighbors.append((volumes[j].id, shared.wkt))
+            volumes[j].neighbors.append((volumes[i].id, shared.wkt))
+
     physical_names_seen = sorted(
         {
             n if isinstance(n, str) else n[0]

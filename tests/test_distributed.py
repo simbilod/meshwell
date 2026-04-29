@@ -320,6 +320,38 @@ def test_build_subdomain_plan_creates_volume_regions():
     assert plan.physical_names_seen == ["mat"]
 
 
+def test_build_subdomain_plan_populates_neighbors():
+    """Adjacent subdomains end up with each other's id + shared boundary in .neighbors."""
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    v0, v1 = plan.volumes
+    assert len(v0.neighbors) == 1
+    assert len(v1.neighbors) == 1
+    assert v0.neighbors[0][0] == v1.id
+    assert v1.neighbors[0][0] == v0.id
+    # Shared boundary should be the line x=1, y in [0,1] - a short LineString.
+    import shapely.wkt
+
+    g0 = shapely.wkt.loads(v0.neighbors[0][1])
+    assert abs(g0.length - 1.0) < 1e-9
+
+
 def test_build_subdomain_plan_rejects_uncovered_entities():
     import shapely
 
