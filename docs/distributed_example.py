@@ -171,10 +171,14 @@ def main() -> None:
     dist_inv = report_inventory("Distributed (stitched)", out_distributed)
 
     # The distributed merged mesh adds <material>___None boundary groups
-    # at each subdomain edge (v2 convention shift); filter those out of
-    # the bare-material comparison.
+    # at each subdomain edge (v2 convention shift) plus <A>___<B>
+    # interfaces between materials inside each tile. Both sides also
+    # carry <material>___None at the outer-domain boundary. Filter
+    # interface/boundary groups out of both for the bare-material
+    # comparison.
+    serial_materials = {n: c for n, c in serial_inv.items() if "___" not in n}
     dist_materials = {n: c for n, c in dist_inv.items() if "___" not in n}
-    serial_names = set(serial_inv)
+    serial_names = set(serial_materials)
     dist_names = set(dist_materials)
 
     print("\n=== Inventory comparison (materials only) ===")
