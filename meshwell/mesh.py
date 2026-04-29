@@ -1026,6 +1026,13 @@ class Mesh:
             self.model_manager.model.mesh.field.setAsBackgroundMesh(min_field_index)
 
         # Turn off default meshing options
+        # NOTE: this disable is unconditional even when refinement_field_indices
+        # is empty — preserved for backward compatibility. The distributed
+        # _interface_constraints flow re-enables MeshSizeFromPoints and
+        # MeshSizeExtendFromBoundary in process_mesh because seeded OCC faces
+        # need them to be honored. If you ever move these inside the
+        # `if refinement_field_indices:` block, also remove the override at
+        # process_mesh's _interface_constraints branch.
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
@@ -1038,6 +1045,9 @@ class Mesh:
         gmsh.model.mesh.field.setAsBackgroundMesh(bg_field)
 
         # Turn off default meshing options
+        # NOTE: see the matching note in _apply_entity_refinement above —
+        # the distributed _interface_constraints flow re-enables these
+        # options in process_mesh because seeded OCC faces need them.
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)

@@ -48,6 +48,21 @@ decomposition" item already advertised in `README.md`.
 - **Out:** Heterogeneous-worker load balancing (executor handles
   scheduling; library does not rebalance).
 - **Out:** Non-conformal seam joins for visualization-only use cases.
+- **Out (v1 limitation):** Subdomain layouts where any volume tile
+  shares boundaries with **2 or more other tiles meeting at a corner**.
+  Concretely: NxM grids with `min(N, M) >= 2` (any layout with interior
+  corners or junctions). The phase-2 OCC face seeding helper
+  `_seed_occ_face_from_seam` correctly seeds a single seam mesh into
+  one OCC face, but seeding two adjacent seams whose boundary nodes
+  converge at a shared corner edge produces a "1D mesh seems not to be
+  forming a closed loop" error during `mesh.generate(3)`. v1 supports
+  strip layouts (`Nx1` or `1xN`) reliably; junction handling and 2D
+  grids are deferred to v2 once node-placement reconciliation across
+  multiple seam imports is implemented. The two integration tests for
+  these cases (`test_distributed_2x2_grid_with_junction` and
+  `test_distributed_consolidates_same_material_across_tiles`) are
+  marked `pytest.mark.xfail(strict=True)` so the v2 fix flips them to
+  XPASS automatically.
 
 ## Public API
 

@@ -16,7 +16,9 @@ Robust, efficient Python-based 2.5D meshing.
 * Shared-memory parallel CAD with [OpenCASCADE](https://dev.opencascade.org/)
 * Shared-memory parallel meshing with [GMSH](https://gmsh.info/)
 * Simplified remeshing with [MMG](https://github.com/MmgTools/MMG)
-* (Planned) Distributed memory processing with domain decomposition
+* Distributed memory processing with domain decomposition
+  ([guide](docs/distributed.md))
+  (v1: strip layouts only — see guide for limitations)
 * (Planned) Hybrid structured / unstructured meshes
 
 ## 📦 Installation
