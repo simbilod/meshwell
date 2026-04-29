@@ -328,7 +328,12 @@ def write_bundles(
     (work_dir / "jobs").mkdir(parents=True, exist_ok=True)
 
     subdomains_blob: dict[str, dict] = {
-        v.id: {"polygon_wkt": v.polygon.wkt, "neighbors": v.neighbors}
+        v.id: {
+            "polygon_wkt": v.polygon.wkt,
+            "neighbors": [
+                {"id": nb_id, "shared_boundary_wkt": wkt} for nb_id, wkt in v.neighbors
+            ],
+        }
         for v in plan.volumes
     }
 
@@ -384,7 +389,10 @@ def _write_volume_bundle(
                 "id": vol.id,
                 "role": "volume",
                 "dim": 3,
-                "neighbors": vol.neighbors,
+                "neighbors": [
+                    {"id": nb_id, "shared_boundary_wkt": wkt}
+                    for nb_id, wkt in vol.neighbors
+                ],
                 "manifest_ref": "../../manifest.json",
             },
             indent=2,
@@ -428,6 +436,10 @@ def run_job(job_dir: Path) -> None:
     manifest = json.loads(manifest_path.read_text())
     entities = deserialize(json.loads((job_dir / "entities.json").read_text()))
     mesh_kwargs = json.loads((job_dir / "mesh_kwargs.json").read_text())
+
+    neighbours = [  # noqa: F841 - wired into the seam retag pass in Task 3
+        (nb["id"], nb["shared_boundary_wkt"]) for nb in job.get("neighbors", [])
+    ]
 
     extra: dict[str, Any] = {
         "_pre_buffered": True,

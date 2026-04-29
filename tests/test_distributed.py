@@ -419,6 +419,38 @@ def test_write_bundles_creates_expected_layout(tmp_path):
         assert (d / "mesh_kwargs.json").exists()
 
 
+def test_write_bundles_ships_neighbors_in_job_json(tmp_path):
+    import json
+
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan, write_bundles
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    write_bundles(
+        tmp_path, plan, [prism], mesh_kwargs={"default_characteristic_length": 0.5}
+    )
+
+    # volume_0000's job.json should list volume_0001 as a neighbour.
+    j = json.loads((tmp_path / "jobs" / "volume_0000" / "job.json").read_text())
+    assert len(j["neighbors"]) == 1
+    assert j["neighbors"][0]["id"] == "volume_0001"
+    assert "shared_boundary_wkt" in j["neighbors"][0]
+
+
 def test_run_job_executes_volume_bundle(tmp_path):
     import json
 
