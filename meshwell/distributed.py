@@ -407,19 +407,23 @@ def _write_volume_bundle(
     )
 
 
-def _bbox_on_geometry(bb, geom, tol: float) -> bool:
-    """Return True iff the OCC face's xy bbox sits on the subdomain seam line.
+def _bbox_on_geometry(bb, seam_geom, tol: float) -> bool:
+    """Return True iff the OCC face's xy projection LIES ON the seam line.
 
     bb is gmsh's 6-tuple (xmin, ymin, zmin, xmax, ymax, zmax). The seam
-    geometry is a 2D LineString or MultiLineString in xy. A face is "on"
-    the seam if its xy projection (potentially a degenerate segment when
-    the face is vertical) is within tol of the seam line.
+    geometry is a 1D LineString (or MultiLineString) in xy. A face lies
+    on the seam if its xy bbox is contained within the seam line buffered
+    by tol — i.e., the face is a vertical wall whose horizontal projection
+    is a subset of the seam line.
+
+    The previous looser check (face_xy.intersects(seam_geom)) misclassified
+    floor/ceiling/lateral-outer faces that TOUCH the seam line at an edge.
     """
     from shapely.geometry import box
 
     xmin, ymin, _zmin, xmax, ymax, _zmax = bb
-    face_xy = box(xmin - tol, ymin - tol, xmax + tol, ymax + tol)
-    return geom.intersects(face_xy) and geom.distance(face_xy) <= tol
+    face_xy = box(xmin, ymin, xmax, ymax)
+    return face_xy.within(seam_geom.buffer(tol))
 
 
 def _retag_subdomain_seams(
