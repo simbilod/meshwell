@@ -6,6 +6,7 @@ seams. See docs/superpowers/specs/2026-04-28-distributed-domain-decomposition-de
 """
 from __future__ import annotations
 
+import hashlib
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,23 @@ from typing import Any, Protocol
 
 import shapely
 from shapely.geometry import LineString, Polygon
+
+_TAG_SPACE = 1_000_000  # safe gap from gmsh's auto-tag range
+
+
+def _name_to_tag(name: str, dim: int) -> int:
+    """Deterministic positive int tag from (dim, name).
+
+    Same name + dim across processes / runs / files produces the same
+    integer, so independently-written .msh files all agree on which
+    tag represents 'silicon' at dim=3. After ``gmsh.merge``, entities
+    from different files contributing to the same (dim, tag) get
+    auto-unioned by gmsh under the shared name — no post-merge
+    consolidation pass needed.
+    """
+    h = hashlib.sha1(f"{dim}:{name}".encode(), usedforsecurity=False).digest()
+    n = int.from_bytes(h[:4], "big") % _TAG_SPACE
+    return max(1, n)
 
 
 @dataclass

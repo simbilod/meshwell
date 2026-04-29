@@ -1071,3 +1071,17 @@ def test_distributed_rejects_uncovered_subdomains(tmp_path):
 
 
 # (Spec test 10 also omitted — see comment block above.)
+
+
+def test_name_to_tag_is_deterministic():
+    from meshwell.distributed import _name_to_tag
+
+    # Same input → same tag
+    assert _name_to_tag("silicon", 3) == _name_to_tag("silicon", 3)
+    # Different name → different tag (with high probability)
+    assert _name_to_tag("silicon", 3) != _name_to_tag("oxide", 3)
+    # Different dim → different tag
+    assert _name_to_tag("silicon", 3) != _name_to_tag("silicon", 2)
+    # Tag is positive int32-safe
+    tag = _name_to_tag("anything", 3)
+    assert 1 <= tag < 2**31
