@@ -24,13 +24,17 @@ for the full architectural rationale.
 
 ## v1 limitations
 
-- **Subdomain layouts must be strip-shaped (`Nx1` or `1xN`)**, i.e. each
-  volume tile shares boundaries with at most one other tile per side.
-  2D grids (e.g. `2x2`, `3x3`) and any layout with interior corner
-  junctions are not supported in v1; they currently fail with
-  `"The 1D mesh seems not to be forming a closed loop"` during phase-2
-  meshing. See the spec's "Out (v1 limitation)" section for the cause
-  and the v2 fix path.
+- **Subdomain layouts must be 2-tile strips (`2x1` or `1x2`)**. Strips
+  with N>=3 tiles fail because interior tiles import seam meshes from
+  *both* neighbours, and those two seams share the tile's top/bottom
+  OCC edges — the seeded boundary nodes converge but do not close,
+  producing `"The 1D mesh seems not to be forming a closed loop"`
+  inside gmsh's `generate(3)`. The same root cause excludes 2D grids
+  (`2x2`, `3x3`, ...), where each interior tile has up to 4 seam
+  neighbours. See the spec's "Out (v1 limitation)" section for the
+  v2 fix path (shared-edge node reconciliation across multiple seam
+  imports). v1 use cases: split a single problem into two halves to
+  fit memory or to exploit two CPUs.
 - `interface_width` must be supplied explicitly (no auto-derivation
   from ResolutionSpec radii in v1).
 - `OCC_entity` instances must be fully contained within a single
