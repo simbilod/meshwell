@@ -483,6 +483,42 @@ def test_run_job_executes_volume_bundle(tmp_path):
     assert res["status"] == "ok"
 
 
+def test_run_job_tags_subdomain_seams(tmp_path):
+    """Worker tags subdomain-internal faces with seam IDs.
+
+    After run_job, the worker's result.msh has _seam_i_j tags on
+    subdomain-internal faces and ___None only on true outer faces.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import build_subdomain_plan, run_job, write_bundles
+    from meshwell.polyprism import PolyPrism
+
+    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    plan = build_subdomain_plan(
+        subdomains=sd,
+        entities=[prism],
+        perturbation=1e-5,
+        point_tolerance=1e-3,
+    )
+    write_bundles(
+        tmp_path, plan, [prism], mesh_kwargs={"default_characteristic_length": 0.5}
+    )
+    run_job(tmp_path / "jobs" / "volume_0000")
+    m = meshio.read(tmp_path / "jobs" / "volume_0000" / "result.msh")
+    names = set((m.field_data or {}))
+    # Expected: ___seam_0000_0001 for the right wall, ___None for the other walls.
+    assert any("___seam_0000_0001" in n for n in names), names
+    assert "mat___None" in names, names
+
+
 def test_cli_run_job_invokes_run_job(tmp_path, monkeypatch):
     import sys
 

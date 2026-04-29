@@ -407,6 +407,119 @@ def _write_volume_bundle(
     )
 
 
+def _bbox_on_geometry(bb, geom, tol: float) -> bool:
+    """Return True iff the OCC face's xy bbox sits on the subdomain seam line.
+
+    bb is gmsh's 6-tuple (xmin, ymin, zmin, xmax, ymax, zmax). The seam
+    geometry is a 2D LineString or MultiLineString in xy. A face is "on"
+    the seam if its xy projection (potentially a degenerate segment when
+    the face is vertical) is within tol of the seam line.
+    """
+    from shapely.geometry import box
+
+    xmin, ymin, _zmin, xmax, ymax, _zmax = bb
+    face_xy = box(xmin - tol, ymin - tol, xmax + tol, ymax + tol)
+    return geom.intersects(face_xy) and geom.distance(face_xy) <= tol
+
+
+def _retag_subdomain_seams(
+    neighbours: list[tuple[str, str]],
+    own_id: str,
+    point_tolerance: float,
+) -> None:
+    """Rename ``<material>___None`` faces that lie on subdomain seams.
+
+    For each existing physical group ending in ``___None``, partition its
+    face entities by which subdomain seam (if any) they lie on:
+
+      * face on the seam shared with neighbour N: regroup as
+        ``<material>___seam_<min(own,N)>_<max(own,N)>``
+      * face not on any seam (true outer boundary): stays in the
+        existing ``<material>___None`` group
+
+    Run on the worker's gmsh model AFTER the standard CAD tagger has
+    already produced the ``<material>___None`` groups but BEFORE the
+    final write. Uses :func:`_name_to_tag` for the new ``___seam_i_j``
+    groups so they consolidate by ``gmsh.merge`` in the master.
+    """
+    import shapely.wkt
+
+    import gmsh
+
+    nb_lines = [(nb_id, shapely.wkt.loads(wkt)) for nb_id, wkt in neighbours]
+    own_index = int(own_id.split("_")[-1])
+
+    for _d, tag in list(gmsh.model.getPhysicalGroups(2)):
+        name = gmsh.model.getPhysicalName(2, tag)
+        if not name.endswith("___None"):
+            continue
+        material = name[: -len("___None")]
+        ents = list(gmsh.model.getEntitiesForPhysicalGroup(2, tag))
+
+        outer: list[int] = []
+        seam_buckets: dict[str, list[int]] = {}
+
+        for ent in ents:
+            bb = gmsh.model.getBoundingBox(2, int(ent))
+            assigned = False
+            for nb_id, nb_geom in nb_lines:
+                if _bbox_on_geometry(bb, nb_geom, point_tolerance):
+                    seam_buckets.setdefault(nb_id, []).append(int(ent))
+                    assigned = True
+                    break
+            if not assigned:
+                outer.append(int(ent))
+
+        gmsh.model.removePhysicalGroups([(2, tag)])
+        if outer:
+            gmsh.model.addPhysicalGroup(
+                2,
+                outer,
+                tag=_name_to_tag(name, 2),
+                name=name,
+            )
+        for nb_id, seam_ents in seam_buckets.items():
+            nb_index = int(nb_id.split("_")[-1])
+            lo, hi = sorted([own_index, nb_index])
+            seam_name = f"{material}___seam_{lo:04d}_{hi:04d}"
+            gmsh.model.addPhysicalGroup(
+                2,
+                seam_ents,
+                tag=_name_to_tag(seam_name, 2),
+                name=seam_name,
+            )
+
+
+def _retag_subdomain_seams_in_msh(
+    msh_path: Path,
+    neighbours: list[tuple[str, str]],
+    own_id: str,
+    point_tolerance: float,
+) -> None:
+    """Open ``msh_path`` in a fresh gmsh session, retag subdomain seams, rewrite.
+
+    Runs as a standalone post-processing pass on the worker's
+    ``result.msh`` so we don't have to thread through the existing
+    :func:`generate_mesh` flow.
+    """
+    import gmsh
+
+    msh_path = Path(msh_path)
+    owns = not gmsh.is_initialized()
+    if owns:
+        gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("retag")
+        gmsh.merge(str(msh_path))
+        _retag_subdomain_seams(neighbours, own_id, point_tolerance)
+        gmsh.write(str(msh_path))
+        gmsh.model.remove()
+    finally:
+        if owns:
+            gmsh.finalize()
+
+
 def run_job(job_dir: Path) -> None:
     """Worker entrypoint: read a volume job bundle and dispatch to ``generate_mesh``.
 
@@ -437,7 +550,7 @@ def run_job(job_dir: Path) -> None:
     entities = deserialize(json.loads((job_dir / "entities.json").read_text()))
     mesh_kwargs = json.loads((job_dir / "mesh_kwargs.json").read_text())
 
-    neighbours = [  # noqa: F841 - wired into the seam retag pass in Task 3
+    neighbours = [
         (nb["id"], nb["shared_boundary_wkt"]) for nb in job.get("neighbors", [])
     ]
 
@@ -456,6 +569,13 @@ def run_job(job_dir: Path) -> None:
             **mesh_kwargs,
             **extra,
         )
+        if neighbours:
+            _retag_subdomain_seams_in_msh(
+                job_dir / "result.msh",
+                neighbours=neighbours,
+                own_id=job["id"],
+                point_tolerance=manifest.get("point_tolerance", 1e-3),
+            )
         status = "ok"
         err = None
     except Exception as e:
