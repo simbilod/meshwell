@@ -157,7 +157,6 @@ def main() -> None:
         subdomains=subdomains,
         output_mesh=out_distributed,
         work_dir=work_dir,
-        interface_width=0.2,  # comfortably > characteristic length 0.15
         executor=SubprocessExecutor(max_workers=2),
         keep_bundles=True,  # leave bundles for inspection
         default_characteristic_length=0.15,

@@ -1,8 +1,13 @@
-"""Distributed domain-decomposition pipeline for meshwell.
+"""Distributed domain-decomposition pipeline for meshwell (v2, single-phase).
 
 Splits an input scene into per-subdomain CAD + mesh jobs (file-based bundles)
-and stitches the resulting .msh files into one final mesh with conformal
-seams. See docs/superpowers/specs/2026-04-28-distributed-domain-decomposition-design.md.
+and stitches the resulting .msh files into one final mesh. Workers emit
+``_hashed_physical_tags=True`` so all per-subdomain .msh files agree on the
+integer tag of each physical-group name (a prerequisite for the gmsh.merge
+based stitch in Task 5).
+
+See docs/superpowers/specs/2026-04-28-distributed-domain-decomposition-design.md
+and the empirical merge spike at tests/test_merge_spike.py.
 """
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import shapely
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import Polygon
 
 _TAG_SPACE = 1_000_000  # safe gap from gmsh's auto-tag range
 
@@ -34,21 +39,6 @@ def _name_to_tag(name: str, dim: int) -> int:
 
 
 @dataclass
-class Slab:
-    """One interface or junction subdomain in the plan.
-
-    For interface slabs, ``between`` has length 2 (the two volume IDs).
-    For junctions, ``between`` has length >= 3.
-    """
-
-    id: str
-    polygon: Polygon
-    between: list[str]
-    cut_polylines: list[LineString]
-    width: float
-
-
-@dataclass
 class VolumeRegion:
     """One volume subdomain in the plan."""
 
@@ -59,16 +49,12 @@ class VolumeRegion:
 
 @dataclass
 class SubdomainPlan:
-    """Output of build_subdomain_plan."""
+    """Output of build_subdomain_plan (v2: volume regions only)."""
 
     volumes: list[VolumeRegion]
-    interfaces: list[Slab]
-    junctions: list[Slab]
     physical_names_seen: list[str]
     perturbation: float
     point_tolerance: float
-    interface_delimiter: str = "___"
-    boundary_delimiter: str = "None"
 
 
 class Executor(Protocol):
@@ -211,54 +197,6 @@ def _clip_entity_to_polygon(
     return new
 
 
-def _resolution_only_proxy(entity: Any) -> Any:
-    """Wrap ``entity`` so it contributes no geometry but keeps its resolutions.
-
-    Used by phase-1 bundles for entities that sit near (but do not intersect)
-    a slab whose ResolutionSpecs may still affect the seam mesh sizing. The
-    proxy's ``instanciate_occ`` returns an empty TopoDS_Compound so no CAD
-    fragment is generated; the resolutions list rides along and gets
-    consumed by the worker's resolver.
-    """
-    from copy import deepcopy
-
-    proxy = deepcopy(entity)
-    proxy.mesh_bool = False
-
-    def _empty_occ_shape(_self=proxy):
-        from OCP.BRep import BRep_Builder
-        from OCP.TopoDS import TopoDS_Compound
-
-        cb = BRep_Builder()
-        c = TopoDS_Compound()
-        cb.MakeCompound(c)
-        return c
-
-    proxy.instanciate_occ = _empty_occ_shape
-    # Also stub the gmsh-backend instanciate so the worker doesn't try to
-    # build geometry there either.
-    proxy.instanciate = lambda _cad_model: []
-    return proxy
-
-
-def _flatten_to_linestrings(geom) -> list[LineString]:
-    """Flatten a possibly-mixed shapely geometry into its LineString components."""
-    from shapely.geometry import GeometryCollection, MultiLineString
-
-    if geom.is_empty:
-        return []
-    if isinstance(geom, LineString):
-        return [geom]
-    if isinstance(geom, MultiLineString):
-        return list(geom.geoms)
-    if isinstance(geom, GeometryCollection):
-        out: list[LineString] = []
-        for g in geom.geoms:
-            out.extend(_flatten_to_linestrings(g))
-        return out
-    return []
-
-
 def subdomains_from_grid(
     bbox: tuple[float, float, float, float],
     nx: int,
@@ -289,11 +227,20 @@ def subdomains_from_grid(
 def build_subdomain_plan(
     subdomains: list[Polygon],
     entities: list[Any],
-    interface_width,
     perturbation: float,
     point_tolerance: float,
 ) -> SubdomainPlan:
-    """Build the volume + interface + junction plan from user-supplied subdomains."""
+    """Build a plan with one VolumeRegion per subdomain polygon.
+
+    Validates: subdomains non-empty + valid; their union covers the
+    entity-polygon union within ``point_tolerance``.
+
+    v2: no interface or junction subdomains. Workers mesh independently
+    and the stitch step (``stitch_meshes``) uses ``gmsh.merge`` with
+    hashed physical-group tags to consolidate entities by name. The
+    ``neighbors`` field on each :class:`VolumeRegion` stays empty since
+    we no longer compute pairwise adjacency for seam-bundle planning.
+    """
     if not subdomains:
         raise ValueError("subdomains must be non-empty")
     for i, sd in enumerate(subdomains):
@@ -301,7 +248,8 @@ def build_subdomain_plan(
             raise ValueError(f"subdomain {i} is not valid: {sd.wkt}")
 
     # Coverage validation: every polygon-bearing entity must lie within
-    # `point_tolerance` of the subdomain union. Fail fast before doing any work.
+    # ``point_tolerance`` of the subdomain union. Fail fast before doing
+    # any work.
     union_sd = shapely.unary_union(subdomains)
     union_ent = shapely.unary_union(
         [
@@ -338,106 +286,8 @@ def build_subdomain_plan(
         }
     )
 
-    # ---- Interfaces: pairwise slabs between adjacent subdomains ----
-    interfaces: list[Slab] = []
-    iface_idx = 0
-    if isinstance(interface_width, (int, float)):
-
-        def width_for(_i: int, _j: int):
-            return interface_width
-
-    else:
-
-        def width_for(i: int, j: int):
-            return interface_width.get((min(i, j), max(i, j))) or interface_width.get(
-                (max(i, j), min(i, j))
-            )
-
-    for i in range(len(subdomains)):
-        for j in range(i + 1, len(subdomains)):
-            shared = subdomains[i].boundary.intersection(subdomains[j].boundary)
-            if shared.is_empty:
-                continue
-            polylines = _flatten_to_linestrings(shared)
-            polylines = [ls for ls in polylines if ls.length > point_tolerance]
-            if not polylines:
-                continue
-            w = width_for(i, j)
-            if w is None or w <= 0:
-                raise ValueError(f"interface_width missing for pair ({i}, {j})")
-            # Flat caps so the slab doesn't bulge past the polyline endpoints —
-            # bounds match the test's expectation of (xmin, ymin, xmax, ymax)
-            # tight against the shared boundary segment.
-            slab_polys = [ls.buffer(w / 2, cap_style=2) for ls in polylines]
-            slab = (
-                slab_polys[0]
-                if len(slab_polys) == 1
-                else shapely.unary_union(slab_polys)
-            )
-            interfaces.append(
-                Slab(
-                    id=f"interface_{iface_idx:04d}",
-                    polygon=slab,
-                    between=[f"volume_{i:04d}", f"volume_{j:04d}"],
-                    cut_polylines=polylines,
-                    width=w,
-                )
-            )
-            volumes[i].neighbors.append(f"volume_{j:04d}")
-            volumes[j].neighbors.append(f"volume_{i:04d}")
-            iface_idx += 1
-
-    # ---- Junctions: points where >= 3 subdomains meet ----
-    from shapely.geometry import Point
-
-    point_to_volumes: dict[tuple[float, float], set[str]] = {}
-    for i, sd in enumerate(subdomains):
-        # Quantize boundary vertices to point_tolerance grid
-        coords: list[tuple[float, float]] = []
-        rings = [sd.exterior, *list(sd.interiors)]
-        for ring in rings:
-            for x, y in ring.coords:
-                key = (
-                    round(x / point_tolerance) * point_tolerance,
-                    round(y / point_tolerance) * point_tolerance,
-                )
-                coords.append(key)
-        for k in set(coords):
-            point_to_volumes.setdefault(k, set()).add(f"volume_{i:04d}")
-
-    junctions: list[Slab] = []
-    j_idx = 0
-    junction_radius = max(
-        (s.width for s in interfaces),
-        default=interface_width if isinstance(interface_width, (int, float)) else 0,
-    )
-    for (x, y), vols in point_to_volumes.items():
-        if len(vols) < 3:
-            continue
-        jpoint = Point(x, y)
-        touching = [
-            s
-            for s in interfaces
-            if any(jpoint.distance(pl) < point_tolerance for pl in s.cut_polylines)
-        ]
-        cut_lines: list[LineString] = []
-        for s in touching:
-            cut_lines.extend(s.cut_polylines)
-        junctions.append(
-            Slab(
-                id=f"junction_{j_idx:04d}",
-                polygon=jpoint.buffer(junction_radius),
-                between=sorted(vols),
-                cut_polylines=cut_lines,
-                width=junction_radius,
-            )
-        )
-        j_idx += 1
-
     return SubdomainPlan(
         volumes=volumes,
-        interfaces=interfaces,
-        junctions=junctions,
         physical_names_seen=list(physical_names_seen),
         perturbation=perturbation,
         point_tolerance=point_tolerance,
@@ -452,82 +302,37 @@ def write_bundles(
 ) -> None:
     """Write the bundle directory tree for ``plan`` under ``work_dir``.
 
-    Emits ``manifest.json`` plus a per-job directory under ``jobs/<id>/``
+    Emits ``manifest.json`` plus a per-volume directory under ``jobs/<id>/``
     containing ``job.json``, ``entities.json``, ``subdomain.wkt``, and
-    ``mesh_kwargs.json``. Volume bundles get the ``entities`` clipped to
-    the subdomain footprint; seam (interface/junction) bundles get the
-    clipped entities plus a phantom :class:`PolySurface` per cut polyline
-    so the seam imprint inherits a ``_seam___`` physical name.
+    ``mesh_kwargs.json``. Each volume bundle holds the entities clipped
+    to its subdomain footprint.
     """
     import json
 
     work_dir = Path(work_dir)
     (work_dir / "jobs").mkdir(parents=True, exist_ok=True)
 
-    # Build manifest
-    subdomains_blob: dict[str, dict] = {}
-    for v in plan.volumes:
-        subdomains_blob[v.id] = {
-            "polygon_wkt": v.polygon.wkt,
-            "neighbors": v.neighbors,
-        }
-    for s in plan.interfaces:
-        subdomains_blob[s.id] = {
-            "polygon_wkt": s.polygon.wkt,
-            "between": s.between,
-            "cut_polylines_wkt": [ls.wkt for ls in s.cut_polylines],
-            "width": s.width,
-        }
-    for s in plan.junctions:
-        subdomains_blob[s.id] = {
-            "polygon_wkt": s.polygon.wkt,
-            "between": s.between,
-            "cut_polylines_wkt": [ls.wkt for ls in s.cut_polylines],
-            "width": s.width,
-        }
+    subdomains_blob: dict[str, dict] = {
+        v.id: {"polygon_wkt": v.polygon.wkt, "neighbors": v.neighbors}
+        for v in plan.volumes
+    }
 
     manifest = {
-        "version": 1,
+        "version": 2,
         "perturbation": plan.perturbation,
         "point_tolerance": plan.point_tolerance,
         "physical_names_seen": plan.physical_names_seen,
-        "interface_delimiter": plan.interface_delimiter,
-        "boundary_delimiter": plan.boundary_delimiter,
         "subdomains": subdomains_blob,
-        "phase_order": [
-            [s.id for s in plan.interfaces] + [s.id for s in plan.junctions],
-            [v.id for v in plan.volumes],
-        ],
+        "phase_order": [[v.id for v in plan.volumes]],
     }
     (work_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    # Per-job bundles
     for v in plan.volumes:
         _write_volume_bundle(
             work_dir / "jobs" / v.id,
             v,
             entities,
             mesh_kwargs,
-            point_tolerance=plan.point_tolerance,
-            perturbation=plan.perturbation,
-        )
-    for s in plan.interfaces:
-        _write_seam_bundle(
-            work_dir / "jobs" / s.id,
-            s,
-            entities,
-            mesh_kwargs,
-            role="interface",
-            point_tolerance=plan.point_tolerance,
-            perturbation=plan.perturbation,
-        )
-    for s in plan.junctions:
-        _write_seam_bundle(
-            work_dir / "jobs" / s.id,
-            s,
-            entities,
-            mesh_kwargs,
-            role="junction",
             point_tolerance=plan.point_tolerance,
             perturbation=plan.perturbation,
         )
@@ -564,7 +369,6 @@ def _write_volume_bundle(
                 "id": vol.id,
                 "role": "volume",
                 "dim": 3,
-                "interface_inputs": [],  # populated between phase 1 and 2
                 "neighbors": vol.neighbors,
                 "manifest_ref": "../../manifest.json",
             },
@@ -580,100 +384,21 @@ def _write_volume_bundle(
     )
 
 
-def _write_seam_bundle(
-    job_dir: Path,
-    slab: Slab,
-    entities: list[Any],
-    mesh_kwargs: dict,
-    role: str,
-    point_tolerance: float = 1e-3,
-    perturbation: float = 0.0,
-) -> None:
-    import json
-
-    from meshwell.polysurface import PolySurface
-
-    job_dir.mkdir(parents=True, exist_ok=True)
-    clipped = []
-    for ent in entities:
-        c = _clip_entity_to_polygon(
-            ent,
-            slab.polygon,
-            point_tolerance=point_tolerance,
-            perturbation=perturbation,
-        )
-        if c is not None:
-            clipped.append(c)
-        elif _entity_within(ent, slab.polygon, slab.width) and getattr(
-            ent, "resolutions", None
-        ):
-            clipped.append(_resolution_only_proxy(ent))
-
-    # Add the phantom seam imprint(s) — one PolySurface per cut polyline.
-    # PolySurface produces a single face per polyline (vs PolyPrism, which
-    # would emit two opposite faces of a thin slab). mesh_bool=False keeps
-    # the imprint phantom; downstream filtering picks up the _seam___ tag.
-    for ls in slab.cut_polylines:
-        if len(slab.between) == 2:
-            seam_name = f"_seam___{slab.between[0]}___{slab.between[1]}"
-        else:
-            seam_name = "_seam___" + "___".join(slab.between)
-        # Imprint as a PolySurface stripe straddling the polyline, tagged
-        # keep=False so it is removed at top-dim but its faces inherit the
-        # name. The stripe half-width must stay strictly above
-        # ``point_tolerance`` so PolySurface's
-        # ``set_precision(grid_size=point_tolerance, mode='pointwise')``
-        # does not snap it to a degenerate polygon (which would yield an
-        # empty seam mesh in phase 1).
-        stripe_width = max(slab.width * 0.001, point_tolerance * 2.0)
-        thin = ls.buffer(stripe_width, single_sided=False, cap_style=2, join_style=2)
-        clipped.append(
-            PolySurface(
-                polygons=thin,
-                physical_name=seam_name,
-                mesh_order=0,
-                mesh_bool=False,
-            )
-        )
-
-    (job_dir / "job.json").write_text(
-        json.dumps(
-            {
-                "id": slab.id,
-                "role": role,
-                "dim": 3,
-                "interface_inputs": [],
-                "neighbors": slab.between,
-                "manifest_ref": "../../manifest.json",
-            },
-            indent=2,
-        )
-    )
-    (job_dir / "entities.json").write_text(
-        json.dumps(_serialize_entities(clipped), indent=2)
-    )
-    (job_dir / "subdomain.wkt").write_text(slab.polygon.wkt)
-    (job_dir / "mesh_kwargs.json").write_text(
-        json.dumps(mesh_kwargs, indent=2, default=str)
-    )
-
-
-def _entity_within(entity: Any, mask: Polygon, distance: float) -> bool:
-    if not hasattr(entity, "polygons"):
-        return False
-    polys = entity.polygons if isinstance(entity.polygons, list) else [entity.polygons]
-    return any(p.distance(mask) <= distance for p in polys)
-
-
 def run_job(job_dir: Path) -> None:
-    """Worker entrypoint: read a job bundle and dispatch to ``generate_mesh``.
+    """Worker entrypoint: read a volume job bundle and dispatch to ``generate_mesh``.
 
     Loads ``job.json`` + ``manifest.json`` (resolved relative to ``job_dir``
-    using the bundle's ``manifest_ref``), deserializes ``entities.json`` and
+    via the bundle's ``manifest_ref``), deserializes ``entities.json`` and
     ``mesh_kwargs.json``, then invokes
-    :func:`meshwell.orchestrator.generate_mesh` with the right per-role
-    extra kwargs (``_pre_buffered`` always). Always writes ``result.json``;
-    re-raises on failure so subprocess executors see a non-zero exit.
+    :func:`meshwell.orchestrator.generate_mesh` with ``_pre_buffered=True``,
+    ``_global_physical_names=manifest["physical_names_seen"]``, and
+    ``_hashed_physical_tags=True``. The hashed-tag flag makes the worker
+    emit deterministic, name-derived integer tags so that
+    :func:`stitch_meshes` can rely on stable cross-file tag IDs when it
+    calls ``gmsh.merge``.
+
+    Always writes ``result.json``; re-raises on failure so subprocess
+    executors see a non-zero exit.
     """
     import json
     import time
@@ -692,6 +417,7 @@ def run_job(job_dir: Path) -> None:
     extra: dict[str, Any] = {
         "_pre_buffered": True,
         "_global_physical_names": manifest["physical_names_seen"],
+        "_hashed_physical_tags": True,
     }
 
     t0 = time.time()
@@ -726,75 +452,10 @@ def run_job(job_dir: Path) -> None:
 
 
 def run_plan(work_dir: Path, plan: SubdomainPlan, executor: Executor) -> None:
-    """Drive the two-phase distributed run.
-
-    Phase 1: submit all interface + junction bundles, wait for completion,
-    collect failures. Raise ``RuntimeError("Phase 1 failures: ...")`` if any
-    failed and DO NOT proceed to phase 2.
-
-    Between phases: for each volume bundle, find every Slab in
-    ``plan.interfaces + plan.junctions`` whose ``between`` includes that
-    volume id, link the slab's ``result.msh`` into the volume's
-    ``interface_meshes/`` subdir (falling back to a copy if symlinking is
-    not supported), and append an entry to the volume's
-    ``job.json["interface_inputs"]`` list.
-
-    Phase 2: submit all volume bundles, wait, collect failures, raise if
-    any.
-    """
-    import json
-    import shutil
-
+    """Single-phase scheduler: submit all volume bundles, wait, raise on any failure."""
     work_dir = Path(work_dir)
-
-    # ---- Phase 1: interfaces + junctions ----
-    phase1_ids = [s.id for s in plan.interfaces] + [s.id for s in plan.junctions]
-    futures = {sid: executor.submit(work_dir / "jobs" / sid) for sid in phase1_ids}
+    futures = {v.id: executor.submit(work_dir / "jobs" / v.id) for v in plan.volumes}
     failures: list[tuple[str, str]] = []
-    for sid, f in futures.items():
-        try:
-            res = f.result()
-            if isinstance(res, dict) and res.get("returncode", 0) != 0:
-                failures.append((sid, res.get("stderr", "")))
-        except Exception as e:
-            failures.append((sid, repr(e)))
-    if failures:
-        raise RuntimeError(f"Phase 1 failures: {failures}")
-
-    # ---- Populate volume bundles' interface_inputs ----
-    # ``s.between`` may contain volume ids (interfaces, len=2) or any number
-    # of volume ids (junctions, len>=3). The membership check against
-    # ``seams_by_volume`` (keyed by volume ids) tolerates both cleanly.
-    seams_by_volume: dict[str, list[Slab]] = {v.id: [] for v in plan.volumes}
-    for s in plan.interfaces + plan.junctions:
-        for v_id in s.between:
-            if v_id in seams_by_volume:
-                seams_by_volume[v_id].append(s)
-
-    for vol in plan.volumes:
-        job_path = work_dir / "jobs" / vol.id / "job.json"
-        j = json.loads(job_path.read_text())
-        ifaces = []
-        for s in seams_by_volume[vol.id]:
-            src = work_dir / "jobs" / s.id / "result.msh"
-            dst_dir = work_dir / "jobs" / vol.id / "interface_meshes"
-            dst_dir.mkdir(parents=True, exist_ok=True)
-            dst = dst_dir / f"{s.id}.msh"
-            if dst.exists() or dst.is_symlink():
-                dst.unlink()
-            try:
-                dst.symlink_to(src.resolve())
-            except (OSError, NotImplementedError):
-                # Windows / restricted filesystems: fall back to copy.
-                shutil.copy(src, dst)
-            ifaces.append({"id": s.id, "path": f"interface_meshes/{s.id}.msh"})
-        j["interface_inputs"] = ifaces
-        job_path.write_text(json.dumps(j, indent=2))
-
-    # ---- Phase 2: volumes ----
-    phase2_ids = [v.id for v in plan.volumes]
-    futures = {vid: executor.submit(work_dir / "jobs" / vid) for vid in phase2_ids}
-    failures = []
     for vid, f in futures.items():
         try:
             res = f.result()
@@ -803,7 +464,7 @@ def run_plan(work_dir: Path, plan: SubdomainPlan, executor: Executor) -> None:
         except Exception as e:
             failures.append((vid, repr(e)))
     if failures:
-        raise RuntimeError(f"Phase 2 failures: {failures}")
+        raise RuntimeError(f"Job failures: {failures}")
 
 
 def stitch_meshes(
@@ -841,7 +502,6 @@ def stitch_meshes(
     work_dir = Path(work_dir)
     output_mesh = Path(output_mesh)
 
-    # Step 1+2: read and capture per-file name tables.
     files = []
     for v in plan.volumes:
         path = work_dir / "jobs" / v.id / "result.msh"
@@ -853,70 +513,7 @@ def stitch_meshes(
     if not files:
         raise RuntimeError(f"No volume meshes found under {work_dir}/jobs/")
 
-    # Identify each volume's local materials (dim-3 physical groups whose name
-    # is neither a seam, nor a boundary "X___None", nor a material-material
-    # interface "A___B"). We use these to rewrite the cross-volume seam
-    # group names from "_seam___volume_0000___volume_0001" into the
-    # material-aware "matA___matB" form expected by downstream consumers.
-    delim = plan.interface_delimiter
-
-    def _local_materials(mesh) -> list[str]:
-        mats: list[str] = []
-        for name, arr in (mesh.field_data or {}).items():
-            dim = int(arr[1])
-            if dim != 3:
-                continue
-            if name.startswith("_seam___"):
-                continue
-            if delim in name:
-                # Interface-style names ("A___B" or "A___None") are not
-                # raw materials; materials are bare names.
-                continue
-            mats.append(name)
-        return mats
-
-    vol_materials: dict[str, list[str]] = {vid: _local_materials(m) for vid, m in files}
-
-    # Build a seam-name rewrite table: any field_data key matching
-    # "_seam___<volA>___<volB>" gets a sibling material-aware name (or
-    # several, if a volume hosts multiple materials at the seam).
-    seam_renames: dict[str, list[str]] = {}
-    for s in plan.interfaces + plan.junctions:
-        if len(s.between) < 2:
-            continue
-        seam_key = "_seam___" + "___".join(s.between)
-        # Collect the cartesian product of materials across the involved
-        # volumes; for the common 2-volume interface case this reduces
-        # to one pair "matA___matB". Same-material seams (mat appearing on
-        # both sides) collapse to a single material name (no interface).
-        per_vol_mats = [vol_materials.get(v, []) for v in s.between]
-        if not all(per_vol_mats):
-            continue
-        # For pairwise interfaces, build "A___B" names; for junctions
-        # involving 3+ volumes, build the fully-delimited form.
-        from itertools import product
-
-        names_out: list[str] = []
-        for combo in product(*per_vol_mats):
-            unique = []
-            for c in combo:
-                if c not in unique:
-                    unique.append(c)
-            if len(unique) == 1:
-                # Same material on both sides: not an interface; skip.
-                continue
-            names_out.append(delim.join(unique))
-        if names_out:
-            # de-dup while preserving order
-            seen: set[str] = set()
-            dedup: list[str] = []
-            for n in names_out:
-                if n not in seen:
-                    seen.add(n)
-                    dedup.append(n)
-            seam_renames[seam_key] = dedup
-
-    # Step 3: concatenate points; track per-file node-index offsets.
+    # Concatenate points; track per-file node-index offsets.
     all_points = []
     point_offsets = []
     cur_offset = 0
@@ -926,35 +523,25 @@ def stitch_meshes(
         cur_offset += m.points.shape[0]
     points_concat = np.vstack(all_points) if all_points else np.zeros((0, 3))
 
-    # Step 4: build the unified field_data.
-    # Each (name, dim) combination -> one new tag (per-dim monotonic).
-    # If a name matches a seam-rename key, emit ALL of the rewritten names
-    # (one per material pair) sharing the same per-cell tag remap.
+    # Build the unified field_data: each (name, dim) -> one new tag
+    # (per-dim monotonic).
     name_dim_to_new_tag: dict[tuple[str, int], int] = {}
     next_tag_per_dim: dict[int, int] = {}
-
-    def _names_for(name: str) -> list[str]:
-        if seam_renames.get(name):
-            # Replace the raw _seam___ key with material-aware names.
-            return seam_renames[name]
-        return [name]
-
     for _vid, m in files:
         for name, arr in (m.field_data or {}).items():
             dim = int(arr[1])
-            for emitted in _names_for(name):
-                key = (emitted, dim)
-                if key not in name_dim_to_new_tag:
-                    next_tag_per_dim.setdefault(dim, 0)
-                    next_tag_per_dim[dim] += 1
-                    name_dim_to_new_tag[key] = next_tag_per_dim[dim]
+            key = (name, dim)
+            if key not in name_dim_to_new_tag:
+                next_tag_per_dim.setdefault(dim, 0)
+                next_tag_per_dim[dim] += 1
+                name_dim_to_new_tag[key] = next_tag_per_dim[dim]
 
     field_data = {
         name: np.array([new_tag, dim])
         for (name, dim), new_tag in name_dim_to_new_tag.items()
     }
 
-    # Step 5: concatenate cells; remap old (dim, tag) -> new tag using each
+    # Concatenate cells; remap (dim, old_tag) -> new tag using each
     # file's own field_data lookup table.
     type_to_dim = {
         "vertex": 0,
@@ -979,14 +566,7 @@ def stitch_meshes(
         per_file_oldtag_to_new: dict[tuple[int, int], int] = {}
         for name, arr in (m.field_data or {}).items():
             tag, dim = int(arr[0]), int(arr[1])
-            # When a seam name is rewritten to multiple material-aware
-            # names, the cells get tagged with the first emitted name's
-            # consolidated tag. (For the common 2-volume case this is
-            # the only emitted name.)
-            emitted_first = _names_for(name)[0] if _names_for(name) else name
-            per_file_oldtag_to_new[(dim, tag)] = name_dim_to_new_tag[
-                (emitted_first, dim)
-            ]
+            per_file_oldtag_to_new[(dim, tag)] = name_dim_to_new_tag[(name, dim)]
 
         gmsh_phys = m.cell_data.get("gmsh:physical") if m.cell_data else None
         for block_idx, block in enumerate(m.cells):
@@ -1008,8 +588,8 @@ def stitch_meshes(
                 )
                 cell_data_phys.append(remapped)
 
-    # Step 6: dedup nodes by coordinate (within point_tolerance / 2).
-    # Use a simple bucketed approach: round coords to tolerance, group identical keys.
+    # Dedup nodes by coordinate (within point_tolerance / 2). Bucketed:
+    # round coords to tolerance, group identical keys.
     tol = max(plan.point_tolerance / 2.0, 1e-12)
     quantized = np.round(points_concat / tol).astype(np.int64)
     keys = [tuple(row) for row in quantized]
@@ -1027,7 +607,7 @@ def stitch_meshes(
         meshio.CellBlock(block.type, remap[block.data]) for block in cell_blocks
     ]
 
-    # Step 7: write. gmsh22 because meshio's gmsh4 writer drops field_data.
+    # gmsh22 because meshio's gmsh4 writer drops field_data.
     out = meshio.Mesh(
         points=points_dedup,
         cells=new_cell_blocks,
@@ -1060,34 +640,36 @@ def generate_mesh_distributed(
     subdomains: list[Polygon],
     output_mesh: Path | str,
     work_dir: Path | str,
-    interface_width,
     executor: Executor | None = None,
     keep_bundles: bool = False,
     registry: dict[str, Any] | None = None,
     **mesh_kwargs,
 ) -> None:
-    """Top-level distributed-meshing entrypoint.
+    """Distributed mesh generation: clip -> mesh in parallel -> stitch.
 
-    Wires up the full distributed pipeline:
+    Pipeline:
 
       1. ``deserialize`` — accept either already-instantiated entities or
          their dict form (round-tripped via :func:`meshwell.utils.deserialize`).
       2. Master-side ``prepare_entities`` — apply the global perturbation
-         buffer ONCE here, on the full pre-clip entity list. Workers will
-         receive ``_pre_buffered=True`` and skip a second buffer pass.
-      3. ``build_subdomain_plan`` — derive volume/interface/junction subdomains.
+         buffer ONCE here, on the full pre-clip entity list. Workers receive
+         ``_pre_buffered=True`` and skip a second buffer pass.
+      3. ``build_subdomain_plan`` — derive volume subdomains and validate
+         coverage.
       4. ``write_bundles`` — emit per-job bundle directories under ``work_dir``.
-      5. ``run_plan`` — drive phase 1 (seam meshes) then phase 2 (volumes)
-         through the supplied :class:`Executor` (defaults to
-         :class:`SubprocessExecutor`).
-      6. ``stitch_meshes`` — merge volume meshes, weld seam nodes, consolidate
-         physical groups, write ``output_mesh``.
+      5. ``run_plan`` — submit every volume bundle through the supplied
+         :class:`Executor` (defaults to :class:`SubprocessExecutor`); raise
+         on any failure. Workers mesh independently with hashed physical-
+         group tags so cross-file tag IDs agree by name.
+      6. ``stitch_meshes`` — ``gmsh.merge`` each result.msh + dedup duplicate
+         nodes at shared faces; write ``output_mesh``.
       7. Optional cleanup — when ``keep_bundles`` is False, ``shutil.rmtree``
          the working directory.
 
-    The master applies ``prepare_entities`` in-place; the same mutated list
-    is then handed to :func:`write_bundles`, so workers serialize entities
-    that already carry the buffered geometry.
+    No ``interface_width`` parameter: workers mesh fully independently and
+    the stitch uses ``gmsh.merge`` with hashed tags. Adjacent tiles must
+    share characteristic length on their common face for conformal seams
+    (verified by the spike at tests/test_merge_spike.py).
     """
     import shutil
 
@@ -1113,7 +695,6 @@ def generate_mesh_distributed(
     plan = build_subdomain_plan(
         subdomains=subdomains,
         entities=entities,
-        interface_width=interface_width,
         perturbation=perturbation,
         point_tolerance=point_tolerance,
     )

@@ -296,34 +296,6 @@ def test_clip_polysurface_to_mask():
     assert first.bounds == pytest.approx((0, 0, 5, 1), abs=1e-9)
 
 
-def test_resolution_only_proxy_contributes_no_geometry():
-    import shapely
-
-    from meshwell.distributed import _resolution_only_proxy
-    from meshwell.polyprism import PolyPrism
-
-    prism = PolyPrism(
-        polygons=shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="A",
-        mesh_order=1,
-    )
-    prism.resolutions = ["sentinel"]
-
-    proxy = _resolution_only_proxy(prism)
-    assert proxy.mesh_bool is False
-    assert proxy.resolutions == ["sentinel"]
-    # instanciate_occ returns an empty TopoDS_Compound
-    shape = proxy.instanciate_occ()
-    from OCP.TopoDS import TopoDS_Compound
-
-    assert isinstance(shape, TopoDS_Compound)
-    from OCP.TopAbs import TopAbs_SOLID
-    from OCP.TopExp import TopExp_Explorer
-
-    assert not TopExp_Explorer(shape, TopAbs_SOLID).More()
-
-
 def test_build_subdomain_plan_creates_volume_regions():
     import shapely
 
@@ -340,139 +312,12 @@ def test_build_subdomain_plan_creates_volume_regions():
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.05,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
     assert [v.id for v in plan.volumes] == ["volume_0000", "volume_0001"]
     assert plan.volumes[0].polygon.equals(sd[0])
     assert plan.physical_names_seen == ["mat"]
-
-
-def test_build_subdomain_plan_creates_interface_slabs():
-    import shapely
-
-    from meshwell.distributed import build_subdomain_plan
-    from meshwell.polyprism import PolyPrism
-
-    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
-    prism = PolyPrism(
-        polygons=shapely.box(0, 0, 2, 1),
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="mat",
-        mesh_order=1,
-    )
-    plan = build_subdomain_plan(
-        subdomains=sd,
-        entities=[prism],
-        interface_width=0.1,
-        perturbation=1e-5,
-        point_tolerance=1e-3,
-    )
-    assert len(plan.interfaces) == 1
-    iface = plan.interfaces[0]
-    assert iface.id == "interface_0000"
-    assert sorted(iface.between) == ["volume_0000", "volume_0001"]
-    # Slab is centered on x=1 with half-width 0.05
-    assert iface.polygon.bounds == pytest.approx((0.95, 0.0, 1.05, 1.0), abs=1e-9)
-
-
-def test_build_subdomain_plan_no_interface_for_disjoint_subdomains():
-    import shapely
-
-    from meshwell.distributed import build_subdomain_plan
-    from meshwell.polyprism import PolyPrism
-
-    # Two disjoint subdomains, each covered by its own entity. Coverage check
-    # (Task 14) requires every entity polygon to lie within the subdomain
-    # union, so we use one prism per subdomain rather than one spanning prism.
-    sd = [shapely.box(0, 0, 1, 1), shapely.box(2, 0, 3, 1)]
-    prism_a = PolyPrism(
-        polygons=shapely.box(0, 0, 1, 1),
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="mat",
-        mesh_order=1,
-    )
-    prism_b = PolyPrism(
-        polygons=shapely.box(2, 0, 3, 1),
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="mat",
-        mesh_order=1,
-    )
-    plan = build_subdomain_plan(
-        subdomains=sd,
-        entities=[prism_a, prism_b],
-        interface_width=0.1,
-        perturbation=1e-5,
-        point_tolerance=1e-3,
-    )
-    assert plan.interfaces == []
-
-
-def test_build_subdomain_plan_interface_width_dict():
-    """When interface_width is a dict, look up by (min(i,j), max(i,j))."""
-    import shapely
-
-    from meshwell.distributed import build_subdomain_plan
-    from meshwell.polyprism import PolyPrism
-
-    sd = [shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)]
-    prism = PolyPrism(
-        polygons=shapely.box(0, 0, 2, 1),
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="mat",
-        mesh_order=1,
-    )
-    plan = build_subdomain_plan(
-        subdomains=sd,
-        entities=[prism],
-        interface_width={(0, 1): 0.2},
-        perturbation=1e-5,
-        point_tolerance=1e-3,
-    )
-    assert len(plan.interfaces) == 1
-    assert plan.interfaces[0].width == 0.2
-    # Also accept reversed key
-    plan2 = build_subdomain_plan(
-        subdomains=sd,
-        entities=[prism],
-        interface_width={(1, 0): 0.3},
-        perturbation=1e-5,
-        point_tolerance=1e-3,
-    )
-    assert plan2.interfaces[0].width == 0.3
-
-
-def test_build_subdomain_plan_creates_junction_for_2x2_grid():
-    import shapely
-
-    from meshwell.distributed import build_subdomain_plan, subdomains_from_grid
-    from meshwell.polyprism import PolyPrism
-
-    sd = subdomains_from_grid((0, 0, 2, 2), nx=2, ny=2)
-    prism = PolyPrism(
-        polygons=shapely.box(0, 0, 2, 2),
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="mat",
-        mesh_order=1,
-    )
-    plan = build_subdomain_plan(
-        subdomains=sd,
-        entities=[prism],
-        interface_width=0.1,
-        perturbation=1e-5,
-        point_tolerance=1e-3,
-    )
-    assert len(plan.junctions) == 1
-    j = plan.junctions[0]
-    assert j.id == "junction_0000"
-    # Junction polygon centered on (1, 1), all 4 volumes meet here
-    assert sorted(j.between) == [
-        "volume_0000",
-        "volume_0001",
-        "volume_0002",
-        "volume_0003",
-    ]
 
 
 def test_build_subdomain_plan_rejects_uncovered_entities():
@@ -493,7 +338,6 @@ def test_build_subdomain_plan_rejects_uncovered_entities():
         build_subdomain_plan(
             subdomains=sd,
             entities=[prism],
-            interface_width=0.1,
             perturbation=1e-5,
             point_tolerance=1e-3,
         )
@@ -517,7 +361,6 @@ def test_write_bundles_creates_expected_layout(tmp_path):
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
@@ -527,18 +370,16 @@ def test_write_bundles_creates_expected_layout(tmp_path):
         entities=[prism],
         mesh_kwargs={"default_characteristic_length": 0.5},
     )
-    # Manifest exists.
+    # Manifest exists; v2 uses a single phase containing only volume bundles.
     manifest = json.loads((tmp_path / "manifest.json").read_text())
-    assert manifest["version"] == 1
+    assert manifest["version"] == 2
     assert "volume_0000" in manifest["subdomains"]
-    assert "interface_0000" in manifest["subdomains"]
-    # Phase 1 must contain interface_0000 (a 2x1 grid produces exactly one
-    # pairwise interface and no junctions). Use set-equality so the test
-    # does not depend on list ordering of phase entries.
-    assert set(manifest["phase_order"][0]) == {"interface_0000"}
-    assert sorted(manifest["phase_order"][1]) == ["volume_0000", "volume_0001"]
-    # Per-job files exist.
-    for jid in ["volume_0000", "volume_0001", "interface_0000"]:
+    assert "volume_0001" in manifest["subdomains"]
+    # phase_order is a single phase listing every volume bundle.
+    assert len(manifest["phase_order"]) == 1
+    assert sorted(manifest["phase_order"][0]) == ["volume_0000", "volume_0001"]
+    # Per-job files exist for each volume.
+    for jid in ["volume_0000", "volume_0001"]:
         d = tmp_path / "jobs" / jid
         assert (d / "job.json").exists()
         assert (d / "entities.json").exists()
@@ -564,7 +405,6 @@ def test_run_job_executes_volume_bundle(tmp_path):
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
@@ -597,7 +437,6 @@ def test_cli_run_job_invokes_run_job(tmp_path, monkeypatch):
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
@@ -617,7 +456,6 @@ def test_cli_run_job_invokes_run_job(tmp_path, monkeypatch):
 def test_distributed_module_imports():
     from meshwell.distributed import (
         Executor,
-        Slab,
         SubdomainPlan,
         SubprocessExecutor,
         VolumeRegion,
@@ -627,7 +465,6 @@ def test_distributed_module_imports():
         subdomains_from_grid,
     )
 
-    assert Slab is not None
     assert VolumeRegion is not None
     assert SubdomainPlan is not None
     assert Executor is not None
@@ -659,7 +496,6 @@ def test_in_process_executor_runs_jobs_synchronously(tmp_path):
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
@@ -675,9 +511,7 @@ def test_in_process_executor_runs_jobs_synchronously(tmp_path):
     assert callable(run_job)
 
 
-def test_run_plan_two_phases_completes(tmp_path):
-    import json
-
+def test_run_plan_single_phase_completes(tmp_path):
     import shapely
 
     from meshwell.distributed import (
@@ -698,7 +532,6 @@ def test_run_plan_two_phases_completes(tmp_path):
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
@@ -708,14 +541,9 @@ def test_run_plan_two_phases_completes(tmp_path):
 
     run_plan(tmp_path, plan, executor=InProcessExecutor())
 
-    # Phase 1 result
-    assert (tmp_path / "jobs" / "interface_0000" / "result.msh").exists()
-    # Phase 2 results
+    # Each volume bundle produced a result.msh in the single-phase run.
     for vid in ["volume_0000", "volume_0001"]:
         assert (tmp_path / "jobs" / vid / "result.msh").exists()
-        # Volume job.json should now reference the interface input.
-        j = json.loads((tmp_path / "jobs" / vid / "job.json").read_text())
-        assert j["interface_inputs"], f"{vid} did not get interface_inputs populated"
 
 
 def test_stitch_meshes_produces_one_unified_mesh(tmp_path):
@@ -741,7 +569,6 @@ def test_stitch_meshes_produces_one_unified_mesh(tmp_path):
     plan = build_subdomain_plan(
         subdomains=sd,
         entities=[prism],
-        interface_width=0.1,
         perturbation=1e-5,
         point_tolerance=1e-3,
     )
@@ -782,7 +609,6 @@ def test_generate_mesh_distributed_smoke(tmp_path):
         subdomains=sd,
         output_mesh=out,
         work_dir=work,
-        interface_width=0.1,
         executor=InProcessExecutor(),
         keep_bundles=True,
         default_characteristic_length=0.3,
@@ -830,16 +656,13 @@ def test_distributed_matches_serial_single_material_2x1(tmp_path):
         subdomains=subdomains_from_grid((0, 0, 2, 1), nx=2, ny=1),
         output_mesh=dist_out,
         work_dir=tmp_path / "work",
-        interface_width=0.1,
         executor=InProcessExecutor(),
         default_characteristic_length=0.3,
     )
     d = meshio.read(dist_out)
 
     serial_names = set(s.field_data or {})
-    dist_names = set(d.field_data or {}) - {
-        n for n in (d.field_data or {}) if n.startswith("_seam___")
-    }
+    dist_names = set(d.field_data or {})
     assert serial_names == dist_names
 
 
@@ -880,7 +703,6 @@ def test_distributed_two_materials_shared_interface(tmp_path):
         subdomains=[shapely.box(0, 0, 1, 1), shapely.box(1, 0, 2, 1)],
         output_mesh=out,
         work_dir=tmp_path / "work",
-        interface_width=0.1,
         executor=InProcessExecutor(),
         default_characteristic_length=0.3,
     )
@@ -929,7 +751,6 @@ def test_distributed_rejects_uncovered_subdomains(tmp_path):
             subdomains=[shapely.box(0, 0, 1, 1)],  # x=[1,2] uncovered
             output_mesh=tmp_path / "out.msh",
             work_dir=tmp_path / "work",
-            interface_width=0.1,
             executor=InProcessExecutor(),
         )
 
