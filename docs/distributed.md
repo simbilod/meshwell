@@ -2,16 +2,18 @@
 
 Meshwell can subdivide a polygonal scene into per-subdomain CAD + meshing
 jobs that run in separate processes (or on separate machines via a
-pluggable `Executor` protocol), then stitch the results into one
-unified mesh with conformal seams and consistent physical-group
-tagging.
+pluggable `Executor` protocol), then stitch the resulting per-tile
+meshes into one unified mesh with conformal seams and consistent
+physical-group tagging.
 
 This is the implementation of the "Distributed memory processing with
 domain decomposition" feature mentioned in the README.
 
 See the design spec at
 [`docs/superpowers/specs/2026-04-28-distributed-domain-decomposition-design.md`](superpowers/specs/2026-04-28-distributed-domain-decomposition-design.md)
-for the full architectural rationale.
+for the full architectural rationale (including the v2 amendment) and
+the v2 plan at
+[`docs/superpowers/plans/2026-04-28-distributed-v2.md`](superpowers/plans/2026-04-28-distributed-v2.md).
 
 ## When to use
 
@@ -22,23 +24,33 @@ for the full architectural rationale.
   glue cost (which is bounded by shapely operations on polygons; very
   cheap relative to OCC fragmentation + 3D meshing).
 
-## v1 limitations
+## Limitations
 
-- **Subdomain layouts must be 2-tile strips (`2x1` or `1x2`)**. Strips
-  with N>=3 tiles fail because interior tiles import seam meshes from
-  *both* neighbours, and those two seams share the tile's top/bottom
-  OCC edges — the seeded boundary nodes converge but do not close,
-  producing `"The 1D mesh seems not to be forming a closed loop"`
-  inside gmsh's `generate(3)`. The same root cause excludes 2D grids
-  (`2x2`, `3x3`, ...), where each interior tile has up to 4 seam
-  neighbours. See the spec's "Out (v1 limitation)" section for the
-  v2 fix path (shared-edge node reconciliation across multiple seam
-  imports). v1 use cases: split a single problem into two halves to
-  fit memory or to exploit two CPUs.
-- `interface_width` must be supplied explicitly (no auto-derivation
-  from ResolutionSpec radii in v1).
-- `OCC_entity` instances must be fully contained within a single
-  subdomain (no spanning support in v1).
+The v2 pipeline supports arbitrary `NxM` grids (no corner-tile or
+N>=3 strip restrictions). The narrower limitations are:
+
+- **Adjacent tiles must use the same characteristic length.** The
+  stitch step welds coincident nodes via `removeDuplicateNodes`; if
+  neighbouring tiles mesh their shared face with different sizing,
+  only the corner nodes will weld and the seam will be non-conformal
+  in the interior. Use a single `default_characteristic_length` (or
+  matched `ResolutionSpec`s along shared faces) when conformity
+  matters. Refining one tile globally relative to another is fine
+  away from seams.
+- **Material-material interface naming convention shifts.** In v1
+  (single-CAD), abutting `silicon` and `oxide` materials produced a
+  synthesized `silicon___oxide` interface group. In v2, each tile
+  meshes independently and only sees its own materials, so each tile
+  emits its own `<material>___None` boundary group at subdomain
+  edges. After stitch, the welded face cells stay tagged with their
+  per-tile boundary names — there is no `silicon___oxide` group. Users
+  who need cross-material interface naming should post-process the
+  output mesh to detect coincident face cells from differently-named
+  groups and re-tag them.
+- **`OCC_entity` instances must fit in one subdomain** (unchanged
+  from v1). Master-side clipping is a shapely op; arbitrary OCC
+  callables can't be clipped that way, so spanning-OCC-entity support
+  is deferred.
 
 ## Quick start
 
@@ -65,7 +77,7 @@ oxide = PolyPrism(
     mesh_order=2,
 )
 
-# Strip layout: two tiles, no interior corners (v1-supported).
+# Any NxM grid works in v2; here a 2x1 split.
 subdomains = subdomains_from_grid((0, 0, 2, 1), nx=2, ny=1)
 
 generate_mesh_distributed(
@@ -73,7 +85,6 @@ generate_mesh_distributed(
     subdomains=subdomains,
     output_mesh="merged.msh",
     work_dir="dist_work",
-    interface_width=0.1,
     executor=InProcessExecutor(),     # use SubprocessExecutor() for parallel
     default_characteristic_length=0.3,
 )
@@ -85,46 +96,51 @@ generate_mesh_distributed(
 ┌─────────────────────────────────────────────────────────────────────┐
 │  MASTER                                                             │
 │  1. prepare_entities once globally (perturbation buffer)            │
-│  2. build subdomain plan: volumes, interface slabs, junctions       │
-│  3. clip entities to each subdomain (drop slivers below             │
+│  2. clip entities to each subdomain (drop slivers below             │
 │     point_tolerance²; clip against mask eroded by perturbation      │
 │     to keep buffer halos out of neighbouring subdomains)            │
-│  4. write per-job bundles (entities.json, subdomain.wkt, job.json)  │
+│  3. write per-tile bundles (entities.json, subdomain.wkt, job.json) │
 └─────────────────────────────────────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────┐
-│  PHASE 1: interface meshing (parallel)                              │
-│  Each interface slab gets a phantom seam imprint along the cut      │
-│  polyline, tagged "_seam___volume_i___volume_j". Worker meshes      │
-│  the slab in 3D, exports only the _seam___-tagged surface mesh.     │
+│  WORKERS (parallel)                                                 │
+│  Each tile meshes independently with _hashed_physical_tags=True,    │
+│  so the integer tag for each physical-group name is identical       │
+│  across all per-tile .msh files.                                    │
 └─────────────────────────────────────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────┐
-│  PHASE 2: volume meshing (parallel)                                 │
-│  Each volume worker imports the seam meshes from its neighbours,    │
-│  seeds them onto the matching OCC face via gmsh.model.mesh.addNodes │
-│  with parametric (u,v) coordinates and Mesh.MeshOnlyEmpty=1, then   │
-│  meshes the volume in 3D.                                           │
-└─────────────────────────────────────────────────────────────────────┘
-                                  ↓
-┌─────────────────────────────────────────────────────────────────────┐
-│  MASTER: glue                                                       │
-│  Concatenate all volume_*.msh via meshio (preserves per-file        │
-│  physical-group names through the merge), dedup nodes within        │
-│  point_tolerance/2, consolidate same-named groups across tiles.     │
+│  MASTER: stitch                                                     │
+│  gmsh.merge each per-tile .msh; gmsh auto-unions entities sharing   │
+│  a (dim, tag); removeDuplicateNodes welds coincident nodes at the   │
+│  seams; gmsh.write the unified mesh.                                │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Choosing `interface_width`
+## Why hashed tags
 
-The interface slab needs to be wide enough to capture any
-ResolutionSpec influence that should affect the seam mesh sizing. Rule
-of thumb: pick `interface_width >= 4 * (largest characteristic length
-of any ResolutionSpec near the cut)`. Smaller widths mean the seam
-mesh may not reflect the resolution refinements the ResolutionSpecs
-would have produced in a serial run.
+The stitch step relies on `gmsh.merge`, which loads each per-tile
+`.msh` into one model and unions entities that share a `(dim, tag)`
+key. Without coordination, gmsh assigns physical-group tags based on
+local insertion order, so silicon's tag in `volume_0000.msh` would
+collide with oxide's tag in `volume_0001.msh` and the merged mesh
+would have the wrong material everywhere.
 
-In v2, this will be auto-derived; for v1 it is a required input.
+To avoid this, workers run with `_hashed_physical_tags=True`. After
+the local mesh is built, every physical group is re-tagged using
+`_name_to_tag(name, dim) = sha1("<dim>:<name>") mod 1_000_000`. The
+result is deterministic across processes, runs, and machines: every
+file calls silicon at dim=3 the same integer. After `gmsh.merge`,
+gmsh consolidates by `(dim, tag)` so silicon from all tiles ends up
+in one physical group named "silicon". No post-merge consolidation
+pass is needed.
+
+The 1,000,000 tag space is chosen to sit safely above gmsh's
+auto-tag range (which starts at 1 and grows with the model), so
+hash-derived tags don't collide with internally-generated tags
+during merge. The empirical merge spike at `tests/test_merge_spike.py`
+validates that this approach handles arbitrary `NxM` grids without
+seam meshes or OCC face seeding.
 
 ## Plugging a custom Executor
 
@@ -167,28 +183,13 @@ with a debugger.
 
 ## Architectural notes
 
-- **OCC face seeding via parametric `addNodes`.** Phase-2 workers do
-  not use `gmsh.merge` + `gmsh.model.mesh.embed` (which fails for
-  cross-kernel imports — see the R3 spike at
-  `tests/test_distributed_spike.py`). Instead they read the seam
-  `.msh` directly, compute parametric `(u, v)` coordinates on the OCC
-  face via `gmsh.model.getParametrization`, and inject nodes +
-  triangles via `gmsh.model.mesh.addNodes` + `addElementsByType`. The
-  spike test pins the working recipe so future gmsh upgrades that
-  break it are caught.
 - **Master-side perturbation + eroded-mask clipping.** The master
   buffers all polygons by `perturbation` (1e-5 default) once globally
   for fragmentation robustness, then clips each entity to a
   subdomain mask eroded inward by the same `perturbation`. This
   prevents buffer halos from leaking into adjacent subdomains and
   spuriously erasing materials there.
-- **Seam imprint via PolySurface.** Each cut polyline is imprinted in
-  the phase-1 slab CAD as a phantom `keep=False` PolySurface tagged
-  `_seam___volume_i___volume_j`. The seam stripe is widened to
-  `max(slab.width * 0.001, point_tolerance * 2)` to survive shapely
-  precision snapping.
-- **meshio-based stitch.** The final merge uses meshio rather than
-  `gmsh.merge` because gmsh.merge collides physical-group tag IDs
-  across files (only the first file's name survives). meshio's
-  `field_data` carries names per-file and is consolidated by name in
-  the master.
+- **gmsh.merge + removeDuplicateNodes.** v1 used a meshio-based stitch
+  to work around `gmsh.merge`'s physical-group tag collisions. v2
+  fixes the collision at the source (hashed tags) and goes back to
+  `gmsh.merge`, which is faster and preserves OCC topology hints.

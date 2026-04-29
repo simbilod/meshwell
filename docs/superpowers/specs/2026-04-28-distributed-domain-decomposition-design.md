@@ -732,3 +732,84 @@ all be present in both).
   fully contained within a single subdomain (validated at plan time
   via their bounding box hint); spanning-OCC-entity support is
   deferred.
+
+---
+
+## v2 amendment (2026-04-28)
+
+The v1 design above is preserved as historical record. The pipeline
+that actually shipped is the v2 single-phase design described here and
+in [`docs/superpowers/plans/2026-04-28-distributed-v2.md`](../plans/2026-04-28-distributed-v2.md).
+
+### Why we replaced the v1 pipeline
+
+The v1 two-phase design (mesh seam slabs in phase 1, seed those node
+sets onto each volume's OCC face in phase 2) hit a hard limit at
+interior corners: any volume that imports 2+ adjacent seam meshes
+whose boundary edges meet at a corner caused gmsh's `generate(3)` to
+enter an infinite recovery loop (`"The 1D mesh seems not to be
+forming a closed loop"`). This excluded all `NxM` grids with N or
+M >= 3, and all 2D grids with interior junctions (2x2, 3x3, ...).
+
+The empirical merge spike at `tests/test_merge_spike.py` validated
+that a much simpler approach works: independently mesh each tile,
+then weld with `gmsh.merge` + `removeDuplicateNodes`. The catch is
+that `gmsh.merge` collides physical-group tags across files (only the
+first file's name survives at any given integer tag). The fix is to
+deterministically hash physical-group names to integer tags before
+each per-tile write, so silicon at `dim=3` always lands on the same
+tag everywhere; after `gmsh.merge`, gmsh auto-unions all tiles'
+silicon entities into one group.
+
+### What changed
+
+- **Single-phase scheduler.** No phase-1 seam meshing, no phase-2
+  OCC seeding. All workers mesh their tile independently in parallel.
+- **Hashed physical-group tags.** `_name_to_tag(name, dim) =
+  sha1("<dim>:<name>") mod 1_000_000` (max with 1). Plumbed through
+  `meshwell.mesh()` as `_hashed_physical_tags=True`. Workers always
+  enable it.
+- **gmsh.merge stitch.** Replaces the v1 meshio-based stitch (which
+  worked around the tag collision by reading per-file `field_data`).
+  v2 uses `gmsh.merge` directly + `removeDuplicateNodes` for seam
+  conformity.
+- **Dead-code removal.** `_emit_only_seam_surfaces`,
+  `_interface_constraints`, `_seed_occ_face_from_seam`,
+  `_filter_msh_to_seam_groups`, `_resolution_only_proxy`, the `Slab`
+  dataclass, junction detection, and the two-phase `run_plan` are all
+  gone. The OCC-seeding spike at `tests/test_distributed_spike.py`
+  is kept as a historical artefact pinning what we tried.
+
+### Convention shift
+
+In v1 (single-CAD), abutting `silicon` and `oxide` materials produced
+a synthesized `silicon___oxide` interface group. In v2, each tile
+meshes independently and only sees its own materials, so each tile
+emits its own `<material>___None` boundary group at subdomain edges.
+After stitch, the welded face cells stay tagged with their per-tile
+boundary names — there is **no** synthesized `silicon___oxide` group.
+Users who need cross-material interface naming should post-process
+the output mesh to detect coincident face cells from differently-
+named groups and re-tag them under the meshwell `A___B` convention.
+
+### Narrower limitations
+
+- **Adjacent tiles must use the same characteristic length** for
+  conformal seams. `removeDuplicateNodes` welds coincident nodes; if
+  neighbouring tiles mesh their shared face with different sizing,
+  only the corner nodes weld and the seam goes non-conformal in the
+  interior. Use a single `default_characteristic_length` (or matched
+  `ResolutionSpec`s along shared faces) when conformity matters.
+- The `interface_width` parameter is **gone** (no seam slabs in v2).
+- `OCC_entity` spanning still deferred (unchanged from v1).
+
+### NxM coverage proof
+
+`tests/test_distributed.py` exercises:
+
+- 2x1 same-material consolidation (matches serial inventory).
+- 2x1 cross-material (silicon/oxide) — verifies the convention shift.
+- 2x2 with interior corner — 4 distinct materials.
+- 2x2 single-material consolidation across 4 tiles.
+- 3x3 alternating materials.
+- 4x1 strip (N>=3 strip — v1 limit gone).

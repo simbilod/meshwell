@@ -18,7 +18,6 @@ Robust, efficient Python-based 2.5D meshing.
 * Simplified remeshing with [MMG](https://github.com/MmgTools/MMG)
 * Distributed memory processing with domain decomposition
   ([guide](docs/distributed.md))
-  (v1: strip layouts only — see guide for limitations)
 * (Planned) Hybrid structured / unstructured meshes
 
 ## 📦 Installation
