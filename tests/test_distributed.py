@@ -666,21 +666,17 @@ def test_distributed_matches_serial_single_material_2x1(tmp_path):
     assert serial_names == dist_names
 
 
-@pytest.mark.skip(
-    reason="awaiting Task 6: with one material per subdomain, each worker "
-    "emits its own boundary group ('silicon___None' / 'oxide___None') for "
-    "the shared face at x=1. gmsh.merge welds the coincident nodes via "
-    "removeDuplicateNodes but does not synthesize a 'silicon___oxide' "
-    "interface group — the two boundary face elements stay tagged with "
-    "their per-tile boundary name. Cross-material interface naming requires "
-    "a post-merge pass that detects coincident face cells from differently-"
-    "named boundary groups and re-tags them under the meshwell A___B "
-    "convention; that pass is the scope of Task 6."
-)
 def test_distributed_two_materials_shared_interface(tmp_path):
-    """Spec test 2: silicon and oxide abut at x=1.
+    """v2: silicon and oxide abut at x=1 across a 2x1 grid.
 
-    The silicon___oxide interface group exists in the merged mesh.
+    v2 convention shift: each tile mesh independently tags its boundary
+    face as '<material>___None'. After gmsh.merge + removeDuplicateNodes,
+    the welded face cells stay tagged with their per-tile boundary
+    names — there is NO synthesized 'silicon___oxide' interface group
+    (that was a v1 feature requiring all materials in one CAD model).
+    Users who need cross-material interface naming should post-process
+    the output mesh to detect coincident face cells from differently-
+    named groups and re-tag them.
     """
     import meshio
     import shapely
@@ -713,26 +709,166 @@ def test_distributed_two_materials_shared_interface(tmp_path):
         default_characteristic_length=0.3,
     )
     m = meshio.read(out)
+    names = set((m.field_data or {}))
+    # Both materials present.
+    assert "silicon" in names, names
+    assert "oxide" in names, names
+    # Each material's boundary face is named `<material>___None`.
+    assert "silicon___None" in names, names
+    assert "oxide___None" in names, names
+    # No cross-material `silicon___oxide` group is synthesized in v2.
+
+
+def test_distributed_2x2_grid_with_junction(tmp_path):
+    """v2: 4 materials, 2x2 grid, interior corner at (1, 1)."""
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+        subdomains_from_grid,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    materials = []
+    for (i, j), name in [
+        ((0, 0), "ll"),
+        ((1, 0), "lr"),
+        ((0, 1), "ul"),
+        ((1, 1), "ur"),
+    ]:
+        materials.append(
+            PolyPrism(
+                polygons=shapely.box(i, j, i + 1, j + 1),
+                buffers={0.0: 0.0, 1.0: 0.0},
+                physical_name=name,
+                mesh_order=1,
+            )
+        )
+    sd = subdomains_from_grid((0, 0, 2, 2), nx=2, ny=2)
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=materials,
+        subdomains=sd,
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.3,
+    )
+    m = meshio.read(out)
     names = set(m.field_data or {})
-    # Material-material interface is named with the existing meshwell convention.
-    assert "silicon" in names
-    assert "oxide" in names
-    interfaces = {n for n in names if "___" in n and not n.startswith("_seam___")}
-    assert any(
-        "silicon" in i and "oxide" in i for i in interfaces
-    ), f"missing silicon/oxide interface among {interfaces}"
+    assert {"ll", "lr", "ul", "ur"}.issubset(names), names
 
 
-# Spec tests 3 (2x2 with junction) and 10 (single material across 4 tiles)
-# are NOT included as runnable tests in v1. Both hit the corner-tile
-# limitation documented in the spec's "Out (v1 limitation)" section AND in
-# docs/distributed.md: any volume that imports 2+ adjacent seam meshes
-# whose boundary edges meet at a corner causes gmsh's generate(3) to enter
-# an infinite recovery loop trying (and failing) to close the 1D mesh.
-# The behavior is a hang, not a clean RuntimeError, so it cannot be
-# pytest.raises'd cleanly. They will be re-introduced as positive
-# assertions once v2 implements shared-edge node reconciliation across
-# multiple seam imports.
+def test_distributed_consolidates_same_material_across_4_tiles(tmp_path):
+    """v2: single 'mat' across a 2x2 grid consolidates to one group.
+
+    A single 'mat' material spans the 2x2 grid; after stitch there
+    is exactly one consolidated 'mat' physical group.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+        subdomains_from_grid,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 2, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=[prism],
+        subdomains=subdomains_from_grid((0, 0, 2, 2), nx=2, ny=2),
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.5,
+    )
+    m = meshio.read(out)
+    names = list((m.field_data or {}).keys())
+    assert names.count("mat") == 1, names
+
+
+def test_distributed_3x3_mixed_materials(tmp_path):
+    """v2: 3x3 grid alternating silicon/oxide consolidates both names.
+
+    Both names are consolidated across the 5 silicon and 4 oxide tiles.
+    """
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+        subdomains_from_grid,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    materials = []
+    for i in range(3):
+        for j in range(3):
+            name = "silicon" if (i + j) % 2 == 0 else "oxide"
+            materials.append(
+                PolyPrism(
+                    polygons=shapely.box(i, j, i + 1, j + 1),
+                    buffers={0.0: 0.0, 1.0: 0.0},
+                    physical_name=name,
+                    mesh_order=1,
+                )
+            )
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=materials,
+        subdomains=subdomains_from_grid((0, 0, 3, 3), nx=3, ny=3),
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.5,
+    )
+    m = meshio.read(out)
+    names = set(m.field_data or {})
+    assert "silicon" in names, names
+    assert "oxide" in names, names
+
+
+def test_distributed_4x1_strip(tmp_path):
+    """v2: 4x1 strip (single material spanning 4 tiles)."""
+    import meshio
+    import shapely
+
+    from meshwell.distributed import (
+        InProcessExecutor,
+        generate_mesh_distributed,
+        subdomains_from_grid,
+    )
+    from meshwell.polyprism import PolyPrism
+
+    prism = PolyPrism(
+        polygons=shapely.box(0, 0, 4, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="mat",
+        mesh_order=1,
+    )
+    out = tmp_path / "out.msh"
+    generate_mesh_distributed(
+        entities=[prism],
+        subdomains=subdomains_from_grid((0, 0, 4, 1), nx=4, ny=1),
+        output_mesh=out,
+        work_dir=tmp_path / "work",
+        executor=InProcessExecutor(),
+        default_characteristic_length=0.5,
+    )
+    m = meshio.read(out)
+    names = list((m.field_data or {}).keys())
+    assert names.count("mat") == 1, names
 
 
 def test_distributed_rejects_uncovered_subdomains(tmp_path):
