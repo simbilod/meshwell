@@ -203,22 +203,32 @@ class CAD_OCC:
         b1: tuple[float, ...],
         b2: tuple[float, ...],
     ) -> bool:
-        """Return True iff the two AABB tuples have overlapping volume.
+        """Return True iff the two AABBs overlap or touch.
 
-        Uses a small gap tolerance (``self.fuzzy_value``) so entities
-        that only TOUCH (shared face, zero-volume overlap) are NOT cut
-        against each other. Touching entities are handled correctly by the
-        subsequent ``BOPAlgo_Builder`` fragment pass; cutting them first
-        with ``BRepAlgoAPI_Cut`` would split non-overlapping faces.
+        Plain AABB intersection. Disjoint shapes (with separated AABBs)
+        skip the cut; overlapping AND touching shapes both proceed to
+        ``BRepAlgoAPI_Cut`` -- mirroring cad_gmsh's unconditional cut.
+
+        Earlier versions used ``gap = self.fuzzy_value`` to skip pairs
+        that "only touch" (shared face, zero-volume overlap). That
+        decision was wrong on two counts: (1) ``fuzzy_value`` defaults
+        to ``point_tolerance = 1e-3``, which is 50x larger than the
+        ~2e-5 perturbation-induced volumetric overlap, so REAL
+        overlapping pairs were classified as "touching" and the cut
+        cascade silently became a no-op for those pairs (BOPAlgo_Builder
+        had to resolve all overlaps in the final fragment, producing
+        unclean interfaces); (2) cutting genuinely-touching pairs is
+        actually desirable -- it splits the boundary face along the
+        contact, which the subsequent fragment then merges into a
+        shared TShape, giving cleanly uniquified interfaces.
         """
-        gap = self.fuzzy_value
         return (
-            b1[0] < b2[3] - gap
-            and b1[3] > b2[0] + gap
-            and b1[1] < b2[4] - gap
-            and b1[4] > b2[1] + gap
-            and b1[2] < b2[5] - gap
-            and b1[5] > b2[2] + gap
+            b1[0] <= b2[3]
+            and b1[3] >= b2[0]
+            and b1[1] <= b2[4]
+            and b1[4] >= b2[1]
+            and b1[2] <= b2[5]
+            and b1[5] >= b2[2]
         )
 
     def _instantiate_entity_occ(
