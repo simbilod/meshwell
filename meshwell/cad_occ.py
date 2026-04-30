@@ -36,12 +36,10 @@ from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
 from OCP.BOPAlgo import BOPAlgo_Builder
-from OCP.BRep import BRep_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
@@ -398,28 +396,33 @@ class CAD_OCC:
                         tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
-                cb = BRep_Builder()
-                tool_compound = TopoDS_Compound()
-                cb.MakeCompound(tool_compound)
-                for s in tool_shapes:
-                    cb.Add(tool_compound, s)
-
-                cut_shapes = []
-                for s in labeled.shapes:
-                    try:
-                        cut_op = BRepAlgoAPI_Cut(s, tool_compound)
-                        result = cut_op.Shape()
-                    except Exception as e:  # pragma: no cover -- defensive
-                        print(
-                            f"Warning: BRepAlgoAPI_Cut failed for entity "
-                            f"{orig_idx}: {e}"
-                        )
-                        result = s
-                    if result is not None:
-                        # Flatten compound wrapper so BOPAlgo_Builder.Modified()
-                        # can track sub-shape provenance correctly.
-                        cut_shapes.extend(self._unwrap_shape(result, labeled.dim))
-                labeled.shapes = cut_shapes
+                # Sequential per-tool cuts. Bundling all tools into a single
+                # ``TopoDS_Compound`` and calling ``BRepAlgoAPI_Cut`` once was
+                # observed to produce empty results (zero SOLIDs) for large
+                # background bodies like a substrate cut against a compound
+                # of ~10 metal+helper bodies, even though the same body
+                # against each tool individually retains 1 SOLID per cut.
+                # Sequential cutting matches gmsh.model.occ.cut(obj, [tools])
+                # which iterates internally.
+                shapes = list(labeled.shapes)
+                for ts in tool_shapes:
+                    new_shapes: list[TopoDS_Shape] = []
+                    for s in shapes:
+                        try:
+                            cut_op = BRepAlgoAPI_Cut(s, ts)
+                            result = cut_op.Shape()
+                        except Exception as e:  # pragma: no cover -- defensive
+                            print(
+                                f"Warning: BRepAlgoAPI_Cut failed for entity "
+                                f"{orig_idx}: {e}"
+                            )
+                            result = s
+                        if result is not None:
+                            # Flatten compound wrapper so BOPAlgo_Builder.Modified()
+                            # can track sub-shape provenance correctly.
+                            new_shapes.extend(self._unwrap_shape(result, labeled.dim))
+                    shapes = new_shapes
+                labeled.shapes = shapes
 
             instantiated[orig_idx] = labeled
 
