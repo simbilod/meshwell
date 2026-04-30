@@ -38,6 +38,7 @@ from OCP.Bnd import Bnd_Box
 from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
@@ -196,6 +197,36 @@ class CAD_OCC:
             return None
         return box.Get()
 
+    def _shapes_actually_overlap(self, s1: TopoDS_Shape, s2: TopoDS_Shape) -> bool:
+        """Return True iff two shapes are within ``fuzzy_value`` of touching.
+
+        AABB overlap is necessary but not sufficient for non-convex
+        geometry such as annular sectors, L-shapes, or any body whose
+        bounding box is much larger than its actual material region. For
+        a 90-degree annular sector at r in [14, 17], the AABB covers the
+        full upper-right quadrant of [0, 17]^2, which AABB-overlaps with
+        any other body in that quadrant -- even ones that share no
+        material with the sector.
+
+        Calling ``BRepAlgoAPI_Cut`` on AABB-overlapping but
+        volumetrically-disjoint shapes is unsafe: OCC has been observed
+        to silently SPLIT the object (returning a Compound of multiple
+        SOLIDs where the input was one) and to leave duplicate face
+        TShapes in the result. Subsequent fragment + meshing then
+        produces malformed solids whose volumes silently fail to
+        tetrahedralize.
+
+        ``BRepExtrema_DistShapeShape`` measures the true minimum
+        distance between two shapes; if it exceeds ``fuzzy_value`` the
+        shapes are definitively disjoint and the cut would be a no-op
+        modulo numerical noise.
+        """
+        ext = BRepExtrema_DistShapeShape(s1, s2)
+        ext.Perform()
+        if not ext.IsDone():
+            return True
+        return ext.Value() <= self.fuzzy_value
+
     def _bboxes_overlap(
         self,
         b1: tuple[float, ...],
@@ -326,6 +357,44 @@ class CAD_OCC:
 
         return entities
 
+    def process_entities_instantiate_only(
+        self,
+        entities_list: list[Any],
+    ) -> list[OCCLabeledEntity]:
+        """Run prepare + sort + instantiate. No cut, no fragment.
+
+        This is the cleanest hand-off point for the gmsh-cut+fragment
+        pipeline: OCP just builds the per-entity TopoDS_Shape (which is
+        the OCP perf advantage) and gmsh handles all subsequent BOP
+        (cut cascade + fragment). Skips OCP's BRepAlgoAPI_Cut entirely,
+        which has been observed to produce topology that gmsh's PLC
+        mesher rejects (sliver faces around arc/rect cuts) -- gmsh's own
+        ``gmsh.model.occ.cut`` doesn't have this problem.
+        """
+        if not entities_list:
+            return []
+
+        from meshwell.cad_common import prepare_entities
+
+        prepare_entities(
+            entities_list,
+            perturbation=self.perturbation,
+            resolve_snap=max(self.perturbation, self.point_tolerance),
+        )
+
+        indexed = list(enumerate(entities_list))
+        indexed.sort(
+            key=lambda pair: (
+                pair[1].mesh_order if pair[1].mesh_order is not None else float("inf"),
+                pair[0],
+            )
+        )
+
+        instantiated: list[OCCLabeledEntity | None] = [None] * len(entities_list)
+        for orig_idx, ent in indexed:
+            instantiated[orig_idx] = self._instantiate_entity_occ(orig_idx, ent)
+        return [le for le in instantiated if le is not None]
+
     def process_entities_cut_only(
         self,
         entities_list: list[Any],
@@ -390,10 +459,22 @@ class CAD_OCC:
                     continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
-                    if tb is not None and any(
-                        self._bboxes_overlap(ob, tb) for ob in obj_bboxes
+                    if tb is None:
+                        continue
+                    if not any(self._bboxes_overlap(ob, tb) for ob in obj_bboxes):
+                        continue
+                    # AABB overlap is too coarse for non-convex shapes
+                    # (annular sectors, L-shapes). Confirm a real
+                    # geometric overlap before cutting -- BRepAlgoAPI_Cut
+                    # on AABB-overlapping but volume-disjoint shapes can
+                    # silently split the object into multiple SOLIDs and
+                    # produce duplicate face TShapes that prevent
+                    # downstream meshing.
+                    if not any(
+                        self._shapes_actually_overlap(s, ts) for s in labeled.shapes
                     ):
-                        tool_shapes.append(ts)
+                        continue
+                    tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
                 # Sequential per-tool cuts. Bundling all tools into a single
@@ -404,25 +485,40 @@ class CAD_OCC:
                 # against each tool individually retains 1 SOLID per cut.
                 # Sequential cutting matches gmsh.model.occ.cut(obj, [tools])
                 # which iterates internally.
-                shapes = list(labeled.shapes)
-                for ts in tool_shapes:
-                    new_shapes: list[TopoDS_Shape] = []
-                    for s in shapes:
-                        try:
-                            cut_op = BRepAlgoAPI_Cut(s, ts)
-                            result = cut_op.Shape()
-                        except Exception as e:  # pragma: no cover -- defensive
-                            print(
-                                f"Warning: BRepAlgoAPI_Cut failed for entity "
-                                f"{orig_idx}: {e}"
-                            )
-                            result = s
-                        if result is not None:
-                            # Flatten compound wrapper so BOPAlgo_Builder.Modified()
-                            # can track sub-shape provenance correctly.
-                            new_shapes.extend(self._unwrap_shape(result, labeled.dim))
-                    shapes = new_shapes
-                labeled.shapes = shapes
+                from OCP.TopTools import TopTools_ListOfShape
+
+                # Single Cut() with all tools as a TopTools_ListOfShape --
+                # matches gmsh.model.occ.cut(obj, [tools]) semantics.
+                # Bundling all tools into a TopoDS_Compound and calling
+                # ``BRepAlgoAPI_Cut(s, compound)`` (the original code) was
+                # observed to produce empty results (zero SOLIDs) for
+                # large bodies cut against ~10 small ones, even though
+                # the same body against each tool individually works.
+                new_shapes: list[TopoDS_Shape] = []
+                for s in labeled.shapes:
+                    try:
+                        cut_op = BRepAlgoAPI_Cut()
+                        args = TopTools_ListOfShape()
+                        args.Append(s)
+                        tools = TopTools_ListOfShape()
+                        for ts in tool_shapes:
+                            tools.Append(ts)
+                        cut_op.SetArguments(args)
+                        cut_op.SetTools(tools)
+                        cut_op.SetFuzzyValue(self.fuzzy_value)
+                        cut_op.Build()
+                        result = cut_op.Shape()
+                    except Exception as e:  # pragma: no cover -- defensive
+                        print(
+                            f"Warning: BRepAlgoAPI_Cut failed for entity "
+                            f"{orig_idx}: {e}"
+                        )
+                        result = s
+                    if result is not None:
+                        # Flatten compound wrapper so BOPAlgo_Builder.Modified()
+                        # in the final fragment pass tracks sub-shape provenance.
+                        new_shapes.extend(self._unwrap_shape(result, labeled.dim))
+                labeled.shapes = new_shapes
 
             instantiated[orig_idx] = labeled
 
@@ -499,43 +595,43 @@ def cad_occ_with_gmsh_fragment(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
 ) -> tuple[list[Any], Any]:
-    """OCP cut cascade + gmsh fragment + tag, returning a meshable gmsh model.
+    """OCP instantiate + gmsh cut+fragment+tag, returning a meshable gmsh model.
 
     Splits the work between the two backends to combine OCP's faster
-    sequential cut with gmsh's more robust fragment + boundary-tagging:
+    instantiation with gmsh's robust BOP + boundary-tagging:
 
-    1. **OCP phase** -- prepare, sort by mesh_order, instantiate and
-       sequential-cut every entity (no fragment yet).
-    2. **Bridge** -- serialize the post-cut shapes to a temporary XAO
-       in ``bridge_mode`` (only synthetic per-entity solid groups, no
-       interfaces) and ``gmsh.merge`` into a fresh ``ModelManager``.
-    3. **gmsh phase** -- map the imported physical groups back to
-       per-entity dimtags, then run the existing ``cad_gmsh`` fragment +
-       ``getBoundary``-driven interface tagging + keep=False removal.
+    1. **OCP phase** -- prepare + sort by mesh_order + instantiate every
+       entity (no cut, no fragment). OCP's perf advantage is in
+       instantiation; doing the cut in OCP produces topology that gmsh's
+       PLC mesher rejects (sliver faces around arc/rect cuts produce
+       silent 0-tetra meshed volumes), so cuts move to gmsh.
+    2. **Bridge** -- serialize the per-entity TopoDS_Shape to a
+       temporary XAO with synthetic ``__cad_occ_bridge_idx_<i>__`` group
+       names and ``gmsh.merge`` into a fresh ``ModelManager``.
+    3. **gmsh phase** -- map physical groups back to per-entity dimtags,
+       then run the existing ``cad_gmsh`` cut cascade + fragment +
+       ``getBoundary`` tagging + keep=False removal. Cuts use
+       ``gmsh.model.occ.cut`` which produces clean, mesher-friendly
+       topology where ``BRepAlgoAPI_Cut`` does not.
 
     Returns ``(labeled, model_manager)`` exactly like
     :func:`meshwell.cad_gmsh.cad_gmsh`, so downstream
-    :func:`meshwell.mesh.mesh` calls are identical. Use this when you
-    want OCP's cut performance and gmsh's interface-tagging robustness
-    in one pipeline.
+    :func:`meshwell.mesh.mesh` calls are identical.
     """
     import tempfile
 
     from meshwell.cad_gmsh import CAD_GMSH, GMSHLabeledEntity
     from meshwell.occ_xao_writer import parse_bridge_group_index, write_xao
 
-    # ----- OCP phase -------------------------------------------------------
+    # ----- OCP phase: instantiate only (no cut, no fragment) --------------
     ocp_processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
         fuzzy_value=fuzzy_value,
         perturbation=perturbation,
     )
-    ocp_labeled = ocp_processor.process_entities_cut_only(
-        entities_list, progress_bars=progress_bars
-    )
+    ocp_labeled = ocp_processor.process_entities_instantiate_only(entities_list)
     if not ocp_labeled:
-        # Build an empty model so callers can still pass model_manager on.
         gmsh_proc = CAD_GMSH(
             point_tolerance=point_tolerance,
             n_threads=n_threads,
@@ -546,7 +642,7 @@ def cad_occ_with_gmsh_fragment(
         gmsh_proc.model_manager.ensure_initialized(filename)
         return [], gmsh_proc.model_manager
 
-    # ----- Bridge ----------------------------------------------------------
+    # ----- Bridge: write XAO of raw shapes, gmsh.merge --------------------
     bridge_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".xao", delete=False, mode="w") as tf:
@@ -563,26 +659,20 @@ def cad_occ_with_gmsh_fragment(
         gmsh_proc.model_manager.ensure_initialized(filename)
         gmsh.merge(bridge_path)
         gmsh_proc.model_manager.sync_model()
-        # Bump the model's BOP tolerance so gmsh's fragment detects
-        # coincidence between solids the OCP cut cascade left as
-        # topologically independent (their touching faces have distinct
-        # TShapes after import). The default ``perturbation/2`` is too
-        # tight for this -- the OCP-built cut faces can drift by up to
-        # ~OCC's internal precision (~1e-7), and faces below the BOP
-        # fuzzy don't get merged. Match cad_gmsh's gmsh-only path's
-        # observable behaviour by widening fuzzy to point_tolerance for
-        # the post-import fragment.
+        # OCP-built shapes imported via XAO arrive as topologically-
+        # independent solids whose touching faces have distinct TShapes.
+        # gmsh.model.occ.cut + fragment need a sufficiently wide BOP
+        # tolerance to detect geometric coincidence and merge them; the
+        # default ``perturbation/2`` (5e-6) is too tight when OCP-side
+        # numerics drift the imported faces by ~1e-7. ``point_tolerance``
+        # (1e-3) is what cad_gmsh uses successfully on the same scenes.
         gmsh.option.setNumber("Geometry.ToleranceBoolean", point_tolerance)
     finally:
         with contextlib.suppress(OSError):
             if bridge_path:
                 Path(bridge_path).unlink()
 
-    # ----- Map gmsh dimtags back to original entities ----------------------
-    # gmsh's XAO importer registers each <group> as a physical group with
-    # its original name. Our bridge writer used synthetic
-    # ``__cad_occ_bridge_idx_<i>__`` names, so each physical group's name
-    # tells us the original entity index.
+    # ----- Map gmsh dimtags back to original entities ---------------------
     index_to_dimtags: dict[int, list[tuple[int, int]]] = {}
     for dim, tag in gmsh.model.getPhysicalGroups():
         name = gmsh.model.getPhysicalName(dim, tag)
@@ -593,13 +683,10 @@ def cad_occ_with_gmsh_fragment(
             (dim, t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
         ]
         index_to_dimtags.setdefault(idx, []).extend(ent_dimtags)
-        # Drop the synthetic bridge group so it doesn't end up in the
-        # final mesh's physical names.
         gmsh.model.removePhysicalGroups([(dim, tag)])
     gmsh_proc.model_manager.sync_model()
 
-    # Build GMSHLabeledEntity list following cad_gmsh's __#index suffix
-    # convention (so _tag_entities behaves exactly as in the gmsh-only path).
+    # Build GMSHLabeledEntity list with __#index suffix, in original order.
     gmsh_entities: list[GMSHLabeledEntity] = []
     for orig_idx, ent in enumerate(entities_list):
         dimtags = index_to_dimtags.get(orig_idx, [])
@@ -621,7 +708,41 @@ def cad_occ_with_gmsh_fragment(
             )
         )
 
-    # ----- gmsh phase: fragment + tag + cleanup ---------------------------
+    # ----- gmsh phase: cut cascade + fragment + tag + cleanup -------------
+    # Replicate cad_gmsh.process_entities's sequential cut: sort by
+    # mesh_order, then cut each entity's dimtags against all previously-
+    # processed same-dim tools via gmsh.model.occ.cut. This is the part
+    # that produces clean topology gmsh's mesher accepts (BRepAlgoAPI_Cut
+    # in OCP does not).
+    indexed_gmsh = sorted(
+        enumerate(gmsh_entities),
+        key=lambda p: (
+            p[1].mesh_order if p[1].mesh_order is not None else float("inf"),
+            p[0],
+        ),
+    )
+    processed: list[GMSHLabeledEntity] = []
+    for _, ent in indexed_gmsh:
+        if ent.dimtags:
+            tool_dimtags: list[tuple[int, int]] = []
+            for prev in processed:
+                if prev.dim == ent.dim and prev.dimtags:
+                    tool_dimtags.extend(prev.dimtags)
+            if tool_dimtags:
+                try:
+                    out_dimtags, _ = gmsh.model.occ.cut(
+                        ent.dimtags,
+                        tool_dimtags,
+                        removeObject=True,
+                        removeTool=False,
+                    )
+                    gmsh_proc.model_manager.sync_model()
+                    ent.dimtags = out_dimtags
+                except Exception as e:
+                    if progress_bars:
+                        print(f"Warning: gmsh cut failed for entity {ent.index}: {e}")
+        processed.append(ent)
+
     labeled = gmsh_proc._fragment_all(gmsh_entities, progress_bars=progress_bars)
     gmsh_proc._tag_entities(labeled, interface_delimiter, boundary_delimiter)
     gmsh_proc._remove_keep_false_top_dim(labeled)
