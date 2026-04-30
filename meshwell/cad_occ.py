@@ -27,9 +27,11 @@ exactly; tests that pin one pin the other.
 """
 from __future__ import annotations
 
+import contextlib
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
@@ -42,6 +44,8 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
+
+import gmsh
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -116,11 +120,19 @@ class CAD_OCC:
                 ``shapely.set_precision`` pass). Vertices closer than this
                 get snapped before the TopoDS graph is built.
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
-            fuzzy_value: BOPAlgo fuzzy value used during the all-fragment
-                pass (gmsh's ``Geometry.ToleranceBoolean`` equivalent).
-                Decoupled from ``point_tolerance`` so near-coincident
-                interfaces can be fused without widening the vertex snap.
-                Defaults to ``point_tolerance`` when ``None``.
+            fuzzy_value: BOPAlgo / BRepAlgoAPI_Cut fuzzy used by the
+                sequential cut cascade and the final all-fragment pass.
+                Defaults to ``point_tolerance`` -- intentionally LOOSER than
+                cad_gmsh's ``tolerance_boolean = perturbation / 2``. cad_occ
+                tags interfaces via raw ``TShape`` identity on per-entity
+                leaves; gmsh tags via ``getBoundary`` set intersection which
+                relies on gmsh's fragment merging near-coincident TShapes
+                aggressively. Tightening cad_occ's fuzzy below the
+                perturbation gap (~2e-5) leaves coincident faces with
+                distinct TShapes, dropping ``A___B`` interfaces. Until
+                cad_occ's tagging moves to a geometric-coincidence test
+                (or the fragment is delegated to gmsh) the loose fuzzy
+                must stay.
             perturbation: Outward shapely buffer applied to polygon entities
                 before the sequential cut cascade. Mirrors cad_gmsh default
                 (1e-5). Used for the shared shapely pre-pass (polygon buffer
@@ -306,36 +318,34 @@ class CAD_OCC:
 
         return entities
 
-    def process_entities(
+    def process_entities_cut_only(
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
-        """Instantiate, sequentially cut, then fragment all entities.
+        """Run the OCP-side prepare + sort + instantiate + sequential-cut phase.
 
-        Pipeline mirrors ``cad_gmsh.process_entities``:
-
-        1. Shared shapely pre-pass (buffer + InterfaceTag resolve) via
-           :func:`meshwell.cad_common.prepare_entities`.
-        2. Sort by mesh_order (lowest first).
-        3. For each entity in sorted order: instantiate via
-           ``instanciate_occ``, then ``BRepAlgoAPI_Cut`` against a
-           ``TopoDS_Compound`` of all previously-instantiated same-dim
-           shapes. The lowest-mesh_order entity keeps its full buffered
-           geometry; higher-mesh_order entities have the overlap carved.
-        4. Final all-fragment pass via ``BOPAlgo_Builder`` (existing
-           ownership resolution by mesh_order).
-
-        ``keep=False`` helpers keep their shapes for the XAO writer's
-        interface-naming pass; the writer itself excludes their bodies
-        from the emitted BREP.
+        Stops short of ``_fragment_all``: each returned entity holds its
+        post-cut shapes but no piece-ownership reassignment has happened.
+        This is the bridge point used by the gmsh-fragment hand-off, where
+        gmsh re-fragments the cut shapes and runs its own tagging pipeline.
         """
         if not entities_list:
             return []
 
         from meshwell.cad_common import prepare_entities
 
-        prepare_entities(entities_list, perturbation=self.perturbation)
+        # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
+        # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
+        # resolved strip is wide enough for non-degenerate panels (at
+        # least 2*point_tolerance per side). Without this override OCC
+        # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
+        # produce zero-area panels at user scale.
+        prepare_entities(
+            entities_list,
+            perturbation=self.perturbation,
+            resolve_snap=max(self.perturbation, self.point_tolerance),
+        )
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))
@@ -406,8 +416,37 @@ class CAD_OCC:
         # ``instantiated`` now has one entry per original entity, in
         # insertion order. Filter out any None (defensive; should not
         # happen) before fragment.
-        labeled_entities = [le for le in instantiated if le is not None]
+        return [le for le in instantiated if le is not None]
 
+    def process_entities(
+        self,
+        entities_list: list[Any],
+        progress_bars: bool = False,
+    ) -> list[OCCLabeledEntity]:
+        """Instantiate, sequentially cut, then fragment all entities.
+
+        Pipeline mirrors ``cad_gmsh.process_entities``:
+
+        1. Shared shapely pre-pass (buffer + InterfaceTag resolve) via
+           :func:`meshwell.cad_common.prepare_entities`.
+        2. Sort by mesh_order (lowest first).
+        3. For each entity in sorted order: instantiate via
+           ``instanciate_occ``, then ``BRepAlgoAPI_Cut`` against a
+           ``TopoDS_Compound`` of all previously-instantiated same-dim
+           shapes. The lowest-mesh_order entity keeps its full buffered
+           geometry; higher-mesh_order entities have the overlap carved.
+        4. Final all-fragment pass via ``BOPAlgo_Builder`` (existing
+           ownership resolution by mesh_order).
+
+        ``keep=False`` helpers keep their shapes for the XAO writer's
+        interface-naming pass; the writer itself excludes their bodies
+        from the emitted BREP.
+        """
+        labeled_entities = self.process_entities_cut_only(
+            entities_list, progress_bars=progress_bars
+        )
+        if not labeled_entities:
+            return []
         return self._fragment_all(labeled_entities, progress_bars=progress_bars)
 
 
@@ -433,3 +472,146 @@ def cad_occ(
         perturbation=perturbation,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)
+
+
+def cad_occ_with_gmsh_fragment(
+    entities_list: list[Any],
+    point_tolerance: float = 1e-3,
+    n_threads: int = cpu_count(),
+    progress_bars: bool = False,
+    fuzzy_value: float | None = None,
+    perturbation: float | None = None,
+    filename: str = "temp",
+    model: Any | None = None,
+    interface_delimiter: str = "___",
+    boundary_delimiter: str = "None",
+) -> tuple[list[Any], Any]:
+    """OCP cut cascade + gmsh fragment + tag, returning a meshable gmsh model.
+
+    Splits the work between the two backends to combine OCP's faster
+    sequential cut with gmsh's more robust fragment + boundary-tagging:
+
+    1. **OCP phase** -- prepare, sort by mesh_order, instantiate and
+       sequential-cut every entity (no fragment yet).
+    2. **Bridge** -- serialize the post-cut shapes to a temporary XAO
+       in ``bridge_mode`` (only synthetic per-entity solid groups, no
+       interfaces) and ``gmsh.merge`` into a fresh ``ModelManager``.
+    3. **gmsh phase** -- map the imported physical groups back to
+       per-entity dimtags, then run the existing ``cad_gmsh`` fragment +
+       ``getBoundary``-driven interface tagging + keep=False removal.
+
+    Returns ``(labeled, model_manager)`` exactly like
+    :func:`meshwell.cad_gmsh.cad_gmsh`, so downstream
+    :func:`meshwell.mesh.mesh` calls are identical. Use this when you
+    want OCP's cut performance and gmsh's interface-tagging robustness
+    in one pipeline.
+    """
+    import tempfile
+
+    from meshwell.cad_gmsh import CAD_GMSH, GMSHLabeledEntity
+    from meshwell.occ_xao_writer import parse_bridge_group_index, write_xao
+
+    # ----- OCP phase -------------------------------------------------------
+    ocp_processor = CAD_OCC(
+        point_tolerance=point_tolerance,
+        n_threads=n_threads,
+        fuzzy_value=fuzzy_value,
+        perturbation=perturbation,
+    )
+    ocp_labeled = ocp_processor.process_entities_cut_only(
+        entities_list, progress_bars=progress_bars
+    )
+    if not ocp_labeled:
+        # Build an empty model so callers can still pass model_manager on.
+        gmsh_proc = CAD_GMSH(
+            point_tolerance=point_tolerance,
+            n_threads=n_threads,
+            filename=filename,
+            model=model,
+            perturbation=perturbation,
+        )
+        gmsh_proc.model_manager.ensure_initialized(filename)
+        return [], gmsh_proc.model_manager
+
+    # ----- Bridge ----------------------------------------------------------
+    bridge_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xao", delete=False, mode="w") as tf:
+            bridge_path = tf.name
+        write_xao(ocp_labeled, bridge_path, bridge_mode=True)
+
+        gmsh_proc = CAD_GMSH(
+            point_tolerance=point_tolerance,
+            n_threads=n_threads,
+            filename=filename,
+            model=model,
+            perturbation=perturbation,
+        )
+        gmsh_proc.model_manager.ensure_initialized(filename)
+        gmsh.merge(bridge_path)
+        gmsh_proc.model_manager.sync_model()
+        # Bump the model's BOP tolerance so gmsh's fragment detects
+        # coincidence between solids the OCP cut cascade left as
+        # topologically independent (their touching faces have distinct
+        # TShapes after import). The default ``perturbation/2`` is too
+        # tight for this -- the OCP-built cut faces can drift by up to
+        # ~OCC's internal precision (~1e-7), and faces below the BOP
+        # fuzzy don't get merged. Match cad_gmsh's gmsh-only path's
+        # observable behaviour by widening fuzzy to point_tolerance for
+        # the post-import fragment.
+        gmsh.option.setNumber("Geometry.ToleranceBoolean", point_tolerance)
+    finally:
+        with contextlib.suppress(OSError):
+            if bridge_path:
+                Path(bridge_path).unlink()
+
+    # ----- Map gmsh dimtags back to original entities ----------------------
+    # gmsh's XAO importer registers each <group> as a physical group with
+    # its original name. Our bridge writer used synthetic
+    # ``__cad_occ_bridge_idx_<i>__`` names, so each physical group's name
+    # tells us the original entity index.
+    index_to_dimtags: dict[int, list[tuple[int, int]]] = {}
+    for dim, tag in gmsh.model.getPhysicalGroups():
+        name = gmsh.model.getPhysicalName(dim, tag)
+        idx = parse_bridge_group_index(name)
+        if idx is None:
+            continue
+        ent_dimtags = [
+            (dim, t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
+        ]
+        index_to_dimtags.setdefault(idx, []).extend(ent_dimtags)
+        # Drop the synthetic bridge group so it doesn't end up in the
+        # final mesh's physical names.
+        gmsh.model.removePhysicalGroups([(dim, tag)])
+    gmsh_proc.model_manager.sync_model()
+
+    # Build GMSHLabeledEntity list following cad_gmsh's __#index suffix
+    # convention (so _tag_entities behaves exactly as in the gmsh-only path).
+    gmsh_entities: list[GMSHLabeledEntity] = []
+    for orig_idx, ent in enumerate(entities_list):
+        dimtags = index_to_dimtags.get(orig_idx, [])
+        physical_name = ent.physical_name
+        if isinstance(physical_name, str):
+            physical_name = (physical_name,)
+        suffixed = tuple(f"{n}__#{orig_idx}" for n in physical_name)
+        dim = getattr(ent, "dimension", None)
+        if dim is None:
+            dim = dimtags[0][0] if dimtags else -1
+        gmsh_entities.append(
+            GMSHLabeledEntity(
+                dimtags=dimtags,
+                physical_name=suffixed,
+                index=orig_idx,
+                keep=getattr(ent, "mesh_bool", True),
+                dim=dim,
+                mesh_order=getattr(ent, "mesh_order", None),
+            )
+        )
+
+    # ----- gmsh phase: fragment + tag + cleanup ---------------------------
+    labeled = gmsh_proc._fragment_all(gmsh_entities, progress_bars=progress_bars)
+    gmsh_proc._tag_entities(labeled, interface_delimiter, boundary_delimiter)
+    gmsh_proc._remove_keep_false_top_dim(labeled)
+    gmsh_proc.model_manager.sync_model()
+
+    return labeled, gmsh_proc.model_manager

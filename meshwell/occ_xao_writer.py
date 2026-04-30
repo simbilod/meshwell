@@ -193,26 +193,89 @@ def _compute_physical_groups(
 # ---------------------------------------------------------------------------
 
 
+_BRIDGE_GROUP_PREFIX = "__cad_occ_bridge_idx_"
+
+
+def _bridge_group_name(entity_index: int) -> str:
+    """Synthetic XAO group name carrying the entity's insertion index.
+
+    Used by the gmsh-fragment hand-off to map gmsh dimtags back to the
+    original entity (whose mesh_order, keep, and physical_name are still
+    held Python-side). Avoids collisions with user-chosen physical names
+    and allows a single gmsh model to import several disjoint
+    ``cad_occ`` invocations without dimtag aliasing.
+    """
+    return f"{_BRIDGE_GROUP_PREFIX}{entity_index}"
+
+
+def parse_bridge_group_index(name: str) -> int | None:
+    """Inverse of :func:`_bridge_group_name`. Returns ``None`` for non-bridge names."""
+    if not name.startswith(_BRIDGE_GROUP_PREFIX):
+        return None
+    try:
+        return int(name[len(_BRIDGE_GROUP_PREFIX) :])
+    except ValueError:
+        return None
+
+
+def _compute_bridge_groups(
+    entities: list[OCCLabeledEntity],
+) -> dict[tuple[int, str], list]:
+    """Per-entity solid groups for the gmsh-fragment hand-off.
+
+    Emits one group per entity at its top dimension, named with a
+    synthetic ``__cad_occ_bridge_idx_<i>__`` tag. ALL entities (kept
+    *and* keep=False helpers) get a group: gmsh's downstream pipeline
+    needs every body present at fragment time to discover shared
+    boundaries -- the helper itself is then removed by
+    ``_remove_keep_false_top_dim`` after tagging. The keep flag travels
+    Python-side via ``GMSHLabeledEntity.keep`` reconstructed from the
+    original entity index.
+
+    No interface or exterior groups are emitted; gmsh recomputes those
+    via ``getBoundary`` after running its own fragment.
+    """
+    if not entities:
+        return {}
+
+    groups: dict[tuple[int, str], list] = {}
+    for ent in entities:
+        leaves = [leaf for s in ent.shapes for leaf, _ in _leaf_subshapes(s, ent.dim)]
+        if not leaves:
+            continue
+        name = _bridge_group_name(ent.index)
+        groups[(ent.dim, name)] = leaves
+    return groups
+
+
 def write_xao(
     entities: list[OCCLabeledEntity],
     xao_path: Path,
     model_name: str = "meshwell",
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
+    bridge_mode: bool = False,
 ) -> None:
-    """Serialize ``entities`` into a self-contained, fully-tagged XAO file.
+    """Serialize ``entities`` into a self-contained XAO file.
 
-    The XAO contains every physical group the meshwell tagging pipeline
-    would produce (entities, interfaces, exterior boundaries), computed at
-    OCP level from TShape identity.
+    Args:
+        entities: Output of :func:`meshwell.cad_occ.cad_occ`.
+        xao_path: Output path.
+        model_name: XAO ``<geometry name=>`` value.
+        interface_delimiter: Separator for ``A___B`` interface group names.
+        boundary_delimiter: Stand-in for "no neighbour" in ``A___None``.
+        bridge_mode: When True, emit only synthetic per-entity groups
+            (``__cad_occ_bridge_idx_<i>__``) suitable for the gmsh-fragment
+            hand-off. The downstream gmsh pipeline will compute interfaces
+            and exterior boundaries itself after running its own fragment.
+            When False (default), emit every physical group the meshwell
+            tagging pipeline would produce, computed at OCP level from
+            TShape identity.
 
     keep=False entities are **not** serialized into the BREP -- only
     their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
     with a kept entity survive, as boundary sub-shapes of the kept
-    entity's solid. That lets ``tag_interfaces`` still name ``A___helper``
-    without putting helper's solid in the mesh. Interface/boundary
-    computation still walks every entity's ``shapes`` list in Python
-    memory; only the BREP serialization excludes keep=False.
+    entity's solid.
     """
     xao_path = Path(xao_path)
 
@@ -231,7 +294,12 @@ def write_xao(
     compound = TopoDS_Compound()
     cb.MakeCompound(compound)
     for ent in entities:
-        if ent.dim == max_dim and not ent.keep:
+        # Standard write skips top-dim keep=False bodies (their cut faces
+        # survive on kept neighbours via shared TShapes). Bridge mode
+        # keeps them: gmsh's fragment + tagging needs every body present
+        # to discover shared boundaries by getBoundary; helpers are
+        # removed in cad_gmsh._remove_keep_false_top_dim after tagging.
+        if not bridge_mode and ent.dim == max_dim and not ent.keep:
             continue
         for s in ent.shapes:
             cb.Add(compound, s)
@@ -252,9 +320,12 @@ def write_xao(
     main_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(compound, main_map)
 
-    physical_groups = _compute_physical_groups(
-        entities, interface_delimiter, boundary_delimiter
-    )
+    if bridge_mode:
+        physical_groups = _compute_bridge_groups(entities)
+    else:
+        physical_groups = _compute_physical_groups(
+            entities, interface_delimiter, boundary_delimiter
+        )
 
     # Build per-dim topology index covering every shape any group references.
     topology_index: dict[int, dict[int, int]] = {0: {}, 1: {}, 2: {}, 3: {}}
