@@ -18,7 +18,7 @@ license = { file = "LICENSE" }
 name = "meshwell"
 readme = "README.md"
 requires-python = ">=3.11"
-version = "2.3.4"
+version = "2.3.6"
 
 [project.optional-dependencies]
 dev = [
