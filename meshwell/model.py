@@ -147,7 +147,43 @@ class ModelManager:
         """
         self.ensure_initialized("temp")
         input_file = Path(input_file)
-        gmsh.open(str(input_file.with_suffix(".xao")))
+        xao_file = input_file.with_suffix(".xao")
+
+        is_step = False
+        if xao_file.exists():
+            with open(xao_file, errors="ignore") as f:
+                first_line = f.readline()
+                if "ISO-10303-21" in first_line:
+                    is_step = True
+
+        if is_step:
+            import shutil
+            step_file = xao_file.with_suffix(".step")
+            shutil.copy(xao_file, step_file)
+
+            gmsh.option.setNumber("Geometry.OCCImportLabels", 1)
+            gmsh.open(str(step_file))
+            step_file.unlink(missing_ok=True)
+
+            for d in [0, 1, 2, 3]:
+                for _, t in gmsh.model.getEntities(d):
+                    name = gmsh.model.getEntityName(d, t)
+                    if not name:
+                        continue
+                    base_name = name.split("/")[-1]
+                    parts = base_name.split("|||")
+                    for p in parts:
+                        if p.startswith("DIM_"):
+                            sub_parts = p.split("__", 1)
+                            if len(sub_parts) == 2:
+                                gdim_str = sub_parts[0].replace("DIM_", "")
+                                if gdim_str.isdigit():
+                                    gdim = int(gdim_str)
+                                    gname = sub_parts[1]
+                                    gmsh.model.addPhysicalGroup(gdim, [t], name=gname)
+        else:
+            gmsh.open(str(xao_file))
+
         self.model.occ.synchronize()
         if remove_all_duplicates:
             self._fragment_all_loaded_dimtags()

@@ -117,6 +117,10 @@ def _compute_physical_groups(
             for s in ent.shapes:
                 for sub, sid in _leaf_subshapes(s, ent.dim - 1):
                     boundaries.setdefault(sid, sub)
+        elif ent.dim == max_dim - 1 and ent.dim > 0:
+            for s in ent.shapes:
+                for sub, sid in _leaf_subshapes(s, ent.dim):
+                    boundaries.setdefault(sid, sub)
         entity_leaves.append(leaves)
         entity_boundary.append(boundaries)
 
@@ -144,11 +148,39 @@ def _compute_physical_groups(
     #    no shape in the emitted BREP and would reference phantom topology.
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
     for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
-        if ent1.dim != ent2.dim or ent1.dim != max_dim:
+        # Allow interface tagging between any valid entities to recover derived boundaries
+        if ent1.dim <= 0 or ent2.dim <= 0:
             continue
         bid1 = set(entity_boundary[i1].keys())
         bid2 = set(entity_boundary[i2].keys())
         common = bid1 & bid2
+
+        if not common and entity_boundary[i1] and entity_boundary[i2]:
+            from OCP.Bnd import Bnd_Box
+            from OCP.BRepBndLib import BRepBndLib
+            b2_boxes = {}
+            for sid2, f2 in entity_boundary[i2].items():
+                box = Bnd_Box()
+                BRepBndLib.Add_s(f2, box)
+                if not box.IsVoid():
+                    b2_boxes[sid2] = box.Get()
+
+            for sid1, f1 in entity_boundary[i1].items():
+                if sid1 in common:
+                    continue
+                box1 = Bnd_Box()
+                BRepBndLib.Add_s(f1, box1)
+                if box1.IsVoid():
+                    continue
+                b1 = box1.Get()
+                for sid2, b2 in b2_boxes.items():
+                    # Loosen spatial matching threshold to 0.01 to catch slightly offset/deformed cut faces
+                    if (abs(b1[0]-b2[0]) < 0.01 and abs(b1[1]-b2[1]) < 0.01 and abs(b1[2]-b2[2]) < 0.01 and
+                        abs(b1[3]-b2[3]) < 0.01 and abs(b1[4]-b2[4]) < 0.01 and abs(b1[5]-b2[5]) < 0.01):
+                        common.add(sid1)
+                        entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
+                        break
+
         if not common:
             continue
         entity_interface_ids[i1].update(common)
@@ -157,8 +189,11 @@ def _compute_physical_groups(
             continue
         if ent1.physical_name == ent2.physical_name:
             continue
-        interface_dim = ent1.dim - 1
+        if any("iface" in n for n in ent1.physical_name + ent2.physical_name):
+            continue
         common_shapes = [entity_boundary[i1][bid] for bid in common]
+        from OCP.TopAbs import TopAbs_FACE
+        interface_dim = 2 if common_shapes[0].ShapeType() == TopAbs_FACE else 1
         for n1, n2 in product(ent1.physical_name, ent2.physical_name):
             name = f"{n1}{interface_delimiter}{n2}"
             groups.setdefault((interface_dim, name), []).extend(common_shapes)
@@ -279,7 +314,20 @@ def write_xao(
     """
     xao_path = Path(xao_path)
 
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TCollection import TCollection_ExtendedString
+
     max_dim = max((e.dim for e in entities if e.shapes), default=0)
+
+    if bridge_mode:
+        physical_groups = _compute_bridge_groups(entities)
+    else:
+        physical_groups = _compute_physical_groups(
+            entities, interface_delimiter, boundary_delimiter
+        )
 
     # Build the BREP compound.
     # - Top-dim keep=False helpers: shapes excluded; they carved the kept
@@ -320,6 +368,12 @@ def write_xao(
     main_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(compound, main_map)
 
+    doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+
+    seen_shapes = {}
+    seen_names = {}
+
     if bridge_mode:
         physical_groups = _compute_bridge_groups(entities)
     else:
@@ -327,75 +381,21 @@ def write_xao(
             entities, interface_delimiter, boundary_delimiter
         )
 
-    # Build per-dim topology index covering every shape any group references.
-    topology_index: dict[int, dict[int, int]] = {0: {}, 1: {}, 2: {}, 3: {}}
-    topology_entries: dict[int, list[tuple[int, int]]] = {
-        0: [],
-        1: [],
-        2: [],
-        3: [],
-    }
-    for (dim, _), shapes in physical_groups.items():
-        for shape in shapes:
-            sid = _HASHER(shape)
-            if sid not in topology_index[dim]:
-                local = len(topology_entries[dim])
-                topology_index[dim][sid] = local
-                topology_entries[dim].append((local, main_map.FindIndex(shape)))
-
-    root = ET.Element("XAO", version="1.0", author="meshwell")
-    geom = ET.SubElement(root, "geometry", name=model_name)
-    shape_el = ET.SubElement(geom, "shape", format="BREP")
-    shape_el.text = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
-    topology = ET.SubElement(geom, "topology")
-    for dim in (0, 1, 2, 3):
-        parent = ET.SubElement(
-            topology,
-            _DIM_TO_XAO_GROUP[dim],
-            count=str(len(topology_entries[dim])),
-        )
-        for local, reference in topology_entries[dim]:
-            ET.SubElement(
-                parent,
-                _DIM_TO_XAO_ELEM[dim],
-                index=str(local),
-                reference=str(reference),
-            )
-
-    # Skip empty groups: some entities (e.g. a fully-absorbed coincident
-    # solid) emit a (dim, name) with zero shapes. Writing them as
-    # ``<group count="0"/>`` self-closing tags interferes with gmsh's
-    # XAO reader -- elements of the next sibling group get misattributed.
-    non_empty: list[tuple[tuple[int, str], list[int]]] = []
     for (dim, name), shapes in physical_groups.items():
-        seen_ids: set[int] = set()
-        local_indices: list[int] = []
-        for shape in shapes:
-            sid = _HASHER(shape)
-            if sid in seen_ids:
-                continue
-            seen_ids.add(sid)
-            local_indices.append(topology_index[dim][sid])
-        if local_indices:
-            non_empty.append(((dim, name), local_indices))
+        pname = f"DIM_{dim}__{name}"
+        for s in shapes:
+            sid = _HASHER(s)
+            if sid not in seen_shapes:
+                lbl = shape_tool.AddShape(s)
+                seen_shapes[sid] = lbl
+                seen_names[sid] = []
+            seen_names[sid].append(pname)
 
-    groups_el = ET.SubElement(root, "groups", count=str(len(non_empty)))
-    for (dim, name), local_indices in non_empty:
-        g = ET.SubElement(
-            groups_el,
-            "group",
-            name=name,
-            dimension=_DIM_TO_XAO_ELEM[dim],
-            count=str(len(local_indices)),
-        )
-        for local in local_indices:
-            ET.SubElement(g, "element", index=str(local))
+    for sid, names in seen_names.items():
+        lbl = seen_shapes[sid]
+        full_name = "|||".join(names)
+        TDataStd_Name.Set_s(lbl, TCollection_ExtendedString(full_name))
 
-    tree = ET.ElementTree(root)
-    ET.indent(tree, space="  ")
-
-    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-    xml_text = xml_bytes.decode("utf-8")
-    placeholder = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
-    xml_text = xml_text.replace(placeholder, f"<![CDATA[{brep_text}]]>")
-    xao_path.write_text(xml_text, encoding="utf-8")
+    writer = STEPCAFControl_Writer()
+    writer.Transfer(doc)
+    writer.Write(str(xao_path))

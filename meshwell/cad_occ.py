@@ -454,8 +454,12 @@ class CAD_OCC:
                 b for s in labeled.shapes if (b := self._shape_bbox(s)) is not None
             ]
             tool_shapes: list[TopoDS_Shape] = []
+            l_ord = labeled.mesh_order if labeled.mesh_order is not None else float("inf")
             for prev in instantiated:
                 if prev is None or prev.dim != labeled.dim:
+                    continue
+                p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
+                if p_ord >= l_ord:
                     continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
@@ -497,17 +501,12 @@ class CAD_OCC:
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     try:
-                        cut_op = BRepAlgoAPI_Cut()
-                        args = TopTools_ListOfShape()
-                        args.Append(s)
-                        tools = TopTools_ListOfShape()
+                        result = s
                         for ts in tool_shapes:
-                            tools.Append(ts)
-                        cut_op.SetArguments(args)
-                        cut_op.SetTools(tools)
-                        cut_op.SetFuzzyValue(self.fuzzy_value)
-                        cut_op.Build()
-                        result = cut_op.Shape()
+                            cut_op = BRepAlgoAPI_Cut(result, ts)
+                            cut_op.SetFuzzyValue(self.perturbation / 2)
+                            cut_op.Build()
+                            result = cut_op.Shape()
                     except Exception as e:  # pragma: no cover -- defensive
                         print(
                             f"Warning: BRepAlgoAPI_Cut failed for entity "
