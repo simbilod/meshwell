@@ -1,7 +1,7 @@
-import gmsh
 import numpy as np
 from shapely.geometry import Polygon
 
+import gmsh
 from meshwell.model import ModelManager
 from meshwell.polyprism import PolyPrism
 
