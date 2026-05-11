@@ -58,6 +58,7 @@ class GMSHLabeledEntity:
     keep: bool
     dim: int
     mesh_order: float | None = None
+    is_structured_phantom: bool = False
 
 
 def _resolve_piece_ownership(
@@ -163,6 +164,7 @@ class CAD_GMSH:
             keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
+            is_structured_phantom=getattr(entity_obj, "is_structured_phantom", False),
         )
 
     def _fragment_all(
@@ -278,8 +280,9 @@ class CAD_GMSH:
             if ent.dim == max_dim:
                 top_dim_entities.append(ent)
                 if not ent.keep:
-                    # Skip tagging the helper body; its interface with
-                    # kept neighbours is still recovered below.
+                    # Skip the 3D volume group: helper bodies don't get
+                    # their own entity tag (apply_structured_slabs emits
+                    # the 3D group for phantoms separately).
                     continue
             for name in ent.physical_name:
                 for dt in ent.dimtags:
@@ -314,13 +317,19 @@ class CAD_GMSH:
         pair_dimtags: dict[tuple[str, str], set[tuple[int, int]]] = defaultdict(set)
         same_material_interfaces: set[tuple[int, int]] = set()
 
+        def _participates_in_tagging(e: GMSHLabeledEntity) -> bool:
+            # Kept entities participate; structured phantoms also do
+            # (their sub-faces survive non-recursive removal and need to
+            # be tagged like regular boundaries).
+            return e.keep or e.is_structured_phantom
+
         for i, ei in enumerate(top_dim_entities):
             for j, ej in enumerate(top_dim_entities):
                 if j <= i:
                     continue
-                if not (ei.keep or ej.keep):
-                    # Both helpers: their shared face is unnamed and
-                    # will dangle after both removals.
+                if not (_participates_in_tagging(ei) or _participates_in_tagging(ej)):
+                    # Both helpers without surviving sub-faces; their
+                    # shared face dangles after removal.
                     continue
                 shared = boundary_of[ei.index] & boundary_of[ej.index]
                 if not shared:
@@ -345,7 +354,7 @@ class CAD_GMSH:
         # Exterior domain boundaries.
         exterior_boundaries = defaultdict(set)
         for ent in top_dim_entities:
-            if not ent.keep:
+            if not _participates_in_tagging(ent):
                 continue
             my_bnd = boundary_of[ent.index]
             others: set[tuple[int, int]] = set()
@@ -369,22 +378,31 @@ class CAD_GMSH:
     def _remove_keep_false_top_dim(self, entities: list[GMSHLabeledEntity]) -> None:
         """Remove geometry of top-dim ``keep=False`` entities from the model.
 
-        Uses ``occ.remove(..., recursive=True)`` so sub-shapes that are
-        *not* shared with any kept entity are cleaned up too. Shared
-        interface faces survive the removal because gmsh's recursive
-        removal leaves sub-shapes with remaining parents in place.
+        Normal keep=False helpers (e.g. polyline cutting markers) are
+        removed with ``recursive=True`` so orphan sub-shapes are cleaned
+        up too. Structured-PolyPrism phantoms are removed
+        ``recursive=False`` so their bottom/top/lateral OCC faces survive
+        for the conformal mesh-stage builder, even when those faces have
+        no kept neighbor (isolated slabs, structured/structured
+        interfaces, etc).
         """
         max_dim = max((e.dim for e in entities if e.dimtags), default=-1)
-        dead: list[tuple[int, int]] = []
+        dead_recursive: list[tuple[int, int]] = []
+        dead_keep_subshapes: list[tuple[int, int]] = []
         for ent in entities:
             if ent.dim != max_dim or ent.keep or not ent.dimtags:
                 continue
-            dead.extend(ent.dimtags)
+            if ent.is_structured_phantom:
+                dead_keep_subshapes.extend(ent.dimtags)
+            else:
+                dead_recursive.extend(ent.dimtags)
             ent.dimtags = []
-        if not dead:
-            return
-        gmsh.model.occ.remove(dead, recursive=True)
-        self.model_manager.sync_model()
+        if dead_recursive:
+            gmsh.model.occ.remove(dead_recursive, recursive=True)
+        if dead_keep_subshapes:
+            gmsh.model.occ.remove(dead_keep_subshapes, recursive=False)
+        if dead_recursive or dead_keep_subshapes:
+            self.model_manager.sync_model()
 
     def process_entities(
         self,

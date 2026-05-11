@@ -215,7 +215,11 @@ def _compute_physical_groups(
             continue
         entity_interface_ids[i1].update(common)
         entity_interface_ids[i2].update(common)
-        if not (ent1.keep or ent2.keep):
+
+        def _participates(e):
+            return e.keep or getattr(e, "is_structured_phantom", False)
+
+        if not (_participates(ent1) or _participates(ent2)):
             continue
         if ent1.physical_name == ent2.physical_name:
             continue
@@ -243,7 +247,11 @@ def _compute_physical_groups(
                 lower_dim_ids.add(_HASHER(leaf))
 
     for i, ent in enumerate(entities):
-        if ent.dim != max_dim or not ent.keep:
+        if ent.dim != max_dim:
+            continue
+        # Kept entities participate; structured phantoms also do (their
+        # sub-faces survive non-recursive removal at the BREP level).
+        if not ent.keep and not getattr(ent, "is_structured_phantom", False):
             continue
         boundary_dim = ent.dim - 1
         bids = set(entity_boundary[i].keys())
@@ -292,6 +300,11 @@ def write_xao(
     # - Top-dim keep=False helpers: shapes excluded; they carved the kept
     #   entities during ``cad_occ``, so the cut faces already live on the
     #   kept entities' boundaries (shared TShape).
+    # - Top-dim keep=False **structured phantoms**: the 3D solid itself
+    #   is skipped (no tet meshing), but all of its boundary faces are
+    #   included directly. This guarantees the conformal mesh-stage
+    #   builder finds bottom/top/lateral OCC faces for every slab, even
+    #   when the slab has no kept neighbor.
     # - Lower-dim keep=False helpers: shapes INCLUDED. Their leaves are
     #   sub-shapes of the kept parent's solid, but including them
     #   directly guarantees ``shape_reference_map.FindIndex`` resolves
@@ -302,6 +315,17 @@ def write_xao(
     compound_builder.MakeCompound(brep_compound)
     for ent in entities:
         if ent.dim == max_dim and not ent.keep:
+            if getattr(ent, "is_structured_phantom", False):
+                # Walk each phantom solid's boundary faces and add them
+                # directly so they survive serialization.
+                from OCP.TopAbs import TopAbs_FACE
+                from OCP.TopExp import TopExp_Explorer
+
+                for solid in ent.shapes:
+                    exp = TopExp_Explorer(solid, TopAbs_FACE)
+                    while exp.More():
+                        compound_builder.Add(brep_compound, exp.Current())
+                        exp.Next()
             continue
         for s in ent.shapes:
             compound_builder.Add(brep_compound, s)

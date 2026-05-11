@@ -70,6 +70,7 @@ class OCCLabeledEntity:
     keep: bool
     dim: int
     mesh_order: float | None = None
+    is_structured_phantom: bool = False
 
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
@@ -293,6 +294,7 @@ class CAD_OCC:
             keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
+            is_structured_phantom=getattr(entity_obj, "is_structured_phantom", False),
         )
 
     def _fragment_all(
@@ -551,8 +553,10 @@ def cad_occ(
             forwarded to :class:`CAD_OCC`.
         n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
         progress_bars: Show ``tqdm`` progress for the per-stage loops.
-        fuzzy_value: BOPAlgo fuzzy value used during the all-fragment
-            pass; defaults to ``point_tolerance`` when ``None``.
+        cut_fuzzy_value: Fuzzy value for the sequential ``BRepAlgoAPI_Cut``;
+            defaults to ``point_tolerance / 2`` when ``None``.
+        fragment_fuzzy_value: Fuzzy value for the final ``BOPAlgo_Builder``
+            fragment pass; defaults to ``point_tolerance`` when ``None``.
         perturbation: Outward shapely buffer applied to polygon entities
             before the cut cascade.
         return_slabs: When True, return ``(labeled, slabs)`` so the
