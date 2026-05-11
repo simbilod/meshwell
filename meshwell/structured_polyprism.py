@@ -488,8 +488,14 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     # the (now-coincident) lateral nodes on either side of each lateral
     # interface are merged into shared tags via removeDuplicateNodes
     # (called from process_mesh).
+    #
+    # When ``slab.recombine`` is True, also flag the slab's bottom, top,
+    # and lateral OCC faces for recombination so their 2D meshes come
+    # out as quads -- the conformal builder then produces hex elements.
     for slab in sorted_slabs:
         _apply_lateral_transfinite_hints(slab, tol)
+        if slab.recombine:
+            _apply_horizontal_recombine_hints(slab, tol)
 
     # Step 1: mesh all 2D OCC faces so we can read their triangulations.
     gmsh.model.mesh.generate(2)
@@ -581,13 +587,16 @@ def _emit_structured_lateral_tags(
         n_layers = slab.n_layers
         height = slab.zhi - slab.zlo
 
-        # Boundary edges of the bottom triangulation: undirected edges
-        # appearing in exactly one triangle. Keys are sorted tag pairs.
+        # Boundary edges of the bottom 2D mesh: undirected edges
+        # appearing in exactly one cell. Works for both triangle and
+        # quad bottom cells (each edge is in <= 2 cells either way).
         edge_counter: Counter[tuple[int, int]] = Counter()
-        for tri in triangles.tolist():
-            a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
-            for x, y in ((a, b), (b, c), (c, a)):
-                edge_counter[tuple(sorted((x, y)))] += 1
+        for cell in triangles.tolist():
+            n_verts = len(cell)
+            for i in range(n_verts):
+                a = int(cell[i])
+                b = int(cell[(i + 1) % n_verts])
+                edge_counter[tuple(sorted((a, b)))] += 1
         boundary_edges = [e for e, c in edge_counter.items() if c == 1]
 
         for a_tag, b_tag in boundary_edges:
@@ -804,6 +813,48 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
                 slab.physical_name,
                 exc,
             )
+        # If the slab is recombined, the lateral grid must be quads so
+        # it matches the hex/wedge lateral facets one-for-one. Without
+        # setRecombine the transfinite grid is triangulated by default.
+        if slab.recombine:
+            try:
+                gmsh.model.mesh.setRecombine(2, ftag)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to setRecombine on lateral face %d for slab %s: %s",
+                    ftag,
+                    slab.physical_name,
+                    exc,
+                )
+
+
+def _apply_horizontal_recombine_hints(slab: Slab, tol: float) -> None:
+    """Mark the slab's bottom and top OCC faces for recombination.
+
+    Required when ``slab.recombine`` is True so the 2D mesh of those
+    faces comes out as quads -- the conformal builder reads the bottom
+    quad mesh and builds hex elements (gmsh type 5) instead of wedges.
+    """
+    import logging
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+    occ_faces = gmsh.model.occ.getEntities(2)
+    bot = _find_occ_face_for_slab(occ_faces, slab, slab.zlo, tol)
+    top = _find_occ_face_for_slab(occ_faces, slab, slab.zhi, tol)
+    for face_tag in (bot, top):
+        if face_tag is None:
+            continue
+        try:
+            gmsh.model.mesh.setRecombine(2, face_tag)
+        except Exception as exc:
+            logger.warning(
+                "Failed to setRecombine on horizontal face %d for slab %s: %s",
+                face_tag,
+                slab.physical_name,
+                exc,
+            )
 
 
 def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict] | None:
@@ -883,22 +934,38 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict] | None
             key = (round(x / snap), round(y / snap))
             top_boundary_lookup[key] = int(tag)
 
+    # Read bottom face's element mesh. The conformal builder handles
+    # either triangles (-> wedge volume, type 6) or quads (-> hex volume,
+    # type 5). The latter only happens when ``slab.recombine`` is True
+    # and ``_apply_horizontal_recombine_hints`` flagged the face.
     elem_types, _, elem_node_tags = gmsh.model.mesh.getElements(2, bottom_face)
-    tri_nodes_flat: np.ndarray | None = None
+    cells_nodes_flat: np.ndarray | None = None
+    cells_per_face = 3  # triangle by default
+    gmsh_3d_type = 6  # wedge
+    top_elem_gmsh_type = 2  # triangle
     for et, en in zip(elem_types, elem_node_tags):
-        if int(et) == 2:  # triangle
-            tri_nodes_flat = np.asarray(en, dtype=np.uint64)
+        if int(et) == 2:  # triangle -> wedge
+            cells_nodes_flat = np.asarray(en, dtype=np.uint64)
+            cells_per_face = 3
+            gmsh_3d_type = 6
+            top_elem_gmsh_type = 2
             break
-    if tri_nodes_flat is None or tri_nodes_flat.size == 0:
+        if int(et) == 3:  # quad -> hex
+            cells_nodes_flat = np.asarray(en, dtype=np.uint64)
+            cells_per_face = 4
+            gmsh_3d_type = 5
+            top_elem_gmsh_type = 3
+            break
+    if cells_nodes_flat is None or cells_nodes_flat.size == 0:
         logger.warning(
-            "Bottom OCC face %d for slab %s at z=%g has no triangles; "
-            "skipping conformal build for this slab.",
+            "Bottom OCC face %d for slab %s at z=%g has no triangle/quad "
+            "elements; skipping conformal build for this slab.",
             bottom_face,
             slab.physical_name,
             slab.zlo,
         )
         return None
-    triangles = tri_nodes_flat.reshape(-1, 3)
+    triangles = cells_nodes_flat.reshape(-1, cells_per_face)
 
     # tag -> index in coord array
     tag_to_idx = {int(t): i for i, t in enumerate(node_tags.tolist())}
@@ -995,52 +1062,51 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict] | None
             top_layer_coords[interior_mask].reshape(-1).tolist(),
         )
 
-    # Build top-face triangles by remapping each bottom-triangle node tag
-    # via tag_to_idx -> top_layer_tags[idx].
-    top_tri_nodes = np.empty_like(triangles, dtype=np.uint64)
+    # Build top-face elements by remapping each bottom-cell node tag
+    # via tag_to_idx -> top_layer_tags[idx]. Same element type as the
+    # bottom (triangle for wedge slabs, quad for hex slabs).
+    top_cell_nodes = np.empty_like(triangles, dtype=np.uint64)
     for r in range(triangles.shape[0]):
-        for c in range(3):
-            top_tri_nodes[r, c] = top_layer_tags[tag_to_idx[int(triangles[r, c])]]
+        for c in range(cells_per_face):
+            top_cell_nodes[r, c] = top_layer_tags[tag_to_idx[int(triangles[r, c])]]
 
     next_elem_tag = int(gmsh.model.mesh.getMaxElementTag()) + 1
-    n_tri = triangles.shape[0]
-    top_tri_tags = np.arange(next_elem_tag, next_elem_tag + n_tri, dtype=np.uint64)
-    next_elem_tag += n_tri
+    n_cells = triangles.shape[0]
+    top_elem_tags = np.arange(next_elem_tag, next_elem_tag + n_cells, dtype=np.uint64)
+    next_elem_tag += n_cells
     gmsh.model.mesh.addElements(
         2,
         top_face,
-        [2],  # triangle type
-        [top_tri_tags.tolist()],
-        [top_tri_nodes.reshape(-1).tolist()],
+        [top_elem_gmsh_type],
+        [top_elem_tags.tolist()],
+        [top_cell_nodes.reshape(-1).tolist()],
     )
 
-    # Build wedges: for each bottom triangle (a, b, c) and each layer
-    # i in 0..n_layers-1, wedge nodes are
-    # [layers[i][a_idx], layers[i][b_idx], layers[i][c_idx],
-    #  layers[i+1][a_idx], layers[i+1][b_idx], layers[i+1][c_idx]].
-    # We build idx triplets once and index into each layer's tag array.
-    tri_indices = np.empty_like(triangles, dtype=np.int64)
+    # Build 3D elements: for each bottom cell (a, b, c[, d]) and each
+    # layer i in 0..n_layers-1, the volume element nodes are
+    # [layers[i][a_idx], ..., layers[i+1][a_idx], ...]. Wedges are
+    # 6-node ``[lo3 | hi3]``; hexes are 8-node ``[lo4 | hi4]``.
+    cell_indices = np.empty_like(triangles, dtype=np.int64)
     for r in range(triangles.shape[0]):
-        for c in range(3):
-            tri_indices[r, c] = tag_to_idx[int(triangles[r, c])]
+        for c in range(cells_per_face):
+            cell_indices[r, c] = tag_to_idx[int(triangles[r, c])]
 
-    wedge_node_lists: list[np.ndarray] = []
+    volume_node_lists: list[np.ndarray] = []
     for i in range(n_layers):
-        lo_tags = layers[i][tri_indices]  # shape (n_tri, 3)
-        hi_tags = layers[i + 1][tri_indices]
-        # interleave: 6 nodes per wedge in [lo3 | hi3] order
-        block = np.concatenate([lo_tags, hi_tags], axis=1)  # shape (n_tri, 6)
-        wedge_node_lists.append(block.reshape(-1))
-    wedge_nodes_flat = np.concatenate(wedge_node_lists)
-    n_wedges = n_tri * n_layers
-    wedge_tags = np.arange(next_elem_tag, next_elem_tag + n_wedges, dtype=np.uint64)
+        lo_tags = layers[i][cell_indices]  # shape (n_cells, cells_per_face)
+        hi_tags = layers[i + 1][cell_indices]
+        block = np.concatenate([lo_tags, hi_tags], axis=1)
+        volume_node_lists.append(block.reshape(-1))
+    volume_nodes_flat = np.concatenate(volume_node_lists)
+    n_3d = n_cells * n_layers
+    volume_tags_arr = np.arange(next_elem_tag, next_elem_tag + n_3d, dtype=np.uint64)
 
     gmsh.model.mesh.addElements(
         3,
         vol_tag,
-        [6],  # wedge type
-        [wedge_tags.tolist()],
-        [wedge_nodes_flat.tolist()],
+        [gmsh_3d_type],
+        [volume_tags_arr.tolist()],
+        [volume_nodes_flat.tolist()],
     )
 
     return vol_tag, {

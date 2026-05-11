@@ -1195,6 +1195,56 @@ def test_structured_lateral_conformality_arc_bearing(tmp_path):
     assert dupes <= 5, f"Expected <= 5 duplicate nodes; got {dupes}."
 
 
+def test_recombine_true_produces_hex_in_conformal_path(tmp_path, square_poly):
+    """recombine=True yields hex elements even on the conformal (neighbored) path.
+
+    In this scene the structured ``film`` sits between an unstructured
+    substrate and cap (conformal path). Without proper plumbing,
+    ``recombine=True`` is silently ignored and the slab is filled with
+    wedge elements. After plumbing through, the slab volume must contain
+    hex elements (gmsh type 5).
+    """
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    hull = Polygon([(-1, -1), (2, -1), (2, 2), (-1, 2)])
+    sub = PolyPrism(
+        polygons=hull,
+        buffers={0.0: 0.0, 0.5: 0.0},
+        physical_name="sub",
+        mesh_order=10,
+    )
+    film = PolyPrism(
+        polygons=square_poly,
+        buffers={0.5: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+        mesh_order=2,
+        recombine=True,
+    )
+    cap = PolyPrism(
+        polygons=hull,
+        buffers={1.0: 0.0, 1.5: 0.0},
+        physical_name="cap",
+        mesh_order=10,
+    )
+    out = tmp_path / "recombine_conformal.msh"
+    generate_mesh(
+        entities=[sub, film, cap],
+        dim=3,
+        output_mesh=str(out),
+        default_characteristic_length=0.4,
+    )
+    m = meshio.read(out)
+    cell_types = {b.type for b in m.cells}
+    assert (
+        "hexahedron" in cell_types
+    ), f"Expected hexahedron cells for recombine=True+conformal; got {cell_types}"
+
+
 def test_structured_lateral_exposed_to_none_is_tagged(tmp_path, square_poly):
     """Lateral walls exposed to None get tagged ``slab___None``.
 
