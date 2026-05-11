@@ -477,20 +477,7 @@ _SCENES: list[tuple[str, Callable[[], list], dict, str | None]] = [
         {},
         None,
     ),
-    (
-        "donut_with_inner_plug",
-        _scene_nested_with_donut_outer,
-        {},
-        # cad_occ produces a topologically-broken outer solid for a
-        # shapely Polygon with a hole when the hole is plugged by a
-        # neighbour body: ``gmsh.model.occ.getMass`` reports the outer
-        # volume as 104 (vs the correct 96) and the outer's exterior
-        # surface area as 248 (vs 232). The 4 hole side walls leak
-        # into ``O___None`` even though they're also correctly tagged
-        # as ``O___I``. Tracked separately -- the test pins the bug.
-        "cad_occ donut topology bug: hole walls leak into exterior, "
-        "outer volume over-counted by the plug's volume",
-    ),
+    ("donut_with_inner_plug", _scene_nested_with_donut_outer, {}, None),
     (
         "arc_polysurface",
         _scene_arc_polysurface,
