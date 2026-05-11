@@ -142,7 +142,7 @@ class ModelManager:
                 topological duplicates, slivers, or sub-fuzzy features,
                 which are the usual root cause of ``dihedral 0`` and PLC
                 errors. For those, prefer ``canonicalize_topology=True``
-                and/or raising ``fuzzy_value`` at the ``cad_occ`` stage.
+                and/or raising ``fragment_fuzzy_value`` at the ``cad_occ`` stage.
 
         """
         self.ensure_initialized("temp")

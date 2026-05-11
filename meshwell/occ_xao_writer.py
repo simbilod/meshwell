@@ -24,6 +24,16 @@ Design notes
   ``TopExp::MapShapes`` reference indices need a bit-identical shape
   on both sides. Embedded inline in CDATA (single self-contained file).
 
+- **Why not STEP+XCAF**: an earlier iteration attached XCAF labels per
+  sub-shape and exported as STEP, but ``XCAFDoc_ShapeTool::AddShape`` on
+  a face that is already a sub-face of an added solid produces a
+  sub-component label whose ``TDataStd_Name`` is silently dropped at
+  STEP export time -- only the parent solid keeps its name. That cost us
+  the ``A___B`` interface and ``B___None`` boundary groups, plus a
+  large perf regression (~2-3x on the write+load round trip for
+  hundred-prism scenes) from the XCAF tree walking gmsh performs on
+  import.
+
 - **keep=False entities** are *not* serialized into the BREP. Their
   shape memory is still used for interface computation -- a face F
   shared between kept A and helper B (via BOPAlgo TShape identity) is
@@ -40,7 +50,9 @@ from itertools import combinations, product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Builder
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepTools import BRepTools
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp, TopExp_Explorer
@@ -61,6 +73,12 @@ _DIM_TO_TOPABS = {
 }
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
+
+# Used by the spatial fallback in ``_compute_physical_groups`` when
+# TShape-identity matching fails to pair a cut face with its
+# coincident neighbour. Picks up cut faces drifted by ~mm at user
+# scale; only kicks in when identity matching produced no commons.
+_AABB_INTERFACE_TOL = 1e-2
 
 # ---------------------------------------------------------------------------
 # OCP-level helpers
@@ -86,6 +104,20 @@ def _leaf_subshapes(shape, dim):
         exp.Next()
 
 
+def _shape_aabb(shape) -> tuple[float, ...] | None:
+    """Return the (xmin, ymin, zmin, xmax, ymax, zmax) AABB or None if void."""
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if box.IsVoid():
+        return None
+    return box.Get()
+
+
+def _aabbs_close(b1: tuple[float, ...], b2: tuple[float, ...], tol: float) -> bool:
+    """Per-corner L_inf proximity between two AABBs."""
+    return all(abs(b1[i] - b2[i]) < tol for i in range(6))
+
+
 def _compute_physical_groups(
     entities: list[OCCLabeledEntity],
     interface_delimiter: str,
@@ -94,10 +126,11 @@ def _compute_physical_groups(
     """OCP reconstruction of ``tag_entities``/``tag_interfaces``/``tag_boundaries``.
 
     Returns ``{(dim, physical_name): [TopoDS_Shape, ...]}``. Interfaces are
-    named by TShape identity of shared sub-shapes. keep=False entities
-    participate in interface tagging (so kept neighbours can name shared
-    boundaries) but do not get their own entity or exterior groups --
-    they will be removed from gmsh after load.
+    named by TShape identity of shared sub-shapes, with an AABB-proximity
+    fallback for cut faces whose TShapes drifted apart during fragmentation.
+    keep=False entities participate in interface tagging (so kept neighbours
+    can name shared boundaries) but do not get their own entity or exterior
+    groups -- they will be removed from gmsh after load.
     """
     if not entities:
         return {}
@@ -105,9 +138,11 @@ def _compute_physical_groups(
     max_dim = max((e.dim for e in entities if e.shapes), default=0)
 
     # entity_leaves[i]  : TopoDS_Shape list at ent.dim (entity's own tags).
-    # entity_boundary[i]: {tshape_id: TopoDS_Shape} at ent.dim - 1, populated
-    #                     only for top-dim entities (lower-dim entities can't
-    #                     have gmsh "boundaries" in meshwell's sense).
+    # entity_boundary[i]: {tshape_id: TopoDS_Shape} at the appropriate
+    #                     boundary dim, populated for top-dim entities (their
+    #                     dim-1 faces) and for dim-1 entities (their own dim
+    #                     leaves -- used to wire up internal embedded
+    #                     surfaces back to a top-dim parent's faces).
     entity_leaves: list[list] = []
     entity_boundary: list[dict[int, object]] = []
     for ent in entities:
@@ -116,6 +151,13 @@ def _compute_physical_groups(
         if ent.dim == max_dim and ent.dim > 0:
             for s in ent.shapes:
                 for sub, sid in _leaf_subshapes(s, ent.dim - 1):
+                    boundaries.setdefault(sid, sub)
+        elif ent.dim == max_dim - 1 and ent.dim > 0:
+            # Lower-dim entity: its own leaves act as the boundary index
+            # so the interface pass can match them against a parent's
+            # faces (embedded internal surface case).
+            for s in ent.shapes:
+                for sub, sid in _leaf_subshapes(s, ent.dim):
                     boundaries.setdefault(sid, sub)
         entity_leaves.append(leaves)
         entity_boundary.append(boundaries)
@@ -144,11 +186,31 @@ def _compute_physical_groups(
     #    no shape in the emitted BREP and would reference phantom topology.
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
     for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
-        if ent1.dim != ent2.dim or ent1.dim != max_dim:
+        if ent1.dim <= 0 or ent2.dim <= 0:
             continue
         bid1 = set(entity_boundary[i1].keys())
         bid2 = set(entity_boundary[i2].keys())
         common = bid1 & bid2
+
+        # Spatial AABB fallback: cut faces that drifted apart in
+        # TShape identity but still occupy the same region. Only runs
+        # when identity-based matching produced nothing.
+        if not common and entity_boundary[i1] and entity_boundary[i2]:
+            b2_boxes: dict[int, tuple[float, ...]] = {}
+            for sid2, f2 in entity_boundary[i2].items():
+                box = _shape_aabb(f2)
+                if box is not None:
+                    b2_boxes[sid2] = box
+            for sid1, f1 in entity_boundary[i1].items():
+                box1 = _shape_aabb(f1)
+                if box1 is None:
+                    continue
+                for sid2, b2 in b2_boxes.items():
+                    if _aabbs_close(box1, b2, _AABB_INTERFACE_TOL):
+                        common.add(sid1)
+                        entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
+                        break
+
         if not common:
             continue
         entity_interface_ids[i1].update(common)
@@ -157,8 +219,16 @@ def _compute_physical_groups(
             continue
         if ent1.physical_name == ent2.physical_name:
             continue
-        interface_dim = ent1.dim - 1
+        # Internal "iface" helpers (named e.g. ``oxide_iface``) carry their
+        # own physical_name and should not also be glued to a neighbour pair.
+        if any("iface" in n for n in ent1.physical_name + ent2.physical_name):
+            continue
         common_shapes = [entity_boundary[i1][bid] for bid in common]
+        # interface_dim is determined by the actual shape type of the shared
+        # sub-shape rather than ``ent.dim - 1`` -- when a lower-dim embedded
+        # entity matches a top-dim entity's face, both are FACEs (dim=2)
+        # even though ent.dim differs.
+        interface_dim = 2 if common_shapes[0].ShapeType() == TopAbs_FACE else 1
         for n1, n2 in product(ent1.physical_name, ent2.physical_name):
             name = f"{n1}{interface_delimiter}{n2}"
             groups.setdefault((interface_dim, name), []).extend(common_shapes)
@@ -200,19 +270,19 @@ def write_xao(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
 ) -> None:
-    """Serialize ``entities`` into a self-contained, fully-tagged XAO file.
+    """Serialize ``entities`` into a self-contained XAO file.
 
-    The XAO contains every physical group the meshwell tagging pipeline
-    would produce (entities, interfaces, exterior boundaries), computed at
-    OCP level from TShape identity.
+    Args:
+        entities: Output of :func:`meshwell.cad_occ.cad_occ`.
+        xao_path: Output path.
+        model_name: XAO ``<geometry name=>`` value.
+        interface_delimiter: Separator for ``A___B`` interface group names.
+        boundary_delimiter: Stand-in for "no neighbour" in ``A___None``.
 
     keep=False entities are **not** serialized into the BREP -- only
     their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
     with a kept entity survive, as boundary sub-shapes of the kept
-    entity's solid. That lets ``tag_interfaces`` still name ``A___helper``
-    without putting helper's solid in the mesh. Interface/boundary
-    computation still walks every entity's ``shapes`` list in Python
-    memory; only the BREP serialization excludes keep=False.
+    entity's solid.
     """
     xao_path = Path(xao_path)
 
@@ -222,26 +292,26 @@ def write_xao(
     # - Top-dim keep=False helpers: shapes excluded; they carved the kept
     #   entities during ``cad_occ``, so the cut faces already live on the
     #   kept entities' boundaries (shared TShape).
-    # - Lower-dim keep=False helpers (e.g. a PolySurface cutting a
-    #   PolyPrism): shapes INCLUDED. Their leaves are sub-shapes of the
-    #   kept parent's solid, but including them directly guarantees
-    #   ``main_map.FindIndex`` resolves even for floating helpers that
-    #   happen not to share a TShape with any kept volume.
-    cb = BRep_Builder()
-    compound = TopoDS_Compound()
-    cb.MakeCompound(compound)
+    # - Lower-dim keep=False helpers: shapes INCLUDED. Their leaves are
+    #   sub-shapes of the kept parent's solid, but including them
+    #   directly guarantees ``shape_reference_map.FindIndex`` resolves
+    #   for floating helpers that happen not to share a TShape with any
+    #   kept volume.
+    compound_builder = BRep_Builder()
+    brep_compound = TopoDS_Compound()
+    compound_builder.MakeCompound(brep_compound)
     for ent in entities:
         if ent.dim == max_dim and not ent.keep:
             continue
         for s in ent.shapes:
-            cb.Add(compound, s)
+            compound_builder.Add(brep_compound, s)
 
     # OCP's BRepTools only exposes Write to a file path (no stream API), so
     # round-trip through a temp file to get the BREP text for inline CDATA.
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".brep", delete=False) as tf:
         tf_path = Path(tf.name)
     try:
-        BRepTools.Write_s(compound, str(tf_path))
+        BRepTools.Write_s(brep_compound, str(tf_path))
         brep_text = tf_path.read_text()
     finally:
         tf_path.unlink(missing_ok=True)
@@ -249,43 +319,43 @@ def write_xao(
     if "]]>" in brep_text:
         raise ValueError("BREP text contains ']]>' sequence, cannot embed in XAO CDATA")
 
-    main_map = TopTools_IndexedMapOfShape()
-    TopExp.MapShapes_s(compound, main_map)
+    shape_reference_map = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(brep_compound, shape_reference_map)
 
     physical_groups = _compute_physical_groups(
         entities, interface_delimiter, boundary_delimiter
     )
 
     # Build per-dim topology index covering every shape any group references.
-    topology_index: dict[int, dict[int, int]] = {0: {}, 1: {}, 2: {}, 3: {}}
-    topology_entries: dict[int, list[tuple[int, int]]] = {
-        0: [],
-        1: [],
-        2: [],
-        3: [],
-    }
+    # ``local_index`` is the position within the per-dim ``<topology>`` list;
+    # ``reference`` is the index into the BREP's TopExp shape map.
+    topology_local_index: dict[int, dict[int, int]] = {0: {}, 1: {}, 2: {}, 3: {}}
+    topology_entries: dict[int, list[tuple[int, int]]] = {0: [], 1: [], 2: [], 3: []}
     for (dim, _), shapes in physical_groups.items():
         for shape in shapes:
             sid = _HASHER(shape)
-            if sid not in topology_index[dim]:
+            if sid not in topology_local_index[dim]:
                 local = len(topology_entries[dim])
-                topology_index[dim][sid] = local
-                topology_entries[dim].append((local, main_map.FindIndex(shape)))
+                topology_local_index[dim][sid] = local
+                topology_entries[dim].append(
+                    (local, shape_reference_map.FindIndex(shape))
+                )
 
     root = ET.Element("XAO", version="1.0", author="meshwell")
-    geom = ET.SubElement(root, "geometry", name=model_name)
-    shape_el = ET.SubElement(geom, "shape", format="BREP")
-    shape_el.text = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
-    topology = ET.SubElement(geom, "topology")
+    geometry_el = ET.SubElement(root, "geometry", name=model_name)
+    shape_el = ET.SubElement(geometry_el, "shape", format="BREP")
+    cdata_placeholder = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
+    shape_el.text = cdata_placeholder
+    topology_el = ET.SubElement(geometry_el, "topology")
     for dim in (0, 1, 2, 3):
-        parent = ET.SubElement(
-            topology,
+        per_dim_parent = ET.SubElement(
+            topology_el,
             _DIM_TO_XAO_GROUP[dim],
             count=str(len(topology_entries[dim])),
         )
         for local, reference in topology_entries[dim]:
             ET.SubElement(
-                parent,
+                per_dim_parent,
                 _DIM_TO_XAO_ELEM[dim],
                 index=str(local),
                 reference=str(reference),
@@ -295,7 +365,7 @@ def write_xao(
     # solid) emit a (dim, name) with zero shapes. Writing them as
     # ``<group count="0"/>`` self-closing tags interferes with gmsh's
     # XAO reader -- elements of the next sibling group get misattributed.
-    non_empty: list[tuple[tuple[int, str], list[int]]] = []
+    non_empty_groups: list[tuple[tuple[int, str], list[int]]] = []
     for (dim, name), shapes in physical_groups.items():
         seen_ids: set[int] = set()
         local_indices: list[int] = []
@@ -304,13 +374,13 @@ def write_xao(
             if sid in seen_ids:
                 continue
             seen_ids.add(sid)
-            local_indices.append(topology_index[dim][sid])
+            local_indices.append(topology_local_index[dim][sid])
         if local_indices:
-            non_empty.append(((dim, name), local_indices))
+            non_empty_groups.append(((dim, name), local_indices))
 
-    groups_el = ET.SubElement(root, "groups", count=str(len(non_empty)))
-    for (dim, name), local_indices in non_empty:
-        g = ET.SubElement(
+    groups_el = ET.SubElement(root, "groups", count=str(len(non_empty_groups)))
+    for (dim, name), local_indices in non_empty_groups:
+        group_el = ET.SubElement(
             groups_el,
             "group",
             name=name,
@@ -318,13 +388,12 @@ def write_xao(
             count=str(len(local_indices)),
         )
         for local in local_indices:
-            ET.SubElement(g, "element", index=str(local))
+            ET.SubElement(group_el, "element", index=str(local))
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ")
 
     xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
     xml_text = xml_bytes.decode("utf-8")
-    placeholder = f"__CDATA_PLACEHOLDER__{id(shape_el)}__"
-    xml_text = xml_text.replace(placeholder, f"<![CDATA[{brep_text}]]>")
+    xml_text = xml_text.replace(cdata_placeholder, f"<![CDATA[{brep_text}]]>")
     xao_path.write_text(xml_text, encoding="utf-8")

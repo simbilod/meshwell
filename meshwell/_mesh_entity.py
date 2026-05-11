@@ -9,6 +9,7 @@ import warnings
 from typing import Any
 
 import gmsh
+
 from meshwell.resolution import CURVE_SUBTYPE_MAP, ResolutionSpec
 
 

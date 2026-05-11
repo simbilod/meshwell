@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import gmsh
+
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
@@ -37,8 +38,10 @@ def generate_mesh(
             plus a few CAD-side kwargs consumed here:
 
             - ``progress_bars`` (bool): status output during the bridge.
-            - ``fuzzy_value`` (float): BOPAlgo fuzzy value for the
-              all-fragment pass.
+            - ``cut_fuzzy_value`` (float): ``BRepAlgoAPI_Cut`` fuzzy
+              for the sequential per-entity cut cascade.
+            - ``fragment_fuzzy_value`` (float): ``BOPAlgo_Builder``
+              fuzzy for the all-fragment pass.
             - ``canonicalize_topology`` (bool): run the OCP post-fragment
               TShape canonicalization pass.
             - ``remove_all_duplicates`` (bool, default ``False``):
@@ -66,8 +69,10 @@ def generate_mesh(
         cad_kwargs["n_threads"] = mesh_kwargs["n_threads"]
     if "point_tolerance" in mesh_kwargs:
         cad_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
-    if "fuzzy_value" in mesh_kwargs:
-        cad_kwargs["fuzzy_value"] = mesh_kwargs.pop("fuzzy_value")
+    if "cut_fuzzy_value" in mesh_kwargs:
+        cad_kwargs["cut_fuzzy_value"] = mesh_kwargs.pop("cut_fuzzy_value")
+    if "fragment_fuzzy_value" in mesh_kwargs:
+        cad_kwargs["fragment_fuzzy_value"] = mesh_kwargs.pop("fragment_fuzzy_value")
     if "canonicalize_topology" in mesh_kwargs:
         cad_kwargs["canonicalize_topology"] = mesh_kwargs.pop("canonicalize_topology")
     progress_bars = mesh_kwargs.pop("progress_bars", False)

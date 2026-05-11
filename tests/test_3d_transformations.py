@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import gmsh
 import numpy as np
 import shapely
 
-import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface

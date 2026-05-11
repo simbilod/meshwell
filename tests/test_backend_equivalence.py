@@ -14,9 +14,9 @@ each backend, loading the result into gmsh, and comparing:
 """
 from __future__ import annotations
 
+import gmsh
 import shapely
 
-import gmsh
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh

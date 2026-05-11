@@ -130,6 +130,12 @@ addopts = '--tb=short --cov=meshwell --cov-report=term-missing --cov-report=xml'
 norecursedirs = ["extra/*.py"]
 python_files = ["meshwell/*.py", "notebooks/*.ipynb", "tests/*.py"]
 testpaths = ["meshwell/", "tests"]
+# Add the project root to sys.path so ``from tests.test_occ_helpers
+# import ...`` resolves the ``tests/`` namespace package regardless of
+# whether meshwell was installed in editable mode (which on the local
+# dev machine puts the project root on path via a ``.pth`` file, but
+# uv's CI install does not).
+pythonpath = ["."]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests that run the full CAD + mesh pipeline end-to-end",
@@ -183,6 +189,13 @@ count = true
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.isort]
+# gmsh ships its CMake source tree as a sibling directory in some local
+# checkouts, which makes ruff's auto-detection classify ``gmsh`` as
+# first-party and reorder imports inconsistently between local and CI.
+# Pin it explicitly so isort sorting matches across environments.
+known-third-party = ["gmsh"]
 
 [tool.ruff.lint.per-file-ignores]
 "docs/*.py" = [

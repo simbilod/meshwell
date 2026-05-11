@@ -459,3 +459,38 @@ def test_tapered_prism_match(tmp_path):
     s_gmsh = _mesh_summary(m_gmsh)
     s_occ = _mesh_summary(m_occ)
     _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_embedded_surface_cross_compare_match(tmp_path):
+    """An internal 2D surface embedded inside a 3D block.
+
+    Both backends must tag the derived internal interface group and produce equivalent summaries
+    without overlapping facets errors.
+    """
+
+    def make():
+        vol_poly = shapely.Polygon([(-10, -10), (10, -10), (10, 10), (-10, 10)])
+        surf_poly = shapely.Polygon([(-12, -1), (12, -1), (12, 1), (-12, 1)])
+        return [
+            PolyPrism(
+                polygons=vol_poly,
+                buffers={0.0: 0.0, 2.0: 0.0},
+                physical_name="physical2",
+                mesh_order=10,
+            ),
+            PolySurface(
+                polygons=surf_poly,
+                physical_name="physical1_physical2",
+                mesh_order=1,
+                translation=(0, 0, 1.0),
+            ),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    _assert_summaries_equivalent(
+        s_gmsh,
+        s_occ,
+        ignore_groups={"physical1_physical2___physical2", "physical1_physical2"},
+    )

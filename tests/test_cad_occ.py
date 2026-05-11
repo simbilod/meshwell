@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import gmsh
 import pytest
 import shapely
 
-import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity

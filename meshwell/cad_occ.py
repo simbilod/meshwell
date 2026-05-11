@@ -4,14 +4,16 @@ Mirrors :mod:`meshwell.cad_gmsh` but drives OCCT directly through OCP
 instead of the gmsh API. The two backends are intentionally kept
 structurally identical so users can compare outputs head-to-head:
 
-1. Initialize per-session geometry cache (vertex / edge sharing is the
-   OCP-side equivalent of ``gmsh.model.occ``'s built-in TShape reuse).
+1. Shared shapely pre-pass (perturbation buffer + InterfaceTag resolve)
+   via :func:`meshwell.cad_common.prepare_entities`.
 2. Call each entity's ``instanciate_occ`` to produce ``TopoDS_Shape``
    instances.
-3. ``BOPAlgo_Builder`` all-fragment over every input shape; per-input
+3. Sequential per-entity ``BRepAlgoAPI_Cut`` cascade against
+   previously-instantiated same-dim tools (lowest ``mesh_order`` wins).
+4. ``BOPAlgo_Builder`` all-fragment over every cut shape; per-input
    ``Modified()`` tells us which fragment piece descends from which
    input, which we invert to build the per-piece candidate list.
-4. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
+5. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
    wins on tie).
 
 ``keep=False`` handling differs from the gmsh backend: here the helper's
@@ -34,14 +36,21 @@ from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
 from OCP.BOPAlgo import BOPAlgo_Builder
-from OCP.BRep import BRep_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
+from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+from OCP.TopAbs import (
+    TopAbs_EDGE,
+    TopAbs_FACE,
+    TopAbs_ShapeEnum,
+    TopAbs_SOLID,
+    TopAbs_VERTEX,
+)
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
+
+from meshwell.cad_common import prepare_entities
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -105,7 +114,8 @@ class CAD_OCC:
         self,
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
-        fuzzy_value: float | None = None,
+        cut_fuzzy_value: float | None = None,
+        fragment_fuzzy_value: float | None = None,
         perturbation: float | None = None,
     ):
         """Initialize OCC CAD processor.
@@ -116,11 +126,19 @@ class CAD_OCC:
                 ``shapely.set_precision`` pass). Vertices closer than this
                 get snapped before the TopoDS graph is built.
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
-            fuzzy_value: BOPAlgo fuzzy value used during the all-fragment
-                pass (gmsh's ``Geometry.ToleranceBoolean`` equivalent).
-                Decoupled from ``point_tolerance`` so near-coincident
-                interfaces can be fused without widening the vertex snap.
-                Defaults to ``point_tolerance`` when ``None``.
+            cut_fuzzy_value: Fuzzy passed to ``BRepAlgoAPI_Cut`` in the
+                sequential per-entity cut cascade. Defaults to
+                ``perturbation / 2`` (mirrors cad_gmsh's
+                ``tolerance_boolean = perturbation / 2``). Tight by design --
+                a loose cut fuzzy merges the buffered overlap into the lower
+                entity and erases the carved face.
+            fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
+                all-fragment pass. Defaults to ``point_tolerance``,
+                intentionally LOOSER than the cut fuzzy: cad_occ tags
+                interfaces via raw ``TShape`` identity on per-entity leaves;
+                tightening this below the perturbation gap (~2e-5) leaves
+                coincident faces with distinct TShapes and drops ``A___B``
+                interfaces.
             perturbation: Outward shapely buffer applied to polygon entities
                 before the sequential cut cascade. Mirrors cad_gmsh default
                 (1e-5). Used for the shared shapely pre-pass (polygon buffer
@@ -128,10 +146,13 @@ class CAD_OCC:
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
-        # Mirrors cad_gmsh default (1e-5). Used for the shared shapely
-        # pre-pass (polygon buffer + InterfaceTag snap distance).
         self.perturbation = perturbation if perturbation is not None else 1e-5
+        self.cut_fuzzy_value = (
+            self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
+        )
+        self.fragment_fuzzy_value = (
+            point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
+        )
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from the first non-empty TopAbs class."""
@@ -156,8 +177,6 @@ class CAD_OCC:
         ensures that Modified() can locate the fragment pieces originating
         from each cut entity.
         """
-        from OCP.TopAbs import TopAbs_ShapeEnum
-
         if shape.ShapeType() != TopAbs_ShapeEnum.TopAbs_COMPOUND:
             return [shape]
 
@@ -186,27 +205,68 @@ class CAD_OCC:
             return None
         return box.Get()
 
+    def _shapes_actually_overlap(self, s1: TopoDS_Shape, s2: TopoDS_Shape) -> bool:
+        """Return True iff two shapes are within ``cut_fuzzy_value`` of touching.
+
+        AABB overlap is necessary but not sufficient for non-convex
+        geometry such as annular sectors, L-shapes, or any body whose
+        bounding box is much larger than its actual material region. For
+        a 90-degree annular sector at r in [14, 17], the AABB covers the
+        full upper-right quadrant of [0, 17]^2, which AABB-overlaps with
+        any other body in that quadrant -- even ones that share no
+        material with the sector.
+
+        Calling ``BRepAlgoAPI_Cut`` on AABB-overlapping but
+        volumetrically-disjoint shapes is unsafe: OCC has been observed
+        to silently SPLIT the object (returning a Compound of multiple
+        SOLIDs where the input was one) and to leave duplicate face
+        TShapes in the result. Subsequent fragment + meshing then
+        produces malformed solids whose volumes silently fail to
+        tetrahedralize.
+
+        ``BRepExtrema_DistShapeShape`` measures the true minimum
+        distance between two shapes; if it exceeds ``cut_fuzzy_value``
+        the shapes are definitively disjoint and the cut would be a
+        no-op modulo numerical noise. Matches the fuzzy the cut itself
+        will use, so the gate and the BOP agree on "near enough".
+        """
+        ext = BRepExtrema_DistShapeShape(s1, s2)
+        ext.Perform()
+        if not ext.IsDone():
+            return True
+        return ext.Value() <= self.cut_fuzzy_value
+
     def _bboxes_overlap(
         self,
         b1: tuple[float, ...],
         b2: tuple[float, ...],
     ) -> bool:
-        """Return True iff the two AABB tuples have overlapping volume.
+        """Return True iff the two AABBs overlap or touch.
 
-        Uses a small gap tolerance (``self.fuzzy_value``) so entities
-        that only TOUCH (shared face, zero-volume overlap) are NOT cut
-        against each other. Touching entities are handled correctly by the
-        subsequent ``BOPAlgo_Builder`` fragment pass; cutting them first
-        with ``BRepAlgoAPI_Cut`` would split non-overlapping faces.
+        Plain AABB intersection. Disjoint shapes (with separated AABBs)
+        skip the cut; overlapping AND touching shapes both proceed to
+        ``BRepAlgoAPI_Cut`` -- mirroring cad_gmsh's unconditional cut.
+
+        Earlier versions used a fuzzy ``gap`` to skip pairs that "only
+        touch" (shared face, zero-volume overlap). That decision was
+        wrong on two counts: (1) the gap defaulted to
+        ``point_tolerance = 1e-3``, which is 50x larger than the
+        ~2e-5 perturbation-induced volumetric overlap, so REAL
+        overlapping pairs were classified as "touching" and the cut
+        cascade silently became a no-op for those pairs (the final
+        fragment had to resolve all overlaps, producing unclean
+        interfaces); (2) cutting genuinely-touching pairs is actually
+        desirable -- it splits the boundary face along the contact,
+        which the subsequent fragment then merges into a shared TShape,
+        giving cleanly uniquified interfaces.
         """
-        gap = self.fuzzy_value
         return (
-            b1[0] < b2[3] - gap
-            and b1[3] > b2[0] + gap
-            and b1[1] < b2[4] - gap
-            and b1[4] > b2[1] + gap
-            and b1[2] < b2[5] - gap
-            and b1[5] > b2[2] + gap
+            b1[0] <= b2[3]
+            and b1[3] >= b2[0]
+            and b1[1] <= b2[4]
+            and b1[4] >= b2[1]
+            and b1[2] <= b2[5]
+            and b1[5] >= b2[2]
         )
 
     def _instantiate_entity_occ(
@@ -249,7 +309,7 @@ class CAD_OCC:
 
         builder = BOPAlgo_Builder()
         builder.SetRunParallel(self.n_threads > 1)
-        builder.SetFuzzyValue(self.fuzzy_value)
+        builder.SetFuzzyValue(self.fragment_fuzzy_value)
         builder.SetNonDestructive(False)
 
         originals_per_entity: list[list[TopoDS_Shape]] = []
@@ -306,36 +366,32 @@ class CAD_OCC:
 
         return entities
 
-    def process_entities(
+    def process_entities_cut_only(
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
     ) -> list[OCCLabeledEntity]:
-        """Instantiate, sequentially cut, then fragment all entities.
+        """Run the OCP-side prepare + sort + instantiate + sequential-cut phase.
 
-        Pipeline mirrors ``cad_gmsh.process_entities``:
-
-        1. Shared shapely pre-pass (buffer + InterfaceTag resolve) via
-           :func:`meshwell.cad_common.prepare_entities`.
-        2. Sort by mesh_order (lowest first).
-        3. For each entity in sorted order: instantiate via
-           ``instanciate_occ``, then ``BRepAlgoAPI_Cut`` against a
-           ``TopoDS_Compound`` of all previously-instantiated same-dim
-           shapes. The lowest-mesh_order entity keeps its full buffered
-           geometry; higher-mesh_order entities have the overlap carved.
-        4. Final all-fragment pass via ``BOPAlgo_Builder`` (existing
-           ownership resolution by mesh_order).
-
-        ``keep=False`` helpers keep their shapes for the XAO writer's
-        interface-naming pass; the writer itself excludes their bodies
-        from the emitted BREP.
+        Stops short of ``_fragment_all``: each returned entity holds its
+        post-cut shapes but no piece-ownership reassignment has happened.
+        This is the bridge point used by the gmsh-fragment hand-off, where
+        gmsh re-fragments the cut shapes and runs its own tagging pipeline.
         """
         if not entities_list:
             return []
 
-        from meshwell.cad_common import prepare_entities
-
-        prepare_entities(entities_list, perturbation=self.perturbation)
+        # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
+        # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
+        # resolved strip is wide enough for non-degenerate panels (at
+        # least 2*point_tolerance per side). Without this override OCC
+        # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
+        # produce zero-area panels at user scale.
+        prepare_entities(
+            entities_list,
+            perturbation=self.perturbation,
+            resolve_snap=max(self.perturbation, self.point_tolerance),
+        )
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))
@@ -367,28 +423,53 @@ class CAD_OCC:
                 b for s in labeled.shapes if (b := self._shape_bbox(s)) is not None
             ]
             tool_shapes: list[TopoDS_Shape] = []
+            l_ord = (
+                labeled.mesh_order if labeled.mesh_order is not None else float("inf")
+            )
             for prev in instantiated:
                 if prev is None or prev.dim != labeled.dim:
                     continue
+                p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
+                if p_ord >= l_ord:
+                    continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
-                    if tb is not None and any(
-                        self._bboxes_overlap(ob, tb) for ob in obj_bboxes
+                    if tb is None:
+                        continue
+                    if not any(self._bboxes_overlap(ob, tb) for ob in obj_bboxes):
+                        continue
+                    # AABB overlap is too coarse for non-convex shapes
+                    # (annular sectors, L-shapes). Confirm a real
+                    # geometric overlap before cutting -- BRepAlgoAPI_Cut
+                    # on AABB-overlapping but volume-disjoint shapes can
+                    # silently split the object into multiple SOLIDs and
+                    # produce duplicate face TShapes that prevent
+                    # downstream meshing.
+                    if not any(
+                        self._shapes_actually_overlap(s, ts) for s in labeled.shapes
                     ):
-                        tool_shapes.append(ts)
+                        continue
+                    tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
-                cb = BRep_Builder()
-                tool_compound = TopoDS_Compound()
-                cb.MakeCompound(tool_compound)
-                for s in tool_shapes:
-                    cb.Add(tool_compound, s)
-
-                cut_shapes = []
+                # Sequential per-tool cuts -- matches
+                # ``gmsh.model.occ.cut(obj, [tools])`` which iterates
+                # internally. Bundling all tools into a single
+                # ``TopoDS_Compound`` and calling ``BRepAlgoAPI_Cut(s,
+                # compound)`` (or feeding a ``TopTools_ListOfShape``) was
+                # observed to produce empty results (zero SOLIDs) for
+                # large bodies like a substrate cut against ~10
+                # metal+helper bodies, even though the same body against
+                # each tool individually retains 1 SOLID per cut.
+                new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     try:
-                        cut_op = BRepAlgoAPI_Cut(s, tool_compound)
-                        result = cut_op.Shape()
+                        result = s
+                        for ts in tool_shapes:
+                            cut_op = BRepAlgoAPI_Cut(result, ts)
+                            cut_op.SetFuzzyValue(self.cut_fuzzy_value)
+                            cut_op.Build()
+                            result = cut_op.Shape()
                     except Exception as e:  # pragma: no cover -- defensive
                         print(
                             f"Warning: BRepAlgoAPI_Cut failed for entity "
@@ -397,17 +478,47 @@ class CAD_OCC:
                         result = s
                     if result is not None:
                         # Flatten compound wrapper so BOPAlgo_Builder.Modified()
-                        # can track sub-shape provenance correctly.
-                        cut_shapes.extend(self._unwrap_shape(result, labeled.dim))
-                labeled.shapes = cut_shapes
+                        # in the final fragment pass tracks sub-shape provenance.
+                        new_shapes.extend(self._unwrap_shape(result, labeled.dim))
+                labeled.shapes = new_shapes
 
             instantiated[orig_idx] = labeled
 
         # ``instantiated`` now has one entry per original entity, in
         # insertion order. Filter out any None (defensive; should not
         # happen) before fragment.
-        labeled_entities = [le for le in instantiated if le is not None]
+        return [le for le in instantiated if le is not None]
 
+    def process_entities(
+        self,
+        entities_list: list[Any],
+        progress_bars: bool = False,
+    ) -> list[OCCLabeledEntity]:
+        """Instantiate, sequentially cut, then fragment all entities.
+
+        Pipeline mirrors ``cad_gmsh.process_entities``:
+
+        1. Shared shapely pre-pass (buffer + InterfaceTag resolve) via
+           :func:`meshwell.cad_common.prepare_entities`.
+        2. Sort by mesh_order (lowest first).
+        3. For each entity in sorted order: instantiate via
+           ``instanciate_occ``, then sequentially ``BRepAlgoAPI_Cut``
+           against each previously-instantiated same-dim tool that
+           passes both the AABB and the geometric-overlap pre-filter.
+           The lowest-mesh_order entity keeps its full buffered geometry;
+           higher-mesh_order entities have the overlap carved.
+        4. Final all-fragment pass via ``BOPAlgo_Builder`` (existing
+           ownership resolution by mesh_order).
+
+        ``keep=False`` helpers keep their shapes for the XAO writer's
+        interface-naming pass; the writer itself excludes their bodies
+        from the emitted BREP.
+        """
+        labeled_entities = self.process_entities_cut_only(
+            entities_list, progress_bars=progress_bars
+        )
+        if not labeled_entities:
+            return []
         return self._fragment_all(labeled_entities, progress_bars=progress_bars)
 
 
@@ -416,7 +527,8 @@ def cad_occ(
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
-    fuzzy_value: float | None = None,
+    cut_fuzzy_value: float | None = None,
+    fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
@@ -429,7 +541,8 @@ def cad_occ(
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
-        fuzzy_value=fuzzy_value,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)

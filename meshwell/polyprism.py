@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import gmsh
 import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
-import gmsh
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.validation import format_physical_name
 
@@ -507,6 +507,7 @@ class PolyPrism(GeometryEntity):
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
         from OCP.gp import gp_Vec
+        from shapely.geometry.polygon import orient
 
         volumes = []
         if self.extrude:
@@ -517,6 +518,19 @@ class PolyPrism(GeometryEntity):
             )
             vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
+                # For polygons with holes, canonicalize to OGC convention
+                # (CCW exterior + CW interiors) so OCC's face-with-hole
+                # construction works regardless of the input's shapely
+                # orientation. ``cad_common.prepare_entities`` runs a
+                # ``buffer(...).intersection(bbox)`` that silently flips
+                # the exterior to CW while leaving interiors CCW; without
+                # this orient pass the resulting BRep face has both wires
+                # CCW and the prism's volume includes the hole. Skipped
+                # when there are no interiors to keep mesh output
+                # bit-identical to pre-fix reference files for the common
+                # no-hole case.
+                if poly.interiors:
+                    poly = orient(poly, sign=1.0)
                 exterior_vertices = [(x, y, self.zmin) for x, y in poly.exterior.coords]
                 outer_wire = self._make_occ_wire_from_vertices(
                     exterior_vertices,
@@ -533,7 +547,6 @@ class PolyPrism(GeometryEntity):
                         min_arc_points=self.min_arc_points,
                         arc_tolerance=self.arc_tolerance,
                     )
-                    hole_wire.Reverse()
                     mf.Add(hole_wire)
                 face = mf.Face()
 

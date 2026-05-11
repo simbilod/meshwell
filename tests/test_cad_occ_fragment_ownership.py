@@ -1,11 +1,11 @@
 """Unit tests for the all-fragment OCC pipeline."""
 from __future__ import annotations
 
+import gmsh
 import shapely
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
-import gmsh
 from meshwell.cad_occ import (
     CAD_OCC,
     OCCLabeledEntity,
@@ -206,19 +206,19 @@ def test_inject_two_overlapping_boxes_produces_shared_interface():
 
 
 def test_cad_occ_fuzzy_value_independent_of_point_tolerance():
-    """``fuzzy_value`` must feed BOPAlgo without altering cache quantization.
+    """``fragment_fuzzy_value`` must feed BOPAlgo without altering cache quantization.
 
-    If the cache were driven by ``fuzzy_value`` instead of ``point_tolerance``,
+    If the cache were driven by the fragment fuzzy instead of ``point_tolerance``,
     a coarse fuzzy value (say 1e-1) would quantize a 1.0-wide box's corners
     to the same TopoDS_Vertex, and BRepBuilderAPI_MakeEdge would raise
     StdFail_NotDone. This test pins that decoupling.
     """
-    processor = CAD_OCC(point_tolerance=1e-4, fuzzy_value=1e-1)
+    processor = CAD_OCC(point_tolerance=1e-4, fragment_fuzzy_value=1e-1)
     assert processor.point_tolerance == 1e-4
-    assert processor.fuzzy_value == 1e-1
+    assert processor.fragment_fuzzy_value == 1e-1
 
     # Feature size (1.0) >> point_tolerance (1e-4), so the cache won't collapse
-    # corners even though fuzzy_value (0.1) would.
+    # corners even though fragment_fuzzy_value (0.1) would.
     a = OCC_entity(
         occ_function=lambda: BRepPrimAPI_MakeBox(
             gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0
@@ -241,9 +241,9 @@ def test_cad_occ_fuzzy_value_independent_of_point_tolerance():
 
 
 def test_cad_occ_fuzzy_value_defaults_to_point_tolerance():
-    """When ``fuzzy_value`` is None, it inherits ``point_tolerance``."""
+    """When ``fragment_fuzzy_value`` is None, it inherits ``point_tolerance``."""
     processor = CAD_OCC(point_tolerance=5e-3)
-    assert processor.fuzzy_value == 5e-3
+    assert processor.fragment_fuzzy_value == 5e-3
 
 
 def test_inject_with_remove_all_duplicates_preserves_physical_tags():
