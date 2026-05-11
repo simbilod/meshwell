@@ -108,7 +108,8 @@ class CAD_OCC:
         self,
         point_tolerance: float = 1e-3,
         n_threads: int = cpu_count(),
-        fuzzy_value: float | None = None,
+        cut_fuzzy_value: float | None = None,
+        fragment_fuzzy_value: float | None = None,
         perturbation: float | None = None,
     ):
         """Initialize OCC CAD processor.
@@ -119,19 +120,19 @@ class CAD_OCC:
                 ``shapely.set_precision`` pass). Vertices closer than this
                 get snapped before the TopoDS graph is built.
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
-            fuzzy_value: BOPAlgo / BRepAlgoAPI_Cut fuzzy used by the
-                sequential cut cascade and the final all-fragment pass.
-                Defaults to ``point_tolerance`` -- intentionally LOOSER than
-                cad_gmsh's ``tolerance_boolean = perturbation / 2``. cad_occ
-                tags interfaces via raw ``TShape`` identity on per-entity
-                leaves; gmsh tags via ``getBoundary`` set intersection which
-                relies on gmsh's fragment merging near-coincident TShapes
-                aggressively. Tightening cad_occ's fuzzy below the
-                perturbation gap (~2e-5) leaves coincident faces with
-                distinct TShapes, dropping ``A___B`` interfaces. Until
-                cad_occ's tagging moves to a geometric-coincidence test
-                (or the fragment is delegated to gmsh) the loose fuzzy
-                must stay.
+            cut_fuzzy_value: Fuzzy passed to ``BRepAlgoAPI_Cut`` in the
+                sequential per-entity cut cascade. Defaults to
+                ``perturbation / 2`` (mirrors cad_gmsh's
+                ``tolerance_boolean = perturbation / 2``). Tight by design --
+                a loose cut fuzzy merges the buffered overlap into the lower
+                entity and erases the carved face.
+            fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
+                all-fragment pass. Defaults to ``point_tolerance``,
+                intentionally LOOSER than the cut fuzzy: cad_occ tags
+                interfaces via raw ``TShape`` identity on per-entity leaves;
+                tightening this below the perturbation gap (~2e-5) leaves
+                coincident faces with distinct TShapes and drops ``A___B``
+                interfaces.
             perturbation: Outward shapely buffer applied to polygon entities
                 before the sequential cut cascade. Mirrors cad_gmsh default
                 (1e-5). Used for the shared shapely pre-pass (polygon buffer
@@ -139,10 +140,15 @@ class CAD_OCC:
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.fuzzy_value = point_tolerance if fuzzy_value is None else fuzzy_value
         # Mirrors cad_gmsh default (1e-5). Used for the shared shapely
         # pre-pass (polygon buffer + InterfaceTag snap distance).
         self.perturbation = perturbation if perturbation is not None else 1e-5
+        self.cut_fuzzy_value = (
+            self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
+        )
+        self.fragment_fuzzy_value = (
+            point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
+        )
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from the first non-empty TopAbs class."""
@@ -198,7 +204,7 @@ class CAD_OCC:
         return box.Get()
 
     def _shapes_actually_overlap(self, s1: TopoDS_Shape, s2: TopoDS_Shape) -> bool:
-        """Return True iff two shapes are within ``fuzzy_value`` of touching.
+        """Return True iff two shapes are within ``cut_fuzzy_value`` of touching.
 
         AABB overlap is necessary but not sufficient for non-convex
         geometry such as annular sectors, L-shapes, or any body whose
@@ -217,15 +223,16 @@ class CAD_OCC:
         tetrahedralize.
 
         ``BRepExtrema_DistShapeShape`` measures the true minimum
-        distance between two shapes; if it exceeds ``fuzzy_value`` the
-        shapes are definitively disjoint and the cut would be a no-op
-        modulo numerical noise.
+        distance between two shapes; if it exceeds ``cut_fuzzy_value``
+        the shapes are definitively disjoint and the cut would be a
+        no-op modulo numerical noise. Matches the fuzzy the cut itself
+        will use, so the gate and the BOP agree on "near enough".
         """
         ext = BRepExtrema_DistShapeShape(s1, s2)
         ext.Perform()
         if not ext.IsDone():
             return True
-        return ext.Value() <= self.fuzzy_value
+        return ext.Value() <= self.cut_fuzzy_value
 
     def _bboxes_overlap(
         self,
@@ -238,18 +245,18 @@ class CAD_OCC:
         skip the cut; overlapping AND touching shapes both proceed to
         ``BRepAlgoAPI_Cut`` -- mirroring cad_gmsh's unconditional cut.
 
-        Earlier versions used ``gap = self.fuzzy_value`` to skip pairs
-        that "only touch" (shared face, zero-volume overlap). That
-        decision was wrong on two counts: (1) ``fuzzy_value`` defaults
-        to ``point_tolerance = 1e-3``, which is 50x larger than the
+        Earlier versions used a fuzzy ``gap`` to skip pairs that "only
+        touch" (shared face, zero-volume overlap). That decision was
+        wrong on two counts: (1) the gap defaulted to
+        ``point_tolerance = 1e-3``, which is 50x larger than the
         ~2e-5 perturbation-induced volumetric overlap, so REAL
         overlapping pairs were classified as "touching" and the cut
-        cascade silently became a no-op for those pairs (BOPAlgo_Builder
-        had to resolve all overlaps in the final fragment, producing
-        unclean interfaces); (2) cutting genuinely-touching pairs is
-        actually desirable -- it splits the boundary face along the
-        contact, which the subsequent fragment then merges into a
-        shared TShape, giving cleanly uniquified interfaces.
+        cascade silently became a no-op for those pairs (the final
+        fragment had to resolve all overlaps, producing unclean
+        interfaces); (2) cutting genuinely-touching pairs is actually
+        desirable -- it splits the boundary face along the contact,
+        which the subsequent fragment then merges into a shared TShape,
+        giving cleanly uniquified interfaces.
         """
         return (
             b1[0] <= b2[3]
@@ -300,7 +307,7 @@ class CAD_OCC:
 
         builder = BOPAlgo_Builder()
         builder.SetRunParallel(self.n_threads > 1)
-        builder.SetFuzzyValue(self.fuzzy_value)
+        builder.SetFuzzyValue(self.fragment_fuzzy_value)
         builder.SetNonDestructive(False)
 
         originals_per_entity: list[list[TopoDS_Shape]] = []
@@ -454,7 +461,9 @@ class CAD_OCC:
                 b for s in labeled.shapes if (b := self._shape_bbox(s)) is not None
             ]
             tool_shapes: list[TopoDS_Shape] = []
-            l_ord = labeled.mesh_order if labeled.mesh_order is not None else float("inf")
+            l_ord = (
+                labeled.mesh_order if labeled.mesh_order is not None else float("inf")
+            )
             for prev in instantiated:
                 if prev is None or prev.dim != labeled.dim:
                     continue
@@ -481,30 +490,22 @@ class CAD_OCC:
                     tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
-                # Sequential per-tool cuts. Bundling all tools into a single
-                # ``TopoDS_Compound`` and calling ``BRepAlgoAPI_Cut`` once was
-                # observed to produce empty results (zero SOLIDs) for large
-                # background bodies like a substrate cut against a compound
-                # of ~10 metal+helper bodies, even though the same body
-                # against each tool individually retains 1 SOLID per cut.
-                # Sequential cutting matches gmsh.model.occ.cut(obj, [tools])
-                # which iterates internally.
-                from OCP.TopTools import TopTools_ListOfShape
-
-                # Single Cut() with all tools as a TopTools_ListOfShape --
-                # matches gmsh.model.occ.cut(obj, [tools]) semantics.
-                # Bundling all tools into a TopoDS_Compound and calling
-                # ``BRepAlgoAPI_Cut(s, compound)`` (the original code) was
+                # Sequential per-tool cuts -- matches
+                # ``gmsh.model.occ.cut(obj, [tools])`` which iterates
+                # internally. Bundling all tools into a single
+                # ``TopoDS_Compound`` and calling ``BRepAlgoAPI_Cut(s,
+                # compound)`` (or feeding a ``TopTools_ListOfShape``) was
                 # observed to produce empty results (zero SOLIDs) for
-                # large bodies cut against ~10 small ones, even though
-                # the same body against each tool individually works.
+                # large bodies like a substrate cut against ~10
+                # metal+helper bodies, even though the same body against
+                # each tool individually retains 1 SOLID per cut.
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     try:
                         result = s
                         for ts in tool_shapes:
                             cut_op = BRepAlgoAPI_Cut(result, ts)
-                            cut_op.SetFuzzyValue(self.perturbation / 2)
+                            cut_op.SetFuzzyValue(self.cut_fuzzy_value)
                             cut_op.Build()
                             result = cut_op.Shape()
                     except Exception as e:  # pragma: no cover -- defensive
@@ -563,7 +564,8 @@ def cad_occ(
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
-    fuzzy_value: float | None = None,
+    cut_fuzzy_value: float | None = None,
+    fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
@@ -576,7 +578,8 @@ def cad_occ(
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
-        fuzzy_value=fuzzy_value,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)
@@ -587,7 +590,8 @@ def cad_occ_with_gmsh_fragment(
     point_tolerance: float = 1e-3,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
-    fuzzy_value: float | None = None,
+    cut_fuzzy_value: float | None = None,
+    fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
     filename: str = "temp",
     model: Any | None = None,
@@ -626,7 +630,8 @@ def cad_occ_with_gmsh_fragment(
     ocp_processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,
-        fuzzy_value=fuzzy_value,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
     ocp_labeled = ocp_processor.process_entities_instantiate_only(entities_list)
