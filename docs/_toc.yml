@@ -17,6 +17,7 @@ parts:
     - file: gmsh_entity
     - file: polysurfaces
     - file: prisms
+    - file: structured_prisms
     - file: models
 
   - caption: Mesh
