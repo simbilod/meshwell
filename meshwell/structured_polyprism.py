@@ -500,14 +500,20 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     # multiple sub-slabs by the cascade) must collapse to one group.
     volumes_by_name: dict[str, list[int]] = defaultdict(list)
     geo_fallback_used = False
+    # Records used for lateral surface tagging post-pass.
+    conformal_records: list[tuple[Slab, dict]] = []
+    geo_records: list[tuple[Slab, list[int]]] = []
     for slab in sorted_slabs:
         result = _build_one_slab_conformal(slab, tol)
         if result is None:
             # No OCC neighbor on bottom or top -- fall back to geo extrude.
-            vol_tags, used_geo = _build_one_slab_geo_fallback(slab, tol)
+            vol_tags, used_geo, exposed_faces = _build_one_slab_geo_fallback(slab, tol)
             geo_fallback_used = geo_fallback_used or used_geo
+            geo_records.append((slab, exposed_faces))
         else:
-            vol_tags = [result]
+            vol_tag, lateral_info = result
+            vol_tags = [vol_tag]
+            conformal_records.append((slab, lateral_info))
         for name in slab.physical_name:
             volumes_by_name[name].extend(vol_tags)
 
@@ -520,6 +526,168 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
             continue
         pg = gmsh.model.addPhysicalGroup(3, vols)
         gmsh.model.setPhysicalName(3, pg, name)
+
+    # Lateral surface tagging: emit ``slab___None`` for facets exposed to
+    # the outer domain and ``slabA___slabB`` for structured/structured
+    # interfaces. Conformal-path slabs need wedge-facet extraction; geo-
+    # fallback slabs already have the side faces as 2D geo entities.
+    _emit_structured_lateral_tags(conformal_records, geo_records, tol)
+
+
+def _emit_structured_lateral_tags(
+    conformal_records: list[tuple[Slab, dict]],
+    geo_records: list[tuple[Slab, list[int]]],
+    tol: float,
+) -> None:
+    """Tag the lateral surfaces of structured slabs.
+
+    For conformal-path slabs we extract wedge lateral quads from the
+    bottom-face triangulation's boundary edges and the per-layer node
+    tag arrays. Each quad is keyed by its 3D midpoint so we can detect
+    facets shared between two slabs (structured/structured interface)
+    vs. exposed to None. Facets covered by a surviving OCC lateral face
+    are skipped (the regular ``_tag_physicals`` machinery has already
+    tagged them).
+
+    For geo-fallback slabs the lateral side faces are already 2D geo
+    entities returned by ``geo.extrude``; we add them straight into a
+    discrete physical group named ``slab___None`` (geo-fallback only
+    fires for isolated slabs, so we don't expect structured/structured
+    interfaces in this path).
+    """
+    from collections import Counter, defaultdict
+
+    import gmsh
+
+    # Build a single fused dict mapping spatial midpoint key -> claimants
+    # (list of (slab_id, quad_node_tags)). Then resolve tags.
+    snap = max(tol, 1e-9)
+
+    def _key(x: float, y: float, z: float) -> tuple[int, int, int]:
+        return (round(x / snap), round(y / snap), round(z / snap))
+
+    quad_index: dict[
+        tuple[int, int, int], list[tuple[int, tuple[int, int, int, int]]]
+    ] = defaultdict(list)
+    quad_midpoints: dict[
+        tuple[int, tuple[int, int, int, int]], tuple[float, float, float]
+    ] = {}
+
+    for slab_id, (slab, info) in enumerate(conformal_records):
+        triangles = info["triangles"]
+        layers = info["layers"]
+        tag_to_idx = info["tag_to_idx"]
+        coord = info["coord"]  # (n_nodes, 3) with z=zlo for layer 0
+        n_layers = slab.n_layers
+        height = slab.zhi - slab.zlo
+
+        # Boundary edges of the bottom triangulation: undirected edges
+        # appearing in exactly one triangle. Keys are sorted tag pairs.
+        edge_counter: Counter[tuple[int, int]] = Counter()
+        for tri in triangles.tolist():
+            a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+            for x, y in ((a, b), (b, c), (c, a)):
+                edge_counter[tuple(sorted((x, y)))] += 1
+        boundary_edges = [e for e, c in edge_counter.items() if c == 1]
+
+        for a_tag, b_tag in boundary_edges:
+            ia = tag_to_idx[a_tag]
+            ib = tag_to_idx[b_tag]
+            xa, ya = float(coord[ia, 0]), float(coord[ia, 1])
+            xb, yb = float(coord[ib, 0]), float(coord[ib, 1])
+            xy_mid_x = 0.5 * (xa + xb)
+            xy_mid_y = 0.5 * (ya + yb)
+            for i in range(n_layers):
+                z_lo = slab.zlo + height * (i / n_layers)
+                z_hi = slab.zlo + height * ((i + 1) / n_layers)
+                z_mid = 0.5 * (z_lo + z_hi)
+                lo = layers[i]
+                hi = layers[i + 1]
+                quad = (
+                    int(lo[ia]),
+                    int(lo[ib]),
+                    int(hi[ib]),
+                    int(hi[ia]),
+                )
+                key = _key(xy_mid_x, xy_mid_y, z_mid)
+                quad_index[key].append((slab_id, quad))
+                quad_midpoints[(slab_id, quad)] = (xy_mid_x, xy_mid_y, z_mid)
+
+    # Collect surviving OCC lateral faces (those with z-extent > tol).
+    import logging
+
+    logger = logging.getLogger(__name__)
+    occ_lateral_bboxes: list[tuple[float, float, float, float, float, float]] = []
+    for dim, ftag in gmsh.model.occ.getEntities(2):
+        if dim != 2:
+            continue
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, ftag)
+        except Exception as exc:
+            logger.debug("getBoundingBox failed for OCC face %d: %s", ftag, exc)
+            continue
+        if zmax - zmin > snap:  # lateral, not horizontal
+            occ_lateral_bboxes.append((xmin, ymin, zmin, xmax, ymax, zmax))
+
+    def _occ_lateral_covers(midpoint: tuple[float, float, float]) -> bool:
+        x, y, z = midpoint
+        for xmin, ymin, zmin, xmax, ymax, zmax in occ_lateral_bboxes:
+            if (
+                xmin - snap <= x <= xmax + snap
+                and ymin - snap <= y <= ymax + snap
+                and zmin - snap <= z <= zmax + snap
+            ):
+                return True
+        return False
+
+    # Group quads by physical-group tag name.
+    quads_by_tag: dict[str, list[tuple[int, int, int, int]]] = defaultdict(list)
+    for claimants in quad_index.values():
+        if len(claimants) >= 2:
+            # Structured/structured interface: pick one representative
+            # quad (post-removeDuplicateNodes the node tags merge anyway).
+            (sid_a, quad_a), (sid_b, _) = claimants[0], claimants[1]
+            name_a = conformal_records[sid_a][0].physical_name[0]
+            name_b = conformal_records[sid_b][0].physical_name[0]
+            if name_a == name_b:
+                tag = f"{name_a}___{name_a}"
+            else:
+                lo_name, hi_name = sorted([name_a, name_b])
+                tag = f"{lo_name}___{hi_name}"
+            quads_by_tag[tag].append(quad_a)
+        else:
+            sid, quad = claimants[0]
+            midpoint = quad_midpoints[(sid, quad)]
+            if _occ_lateral_covers(midpoint):
+                # Already tagged by regular _tag_physicals via the OCC face.
+                continue
+            name = conformal_records[sid][0].physical_name[0]
+            quads_by_tag[f"{name}___None"].append(quad)
+
+    # Materialize: one discrete 2D entity per tag, then a physical group.
+    for tag, quads in quads_by_tag.items():
+        if not quads:
+            continue
+        ent_tag = gmsh.model.addDiscreteEntity(2)
+        next_elem = int(gmsh.model.mesh.getMaxElementTag()) + 1
+        elem_tags = list(range(next_elem, next_elem + len(quads)))
+        flat_nodes: list[int] = []
+        for q in quads:
+            flat_nodes.extend(q)
+        gmsh.model.mesh.addElements(
+            2, ent_tag, [3], [elem_tags], [flat_nodes]
+        )  # gmsh element type 3 = 4-node quad
+        pg = gmsh.model.addPhysicalGroup(2, [ent_tag])
+        gmsh.model.setPhysicalName(2, pg, tag)
+
+    # Geo-fallback slabs: tag exposed 2D geo faces (lateral + bottom/top
+    # when not embedded in an OCC neighbor) directly.
+    for slab, exposed_faces in geo_records:
+        if not exposed_faces:
+            continue
+        name = slab.physical_name[0]
+        pg = gmsh.model.addPhysicalGroup(2, exposed_faces)
+        gmsh.model.setPhysicalName(2, pg, f"{name}___None")
 
 
 def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
@@ -545,9 +713,8 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
     """
     import logging
 
-    from shapely.geometry import box as sh_box
-
     import gmsh
+    from shapely.geometry import box as sh_box
 
     logger = logging.getLogger(__name__)
 
@@ -639,17 +806,21 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
             )
 
 
-def _build_one_slab_conformal(slab: Slab, tol: float) -> int | None:
+def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict] | None:
     """Build a discrete 3D entity for ``slab`` with conformal bottom/top.
 
-    Returns the discrete-volume tag, or ``None`` when neither the bottom
-    nor the top OCC face was found (caller should use the geo-fallback).
+    Returns ``(vol_tag, lateral_info)`` where ``lateral_info`` is a dict
+    with keys ``layers`` (list of np.ndarray of node tags per layer 0..n),
+    ``triangles`` (np.ndarray of bottom-face triangle connectivity in tag
+    space), ``tag_to_idx`` (bottom-node-tag -> index), and ``coord`` (the
+    bottom-face node coordinates at z=zlo). Returns ``None`` when neither
+    the bottom nor the top OCC face was found (caller should use the
+    geo-fallback).
     """
     import logging
 
-    import numpy as np
-
     import gmsh
+    import numpy as np
 
     logger = logging.getLogger(__name__)
 
@@ -872,15 +1043,28 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> int | None:
         [wedge_nodes_flat.tolist()],
     )
 
-    return vol_tag
+    return vol_tag, {
+        "layers": layers,
+        "triangles": triangles,
+        "tag_to_idx": tag_to_idx,
+        "coord": coord,
+    }
 
 
-def _build_one_slab_geo_fallback(slab: Slab, tol: float) -> tuple[list[int], bool]:
+def _build_one_slab_geo_fallback(
+    slab: Slab, tol: float
+) -> tuple[list[int], bool, list[int]]:
     """Build geo-kernel replicas (the v1 path) for slabs with no OCC neighbors.
 
-    Returns (volume_tags, used_flag) where used_flag is True if any geo
-    work was actually done (caller uses it to decide whether to call
-    ``geo.synchronize`` afterwards).
+    Returns (volume_tags, used_flag, exposed_face_tags) where used_flag
+    is True if any geo work was actually done (caller uses it to decide
+    whether to call ``geo.synchronize`` afterwards) and exposed_face_tags
+    is the list of 2D geo entity tags for faces NOT mated to a surviving
+    OCC neighbor (caller emits ``slab___None`` for them). The bottom and
+    top are included only when no OCC face at the corresponding z covers
+    the slab footprint; lateral sides are always exposed in this path
+    (geo-fallback only fires when at least one of bottom/top is absent,
+    and in those scenes the lateral OCC faces are also orphan-removed).
     """
     import gmsh
 
@@ -889,6 +1073,18 @@ def _build_one_slab_geo_fallback(slab: Slab, tol: float) -> tuple[list[int], boo
     )
     height = slab.zhi - slab.zlo
     volume_tags: list[int] = []
+    exposed_face_tags: list[int] = []
+
+    # Determine OCC neighbor presence ONCE before adding geo bodies, so
+    # the surviving OCC faces are the only ones in the candidate list.
+    occ_face_candidates = gmsh.model.occ.getEntities(2)
+    has_bottom_neighbor = (
+        _find_occ_face_for_slab(occ_face_candidates, slab, slab.zlo, tol) is not None
+    )
+    has_top_neighbor = (
+        _find_occ_face_for_slab(occ_face_candidates, slab, slab.zhi, tol) is not None
+    )
+
     for poly in polys:
         loops = [_geo_curve_loop(list(poly.exterior.coords)[:-1], slab.zlo)]
         loops.extend(
@@ -910,6 +1106,18 @@ def _build_one_slab_geo_fallback(slab: Slab, tol: float) -> tuple[list[int], boo
         volume_dt = next(dt for dt in extruded if dt[0] == 3)
         volume_tags.append(volume_dt[1])
 
+        face_dts = [dt for dt in extruded if dt[0] == 2]
+        top_face = face_dts[0][1]
+        side_face_tags = [t for _, t in face_dts[1:]]
+
+        # Always tag lateral sides as exposed (see docstring).
+        exposed_face_tags.extend(side_face_tags)
+        # Bottom and top only when no covering OCC face exists.
+        if not has_bottom_neighbor:
+            exposed_face_tags.append(bottom_surface)
+        if not has_top_neighbor:
+            exposed_face_tags.append(top_face)
+
         gmsh.model.geo.synchronize()
 
         # If any OCC neighbors do exist (e.g. only one of bottom/top is
@@ -917,11 +1125,11 @@ def _build_one_slab_geo_fallback(slab: Slab, tol: float) -> tuple[list[int], boo
         # available shared face is at least mated kernel-to-kernel.
         _embed_geo_into_occ_neighbors(
             geo_bottom=bottom_surface,
-            geo_top=next(dt for dt in extruded if dt[0] == 2)[1],
+            geo_top=top_face,
             slab=slab,
             tol=tol,
         )
-    return volume_tags, True
+    return volume_tags, True, exposed_face_tags
 
 
 def _geo_curve_loop(coords, z: float) -> int:
@@ -984,9 +1192,8 @@ def _find_occ_face_for_slab(
     bounds *this* slab's void rather than some unrelated z-coplanar OCC
     face elsewhere in the scene.
     """
-    from shapely.geometry import box
-
     import gmsh
+    from shapely.geometry import box
 
     fp = slab.footprint
     fp_area = fp.area

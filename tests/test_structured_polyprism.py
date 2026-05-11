@@ -484,6 +484,7 @@ def test_apply_structured_slabs_isolated_slab(square_poly):
     from collections import defaultdict
 
     import gmsh
+
     from meshwell.cad_gmsh import cad_gmsh
     from meshwell.polyprism import PolyPrism
     from meshwell.structured_polyprism import apply_structured_slabs
@@ -1192,3 +1193,143 @@ def test_structured_lateral_conformality_arc_bearing(tmp_path):
     # Arc-bearing case may have a few stragglers due to floating-point at arc
     # corners. Accept up to 5 duplicate residues.
     assert dupes <= 5, f"Expected <= 5 duplicate nodes; got {dupes}."
+
+
+def test_structured_lateral_exposed_to_none_is_tagged(tmp_path, square_poly):
+    """Lateral walls exposed to None get tagged ``slab___None``.
+
+    A structured slab sandwiched by substrate/cap (no lateral neighbor)
+    emits ``slab___None`` for its lateral walls. The substrate and cap
+    extend above/below in z but do NOT cover the slab's z-range
+    laterally, so the slab's lateral OCC faces are orphan and removed
+    at the CAD stage. The lateral wall mesh and ``slab___None`` tag
+    must still appear in the output.
+    """
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    hull = Polygon([(-1, -1), (2, -1), (2, 2), (-1, 2)])
+    sub = PolyPrism(
+        polygons=hull,
+        buffers={0.0: 0.0, 0.5: 0.0},
+        physical_name="sub",
+        mesh_order=10,
+    )
+    film = PolyPrism(
+        polygons=square_poly,
+        buffers={0.5: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+        mesh_order=2,
+    )
+    cap = PolyPrism(
+        polygons=hull,
+        buffers={1.0: 0.0, 1.5: 0.0},
+        physical_name="cap",
+        mesh_order=10,
+    )
+    out = tmp_path / "lateral_none.msh"
+    generate_mesh(
+        entities=[sub, film, cap],
+        dim=3,
+        output_mesh=str(out),
+        default_characteristic_length=0.4,
+    )
+    m = meshio.read(out)
+    assert (
+        "film___None" in m.field_data
+    ), f"Expected film___None in field_data; got {sorted(m.field_data.keys())}"
+
+
+def test_structured_isolated_emits_none_tag_on_all_faces(tmp_path, square_poly):
+    """Isolated structured slab tags every external face as ``slab___None``.
+
+    With no neighbors the slab is built via the geo-fallback path; bottom,
+    top, and lateral side faces must all appear in ``slab___None``.
+    """
+    import meshio
+    import numpy as np
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    slab = PolyPrism(
+        polygons=square_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="film",
+    )
+    out = tmp_path / "isolated_none.msh"
+    generate_mesh(
+        entities=[slab],
+        dim=3,
+        output_mesh=str(out),
+        default_characteristic_length=0.4,
+    )
+    m = meshio.read(out)
+    assert (
+        "film___None" in m.field_data
+    ), f"Expected film___None in field_data; got {sorted(m.field_data.keys())}"
+
+    # Tag must cover bottom (z=0), top (z=1), and lateral walls.
+    pts = np.asarray(m.points)
+    cell_sets = m.cell_sets.get("film___None", [])
+    bot = top = lat = 0
+    for i, ids in enumerate(cell_sets):
+        if ids is None or len(ids) == 0:
+            continue
+        block = m.cells[i]
+        coords = pts[block.data[ids]]
+        z_lo = coords[..., 2].min(axis=1)
+        z_hi = coords[..., 2].max(axis=1)
+        bot += int(((z_lo > -1e-6) & (z_hi < 1e-6)).sum())
+        top += int(((z_lo > 1.0 - 1e-6) & (z_hi < 1.0 + 1e-6)).sum())
+        lat += int((z_hi - z_lo > 1e-6).sum())
+    assert bot > 0, f"film___None missing bottom-face elements (bot={bot})"
+    assert top > 0, f"film___None missing top-face elements (top={top})"
+    assert lat > 0, f"film___None missing lateral-face elements (lat={lat})"
+
+
+def test_structured_fully_embedded_has_no_none_tag(tmp_path, square_poly):
+    """Fully embedded structured slab has no ``___None`` tag.
+
+    Every face of the slab is shared with the surrounding bulk so the
+    only interface tag should be ``bulk___slab``. Guards against the
+    lateral-tagging post-pass emitting spurious ``___None`` for embedded
+    slabs.
+    """
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    bulk = PolyPrism(
+        polygons=Polygon([(-2, -2), (3, -2), (3, 3), (-2, 3)]),
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="bulk",
+        mesh_order=10,
+    )
+    wire = PolyPrism(
+        polygons=square_poly,
+        buffers={0.5: 0.0, 1.0: 0.0},
+        n_layers=[3],
+        physical_name="wire",
+        mesh_order=2,
+    )
+    out = tmp_path / "embedded_no_none.msh"
+    generate_mesh(
+        entities=[bulk, wire],
+        dim=3,
+        output_mesh=str(out),
+        default_characteristic_length=0.4,
+    )
+    m = meshio.read(out)
+    assert "wire___None" not in m.field_data, (
+        f"wire is fully embedded inside bulk; wire___None should not exist. "
+        f"Got: {sorted(m.field_data.keys())}"
+    )
+    assert "bulk___wire" in m.field_data
