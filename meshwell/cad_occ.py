@@ -29,12 +29,9 @@ exactly; tests that pin one pin the other.
 """
 from __future__ import annotations
 
-import contextlib
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
@@ -53,7 +50,6 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
-import gmsh
 from meshwell.cad_common import prepare_entities
 
 if TYPE_CHECKING:
@@ -370,42 +366,6 @@ class CAD_OCC:
 
         return entities
 
-    def process_entities_instantiate_only(
-        self,
-        entities_list: list[Any],
-    ) -> list[OCCLabeledEntity]:
-        """Run prepare + sort + instantiate. No cut, no fragment.
-
-        This is the cleanest hand-off point for the gmsh-cut+fragment
-        pipeline: OCP just builds the per-entity TopoDS_Shape (which is
-        the OCP perf advantage) and gmsh handles all subsequent BOP
-        (cut cascade + fragment). Skips OCP's BRepAlgoAPI_Cut entirely,
-        which has been observed to produce topology that gmsh's PLC
-        mesher rejects (sliver faces around arc/rect cuts) -- gmsh's own
-        ``gmsh.model.occ.cut`` doesn't have this problem.
-        """
-        if not entities_list:
-            return []
-
-        prepare_entities(
-            entities_list,
-            perturbation=self.perturbation,
-            resolve_snap=max(self.perturbation, self.point_tolerance),
-        )
-
-        indexed = list(enumerate(entities_list))
-        indexed.sort(
-            key=lambda pair: (
-                pair[1].mesh_order if pair[1].mesh_order is not None else float("inf"),
-                pair[0],
-            )
-        )
-
-        instantiated: list[OCCLabeledEntity | None] = [None] * len(entities_list)
-        for orig_idx, ent in indexed:
-            instantiated[orig_idx] = self._instantiate_entity_occ(orig_idx, ent)
-        return [le for le in instantiated if le is not None]
-
     def process_entities_cut_only(
         self,
         entities_list: list[Any],
@@ -586,176 +546,3 @@ def cad_occ(
         perturbation=perturbation,
     )
     return processor.process_entities(entities_list, progress_bars=progress_bars)
-
-
-def cad_occ_with_gmsh_fragment(
-    entities_list: list[Any],
-    point_tolerance: float = 1e-3,
-    n_threads: int = cpu_count(),
-    progress_bars: bool = False,
-    cut_fuzzy_value: float | None = None,
-    fragment_fuzzy_value: float | None = None,
-    perturbation: float | None = None,
-    filename: str = "temp",
-    model: Any | None = None,
-    interface_delimiter: str = "___",
-    boundary_delimiter: str = "None",
-) -> tuple[list[Any], Any]:
-    """OCP instantiate + gmsh cut+fragment+tag, returning a meshable gmsh model.
-
-    Splits the work between the two backends to combine OCP's faster
-    instantiation with gmsh's robust BOP + boundary-tagging:
-
-    1. **OCP phase** -- prepare + sort by mesh_order + instantiate every
-       entity (no cut, no fragment). OCP's perf advantage is in
-       instantiation; doing the cut in OCP produces topology that gmsh's
-       PLC mesher rejects (sliver faces around arc/rect cuts produce
-       silent 0-tetra meshed volumes), so cuts move to gmsh.
-    2. **Bridge** -- serialize the per-entity TopoDS_Shape to a
-       temporary XAO with synthetic ``__cad_occ_bridge_idx_<i>__`` group
-       names and ``gmsh.merge`` into a fresh ``ModelManager``.
-    3. **gmsh phase** -- map physical groups back to per-entity dimtags,
-       then run the existing ``cad_gmsh`` cut cascade + fragment +
-       ``getBoundary`` tagging + keep=False removal. Cuts use
-       ``gmsh.model.occ.cut`` which produces clean, mesher-friendly
-       topology where ``BRepAlgoAPI_Cut`` does not.
-
-    Returns ``(labeled, model_manager)`` exactly like
-    :func:`meshwell.cad_gmsh.cad_gmsh`, so downstream
-    :func:`meshwell.mesh.mesh` calls are identical.
-    """
-    # cad_gmsh + occ_xao_writer imported lazily to avoid a hard
-    # cycle: occ_xao_writer's TYPE_CHECKING imports cad_occ, and
-    # cad_gmsh imports ModelManager from meshwell.model which is fine,
-    # but pulling CAD_GMSH up to module level would force meshwell to
-    # initialize the full gmsh model on import of cad_occ.
-    from meshwell.cad_gmsh import CAD_GMSH, GMSHLabeledEntity
-    from meshwell.occ_xao_writer import parse_bridge_group_index, write_xao
-
-    # ----- OCP phase: instantiate only (no cut, no fragment) --------------
-    ocp_processor = CAD_OCC(
-        point_tolerance=point_tolerance,
-        n_threads=n_threads,
-        cut_fuzzy_value=cut_fuzzy_value,
-        fragment_fuzzy_value=fragment_fuzzy_value,
-        perturbation=perturbation,
-    )
-    ocp_labeled = ocp_processor.process_entities_instantiate_only(entities_list)
-    if not ocp_labeled:
-        gmsh_proc = CAD_GMSH(
-            point_tolerance=point_tolerance,
-            n_threads=n_threads,
-            filename=filename,
-            model=model,
-            perturbation=perturbation,
-        )
-        gmsh_proc.model_manager.ensure_initialized(filename)
-        return [], gmsh_proc.model_manager
-
-    # ----- Bridge: write XAO of raw shapes, gmsh.merge --------------------
-    bridge_path: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".xao", delete=False, mode="w") as tf:
-            bridge_path = tf.name
-        write_xao(ocp_labeled, bridge_path, bridge_mode=True)
-
-        gmsh_proc = CAD_GMSH(
-            point_tolerance=point_tolerance,
-            n_threads=n_threads,
-            filename=filename,
-            model=model,
-            perturbation=perturbation,
-        )
-        gmsh_proc.model_manager.ensure_initialized(filename)
-        gmsh.merge(bridge_path)
-        gmsh_proc.model_manager.sync_model()
-        # OCP-built shapes imported via XAO arrive as topologically-
-        # independent solids whose touching faces have distinct TShapes.
-        # gmsh.model.occ.cut + fragment need a sufficiently wide BOP
-        # tolerance to detect geometric coincidence and merge them; the
-        # default ``perturbation/2`` (5e-6) is too tight when OCP-side
-        # numerics drift the imported faces by ~1e-7. ``point_tolerance``
-        # (1e-3) is what cad_gmsh uses successfully on the same scenes.
-        gmsh.option.setNumber("Geometry.ToleranceBoolean", point_tolerance)
-    finally:
-        with contextlib.suppress(OSError):
-            if bridge_path:
-                Path(bridge_path).unlink()
-
-    # ----- Map gmsh dimtags back to original entities ---------------------
-    index_to_dimtags: dict[int, list[tuple[int, int]]] = {}
-    for dim, tag in gmsh.model.getPhysicalGroups():
-        name = gmsh.model.getPhysicalName(dim, tag)
-        idx = parse_bridge_group_index(name)
-        if idx is None:
-            continue
-        ent_dimtags = [
-            (dim, t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
-        ]
-        index_to_dimtags.setdefault(idx, []).extend(ent_dimtags)
-        gmsh.model.removePhysicalGroups([(dim, tag)])
-    gmsh_proc.model_manager.sync_model()
-
-    # Build GMSHLabeledEntity list with __#index suffix, in original order.
-    gmsh_entities: list[GMSHLabeledEntity] = []
-    for orig_idx, ent in enumerate(entities_list):
-        dimtags = index_to_dimtags.get(orig_idx, [])
-        physical_name = ent.physical_name
-        if isinstance(physical_name, str):
-            physical_name = (physical_name,)
-        suffixed = tuple(f"{n}__#{orig_idx}" for n in physical_name)
-        dim = getattr(ent, "dimension", None)
-        if dim is None:
-            dim = dimtags[0][0] if dimtags else -1
-        gmsh_entities.append(
-            GMSHLabeledEntity(
-                dimtags=dimtags,
-                physical_name=suffixed,
-                index=orig_idx,
-                keep=getattr(ent, "mesh_bool", True),
-                dim=dim,
-                mesh_order=getattr(ent, "mesh_order", None),
-            )
-        )
-
-    # ----- gmsh phase: cut cascade + fragment + tag + cleanup -------------
-    # Replicate cad_gmsh.process_entities's sequential cut: sort by
-    # mesh_order, then cut each entity's dimtags against all previously-
-    # processed same-dim tools via gmsh.model.occ.cut. This is the part
-    # that produces clean topology gmsh's mesher accepts (BRepAlgoAPI_Cut
-    # in OCP does not).
-    indexed_gmsh = sorted(
-        enumerate(gmsh_entities),
-        key=lambda p: (
-            p[1].mesh_order if p[1].mesh_order is not None else float("inf"),
-            p[0],
-        ),
-    )
-    processed: list[GMSHLabeledEntity] = []
-    for _, ent in indexed_gmsh:
-        if ent.dimtags:
-            tool_dimtags: list[tuple[int, int]] = []
-            for prev in processed:
-                if prev.dim == ent.dim and prev.dimtags:
-                    tool_dimtags.extend(prev.dimtags)
-            if tool_dimtags:
-                try:
-                    out_dimtags, _ = gmsh.model.occ.cut(
-                        ent.dimtags,
-                        tool_dimtags,
-                        removeObject=True,
-                        removeTool=False,
-                    )
-                    gmsh_proc.model_manager.sync_model()
-                    ent.dimtags = out_dimtags
-                except Exception as e:
-                    if progress_bars:
-                        print(f"Warning: gmsh cut failed for entity {ent.index}: {e}")
-        processed.append(ent)
-
-    labeled = gmsh_proc._fragment_all(gmsh_entities, progress_bars=progress_bars)
-    gmsh_proc._tag_entities(labeled, interface_delimiter, boundary_delimiter)
-    gmsh_proc._remove_keep_false_top_dim(labeled)
-    gmsh_proc.model_manager.sync_model()
-
-    return labeled, gmsh_proc.model_manager
