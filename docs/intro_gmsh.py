@@ -3,9 +3,9 @@
 # Since meshwell is a wrapper around GMSH, we will first review GMSH  Python API. For a more thorough explanation of the below, see the GMSH documentation (https://gmsh.info/doc/texinfo/gmsh.html), tutorials (https://gitlab.onelab.info/gmsh/gmsh/-/tree/master/tutorials/python) and API (https://gitlab.onelab.info/gmsh/gmsh/-/blob/master/api/gmsh.py?ref_type=heads).
 
 # %%
+import gmsh
 import meshio
 
-import gmsh
 from meshwell.visualization import plot2D
 
 # %% [markdown]

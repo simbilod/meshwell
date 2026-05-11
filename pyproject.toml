@@ -184,6 +184,13 @@ count = true
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.isort]
+# gmsh ships its CMake source tree as a sibling directory in some local
+# checkouts, which makes ruff's auto-detection classify ``gmsh`` as
+# first-party and reorder imports inconsistently between local and CI.
+# Pin it explicitly so isort sorting matches across environments.
+known-third-party = ["gmsh"]
+
 [tool.ruff.lint.per-file-ignores]
 "docs/*.py" = [
     "B018", # allow useless expressions for notebooks

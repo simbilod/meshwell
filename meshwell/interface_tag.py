@@ -18,6 +18,7 @@ import itertools
 import warnings
 from typing import TYPE_CHECKING, Any
 
+import gmsh
 import shapely
 from shapely.geometry import (
     GeometryCollection,
@@ -26,7 +27,6 @@ from shapely.geometry import (
 )
 from shapely.ops import unary_union
 
-import gmsh
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:

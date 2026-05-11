@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import gmsh
 import shapely
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
-import gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity

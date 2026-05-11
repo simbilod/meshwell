@@ -4,11 +4,11 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 
+import gmsh
 import pytest
 import shapely
 from shapely.geometry import LineString
 
-import gmsh
 from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.interface_tag import InterfaceTag
 from meshwell.mesh import mesh as mesh_func

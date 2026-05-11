@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import gmsh
+
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager

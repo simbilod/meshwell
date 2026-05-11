@@ -29,9 +29,9 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import Any
 
+import gmsh
 from tqdm.auto import tqdm
 
-import gmsh
 from meshwell.cad_common import prepare_entities
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags

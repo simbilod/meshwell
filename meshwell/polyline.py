@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import gmsh
 import shapely
 from shapely.geometry import LineString, MultiLineString
 
-import gmsh
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:

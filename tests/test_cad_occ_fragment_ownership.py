@@ -1,11 +1,11 @@
 """Unit tests for the all-fragment OCC pipeline."""
 from __future__ import annotations
 
+import gmsh
 import shapely
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCP.gp import gp_Pnt
 
-import gmsh
 from meshwell.cad_occ import (
     CAD_OCC,
     OCCLabeledEntity,

@@ -7,10 +7,10 @@ from collections.abc import Sequence
 from os import cpu_count
 from pathlib import Path
 
+import gmsh
 import meshio
 import numpy as np
 
-import gmsh
 from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
 

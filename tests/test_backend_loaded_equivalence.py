@@ -29,12 +29,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import gmsh
 import numpy as np
 import pytest
 import shapely
 from shapely.geometry import LineString
 
-import gmsh
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.interface_tag import InterfaceTag

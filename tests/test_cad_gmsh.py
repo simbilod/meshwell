@@ -9,9 +9,9 @@ and end-to-end meshing for a handful of representative scenes.
 """
 from __future__ import annotations
 
+import gmsh
 import shapely
 
-import gmsh
 from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.mesh import mesh
 from meshwell.polyprism import PolyPrism

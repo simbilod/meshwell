@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from os import cpu_count
 from pathlib import Path
 
+import gmsh
 import meshio
 import numpy as np
 from scipy.interpolate import NearestNDInterpolator
 from scipy.spatial import cKDTree
 
-import gmsh
 from meshwell.model import ModelManager
 from meshwell.resolution import DirectSizeSpecification
 

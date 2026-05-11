@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import gmsh
 import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
-import gmsh
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.validation import format_physical_name
 

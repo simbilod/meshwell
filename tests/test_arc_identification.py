@@ -1,8 +1,8 @@
+import gmsh
 import numpy as np
 import pytest
 from shapely.geometry import LineString, Polygon
 
-import gmsh
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
