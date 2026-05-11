@@ -4,14 +4,16 @@ Mirrors :mod:`meshwell.cad_gmsh` but drives OCCT directly through OCP
 instead of the gmsh API. The two backends are intentionally kept
 structurally identical so users can compare outputs head-to-head:
 
-1. Initialize per-session geometry cache (vertex / edge sharing is the
-   OCP-side equivalent of ``gmsh.model.occ``'s built-in TShape reuse).
+1. Shared shapely pre-pass (perturbation buffer + InterfaceTag resolve)
+   via :func:`meshwell.cad_common.prepare_entities`.
 2. Call each entity's ``instanciate_occ`` to produce ``TopoDS_Shape``
    instances.
-3. ``BOPAlgo_Builder`` all-fragment over every input shape; per-input
+3. Sequential per-entity ``BRepAlgoAPI_Cut`` cascade against
+   previously-instantiated same-dim tools (lowest ``mesh_order`` wins).
+4. ``BOPAlgo_Builder`` all-fragment over every cut shape; per-input
    ``Modified()`` tells us which fragment piece descends from which
    input, which we invert to build the per-piece candidate list.
-4. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
+5. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
    wins on tie).
 
 ``keep=False`` handling differs from the gmsh backend: here the helper's
@@ -28,6 +30,7 @@ exactly; tests that pin one pin the other.
 from __future__ import annotations
 
 import contextlib
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
@@ -39,12 +42,19 @@ from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
+from OCP.TopAbs import (
+    TopAbs_EDGE,
+    TopAbs_FACE,
+    TopAbs_ShapeEnum,
+    TopAbs_SOLID,
+    TopAbs_VERTEX,
+)
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
 import gmsh
+from meshwell.cad_common import prepare_entities
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -140,8 +150,6 @@ class CAD_OCC:
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        # Mirrors cad_gmsh default (1e-5). Used for the shared shapely
-        # pre-pass (polygon buffer + InterfaceTag snap distance).
         self.perturbation = perturbation if perturbation is not None else 1e-5
         self.cut_fuzzy_value = (
             self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
@@ -173,8 +181,6 @@ class CAD_OCC:
         ensures that Modified() can locate the fragment pieces originating
         from each cut entity.
         """
-        from OCP.TopAbs import TopAbs_ShapeEnum
-
         if shape.ShapeType() != TopAbs_ShapeEnum.TopAbs_COMPOUND:
             return [shape]
 
@@ -381,8 +387,6 @@ class CAD_OCC:
         if not entities_list:
             return []
 
-        from meshwell.cad_common import prepare_entities
-
         prepare_entities(
             entities_list,
             perturbation=self.perturbation,
@@ -416,8 +420,6 @@ class CAD_OCC:
         """
         if not entities_list:
             return []
-
-        from meshwell.cad_common import prepare_entities
 
         # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
         # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
@@ -540,10 +542,11 @@ class CAD_OCC:
            :func:`meshwell.cad_common.prepare_entities`.
         2. Sort by mesh_order (lowest first).
         3. For each entity in sorted order: instantiate via
-           ``instanciate_occ``, then ``BRepAlgoAPI_Cut`` against a
-           ``TopoDS_Compound`` of all previously-instantiated same-dim
-           shapes. The lowest-mesh_order entity keeps its full buffered
-           geometry; higher-mesh_order entities have the overlap carved.
+           ``instanciate_occ``, then sequentially ``BRepAlgoAPI_Cut``
+           against each previously-instantiated same-dim tool that
+           passes both the AABB and the geometric-overlap pre-filter.
+           The lowest-mesh_order entity keeps its full buffered geometry;
+           higher-mesh_order entities have the overlap carved.
         4. Final all-fragment pass via ``BOPAlgo_Builder`` (existing
            ownership resolution by mesh_order).
 
@@ -621,8 +624,11 @@ def cad_occ_with_gmsh_fragment(
     :func:`meshwell.cad_gmsh.cad_gmsh`, so downstream
     :func:`meshwell.mesh.mesh` calls are identical.
     """
-    import tempfile
-
+    # cad_gmsh + occ_xao_writer imported lazily to avoid a hard
+    # cycle: occ_xao_writer's TYPE_CHECKING imports cad_occ, and
+    # cad_gmsh imports ModelManager from meshwell.model which is fine,
+    # but pulling CAD_GMSH up to module level would force meshwell to
+    # initialize the full gmsh model on import of cad_occ.
     from meshwell.cad_gmsh import CAD_GMSH, GMSHLabeledEntity
     from meshwell.occ_xao_writer import parse_bridge_group_index, write_xao
 

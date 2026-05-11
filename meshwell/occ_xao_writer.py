@@ -74,13 +74,11 @@ _DIM_TO_TOPABS = {
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 
-# AABB-overlap tolerance used by the spatial fallback in
-# ``_compute_physical_groups``. Picks up cut faces that survive the BOP
-# pass with slightly drifted endpoints (~mm scale for user-scale scenes).
-# Loose by design: the fallback only kicks in when TShape identity has
-# already failed to find a shared boundary.
+# Used by the spatial fallback in ``_compute_physical_groups`` when
+# TShape-identity matching fails to pair a cut face with its
+# coincident neighbour. Picks up cut faces drifted by ~mm at user
+# scale; only kicks in when identity matching produced no commons.
 _AABB_INTERFACE_TOL = 1e-2
-
 
 # ---------------------------------------------------------------------------
 # OCP-level helpers
