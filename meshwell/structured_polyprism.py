@@ -538,6 +538,14 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
         _apply_lateral_transfinite_hints(slab, tol)
         if slab.recombine:
             _apply_horizontal_recombine_hints(slab, tol)
+        # Make the top horizontal OCC face a periodic translation of the
+        # bottom. Without this, gmsh's size-field-driven 1D mesher can give
+        # the bottom and top boundary curves DIFFERENT node counts, which
+        # makes the lateral ``setTransfiniteSurface`` fail at mesh.generate(2)
+        # (opposite sides of a transfinite rectangle must match). The
+        # structured slab takes precedence over any non-structured neighbour
+        # on the shared horizontal plane.
+        _apply_slab_horizontal_periodicity(slab, tol)
 
     # Step 1: mesh all 2D OCC faces so we can read their triangulations.
     gmsh.model.mesh.generate(2)
@@ -703,6 +711,80 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
                     slab.physical_name,
                     exc,
                 )
+
+
+def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
+    """Pin the top horizontal OCC face's mesh as a translation of the bottom.
+
+    Sets ``gmsh.model.mesh.setPeriodic(2, [top_face], [bottom_face], T)``
+    with ``T`` a pure translation by ``(0, 0, slab.zhi - slab.zlo)``. After
+    ``mesh.generate(2)``, gmsh meshes the master (bottom) under the size
+    field, then constructs the slave (top) by applying ``T`` — including
+    every bounding 1D curve and 0D vertex. This guarantees:
+
+    * Bottom/top boundary 1D curves have identical node counts at
+      translation-paired positions, so the lateral
+      ``setTransfiniteSurface`` constraint always finds matching opposing
+      sides (the production failure this fixes).
+    * The top face's interior 2D mesh is a translated copy of the bottom's,
+      eliminating any chance of mismatch.
+
+    Stacked slabs (``A.zhi == B.zlo``) chain naturally: ``A_top`` is slave
+    of ``A_bottom`` and master of ``B_top`` — gmsh composes the translations.
+    The structured slab's periodic constraint dominates any non-structured
+    neighbour sharing the horizontal plane.
+
+    Silently no-ops when either face can't be located (e.g. embedded
+    surface splits one face but not the other — lateral transfinite would
+    already fail for that geometry and this helper makes things no worse).
+    """
+    import logging
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+
+    occ_faces = gmsh.model.occ.getEntities(2)
+    bottom_face = _find_occ_face_for_slab(occ_faces, slab, slab.zlo, tol)
+    top_face = _find_occ_face_for_slab(occ_faces, slab, slab.zhi, tol)
+    if bottom_face is None or top_face is None:
+        logger.debug(
+            "Skipping periodic for slab %s at z=[%s, %s]: bottom=%s top=%s",
+            slab.physical_name,
+            slab.zlo,
+            slab.zhi,
+            bottom_face,
+            top_face,
+        )
+        return
+
+    dz = slab.zhi - slab.zlo
+    affine = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        dz,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    try:
+        gmsh.model.mesh.setPeriodic(2, [top_face], [bottom_face], affine)
+    except Exception as exc:
+        logger.warning(
+            "Failed to set periodic top->bottom face for slab %s: %s",
+            slab.physical_name,
+            exc,
+        )
 
 
 def _apply_horizontal_recombine_hints(slab: Slab, tol: float) -> None:
