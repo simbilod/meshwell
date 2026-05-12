@@ -1383,3 +1383,175 @@ def test_structured_fully_embedded_has_no_none_tag(tmp_path, square_poly):
         f"Got: {sorted(m.field_data.keys())}"
     )
     assert "bulk___wire" in m.field_data
+
+
+def test_thin_structured_slab_cut_by_arc_keepfalse_inside_bulk(tmp_path):
+    """Stack of thin structured slabs carved by a ``mesh_bool=False`` arc-bearing prism, inside a bulk.
+
+    Scene:
+      - Large unstructured ``bulk`` PolyPrism wraps everything.
+      - Three stacked thin structured slabs (``film_lo``, ``film_mid``,
+        ``film_hi``) with slightly different thicknesses, sharing the same
+        xy footprint and a common ``n_layers`` so the touching horizontal
+        interfaces are conformal (the structured layer-count constraint
+        across shared horizontal faces).
+      - A stadium-shape (rectangle with two semicircular caps) PolyPrism with
+        ``identify_arcs=True`` and ``mesh_bool=False`` punches through every
+        slab in z. Higher priority (lower mesh_order) than the slabs so it
+        wins the overlap and removes material from each.
+
+    Asserts:
+      - Mesh writes successfully and contains 3D cells.
+      - ``bulk`` and all three film physicals are present.
+      - The cutter has no own volume physical (mesh_bool=False).
+      - Every slab's surviving region still carries its own structured
+        z-layering (n_layers+1 distinct z-levels per interior xy column
+        within that slab's z-range).
+    """
+    import math
+    from collections import defaultdict
+
+    import meshio
+    from shapely.geometry import Polygon
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    # Stadium polygon: rectangle [-0.6, 0.6] x [-0.25, 0.25] capped with semicircles.
+    n_arc = 24
+    radius = 0.25
+    half_len = 0.6
+    right_arc = [
+        (
+            half_len + radius * math.cos(-math.pi / 2 + i * math.pi / n_arc),
+            radius * math.sin(-math.pi / 2 + i * math.pi / n_arc),
+        )
+        for i in range(n_arc + 1)
+    ]
+    left_arc = [
+        (
+            -half_len + radius * math.cos(math.pi / 2 + i * math.pi / n_arc),
+            radius * math.sin(math.pi / 2 + i * math.pi / n_arc),
+        )
+        for i in range(n_arc + 1)
+    ]
+    stadium = Polygon(right_arc + left_arc)
+
+    bulk = PolyPrism(
+        polygons=Polygon([(-3, -3), (3, -3), (3, 3), (-3, 3)]),
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="bulk",
+        mesh_order=10,
+    )
+    # Three stacked thin structured slabs sharing the same xy footprint.
+    # Thicknesses differ slightly (0.10, 0.08, 0.12) but n_layers matches
+    # across them so the conformal touching faces at z=0.80 and z=0.88 do
+    # not trigger StructuredLayerMismatchError.
+    film_footprint = Polygon([(-2, -2), (2, -2), (2, 2), (-2, 2)])
+    film_lo = PolyPrism(
+        polygons=film_footprint,
+        buffers={0.70: 0.0, 0.80: 0.0},
+        n_layers=[3],
+        physical_name="film_lo",
+        mesh_order=2,
+    )
+    film_mid = PolyPrism(
+        polygons=film_footprint,
+        buffers={0.80: 0.0, 0.88: 0.0},
+        n_layers=[3],
+        physical_name="film_mid",
+        mesh_order=2,
+    )
+    film_hi = PolyPrism(
+        polygons=film_footprint,
+        buffers={0.88: 0.0, 1.00: 0.0},
+        n_layers=[3],
+        physical_name="film_hi",
+        mesh_order=2,
+    )
+    # Arc-bearing cutter, mesh_bool=False, spans (and exceeds) the full
+    # stack z-range so it cuts cleanly through every slab.
+    cutter = PolyPrism(
+        polygons=stadium,
+        buffers={0.65: 0.0, 1.05: 0.0},
+        physical_name="hole",
+        mesh_order=1,
+        mesh_bool=False,
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+    )
+
+    out = tmp_path / "thin_slab_stack_arc_cut.msh"
+    generate_mesh(
+        entities=[bulk, film_lo, film_mid, film_hi, cutter],
+        dim=3,
+        output_mesh=str(out),
+        default_characteristic_length=0.3,
+    )
+
+    m = meshio.read(out)
+    cell_types = {b.type for b in m.cells}
+    assert cell_types & {"tetra", "wedge", "hexahedron"}, cell_types
+
+    assert "bulk" in m.field_data
+    for name in ("film_lo", "film_mid", "film_hi"):
+        assert (
+            name in m.field_data
+        ), f"missing physical {name!r}; got {sorted(m.field_data.keys())}"
+    # Cutter is keep=False at top dim: no own volume physical.
+    assert "hole" not in m.field_data, (
+        f"mesh_bool=False cutter must not produce a volume physical; "
+        f"got {sorted(m.field_data.keys())}"
+    )
+
+    # Each slab must (a) actually contain 3D mesh cells in its physical
+    # group and (b) keep its own structured layering signature (n_layers+1
+    # distinct z-levels per interior xy column within that slab's z-range).
+    import numpy as np
+
+    pts = np.asarray(m.points)
+    slab_ranges = [
+        ("film_lo", 0.70, 0.80, 4),
+        ("film_mid", 0.80, 0.88, 4),
+        ("film_hi", 0.88, 1.00, 4),
+    ]
+    for name, zlo, zhi, expected_levels in slab_ranges:
+        # (a) The physical group must have at least one 3D cell whose
+        # centroid lies inside [zlo, zhi].
+        cells_in_slab = 0
+        cell_sets = m.cell_sets.get(name, [])
+        for i, ids in enumerate(cell_sets):
+            if ids is None or len(ids) == 0:
+                continue
+            block = m.cells[i]
+            if block.type not in ("tetra", "wedge", "hexahedron"):
+                continue
+            centroids_z = pts[block.data[ids]][..., 2].mean(axis=1)
+            cells_in_slab += int(
+                ((centroids_z >= zlo - 1e-6) & (centroids_z <= zhi + 1e-6)).sum()
+            )
+        assert cells_in_slab > 0, (
+            f"{name}: expected >0 3D cells with centroid in z=[{zlo}, {zhi}]; "
+            f"got {cells_in_slab}"
+        )
+
+        # (b) Structured layering signature.
+        z_by_xy: dict[tuple[float, float], set[float]] = defaultdict(set)
+        for x, y, z in m.points:
+            if zlo - 1e-6 <= z <= zhi + 1e-6:
+                z_by_xy[(round(x, 6), round(y, 6))].add(round(z, 6))
+        column_lengths = {len(zs) for zs in z_by_xy.values() if len(zs) > 1}
+        assert expected_levels in column_lengths, (
+            f"{name}: expected at least one xy column with {expected_levels} "
+            f"distinct z-levels in z=[{zlo}, {zhi}]; got {column_lengths}"
+        )
+
+    # Bulk also gets actually meshed (3D cells in its physical).
+    bulk_cells = 0
+    for i, ids in enumerate(m.cell_sets.get("bulk", [])):
+        if ids is None or len(ids) == 0:
+            continue
+        if m.cells[i].type in ("tetra", "wedge", "hexahedron"):
+            bulk_cells += len(ids)
+    assert bulk_cells > 0, "bulk physical has no 3D cells"

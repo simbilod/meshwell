@@ -50,6 +50,14 @@ class Slab:
         source_index: Index of the originating entity in the user-supplied
             list. Deterministic tie-break for the cascade.
         mesh_order: Ownership priority (lower = higher priority).
+        fragment_fuzzy_value: BOP fuzzy used by ``cad_occ`` when this
+            slab's geometry was fragmented. Drives the bbox-tolerance
+            floor at mesh stage (``_find_occ_face_for_slab``,
+            ``_apply_lateral_transfinite_hints``): after BOP, a planar
+            face's bbox z-extent is bounded by this value plus gmsh's
+            ``Precision::Confusion`` (~1e-7) bbox pad. ``None`` when the
+            slab predates this plumbing (legacy sidecars) -- callers fall
+            back to ``model_manager.point_tolerance``.
     """
 
     footprint: Polygon | MultiPolygon
@@ -60,6 +68,7 @@ class Slab:
     physical_name: tuple[str, ...]
     source_index: int = 0
     mesh_order: float = float("inf")
+    fragment_fuzzy_value: float | None = None
 
 
 class _StructuredPolyPrism(PolyPrism):
@@ -417,6 +426,33 @@ class StructuredLayerMismatchError(ValueError):
     """
 
 
+# gmsh's OCC ``getBoundingBox`` adds ``Precision::Confusion()`` (~1e-7) of
+# padding to every face bounding box, so a genuinely planar face reports a
+# z-extent of ~2e-7 even before any BOP fuzzy snapping. Floor for the
+# bbox-based face-locator helpers.
+_OCC_BBOX_PAD = 2e-7
+
+
+def _bbox_tol_for_slab(slab: Slab, fallback_tol: float) -> float:
+    """Tolerance for OCC-face bbox comparisons against a slab's z-planes.
+
+    After ``cad_occ``/``cad_gmsh`` BOP fragmentation with fuzzy ``F``, a
+    nominally-planar face's bbox z-extent is bounded by ``F`` plus the
+    constant ``_OCC_BBOX_PAD`` gmsh adds. To accept such faces without
+    rejecting them or matching unrelated planes, use
+    ``max(F, _OCC_BBOX_PAD)``.
+
+    ``slab.fragment_fuzzy_value`` carries ``F`` from the CAD stage; when
+    it is ``None`` (legacy sidecars, pre-plumbing slabs), fall back to
+    ``fallback_tol`` -- typically ``model_manager.point_tolerance``,
+    which conventionally matches the cad-stage fuzzy.
+    """
+    fuzzy = slab.fragment_fuzzy_value
+    if fuzzy is None:
+        fuzzy = fallback_tol
+    return max(fuzzy, _OCC_BBOX_PAD)
+
+
 def _validate_slab_layer_mating(slabs: list[Slab], tol: float) -> None:
     """Raise if any pair of slabs sharing a horizontal face disagrees on n_layers.
 
@@ -568,10 +604,14 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
         except Exception as exc:
             logger.debug("getBoundingBox failed for face %d: %s", ftag, exc)
             continue
-        # Lateral face: spans full slab z-range.
-        if abs(zmin - slab.zlo) > tol or abs(zmax - slab.zhi) > tol:
+        # Lateral face: spans full slab z-range. The bbox tolerance must
+        # accept faces whose vertices were snapped by the CAD-stage BOP
+        # fuzzy AND the constant ~2e-7 pad gmsh's OCC adds to every
+        # bounding box. See ``_bbox_tol_for_slab``.
+        bbox_tol = _bbox_tol_for_slab(slab, tol)
+        if abs(zmin - slab.zlo) > bbox_tol or abs(zmax - slab.zhi) > bbox_tol:
             continue
-        if abs(zmax - zmin) < tol:
+        if abs(zmax - zmin) < bbox_tol:
             continue  # horizontal face (bottom/top)
         # xy-bbox must touch the slab footprint boundary.
         if xmax - xmin < tol and ymax - ymin < tol:
@@ -978,6 +1018,7 @@ def _find_occ_face_for_slab(
         return None
     best_tag: int | None = None
     best_score = -float("inf")
+    bbox_tol = _bbox_tol_for_slab(slab, tol)
     # Require >= 50% of the face's bbox area to lie inside the slab footprint.
     # Stricter than "any overlap" -- prevents picking a neighbor's coplanar
     # face whose edge merely touches the slab footprint along one boundary.
@@ -985,10 +1026,10 @@ def _find_occ_face_for_slab(
         if dim != 2:
             continue
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, tag)
-        if abs(zmin - zmax) > tol:
+        if abs(zmin - zmax) > bbox_tol:
             continue
         z_face = 0.5 * (zmin + zmax)
-        if abs(z_face - target_z) > tol:
+        if abs(z_face - target_z) > bbox_tol:
             continue
         face_box = box(xmin, ymin, xmax, ymax)
         face_box_area = face_box.area
@@ -1025,6 +1066,7 @@ def slabs_to_json(slabs: list[Slab]) -> list[dict]:
             "physical_name": list(s.physical_name),
             "source_index": s.source_index,
             "mesh_order": s.mesh_order if s.mesh_order != float("inf") else None,
+            "fragment_fuzzy_value": s.fragment_fuzzy_value,
         }
         for s in slabs
     ]
@@ -1044,6 +1086,7 @@ def slabs_from_json(data: list[dict]) -> list[Slab]:
             physical_name=tuple(d["physical_name"]),
             source_index=d["source_index"],
             mesh_order=d["mesh_order"] if d["mesh_order"] is not None else float("inf"),
+            fragment_fuzzy_value=d.get("fragment_fuzzy_value"),
         )
         for d in data
     ]

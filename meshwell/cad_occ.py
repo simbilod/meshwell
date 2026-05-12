@@ -399,6 +399,11 @@ class CAD_OCC:
             resolve_snap=max(self.perturbation, self.point_tolerance),
             structured_slabs_out=self._captured_slabs,
         )
+        # Stamp the BOP fuzzy onto each captured slab so the mesh stage
+        # (apply_structured_slabs) can compute a principled bbox tolerance
+        # for face location without guessing what fuzzy was used here.
+        for slab in self._captured_slabs:
+            slab.fragment_fuzzy_value = self.fragment_fuzzy_value
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))

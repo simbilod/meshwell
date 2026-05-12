@@ -433,6 +433,12 @@ class CAD_GMSH:
             resolve_snap=max(self.perturbation, self.point_tolerance),
             structured_slabs_out=self.model_manager.structured_slabs,
         )
+        # Stamp gmsh's effective fuzzy (Geometry.ToleranceBoolean) onto each
+        # captured slab so apply_structured_slabs uses the same tolerance
+        # budget at mesh stage as was applied at CAD stage.
+        gmsh_fuzzy = self.model_manager.tolerance_boolean or self.point_tolerance
+        for slab in self.model_manager.structured_slabs:
+            slab.fragment_fuzzy_value = gmsh_fuzzy
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
