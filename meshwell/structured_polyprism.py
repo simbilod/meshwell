@@ -546,6 +546,13 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
         # structured slab takes precedence over any non-structured neighbour
         # on the shared horizontal plane.
         _apply_slab_horizontal_periodicity(slab, tol)
+        # Likewise pin every vertical edge as a horizontal translation of
+        # one master vertical edge of the same slab. Transfinite alone pins
+        # node *count* (n_layers+1) but not positions; this guarantees every
+        # vertical edge of the slab meshes at identical z values even if a
+        # non-structured neighbour or size-field interaction would have
+        # perturbed an individual edge.
+        _apply_slab_vertical_periodicity(slab, tol)
 
     # Step 1: mesh all 2D OCC faces so we can read their triangulations.
     gmsh.model.mesh.generate(2)
@@ -785,6 +792,150 @@ def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
             slab.physical_name,
             exc,
         )
+
+
+def _collect_slab_vertical_edges(
+    slab: Slab, tol: float
+) -> list[tuple[int, tuple[float, float]]]:
+    """Return ``(edge_tag, (x_mid, y_mid))`` for every vertical OCC edge of ``slab``.
+
+    A vertical edge is one whose bbox spans ``[slab.zlo, slab.zhi]`` in z
+    with negligible xy extent, AND that bounds at least one of the slab's
+    lateral OCC faces. Dedup'd across faces (a shared vertical edge between
+    two lateral faces appears once).
+    """
+    import logging
+
+    import gmsh
+    from shapely.geometry import box as sh_box
+
+    logger = logging.getLogger(__name__)
+
+    occ_faces = gmsh.model.occ.getEntities(2)
+    boundary = slab.footprint.boundary
+    bbox_tol = _bbox_tol_for_slab(slab, tol)
+    xy_extent_tol = max(tol * 10, 0.1 * (slab.zhi - slab.zlo))
+
+    edges: list[tuple[int, tuple[float, float]]] = []
+    seen: set[int] = set()
+    for dim, ftag in occ_faces:
+        if dim != 2:
+            continue
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, ftag)
+        except Exception as exc:
+            logger.debug("getBoundingBox failed for face %d: %s", ftag, exc)
+            continue
+        # Lateral face filter -- same predicate as _apply_lateral_transfinite_hints.
+        if abs(zmin - slab.zlo) > bbox_tol or abs(zmax - slab.zhi) > bbox_tol:
+            continue
+        if abs(zmax - zmin) < bbox_tol:
+            continue
+        if xmax - xmin < tol and ymax - ymin < tol:
+            continue
+        face_xy_box = sh_box(xmin, ymin, xmax, ymax)
+        try:
+            if not boundary.dwithin(face_xy_box, max(tol, 1e-4)):
+                continue
+        except Exception as exc:
+            logger.debug("shapely boundary.dwithin failed for face %d: %s", ftag, exc)
+            continue
+        try:
+            curves = gmsh.model.getBoundary(
+                [(2, ftag)], oriented=False, recursive=False
+            )
+        except Exception as exc:
+            logger.debug("getBoundary failed for face %d: %s", ftag, exc)
+            continue
+        for cdim, ctag in curves:
+            if cdim != 1 or ctag in seen:
+                continue
+            try:
+                (
+                    cxmin,
+                    cymin,
+                    czmin,
+                    cxmax,
+                    cymax,
+                    czmax,
+                ) = gmsh.model.occ.getBoundingBox(1, ctag)
+            except Exception as exc:
+                logger.debug("getBoundingBox failed for curve %d: %s", ctag, exc)
+                continue
+            if (
+                abs(czmin - slab.zlo) < xy_extent_tol
+                and abs(czmax - slab.zhi) < xy_extent_tol
+                and abs(cxmax - cxmin) < xy_extent_tol
+                and abs(cymax - cymin) < xy_extent_tol
+                and (czmax - czmin) > 0.5 * (slab.zhi - slab.zlo)
+            ):
+                seen.add(ctag)
+                edges.append((ctag, (0.5 * (cxmin + cxmax), 0.5 * (cymin + cymax))))
+    return edges
+
+
+def _apply_slab_vertical_periodicity(slab: Slab, tol: float) -> None:
+    """Pin every vertical edge of the slab as a horizontal translation of one master.
+
+    Counterpart to :func:`_apply_slab_horizontal_periodicity` for the slab's
+    vertical 1D edges. ``setTransfiniteCurve`` pins node *count*
+    (``n_layers + 1``); ``setPeriodic`` pins node *positions* (slave nodes =
+    master nodes plus a pure horizontal translation). The two together
+    guarantee that every vertical edge of a slab meshes at identical z
+    values regardless of how the size field or any neighbour might
+    otherwise have perturbed an individual edge.
+
+    Master selection is deterministic (lexicographically smallest
+    ``(x_mid, y_mid)``), so re-running the same model produces identical
+    periodic relationships.
+
+    No-op when fewer than two vertical edges are found (nothing to make
+    periodic).
+    """
+    import logging
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+
+    edges = _collect_slab_vertical_edges(slab, tol)
+    if len(edges) < 2:
+        return
+
+    edges.sort(key=lambda item: item[1])
+    master_tag, (mx, my) = edges[0]
+    for slave_tag, (sx, sy) in edges[1:]:
+        dx = sx - mx
+        dy = sy - my
+        affine = [
+            1.0,
+            0.0,
+            0.0,
+            dx,
+            0.0,
+            1.0,
+            0.0,
+            dy,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+        try:
+            gmsh.model.mesh.setPeriodic(1, [slave_tag], [master_tag], affine)
+        except Exception as exc:
+            logger.warning(
+                "Failed to set vertical-edge periodic for slab %s "
+                "(master=%d, slave=%d): %s",
+                slab.physical_name,
+                master_tag,
+                slave_tag,
+                exc,
+            )
 
 
 def _apply_horizontal_recombine_hints(slab: Slab, tol: float) -> None:
