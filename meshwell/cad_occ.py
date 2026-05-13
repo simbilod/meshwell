@@ -287,8 +287,15 @@ class CAD_OCC:
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
+        # Unwrap a top-dim compound into its constituent solids/faces so
+        # the fragment pass can track them individually. Structured-phantom
+        # entities use this to return multiple partition sub-prisms in one
+        # compound; without unwrapping ``BOPAlgo_Builder.Modified()``
+        # tracks the compound, not its sub-shapes, and shared sub-face
+        # TShape merging across entities doesn't happen.
+        shapes = self._unwrap_shape(shape, dim)
         return OCCLabeledEntity(
-            shapes=[shape],
+            shapes=shapes,
             physical_name=physical_name,
             index=index,
             keep=getattr(entity_obj, "mesh_bool", True),

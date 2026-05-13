@@ -80,6 +80,14 @@ class Slab:
     identify_arcs: bool = False
     min_arc_points: int = 4
     arc_tolerance: float = 1e-3
+    # XY partition of the slab footprint into disjoint pieces, derived
+    # at slab-resolution time from the union of neighbouring entities'
+    # footprints that touch z=zlo or z=zhi. ``_StructuredPhantom`` builds
+    # one OCC sub-prism per piece and fuses them, so the resulting solid
+    # has identically-partitioned bottom and top OCC faces (mirror
+    # topology). ``None`` means "no partition needed" -- the phantom
+    # builds a single prism from ``footprint`` directly.
+    face_partition: list[Polygon] | None = None
 
 
 class _StructuredPolyPrism(PolyPrism):
@@ -243,6 +251,14 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
         raw_slabs.extend(expand_slabs_for_entity(ent, source_index=idx))
 
     if len(raw_slabs) <= 1:
+        # Single-slab case: skip the structured-vs-structured cascade,
+        # but still compute the xy face partition so the phantom builds
+        # a pre-partitioned solid for the neighbouring non-structured
+        # entities at z=zlo / z=zhi.
+        for slab in raw_slabs:
+            slab.face_partition = _compute_face_partition(
+                slab, entities_list, other_slabs=raw_slabs
+            )
         return raw_slabs
 
     raw_slabs.sort(key=lambda s: (s.mesh_order, s.source_index, s.zlo))
@@ -307,7 +323,125 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
                 )
             )
 
+    # Final pass: for each slab, compute the xy partition of its footprint
+    # induced by (a) non-structured entities touching z=zlo or z=zhi and
+    # (b) sibling cascaded slabs sharing a horizontal face. The phantom
+    # builds one sub-prism per partition piece (combined via BOPAlgo_Builder)
+    # so the OCC scene has mirror-symmetric bottom/top face decompositions
+    # and matching decompositions across every stacked-slab interface.
+    for slab in resolved:
+        slab.face_partition = _compute_face_partition(
+            slab, entities_list, other_slabs=resolved
+        )
+
     return resolved
+
+
+def _compute_face_partition(
+    slab: "Slab",
+    entities_list: list,
+    other_slabs: list["Slab"] | None = None,
+    tol: float = 1e-6,
+) -> list[Polygon] | None:
+    """Return a disjoint Polygon partition of ``slab.footprint``, or None.
+
+    Splitters at ``slab.zlo`` / ``slab.zhi``:
+
+    * **Non-structured entities** (PolySurface at that z, PolyPrism with a
+      face there, etc.) -- their xy footprints clipped to the slab.
+    * **Other cascaded slabs** sharing a horizontal face with this slab
+      (``other.zhi == slab.zlo`` or ``other.zlo == slab.zhi``) -- their
+      footprints partition this slab so OCC's fragmentation at the shared
+      face produces matching sub-faces on both sides. Without this,
+      adjacent stacked slabs end up with asymmetric top/bottom topology
+      and ``setPeriodic`` fails.
+
+    The partition is computed by overlaying all splitter boundaries
+    (clipped to the slab footprint) plus the slab footprint boundary,
+    then ``polygonize``-ing the merged line network. The resulting pieces
+    are guaranteed pairwise xy-disjoint and cover ``slab.footprint``.
+    Returns ``None`` when nothing partitions the slab (no splitters or
+    only full-coverage splitters).
+    """
+    from shapely.ops import polygonize, unary_union
+
+    slab_area = slab.footprint.area
+    if slab_area <= 0:
+        return None
+    area_floor = max(tol * tol, slab_area * 1e-9)
+
+    splitters: list[Polygon | MultiPolygon] = []
+
+    # (1) Non-structured entity splitters: body touches slab.zlo/zhi.
+    for idx, ent in enumerate(entities_list):
+        if idx == slab.source_index:
+            continue
+        if isinstance(ent, _StructuredPolyPrism):
+            continue
+        z_range = _entity_z_range(ent)
+        if z_range is None:
+            continue
+        emin, emax = z_range
+        touches_z = (
+            abs(emin - slab.zlo) <= tol
+            or abs(emax - slab.zlo) <= tol
+            or abs(emin - slab.zhi) <= tol
+            or abs(emax - slab.zhi) <= tol
+        )
+        if not touches_z:
+            continue
+        ent_fp = _entity_footprint_multi(ent)
+        if ent_fp is None or ent_fp.is_empty:
+            continue
+        try:
+            clipped = slab.footprint.intersection(ent_fp)
+        except Exception:
+            continue
+        if clipped.is_empty or clipped.area <= area_floor:
+            continue
+        if abs(clipped.area - slab_area) <= area_floor:
+            continue
+        splitters.append(clipped)
+
+    # (2) Sibling cascaded slabs sharing a horizontal face with this slab.
+    if other_slabs is not None:
+        for other in other_slabs:
+            if other is slab:
+                continue
+            shares_zlo = abs(other.zhi - slab.zlo) <= tol
+            shares_zhi = abs(other.zlo - slab.zhi) <= tol
+            if not (shares_zlo or shares_zhi):
+                continue
+            try:
+                clipped = slab.footprint.intersection(other.footprint)
+            except Exception:
+                continue
+            if clipped.is_empty or clipped.area <= area_floor:
+                continue
+            if abs(clipped.area - slab_area) <= area_floor:
+                continue
+            splitters.append(clipped)
+
+    if not splitters:
+        return None
+
+    lines: list = [slab.footprint.boundary]
+    for sp in splitters:
+        b = sp.boundary
+        if not b.is_empty:
+            lines.append(b)
+    merged = unary_union(lines)
+    pieces = []
+    for poly in polygonize(merged):
+        if poly.area <= area_floor:
+            continue
+        if not slab.footprint.contains(poly.representative_point()):
+            continue
+        pieces.append(poly)
+
+    if len(pieces) <= 1:
+        return None
+    return pieces
 
 
 class _StructuredPhantom:
@@ -337,11 +471,13 @@ class _StructuredPhantom:
         import gmsh
 
         height = self.slab.zhi - self.slab.zlo
-        polys = (
-            self.slab.footprint.geoms
-            if hasattr(self.slab.footprint, "geoms")
-            else [self.slab.footprint]
-        )
+        # Mirror the OCC-path partition handling (see ``instanciate_occ``).
+        if self.slab.face_partition:
+            polys = list(self.slab.face_partition)
+        elif hasattr(self.slab.footprint, "geoms"):
+            polys = list(self.slab.footprint.geoms)
+        else:
+            polys = [self.slab.footprint]
         out_dimtags: list[tuple[int, int]] = []
         for poly in polys:
             ext_tags = self._add_polygon_face_gmsh(poly, z=self.slab.zlo)
@@ -387,11 +523,17 @@ class _StructuredPhantom:
 
         height = self.slab.zhi - self.slab.zlo
         vec = gp_Vec(0, 0, height)
-        polys = (
-            self.slab.footprint.geoms
-            if hasattr(self.slab.footprint, "geoms")
-            else [self.slab.footprint]
-        )
+        # Build one sub-prism per partition piece (when defined) so the
+        # fused result has identically-partitioned bottom and top OCC
+        # faces by construction. When ``face_partition`` is None, fall
+        # back to the slab's raw footprint (single-piece prism, or one
+        # per MultiPolygon component).
+        if self.slab.face_partition:
+            polys = list(self.slab.face_partition)
+        elif hasattr(self.slab.footprint, "geoms"):
+            polys = list(self.slab.footprint.geoms)
+        else:
+            polys = [self.slab.footprint]
         # Delegate wire construction to GeometryEntity helpers via a
         # tiny adapter so we don't duplicate arc handling. When the
         # originating ``_StructuredPolyPrism`` requested ``identify_arcs``,
@@ -436,14 +578,24 @@ class _StructuredPhantom:
         if len(result_solids) == 1:
             return result_solids[0]
 
-        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        # Combine sub-prisms via ``BOPAlgo_Builder`` (the BOP fragmenter)
+        # rather than ``BRepAlgoAPI_Fuse``. ``Fuse`` merges adjacent
+        # coplanar faces into one (eliminating the internal partition we
+        # just constructed); the bare ``BOPAlgo_Builder`` keeps each
+        # sub-prism as its own solid while still sharing sub-shape
+        # TShapes between them at the partition boundaries. This gives a
+        # phantom whose bottom and top OCC faces are partitioned
+        # mirror-symmetrically -- the property the mesh-stage slab
+        # builder needs for clean ``setPeriodic`` and multi-sub-face
+        # bottom/top reading.
+        from OCP.BOPAlgo import BOPAlgo_Builder
 
-        result = result_solids[0]
-        for s in result_solids[1:]:
-            fuser = BRepAlgoAPI_Fuse(result, s)
-            fuser.Build()
-            result = fuser.Shape()
-        return result
+        bop = BOPAlgo_Builder()
+        for s in result_solids:
+            bop.AddArgument(s)
+        bop.SetFuzzyValue(1e-7)
+        bop.Perform()
+        return bop.Shape()
 
 
 class StructuredLayerMismatchError(ValueError):
@@ -522,25 +674,29 @@ def _entity_footprint_multi(entity):
 def _validate_slab_face_topology_symmetry(
     slabs: list["Slab"], entities_list: list, tol: float = 1e-3
 ) -> None:
-    """Raise when a non-structured entity has a z-face within a slab's z-range.
+    """Raise when a non-structured entity would corrupt slab lateral topology.
 
-    The structured-slab mesh-stage builder is built around the invariant that
-    every slab is a simple z-extrusion of a 2D footprint: its OCC bottom and
-    top faces are single-component and topologically identical, and its only
-    lateral faces span the full ``[zlo, zhi]`` z-range. Any non-structured
-    entity that has a horizontal face strictly inside the slab z-range
-    (``zlo < z < zhi``), or one that partially covers the slab footprint at
-    z=zlo or z=zhi, breaks the invariant:
+    The structured-slab mesh-stage builder requires that every slab's
+    lateral OCC faces span the full slab ``[zlo, zhi]`` z-range with
+    4-corner topology. Two ways this gets broken:
 
-    * **Interior z-face**: introduces a lateral perimeter face whose
-      z-extent is a sub-interval of the slab z-range.
-      ``_apply_lateral_transfinite_hints`` misses it (its lateral filter
-      only accepts faces spanning the full slab z-range) and the slab
-      build silently produces overlapping wedges + neighbour tets.
-    * **Partial coverage at z=zlo or z=zhi**: splits the slab's bottom
-      or top OCC face asymmetrically with the opposite z-face, so
-      ``setPeriodic`` fails and ``_build_one_slab_conformal`` references
-      un-meshed nodes.
+    1. **3D entity with an interior z-face** (``slab.zlo < z < slab.zhi``):
+       its lateral wall sits *inside* the slab volume, terminating at the
+       interior z-face. The slab's lateral faces around the entity gain
+       extra horizontal edges (the entity's lateral wall intersects the
+       slab's lateral wall at the entity's z-face boundary), yielding
+       5+-corner lateral faces ``setTransfiniteSurface`` cannot mesh.
+
+    2. **2D entity strictly interior** (``slab.zlo < z < slab.zhi``):
+       creates a horizontal interface inside the slab volume that the
+       slab's layer grid almost certainly doesn't align with --
+       non-conformal interior interface in the resulting mesh.
+
+    Top/bottom face *decomposition* (entities touching ``slab.zlo`` or
+    ``slab.zhi`` with partial xy coverage) is **not** rejected -- the
+    slab phantom is pre-partitioned at CAD stage so top and bottom
+    decompositions are mirror-symmetric by construction, and the
+    mesh-stage builder handles multi-face bottom/top reads.
 
     Structured PolyPrism entities are skipped: ``resolve_structured_slabs``
     has its own structured-vs-structured z-cascade for them.
@@ -577,23 +733,28 @@ def _validate_slab_face_topology_symmetry(
                 continue
             if inter.is_empty or inter.area <= rel_tol:
                 continue
-            full_coverage = abs(inter.area - slab_area) <= rel_tol
             emin, emax = z_range
+            ent_dim = getattr(ent, "dimension", None)
+            is_2d = (ent_dim == 2) or (abs(emax - emin) <= tol)
             violations: list[str] = []
-            for z_label, z in (("z-start", emin), ("z-end", emax)):
-                # Strictly interior z-face: always rejected.
+            if is_2d:
+                # 2D: only the z-position matters. Reject strictly-interior;
+                # allow at z=zlo / z=zhi (handled by phantom partitioning) or
+                # outside slab z-range.
+                z = 0.5 * (emin + emax)
                 if slab.zlo + tol < z < slab.zhi - tol:
-                    violations.append(f"{z_label}={z} is interior to slab z-range")
-                # At slab z-boundary AND partial coverage: rejected
-                # (asymmetric split with the opposite z-face).
-                elif (
-                    abs(z - slab.zlo) <= tol or abs(z - slab.zhi) <= tol
-                ) and not full_coverage:
-                    boundary = "z=zlo" if abs(z - slab.zlo) <= tol else "z=zhi"
                     violations.append(
-                        f"{z_label}={z} sits on slab {boundary} with partial "
-                        f"xy coverage ({inter.area:.3g} of {slab_area:.3g})"
+                        f"2D entity at z={z} is strictly interior to slab "
+                        f"z-range [{slab.zlo}, {slab.zhi}]"
                     )
+            else:
+                # 3D: reject if any horizontal face is strictly interior.
+                for z_label, z in (("z-start", emin), ("z-end", emax)):
+                    if slab.zlo + tol < z < slab.zhi - tol:
+                        violations.append(
+                            f"3D {z_label}={z} is strictly interior to slab "
+                            f"z-range [{slab.zlo}, {slab.zhi}]"
+                        )
             if not violations:
                 continue
             name = getattr(ent, "physical_name", None) or f"entity[{idx}]"
@@ -607,10 +768,116 @@ def _validate_slab_face_topology_symmetry(
                 + "\n".join(f"  - {v}" for v in violations)
                 + "\n\nThe structured-slab builder requires every "
                 "non-structured entity intersecting the slab to either "
-                "(a) lie strictly outside the slab z-range, (b) fully "
-                "cross the slab (z-range strictly contains [zlo, zhi]), "
-                "or (c) sit at z=zlo or z=zhi with footprint fully "
-                "covering the slab footprint (mirror)."
+                "(a) lie strictly outside the slab z-range, (b) for 3D "
+                "entities, fully cross the slab (z-range contains "
+                "[zlo, zhi]) or have a z-face exactly on z=zlo / z=zhi, "
+                "or (c) for 2D entities, sit exactly on z=zlo or z=zhi."
+            )
+
+
+def _validate_slab_neighbour_mesh_order(
+    slabs: list["Slab"], entities_list: list, tol: float = 1e-3
+) -> None:
+    """Raise when a non-structured neighbour's ``mesh_order`` would conflict with slab wedges.
+
+    Slab wedges are built unconditionally over the full ``slab.footprint``
+    by the mesh-stage builder. Meanwhile, cad_occ's piece-ownership
+    cascade may assign the volumetric overlap region (slab.xy ∩ neighbour.xy
+    intersected with their z-overlap) to whichever entity has the lower
+    ``mesh_order``.
+
+    * **Neighbour wins (``ent_mo < slab_mo``)**: the cascade gives the
+      overlap volume to the neighbour, which generates tets there. The
+      slab builder's wedges cover the same volume -- two cell sets occupy
+      the same 3D region. Invalid mesh.
+    * **Slab wins (``ent_mo > slab_mo``)**: the cascade assigns the
+      overlap to the slab phantom (keep=False), which discards it; the
+      neighbour does not generate tets in the slab's footprint, and the
+      slab's wedges fill the region cleanly. Safe.
+
+    Convention: structured slabs should always win their footprint, so
+    set their ``mesh_order`` *lower* than any volumetrically-overlapping
+    non-structured neighbour. This validator rejects the inverted case
+    at CAD stage so users see a clear error instead of a mesh with
+    overlapping cells.
+
+    Structured PolyPrism entities are skipped: their inter-slab priority
+    is resolved by ``resolve_structured_slabs``.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    for slab in slabs:
+        slab_mo = slab.mesh_order if slab.mesh_order is not None else float("inf")
+        slab_area = slab.footprint.area
+        if slab_area <= 0:
+            continue
+        rel_tol = max(tol, 1e-9) * max(slab_area, 1.0)
+        for idx, ent in enumerate(entities_list):
+            if idx == slab.source_index:
+                continue
+            if isinstance(ent, _StructuredPolyPrism):
+                continue
+            # ``mesh_bool=False`` (keep=False) cutters don't generate cells;
+            # they exist only to carve other entities. No risk of duplicate
+            # cells with slab wedges.
+            if not getattr(ent, "mesh_bool", True):
+                continue
+            ent_mo = getattr(ent, "mesh_order", None)
+            if ent_mo is None:
+                ent_mo = float("inf")
+            if ent_mo >= slab_mo:
+                continue  # slab wins overlap -> wedges and neighbour don't conflict
+            # ent_mo < slab_mo: neighbour wins overlap, generates tets,
+            # conflicts with slab wedges. Only a real conflict when both
+            # bodies overlap volumetrically (xy and z).
+            ent_fp = _entity_footprint_multi(ent)
+            if ent_fp is None or ent_fp.is_empty:
+                continue
+            try:
+                inter = slab.footprint.intersection(ent_fp)
+            except Exception as exc:
+                logger.debug(
+                    "shapely intersection failed for slab %s vs entity %d: %s",
+                    slab.physical_name,
+                    idx,
+                    exc,
+                )
+                continue
+            if inter.is_empty or inter.area <= rel_tol:
+                continue
+            z_range = _entity_z_range(ent)
+            if z_range is None:
+                continue
+            emin, emax = z_range
+            # Require genuine volumetric overlap. A shared z-face (e.g.
+            # stacked entities at slab.zhi) is harmless -- cad_occ's
+            # ownership cascade resolves at the TopoDS_Solid level.
+            z_overlap_lo = max(emin, slab.zlo)
+            z_overlap_hi = min(emax, slab.zhi)
+            if (z_overlap_hi - z_overlap_lo) <= tol:
+                continue
+            name = getattr(ent, "physical_name", None) or f"entity[{idx}]"
+            if isinstance(name, tuple):
+                name = "/".join(name) or f"entity[{idx}]"
+            raise StructuredFaceTopologySplitError(
+                f"Structured slab {slab.physical_name} (mesh_order="
+                f"{slab.mesh_order}) overlaps non-structured entity "
+                f"{name} (index {idx}, mesh_order={ent_mo}) in xy "
+                f"(intersection bbox={inter.bounds}) and z (entity z="
+                f"[{emin}, {emax}], slab z=[{slab.zlo}, {slab.zhi}]) "
+                f"but the slab has the HIGHER mesh_order. The neighbour "
+                f"would win the overlap piece in cad_occ's fragment "
+                f"cascade and generate tets there, while the slab "
+                f"builder unconditionally fills the same region with "
+                f"wedges -- producing a mesh with two cell sets in the "
+                f"same 3D region.\n\n"
+                f"Fix: lower the slab's mesh_order below {ent_mo}, or "
+                f"raise {name}'s mesh_order above {slab.mesh_order}. "
+                f"Convention: structured slabs should always win their "
+                f"footprint -- set their mesh_order LOWER than any "
+                f"volumetrically-overlapping neighbour."
             )
 
 
@@ -940,16 +1207,16 @@ def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
     logger = logging.getLogger(__name__)
 
     occ_faces = gmsh.model.occ.getEntities(2)
-    bottom_face = _find_occ_face_for_slab(occ_faces, slab, slab.zlo, tol)
-    top_face = _find_occ_face_for_slab(occ_faces, slab, slab.zhi, tol)
-    if bottom_face is None or top_face is None:
+    bottom_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zlo, tol)
+    top_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zhi, tol)
+    if not bottom_faces or not top_faces:
         logger.debug(
             "Skipping periodic for slab %s at z=[%s, %s]: bottom=%s top=%s",
             slab.physical_name,
             slab.zlo,
             slab.zhi,
-            bottom_face,
-            top_face,
+            bottom_faces,
+            top_faces,
         )
         return
 
@@ -972,14 +1239,43 @@ def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
         0.0,
         1.0,
     ]
-    try:
-        gmsh.model.mesh.setPeriodic(2, [top_face], [bottom_face], affine)
-    except Exception as exc:
-        logger.warning(
-            "Failed to set periodic top->bottom face for slab %s: %s",
-            slab.physical_name,
-            exc,
+
+    # Pair each bottom sub-face with its xy-twin top sub-face by bbox.
+    # After phantom partitioning the decompositions are mirror-symmetric,
+    # so every bottom sub-face has exactly one top counterpart with the
+    # same xy bbox (within tolerance).
+    def _bbox_key(tag: int) -> tuple[int, int, int, int]:
+        bb = gmsh.model.occ.getBoundingBox(2, tag)
+        return (
+            round(bb[0] / max(tol, 1e-9)),
+            round(bb[1] / max(tol, 1e-9)),
+            round(bb[3] / max(tol, 1e-9)),
+            round(bb[4] / max(tol, 1e-9)),
         )
+
+    top_by_key = {_bbox_key(t): t for t in top_faces}
+    for bf in bottom_faces:
+        key = _bbox_key(bf)
+        tf = top_by_key.get(key)
+        if tf is None:
+            logger.warning(
+                "No xy-twin top sub-face for slab %s bottom sub-face %d "
+                "(bbox key=%s); skipping periodic for this pair",
+                slab.physical_name,
+                bf,
+                key,
+            )
+            continue
+        try:
+            gmsh.model.mesh.setPeriodic(2, [tf], [bf], affine)
+        except Exception as exc:
+            logger.warning(
+                "Failed to set periodic top=%d <- bottom=%d for slab %s: %s",
+                tf,
+                bf,
+                slab.physical_name,
+                exc,
+            )
 
 
 def _collect_slab_vertical_edges(
@@ -1165,10 +1461,12 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
     ``tag_to_idx`` (bottom-node-tag -> index), and ``coord`` (the
     bottom-face node coordinates at z=zlo).
 
-    Phantom OCC sub-faces survive ``_remove_keep_false_top_dim`` (which
-    removes the volume non-recursively for ``is_structured_phantom``
-    entities), so ``_find_occ_face_for_slab`` always returns a valid
-    face for both ``slab.zlo`` and ``slab.zhi``.
+    When the slab phantom is xy-partitioned (``slab.face_partition``
+    set), the slab's bottom (and top) is composed of multiple OCC
+    sub-faces with mirror-symmetric topology. The build reads the union
+    of all bottom sub-faces' meshes, builds layered wedges over the
+    combined column footprint, and deposits the translated top mesh
+    partitioned by xy onto each top sub-face individually.
     """
     import logging
 
@@ -1178,99 +1476,123 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
     logger = logging.getLogger(__name__)
 
     occ_faces = gmsh.model.occ.getEntities(2)
-    bottom_face = _find_occ_face_for_slab(occ_faces, slab, slab.zlo, tol)
-    top_face = _find_occ_face_for_slab(occ_faces, slab, slab.zhi, tol)
+    bottom_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zlo, tol)
+    top_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zhi, tol)
 
-    if bottom_face is None or top_face is None:
+    if not bottom_faces or not top_faces:
         raise RuntimeError(
             f"Conformal slab build for {slab.physical_name} at "
             f"z=[{slab.zlo}, {slab.zhi}] could not locate "
-            f"{'bottom' if bottom_face is None else 'top'} OCC face. "
+            f"{'bottom' if not bottom_faces else 'top'} OCC face(s). "
             f"This indicates a bug in phantom sub-face preservation; "
             f"check that _StructuredPhantom volumes are removed "
             f"non-recursively in _remove_keep_false_top_dim."
         )
 
-    # Read bottom face's 2D mesh (interior + boundary nodes).
-    node_tags, coord, _ = gmsh.model.mesh.getNodes(2, bottom_face, includeBoundary=True)
-    if len(node_tags) == 0:
+    # Read combined bottom mesh across all bottom sub-faces. Boundary
+    # nodes shared between sub-faces (at partition boundaries) appear in
+    # multiple sub-faces' ``getNodes`` output -- dedup by tag.
+    tag_to_idx: dict[int, int] = {}
+    coord_list: list = []
+    node_tags_list: list[int] = []
+    boundary_tags: set[int] = set()
+    cells_per_type_t: list = []  # triangle element node lists
+    cells_per_type_q: list = []  # quad element node lists
+
+    for face in bottom_faces:
+        nt, nc, _ = gmsh.model.mesh.getNodes(2, face, includeBoundary=True)
+        if len(nt) == 0:
+            continue
+        nc = np.asarray(nc, dtype=float).reshape(-1, 3)
+        for i, raw_t in enumerate(nt):
+            t = int(raw_t)
+            if t in tag_to_idx:
+                continue
+            tag_to_idx[t] = len(node_tags_list)
+            node_tags_list.append(t)
+            coord_list.append(nc[i])
+        # Boundary classification: nodes returned with includeBoundary=False
+        # are interior; everything else is on the face's bounding curves.
+        iface_nodes, _, _ = gmsh.model.mesh.getNodes(2, face, includeBoundary=False)
+        face_interior = {int(t) for t in iface_nodes}
+        for raw_t in nt:
+            t = int(raw_t)
+            if t not in face_interior:
+                boundary_tags.add(t)
+
+        elem_types, _, elem_node_tags = gmsh.model.mesh.getElements(2, face)
+        for et, en in zip(elem_types, elem_node_tags):
+            if int(et) == 2:
+                cells_per_type_t.append(np.asarray(en, dtype=np.uint64))
+            elif int(et) == 3:
+                cells_per_type_q.append(np.asarray(en, dtype=np.uint64))
+
+    if not node_tags_list:
         raise RuntimeError(
-            f"Bottom OCC face {bottom_face} for slab {slab.physical_name} "
-            f"at z={slab.zlo} has no 2D mesh nodes after mesh.generate(2)."
+            f"Bottom OCC face(s) {bottom_faces} for slab "
+            f"{slab.physical_name} at z={slab.zlo} have no 2D mesh nodes "
+            f"after mesh.generate(2)."
         )
-    coord = np.asarray(coord, dtype=float).reshape(-1, 3)
-    node_tags = np.asarray(node_tags, dtype=np.uint64)
 
-    # Identify which bottom-face nodes lie on the bounding curves (1D
-    # entities). For those, layer n must reuse the corresponding top-face
-    # boundary curve's existing node tags rather than creating new ones,
-    # otherwise we duplicate the 1D-curve nodes that the surrounding OCC
-    # face also owns.
-    # Boundary-only nodes: exclude (dim=2) interior nodes.
-    bottom_iface_nodes, _, _ = gmsh.model.mesh.getNodes(
-        2, bottom_face, includeBoundary=False
-    )
-    interior_set = {int(t) for t in bottom_iface_nodes}
-    is_boundary = np.array(
-        [int(t) not in interior_set for t in node_tags.tolist()], dtype=bool
-    )
+    coord = np.asarray(coord_list, dtype=float)
+    node_tags = np.asarray(node_tags_list, dtype=np.uint64)
 
-    # Build a mapping from bottom-boundary xy -> top-face boundary node tag,
-    # by collecting all nodes on top_face's boundary curves at z=zhi.
+    is_boundary = np.array([t in boundary_tags for t in node_tags_list], dtype=bool)
+
+    # Build the bottom-boundary -> top-boundary tag map by walking every
+    # top sub-face's bounding curves. Whether a curve lies on the slab's
+    # outer perimeter or on a partition boundary, the per-sub-face
+    # ``setPeriodic`` constraint guarantees it has a matching bottom
+    # counterpart at the translated xy.
     top_boundary_lookup: dict[tuple[float, float], int] = {}
-    # Get curves bounding top_face.
-    top_curves = gmsh.model.getBoundary(
-        [(2, top_face)], oriented=False, recursive=False
-    )
-    # Collect 1D nodes on each bounding curve of top_face. includeBoundary=True
-    # also picks up the 0D vertex nodes shared between adjacent curves.
     snap = max(tol, 1e-9)
-    for cdim, ctag in top_curves:
-        if cdim != 1:
-            continue
+    for tf in top_faces:
         try:
-            tnt, tcd, _ = gmsh.model.mesh.getNodes(1, ctag, includeBoundary=True)
+            top_curves = gmsh.model.getBoundary(
+                [(2, tf)], oriented=False, recursive=False
+            )
         except Exception as exc:
-            logger.debug("Skipping top-face curve %d (no 1D mesh nodes): %s", ctag, exc)
+            logger.debug("getBoundary failed for top face %d: %s", tf, exc)
             continue
-        tcd = np.asarray(tcd, dtype=float).reshape(-1, 3)
-        for i, tag in enumerate(tnt):
-            x, y = tcd[i, 0], tcd[i, 1]
-            key = (round(x / snap), round(y / snap))
-            top_boundary_lookup[key] = int(tag)
+        for cdim, ctag in top_curves:
+            if cdim != 1:
+                continue
+            try:
+                tnt, tcd, _ = gmsh.model.mesh.getNodes(1, ctag, includeBoundary=True)
+            except Exception as exc:
+                logger.debug(
+                    "Skipping top-face curve %d (no 1D mesh nodes): %s",
+                    ctag,
+                    exc,
+                )
+                continue
+            tcd = np.asarray(tcd, dtype=float).reshape(-1, 3)
+            for i, tag in enumerate(tnt):
+                x, y = tcd[i, 0], tcd[i, 1]
+                key = (round(x / snap), round(y / snap))
+                top_boundary_lookup[key] = int(tag)
 
-    # Read bottom face's element mesh. The conformal builder handles
-    # either triangles (-> wedge volume, type 6) or quads (-> hex volume,
-    # type 5). The latter only happens when ``slab.recombine`` is True
-    # and ``_apply_horizontal_recombine_hints`` flagged the face.
-    elem_types, _, elem_node_tags = gmsh.model.mesh.getElements(2, bottom_face)
-    cells_nodes_flat: np.ndarray | None = None
-    cells_per_face = 3  # triangle by default
+    # Pick element type from the combined bottom mesh. Triangles win
+    # over quads when both present (mixed types not currently supported).
+    cells_per_face = 3
     gmsh_3d_type = 6  # wedge
     top_elem_gmsh_type = 2  # triangle
-    for et, en in zip(elem_types, elem_node_tags):
-        if int(et) == 2:  # triangle -> wedge
-            cells_nodes_flat = np.asarray(en, dtype=np.uint64)
-            cells_per_face = 3
-            gmsh_3d_type = 6
-            top_elem_gmsh_type = 2
-            break
-        if int(et) == 3:  # quad -> hex
-            cells_nodes_flat = np.asarray(en, dtype=np.uint64)
-            cells_per_face = 4
-            gmsh_3d_type = 5
-            top_elem_gmsh_type = 3
-            break
-    if cells_nodes_flat is None or cells_nodes_flat.size == 0:
+    if cells_per_type_t:
+        cells_nodes_flat = np.concatenate(cells_per_type_t)
+    elif cells_per_type_q:
+        cells_nodes_flat = np.concatenate(cells_per_type_q)
+        cells_per_face = 4
+        gmsh_3d_type = 5  # hex
+        top_elem_gmsh_type = 3  # quad
+    else:
         raise RuntimeError(
-            f"Bottom OCC face {bottom_face} for slab {slab.physical_name} "
-            f"at z={slab.zlo} has no triangle/quad elements after "
-            f"mesh.generate(2)."
+            f"Bottom OCC face(s) {bottom_faces} for slab "
+            f"{slab.physical_name} at z={slab.zlo} have no triangle/quad "
+            f"elements after mesh.generate(2)."
         )
     triangles = cells_nodes_flat.reshape(-1, cells_per_face)
 
-    # tag -> index in coord array
-    tag_to_idx = {int(t): i for i, t in enumerate(node_tags.tolist())}
+    # ``tag_to_idx`` was already built while reading combined sub-faces.
     n_nodes = len(node_tags)
     n_layers = slab.n_layers
 
@@ -1337,52 +1659,112 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
             interior_coords.reshape(-1).tolist(),
         )
 
-    # Override top face: clear its 2D mesh (NOT its 1D bounding curves --
-    # those are shared with surrounding OCC faces) and add only the new
-    # interior nodes plus triangles with the bottom's connectivity. The
-    # boundary nodes already live on the 1D curves and are reused via
-    # top_boundary_lookup above.
+    # Override top faces: clear each top sub-face's 2D mesh (NOT its 1D
+    # bounding curves -- those are shared with surrounding OCC faces) and
+    # deposit translated bottom cells partitioned by xy centroid. Each
+    # cell goes to the top sub-face whose footprint contains its centroid.
     top_layer_tags = new_layer_tags[-1]
     top_layer_coords = new_layer_coords[-1]
 
-    try:
-        gmsh.model.mesh.clear([(2, top_face)])
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "mesh.clear failed for top face %d (slab %s): %s",
-            top_face,
-            slab.physical_name,
-            exc,
-        )
+    # Compute each cell's centroid xy (in the bottom mesh's frame) so we
+    # can route it to the matching top sub-face.
+    cell_centroid_xy = np.empty((triangles.shape[0], 2), dtype=float)
+    for r in range(triangles.shape[0]):
+        idxs = [tag_to_idx[int(triangles[r, c])] for c in range(cells_per_face)]
+        cell_centroid_xy[r, 0] = float(np.mean(coord[idxs, 0]))
+        cell_centroid_xy[r, 1] = float(np.mean(coord[idxs, 1]))
 
+    # Top sub-face bbox + centroid coverage. We assign each cell to the
+    # top sub-face whose xy bbox contains the cell centroid. Bbox is an
+    # approximation but cheap; partition boundaries are axis-aligned in
+    # the common case (rectangular embedded films) so bbox containment
+    # matches polygon containment.
+    top_face_boxes: list[tuple[int, float, float, float, float]] = []
+    for tf in top_faces:
+        bb = gmsh.model.occ.getBoundingBox(2, tf)
+        # Inflate by tol so cells on the boundary aren't rejected.
+        top_face_boxes.append((tf, bb[0] - tol, bb[1] - tol, bb[3] + tol, bb[4] + tol))
+
+    cell_to_top: list[int] = [-1] * triangles.shape[0]
+    for r in range(triangles.shape[0]):
+        cx, cy = cell_centroid_xy[r]
+        best = -1
+        for tf, x0, y0, x1, y1 in top_face_boxes:
+            if x0 <= cx <= x1 and y0 <= cy <= y1:
+                # Prefer the smallest bbox (most specific). When sub-faces
+                # nest, the inner sub-face wins.
+                if best == -1:
+                    best = tf
+                else:
+                    bb_best = next(b for b in top_face_boxes if b[0] == best)
+                    if (x1 - x0) * (y1 - y0) < (bb_best[3] - bb_best[1]) * (
+                        bb_best[4] - bb_best[2]
+                    ):
+                        best = tf
+        if best == -1:
+            best = top_faces[0]
+        cell_to_top[r] = best
+
+    # Clear and re-deposit per top sub-face.
+    for tf in top_faces:
+        try:
+            gmsh.model.mesh.clear([(2, tf)])
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "mesh.clear failed for top sub-face %d (slab %s): %s",
+                tf,
+                slab.physical_name,
+                exc,
+            )
+
+    # Add top interior nodes (those whose bottom counterpart was not on
+    # a boundary curve) only once, owned by the top sub-face containing
+    # their xy.
     interior_mask = ~is_boundary
     if interior_mask.any():
-        gmsh.model.mesh.addNodes(
-            2,
-            top_face,
-            top_layer_tags[interior_mask].tolist(),
-            top_layer_coords[interior_mask].reshape(-1).tolist(),
-        )
+        # Bucket interior nodes by destination top sub-face via centroid
+        # bbox containment (same logic as cells).
+        for tf, x0, y0, x1, y1 in top_face_boxes:
+            in_box = (
+                interior_mask
+                & (coord[:, 0] >= x0)
+                & (coord[:, 0] <= x1)
+                & (coord[:, 1] >= y0)
+                & (coord[:, 1] <= y1)
+            )
+            if in_box.any():
+                gmsh.model.mesh.addNodes(
+                    2,
+                    tf,
+                    top_layer_tags[in_box].tolist(),
+                    top_layer_coords[in_box].reshape(-1).tolist(),
+                )
 
     # Build top-face elements by remapping each bottom-cell node tag
-    # via tag_to_idx -> top_layer_tags[idx]. Same element type as the
-    # bottom (triangle for wedge slabs, quad for hex slabs).
+    # via tag_to_idx -> top_layer_tags[idx]. Group cells by their
+    # destination top sub-face.
     top_cell_nodes = np.empty_like(triangles, dtype=np.uint64)
     for r in range(triangles.shape[0]):
         for c in range(cells_per_face):
             top_cell_nodes[r, c] = top_layer_tags[tag_to_idx[int(triangles[r, c])]]
 
     next_elem_tag = int(gmsh.model.mesh.getMaxElementTag()) + 1
-    n_cells = triangles.shape[0]
-    top_elem_tags = np.arange(next_elem_tag, next_elem_tag + n_cells, dtype=np.uint64)
-    next_elem_tag += n_cells
-    gmsh.model.mesh.addElements(
-        2,
-        top_face,
-        [top_elem_gmsh_type],
-        [top_elem_tags.tolist()],
-        [top_cell_nodes.reshape(-1).tolist()],
-    )
+    cells_by_top: dict[int, list[int]] = {}
+    for r, tf in enumerate(cell_to_top):
+        cells_by_top.setdefault(tf, []).append(r)
+    for tf, cell_indices_list in cells_by_top.items():
+        rows = np.asarray(cell_indices_list, dtype=int)
+        sub_nodes = top_cell_nodes[rows]
+        n_sub = len(rows)
+        sub_elem_tags = np.arange(next_elem_tag, next_elem_tag + n_sub, dtype=np.uint64)
+        next_elem_tag += n_sub
+        gmsh.model.mesh.addElements(
+            2,
+            tf,
+            [top_elem_gmsh_type],
+            [sub_elem_tags.tolist()],
+            [sub_nodes.reshape(-1).tolist()],
+        )
 
     # Build 3D elements: for each bottom cell (a, b, c[, d]) and each
     # layer i in 0..n_layers-1, the volume element nodes are
@@ -1400,7 +1782,7 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
         block = np.concatenate([lo_tags, hi_tags], axis=1)
         volume_node_lists.append(block.reshape(-1))
     volume_nodes_flat = np.concatenate(volume_node_lists)
-    n_3d = n_cells * n_layers
+    n_3d = triangles.shape[0] * n_layers
     volume_tags_arr = np.arange(next_elem_tag, next_elem_tag + n_3d, dtype=np.uint64)
 
     gmsh.model.mesh.addElements(
@@ -1422,13 +1804,35 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
 def _find_occ_face_for_slab(
     candidates, slab: Slab, target_z: float, tol: float
 ) -> int | None:
-    """Return tag of an OCC face bounding the slab at ``target_z``.
+    """Return tag of the OCC face with highest slab-footprint coverage at ``target_z``.
 
-    The matched face must lie at z = ``target_z`` (within ``tol``) AND its
-    xy bounding box must sit substantially inside the slab footprint.
-    Stricter than :func:`_find_occ_face_at_z`: verifies the face actually
-    bounds *this* slab's void rather than some unrelated z-coplanar OCC
-    face elsewhere in the scene.
+    Single-face variant (legacy): kept for code paths that only need
+    *one* face (e.g. ``setPeriodic`` on the dominant sub-face). For
+    full-coverage operations (combined mesh reading, multi-face
+    deposition), use :func:`_find_all_occ_faces_for_slab`.
+    """
+    faces = _find_all_occ_faces_for_slab(candidates, slab, target_z, tol)
+    return faces[0] if faces else None
+
+
+def _find_all_occ_faces_for_slab(
+    candidates, slab: Slab, target_z: float, tol: float
+) -> list[int]:
+    """Return tags of every OCC face that bounds the slab at ``target_z``.
+
+    After phantom partitioning, the slab's bottom (and top) is composed
+    of one or more sub-faces whose union covers the slab footprint.
+    This walker returns all of them (with bbox xy substantially inside
+    the slab footprint), sorted by descending coverage so the dominant
+    sub-face is first.
+
+    Filters out faces that belong to neighbouring entities whose bodies
+    happen to fragment within the slab footprint (e.g., a 3D pillar
+    fully crossing the slab in z produces sub-faces inside slab.footprint
+    that belong to the pillar, not the slab). The filter uses physical
+    group membership: a face belongs to this slab iff at least one of
+    its physical groups names this slab (directly as ``slab_name`` or as
+    an interface ``slab_name___X`` / ``X___slab_name``).
     """
     import gmsh
     from shapely.geometry import box
@@ -1436,13 +1840,31 @@ def _find_occ_face_for_slab(
     fp = slab.footprint
     fp_area = fp.area
     if fp_area <= 0:
-        return None
-    best_tag: int | None = None
-    best_score = -float("inf")
+        return []
     bbox_tol = _bbox_tol_for_slab(slab, tol)
-    # Require >= 50% of the face's bbox area to lie inside the slab footprint.
-    # Stricter than "any overlap" -- prevents picking a neighbor's coplanar
-    # face whose edge merely touches the slab footprint along one boundary.
+    slab_names = set(slab.physical_name)
+
+    def _face_belongs_to_slab(tag: int) -> bool:
+        try:
+            group_tags = gmsh.model.getPhysicalGroupsForEntity(2, tag)
+        except Exception:
+            return True  # no group info -> include conservatively
+        if len(group_tags) == 0:
+            # Untagged face: assume slab-owned (slab phantom's surviving
+            # sub-faces aren't always tagged, e.g., when the slab has no
+            # neighbour at all and the exterior tagging skipped it).
+            return True
+        for gt in group_tags:
+            try:
+                gname = gmsh.model.getPhysicalName(2, int(gt))
+            except Exception:
+                continue
+            parts = gname.split("___")
+            if slab_names & set(parts):
+                return True
+        return False
+
+    candidates_with_score: list[tuple[float, int]] = []
     for dim, tag in candidates:
         if dim != 2:
             continue
@@ -1459,18 +1881,18 @@ def _find_occ_face_for_slab(
         inter = fp.intersection(face_box)
         if inter.is_empty:
             continue
-        # Require the face bbox to be substantially inside the slab footprint.
-        # A neighbor face that merely shares an edge yields inter.area ~ 0
-        # relative to its own bbox area, so the ratio filters it out.
+        # The 50% bbox-coverage filter rejects neighbour-only faces whose
+        # bbox is mostly outside the slab footprint (e.g. a face that
+        # merely shares an edge along the slab perimeter).
         coverage = inter.area / face_box_area
         if coverage < 0.5:
             continue
-        # Prefer the face whose footprint best fills the slab footprint.
+        if not _face_belongs_to_slab(tag):
+            continue
         score = inter.area / fp_area
-        if score > best_score:
-            best_score = score
-            best_tag = tag
-    return best_tag
+        candidates_with_score.append((score, tag))
+    candidates_with_score.sort(reverse=True)
+    return [tag for _, tag in candidates_with_score]
 
 
 def slabs_to_json(slabs: list[Slab]) -> list[dict]:
@@ -1491,6 +1913,11 @@ def slabs_to_json(slabs: list[Slab]) -> list[dict]:
             "identify_arcs": s.identify_arcs,
             "min_arc_points": s.min_arc_points,
             "arc_tolerance": s.arc_tolerance,
+            "face_partition_wkt": (
+                [shapely.wkt.dumps(p, rounding_precision=12) for p in s.face_partition]
+                if s.face_partition is not None
+                else None
+            ),
         }
         for s in slabs
     ]
@@ -1499,6 +1926,11 @@ def slabs_to_json(slabs: list[Slab]) -> list[dict]:
 def slabs_from_json(data: list[dict]) -> list[Slab]:
     """Inverse of ``slabs_to_json``."""
     import shapely.wkt
+
+    def _load_partition(raw):
+        if raw is None:
+            return None
+        return [shapely.wkt.loads(p) for p in raw]
 
     return [
         Slab(
@@ -1514,6 +1946,7 @@ def slabs_from_json(data: list[dict]) -> list[Slab]:
             identify_arcs=d.get("identify_arcs", False),
             min_arc_points=d.get("min_arc_points", 4),
             arc_tolerance=d.get("arc_tolerance", 1e-3),
+            face_partition=_load_partition(d.get("face_partition_wkt")),
         )
         for d in data
     ]

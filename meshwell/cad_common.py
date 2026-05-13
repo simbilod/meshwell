@@ -132,6 +132,7 @@ def prepare_entities(
             _StructuredPhantom,
             _StructuredPolyPrism,
             _validate_slab_face_topology_symmetry,
+            _validate_slab_neighbour_mesh_order,
             resolve_structured_slabs,
         )
 
@@ -144,6 +145,7 @@ def prepare_entities(
         # belt-and-suspenders guard -- it should never trigger.
         slabs = resolve_structured_slabs(entities_list)
         _validate_slab_face_topology_symmetry(slabs, entities_list)
+        _validate_slab_neighbour_mesh_order(slabs, entities_list)
         structured_slabs_out.extend(slabs)
 
         # Build phantoms in source order so insertion order maps directly
