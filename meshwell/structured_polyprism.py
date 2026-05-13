@@ -395,8 +395,8 @@ def _compute_face_partition(
             continue
         try:
             clipped = slab.footprint.intersection(ent_fp)
-        except Exception:
-            continue
+        except Exception as e:
+            raise e
         if clipped.is_empty or clipped.area <= area_floor:
             continue
         if abs(clipped.area - slab_area) <= area_floor:
@@ -414,8 +414,8 @@ def _compute_face_partition(
                 continue
             try:
                 clipped = slab.footprint.intersection(other.footprint)
-            except Exception:
-                continue
+            except Exception as e:
+                raise e
             if clipped.is_empty or clipped.area <= area_floor:
                 continue
             if abs(clipped.area - slab_area) <= area_floor:
@@ -888,6 +888,52 @@ def _validate_slab_neighbour_mesh_order(
 _OCC_BBOX_PAD = 2e-7
 
 
+def _snapshot_occ_face_bboxes() -> (
+    tuple[
+        list[tuple[int, int]],
+        dict[int, tuple[float, float, float, float, float, float]],
+    ]
+):
+    """Return ``(occ_faces, bbox_by_tag)`` for every 2D OCC face.
+
+    The per-slab helpers each used to call ``gmsh.model.occ.getEntities(2)``
+    and then ``getBoundingBox(2, ftag)`` for every face -- O(slabs * faces)
+    gmsh round-trips. Topology is stable during ``apply_structured_slabs``
+    (no OCC mutation between calls), so a single snapshot taken at the top
+    of the slab loops can be threaded into every helper.
+
+    Helpers accept this as an optional kwarg and fall back to live gmsh
+    calls when ``None`` is passed, so callers outside ``apply_structured_slabs``
+    (tests, debug scripts) keep working unchanged.
+    """
+    import gmsh
+
+    faces = gmsh.model.occ.getEntities(2)
+    bbox_by_tag: dict[int, tuple[float, float, float, float, float, float]] = {}
+    for dim, ftag in faces:
+        if dim != 2:
+            continue
+        try:
+            bbox_by_tag[ftag] = gmsh.model.occ.getBoundingBox(2, ftag)
+        except Exception as e:
+            raise e
+    return faces, bbox_by_tag
+
+
+def _face_bbox(
+    ftag: int,
+    bbox_cache: dict[int, tuple] | None,
+):
+    """Return the bbox of an OCC face, preferring the snapshot when available."""
+    if bbox_cache is not None:
+        bb = bbox_cache.get(ftag)
+        if bb is not None:
+            return bb
+    import gmsh
+
+    return gmsh.model.occ.getBoundingBox(2, ftag)
+
+
 def _bbox_tol_for_slab(slab: Slab, fallback_tol: float) -> float:
     """Tolerance for OCC-face bbox comparisons against a slab's z-planes.
 
@@ -989,10 +1035,31 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     # When ``slab.recombine`` is True, also flag the slab's bottom, top,
     # and lateral OCC faces for recombination so their 2D meshes come
     # out as quads -- the conformal builder then produces hex elements.
+    # Snapshot 2D OCC face list + bboxes once. Every per-slab helper used
+    # to re-call ``getEntities(2)`` + ``getBoundingBox`` for every face,
+    # i.e. O(slabs * faces) gmsh round-trips. OCC topology is stable across
+    # the helper calls below (no occ mutation, ``mesh.generate(2)`` only
+    # produces a 2D mesh -- it doesn't change face tags or bboxes), so the
+    # same snapshot is reused before AND after the 2D mesh step.
+    occ_faces, bbox_cache = _snapshot_occ_face_bboxes()
+
+    # Memoize ``_find_all_occ_faces_for_slab(slab, z)`` results across the
+    # two phases (periodicity pre-mesh, conformal-build post-mesh). The
+    # function is otherwise called 4x per slab with identical args.
+    face_locator_cache: dict[tuple[int, float], list[int]] = {}
+
     for slab in sorted_slabs:
-        _apply_lateral_transfinite_hints(slab, tol)
+        _apply_lateral_transfinite_hints(
+            slab, tol, occ_faces=occ_faces, bbox_cache=bbox_cache
+        )
         if slab.recombine:
-            _apply_horizontal_recombine_hints(slab, tol)
+            _apply_horizontal_recombine_hints(
+                slab,
+                tol,
+                occ_faces=occ_faces,
+                bbox_cache=bbox_cache,
+                face_locator_cache=face_locator_cache,
+            )
         # Make the top horizontal OCC face a periodic translation of the
         # bottom. Without this, gmsh's size-field-driven 1D mesher can give
         # the bottom and top boundary curves DIFFERENT node counts, which
@@ -1000,14 +1067,22 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
         # (opposite sides of a transfinite rectangle must match). The
         # structured slab takes precedence over any non-structured neighbour
         # on the shared horizontal plane.
-        _apply_slab_horizontal_periodicity(slab, tol)
+        _apply_slab_horizontal_periodicity(
+            slab,
+            tol,
+            occ_faces=occ_faces,
+            bbox_cache=bbox_cache,
+            face_locator_cache=face_locator_cache,
+        )
         # Likewise pin every vertical edge as a horizontal translation of
         # one master vertical edge of the same slab. Transfinite alone pins
         # node *count* (n_layers+1) but not positions; this guarantees every
         # vertical edge of the slab meshes at identical z values even if a
         # non-structured neighbour or size-field interaction would have
         # perturbed an individual edge.
-        _apply_slab_vertical_periodicity(slab, tol)
+        _apply_slab_vertical_periodicity(
+            slab, tol, occ_faces=occ_faces, bbox_cache=bbox_cache
+        )
 
     # Step 1: mesh all 2D OCC faces so we can read their triangulations.
     gmsh.model.mesh.generate(2)
@@ -1018,7 +1093,13 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
     # multiple sub-slabs by the cascade) must collapse to one group.
     volumes_by_name: dict[str, list[int]] = defaultdict(list)
     for slab in sorted_slabs:
-        vol_tag, _info = _build_one_slab_conformal(slab, tol)
+        vol_tag, _info = _build_one_slab_conformal(
+            slab,
+            tol,
+            occ_faces=occ_faces,
+            bbox_cache=bbox_cache,
+            face_locator_cache=face_locator_cache,
+        )
         for name in slab.physical_name:
             volumes_by_name[name].append(vol_tag)
 
@@ -1034,7 +1115,12 @@ def apply_structured_slabs(model_manager, slabs: list[Slab]) -> None:
         gmsh.model.setPhysicalName(3, pg, name)
 
 
-def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
+def _apply_lateral_transfinite_hints(
+    slab: Slab,
+    tol: float,
+    occ_faces: list[tuple[int, int]] | None = None,
+    bbox_cache: dict[int, tuple] | None = None,
+) -> None:
     """Force lateral OCC faces of the slab void to mesh as structured grids.
 
     For each OCC face whose z-extent spans ``[slab.zlo, slab.zhi]`` (within
@@ -1063,14 +1149,15 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
     logger = logging.getLogger(__name__)
 
     n_layers = slab.n_layers
-    occ_faces = gmsh.model.occ.getEntities(2)
+    if occ_faces is None:
+        occ_faces = gmsh.model.occ.getEntities(2)
     boundary = slab.footprint.boundary
 
     for dim, ftag in occ_faces:
         if dim != 2:
             continue
         try:
-            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, ftag)
+            xmin, ymin, zmin, xmax, ymax, zmax = _face_bbox(ftag, bbox_cache)
         except Exception as exc:
             logger.debug("getBoundingBox failed for face %d: %s", ftag, exc)
             continue
@@ -1175,7 +1262,13 @@ def _apply_lateral_transfinite_hints(slab: Slab, tol: float) -> None:
                 )
 
 
-def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
+def _apply_slab_horizontal_periodicity(
+    slab: Slab,
+    tol: float,
+    occ_faces: list[tuple[int, int]] | None = None,
+    bbox_cache: dict[int, tuple] | None = None,
+    face_locator_cache: dict[tuple[int, float], list[int]] | None = None,
+) -> None:
     """Pin the top horizontal OCC face's mesh as a translation of the bottom.
 
     Sets ``gmsh.model.mesh.setPeriodic(2, [top_face], [bottom_face], T)``
@@ -1206,9 +1299,24 @@ def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
 
     logger = logging.getLogger(__name__)
 
-    occ_faces = gmsh.model.occ.getEntities(2)
-    bottom_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zlo, tol)
-    top_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zhi, tol)
+    if occ_faces is None:
+        occ_faces = gmsh.model.occ.getEntities(2)
+    bottom_faces = _find_all_occ_faces_for_slab(
+        occ_faces,
+        slab,
+        slab.zlo,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=face_locator_cache,
+    )
+    top_faces = _find_all_occ_faces_for_slab(
+        occ_faces,
+        slab,
+        slab.zhi,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=face_locator_cache,
+    )
     if not bottom_faces or not top_faces:
         logger.debug(
             "Skipping periodic for slab %s at z=[%s, %s]: bottom=%s top=%s",
@@ -1245,7 +1353,7 @@ def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
     # so every bottom sub-face has exactly one top counterpart with the
     # same xy bbox (within tolerance).
     def _bbox_key(tag: int) -> tuple[int, int, int, int]:
-        bb = gmsh.model.occ.getBoundingBox(2, tag)
+        bb = _face_bbox(tag, bbox_cache)
         return (
             round(bb[0] / max(tol, 1e-9)),
             round(bb[1] / max(tol, 1e-9)),
@@ -1279,7 +1387,10 @@ def _apply_slab_horizontal_periodicity(slab: Slab, tol: float) -> None:
 
 
 def _collect_slab_vertical_edges(
-    slab: Slab, tol: float
+    slab: Slab,
+    tol: float,
+    occ_faces: list[tuple[int, int]] | None = None,
+    bbox_cache: dict[int, tuple] | None = None,
 ) -> list[tuple[int, tuple[float, float]]]:
     """Return ``(edge_tag, (x_mid, y_mid))`` for every vertical OCC edge of ``slab``.
 
@@ -1295,7 +1406,8 @@ def _collect_slab_vertical_edges(
 
     logger = logging.getLogger(__name__)
 
-    occ_faces = gmsh.model.occ.getEntities(2)
+    if occ_faces is None:
+        occ_faces = gmsh.model.occ.getEntities(2)
     boundary = slab.footprint.boundary
     bbox_tol = _bbox_tol_for_slab(slab, tol)
     xy_extent_tol = max(tol * 10, 0.1 * (slab.zhi - slab.zlo))
@@ -1306,7 +1418,7 @@ def _collect_slab_vertical_edges(
         if dim != 2:
             continue
         try:
-            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, ftag)
+            xmin, ymin, zmin, xmax, ymax, zmax = _face_bbox(ftag, bbox_cache)
         except Exception as exc:
             logger.debug("getBoundingBox failed for face %d: %s", ftag, exc)
             continue
@@ -1358,7 +1470,12 @@ def _collect_slab_vertical_edges(
     return edges
 
 
-def _apply_slab_vertical_periodicity(slab: Slab, tol: float) -> None:
+def _apply_slab_vertical_periodicity(
+    slab: Slab,
+    tol: float,
+    occ_faces: list[tuple[int, int]] | None = None,
+    bbox_cache: dict[int, tuple] | None = None,
+) -> None:
     """Pin every vertical edge of the slab as a horizontal translation of one master.
 
     Counterpart to :func:`_apply_slab_horizontal_periodicity` for the slab's
@@ -1382,7 +1499,9 @@ def _apply_slab_vertical_periodicity(slab: Slab, tol: float) -> None:
 
     logger = logging.getLogger(__name__)
 
-    edges = _collect_slab_vertical_edges(slab, tol)
+    edges = _collect_slab_vertical_edges(
+        slab, tol, occ_faces=occ_faces, bbox_cache=bbox_cache
+    )
     if len(edges) < 2:
         return
 
@@ -1422,7 +1541,13 @@ def _apply_slab_vertical_periodicity(slab: Slab, tol: float) -> None:
             )
 
 
-def _apply_horizontal_recombine_hints(slab: Slab, tol: float) -> None:
+def _apply_horizontal_recombine_hints(
+    slab: Slab,
+    tol: float,
+    occ_faces: list[tuple[int, int]] | None = None,
+    bbox_cache: dict[int, tuple] | None = None,
+    face_locator_cache: dict[tuple[int, float], list[int]] | None = None,
+) -> None:
     """Mark the slab's bottom and top OCC faces for recombination.
 
     Required when ``slab.recombine`` is True so the 2D mesh of those
@@ -1434,9 +1559,24 @@ def _apply_horizontal_recombine_hints(slab: Slab, tol: float) -> None:
     import gmsh
 
     logger = logging.getLogger(__name__)
-    occ_faces = gmsh.model.occ.getEntities(2)
-    bot = _find_occ_face_for_slab(occ_faces, slab, slab.zlo, tol)
-    top = _find_occ_face_for_slab(occ_faces, slab, slab.zhi, tol)
+    if occ_faces is None:
+        occ_faces = gmsh.model.occ.getEntities(2)
+    bot = _find_occ_face_for_slab(
+        occ_faces,
+        slab,
+        slab.zlo,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=face_locator_cache,
+    )
+    top = _find_occ_face_for_slab(
+        occ_faces,
+        slab,
+        slab.zhi,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=face_locator_cache,
+    )
     for face_tag in (bot, top):
         if face_tag is None:
             continue
@@ -1451,7 +1591,13 @@ def _apply_horizontal_recombine_hints(slab: Slab, tol: float) -> None:
             )
 
 
-def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
+def _build_one_slab_conformal(
+    slab: Slab,
+    tol: float,
+    occ_faces: list[tuple[int, int]] | None = None,
+    bbox_cache: dict[int, tuple] | None = None,
+    face_locator_cache: dict[tuple[int, float], list[int]] | None = None,
+) -> tuple[int, dict]:
     """Build a discrete 3D entity for ``slab`` with conformal bottom/top.
 
     Returns ``(vol_tag, lateral_info)`` where ``lateral_info`` is a dict
@@ -1475,9 +1621,24 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
 
     logger = logging.getLogger(__name__)
 
-    occ_faces = gmsh.model.occ.getEntities(2)
-    bottom_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zlo, tol)
-    top_faces = _find_all_occ_faces_for_slab(occ_faces, slab, slab.zhi, tol)
+    if occ_faces is None:
+        occ_faces = gmsh.model.occ.getEntities(2)
+    bottom_faces = _find_all_occ_faces_for_slab(
+        occ_faces,
+        slab,
+        slab.zlo,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=face_locator_cache,
+    )
+    top_faces = _find_all_occ_faces_for_slab(
+        occ_faces,
+        slab,
+        slab.zhi,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=face_locator_cache,
+    )
 
     if not bottom_faces or not top_faces:
         raise RuntimeError(
@@ -1681,7 +1842,7 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
     # matches polygon containment.
     top_face_boxes: list[tuple[int, float, float, float, float]] = []
     for tf in top_faces:
-        bb = gmsh.model.occ.getBoundingBox(2, tf)
+        bb = _face_bbox(tf, bbox_cache)
         # Inflate by tol so cells on the boundary aren't rejected.
         top_face_boxes.append((tf, bb[0] - tol, bb[1] - tol, bb[3] + tol, bb[4] + tol))
 
@@ -1802,7 +1963,12 @@ def _build_one_slab_conformal(slab: Slab, tol: float) -> tuple[int, dict]:
 
 
 def _find_occ_face_for_slab(
-    candidates, slab: Slab, target_z: float, tol: float
+    candidates,
+    slab: Slab,
+    target_z: float,
+    tol: float,
+    bbox_cache: dict[int, tuple] | None = None,
+    result_cache: dict[tuple[int, float], list[int]] | None = None,
 ) -> int | None:
     """Return tag of the OCC face with highest slab-footprint coverage at ``target_z``.
 
@@ -1811,12 +1977,24 @@ def _find_occ_face_for_slab(
     full-coverage operations (combined mesh reading, multi-face
     deposition), use :func:`_find_all_occ_faces_for_slab`.
     """
-    faces = _find_all_occ_faces_for_slab(candidates, slab, target_z, tol)
+    faces = _find_all_occ_faces_for_slab(
+        candidates,
+        slab,
+        target_z,
+        tol,
+        bbox_cache=bbox_cache,
+        result_cache=result_cache,
+    )
     return faces[0] if faces else None
 
 
 def _find_all_occ_faces_for_slab(
-    candidates, slab: Slab, target_z: float, tol: float
+    candidates,
+    slab: Slab,
+    target_z: float,
+    tol: float,
+    bbox_cache: dict[int, tuple] | None = None,
+    result_cache: dict[tuple[int, float], list[int]] | None = None,
 ) -> list[int]:
     """Return tags of every OCC face that bounds the slab at ``target_z``.
 
@@ -1837,9 +2015,19 @@ def _find_all_occ_faces_for_slab(
     import gmsh
     from shapely.geometry import box
 
+    # Memoize across the periodicity (pre-mesh) + conformal-build (post-mesh)
+    # phases. OCC topology, face tags, and bboxes are stable between these,
+    # so the same (slab_id, target_z) yields the same result. Otherwise the
+    # function runs 4x per slab with identical args.
+    cache_key = (id(slab), float(target_z))
+    if result_cache is not None and cache_key in result_cache:
+        return result_cache[cache_key]
+
     fp = slab.footprint
     fp_area = fp.area
     if fp_area <= 0:
+        if result_cache is not None:
+            result_cache[cache_key] = []
         return []
     bbox_tol = _bbox_tol_for_slab(slab, tol)
     slab_names = set(slab.physical_name)
@@ -1857,8 +2045,8 @@ def _find_all_occ_faces_for_slab(
         for gt in group_tags:
             try:
                 gname = gmsh.model.getPhysicalName(2, int(gt))
-            except Exception:
-                continue
+            except Exception as e:
+                raise e
             parts = gname.split("___")
             if slab_names & set(parts):
                 return True
@@ -1868,7 +2056,10 @@ def _find_all_occ_faces_for_slab(
     for dim, tag in candidates:
         if dim != 2:
             continue
-        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(2, tag)
+        try:
+            xmin, ymin, zmin, xmax, ymax, zmax = _face_bbox(tag, bbox_cache)
+        except Exception as e:
+            raise e
         if abs(zmin - zmax) > bbox_tol:
             continue
         z_face = 0.5 * (zmin + zmax)
@@ -1892,7 +2083,10 @@ def _find_all_occ_faces_for_slab(
         score = inter.area / fp_area
         candidates_with_score.append((score, tag))
     candidates_with_score.sort(reverse=True)
-    return [tag for _, tag in candidates_with_score]
+    result = [tag for _, tag in candidates_with_score]
+    if result_cache is not None:
+        result_cache[cache_key] = result
+    return result
 
 
 def slabs_to_json(slabs: list[Slab]) -> list[dict]:
