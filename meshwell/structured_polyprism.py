@@ -292,6 +292,7 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
                     mesh_order=slab.mesh_order,
                 )
             )
+
     return resolved
 
 
@@ -424,6 +425,165 @@ class StructuredLayerMismatchError(ValueError):
     other's ``zlo``) and overlap in xy must agree on ``n_layers`` so the
     shared face has a single, consistent mesh.
     """
+
+
+class StructuredFaceTopologySplitError(ValueError):
+    """Raised when an entity asymmetrically splits a slab's z=zlo or z=zhi face.
+
+    The mesh-stage builder (``_build_one_slab_conformal``) reads the slab's
+    bottom face mesh and translates it upward to populate the top face. For
+    this to work, gmsh's ``setPeriodic(2, top_face, bottom_face, T)`` must
+    succeed -- which requires the two faces to have **matching OCC topology**.
+    When some entity touches z=zlo with footprint F1 but nothing matches it
+    at z=zhi (or vice versa), the slab's bottom and top OCC faces partition
+    differently and periodic fails. The "Unknown node" crash in the slab
+    build follows.
+
+    Until the cascade-extension fix (splitting slab footprints at xy-boundaries
+    of entities that touch z=zlo or z=zhi) is implemented, the only safe
+    behaviour is to fail at CAD stage with a clear pointer to the offending
+    entity.
+    """
+
+
+def _entity_z_face_set(entity) -> list[float]:
+    """Return z-values of horizontal faces that the entity's BODY exposes.
+
+    A PolyPrism with ``buffers={a: 0, b: 0}`` exposes faces at z=a and z=b
+    (extruded mode -- single body). With non-zero or varying buffers (rib
+    surfaces at intermediate z keys), each z key contributes a face. A
+    PolySurface / PolyLine at ``translation=(0,0,z)`` exposes one face/curve
+    at z. Returns ``[]`` for entities without an inherent z-localization
+    (e.g. InterfaceTag).
+    """
+    if hasattr(entity, "buffers") and entity.buffers:
+        return list(entity.buffers.keys())
+    if hasattr(entity, "translation") and entity.translation is not None:
+        return [float(entity.translation[2])]
+    return []
+
+
+def _entity_z_range(entity) -> tuple[float, float] | None:
+    """Return (z_min, z_max) of the entity's vertical extent, or None."""
+    zs = _entity_z_face_set(entity)
+    if not zs:
+        return None
+    return (min(zs), max(zs))
+
+
+def _entity_footprint_multi(entity):
+    """Return the entity's xy footprint as a MultiPolygon, or ``None``."""
+    polys = getattr(entity, "polygons", None)
+    if polys is None:
+        return None
+    if isinstance(polys, MultiPolygon):
+        return polys
+    if isinstance(polys, Polygon):
+        return MultiPolygon([polys])
+    if isinstance(polys, list):
+        flat: list[Polygon] = []
+        for p in polys:
+            if isinstance(p, MultiPolygon):
+                flat.extend(p.geoms)
+            elif isinstance(p, Polygon):
+                flat.append(p)
+        return MultiPolygon(flat) if flat else None
+    return None
+
+
+def _validate_slab_face_topology_symmetry(
+    slabs: list["Slab"], entities_list: list, tol: float = 1e-3
+) -> None:
+    """Raise when a non-structured entity has a z-face within a slab's z-range.
+
+    The structured-slab mesh-stage builder is built around the invariant that
+    every slab is a simple z-extrusion of a 2D footprint: its OCC bottom and
+    top faces are single-component and topologically identical, and its only
+    lateral faces span the full ``[zlo, zhi]`` z-range. Any non-structured
+    entity that has a horizontal face strictly inside the slab z-range
+    (``zlo < z < zhi``), or one that partially covers the slab footprint at
+    z=zlo or z=zhi, breaks the invariant:
+
+    * **Interior z-face**: introduces a lateral perimeter face whose
+      z-extent is a sub-interval of the slab z-range.
+      ``_apply_lateral_transfinite_hints`` misses it (its lateral filter
+      only accepts faces spanning the full slab z-range) and the slab
+      build silently produces overlapping wedges + neighbour tets.
+    * **Partial coverage at z=zlo or z=zhi**: splits the slab's bottom
+      or top OCC face asymmetrically with the opposite z-face, so
+      ``setPeriodic`` fails and ``_build_one_slab_conformal`` references
+      un-meshed nodes.
+
+    Structured PolyPrism entities are skipped: ``resolve_structured_slabs``
+    has its own structured-vs-structured z-cascade for them.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    for slab in slabs:
+        slab_area = slab.footprint.area
+        if slab_area <= 0:
+            continue
+        rel_tol = max(tol, 1e-9) * max(slab_area, 1.0)
+        for idx, ent in enumerate(entities_list):
+            if idx == slab.source_index:
+                continue
+            if isinstance(ent, _StructuredPolyPrism):
+                continue
+            z_range = _entity_z_range(ent)
+            if z_range is None:
+                continue
+            ent_fp = _entity_footprint_multi(ent)
+            if ent_fp is None or ent_fp.is_empty:
+                continue
+            try:
+                inter = slab.footprint.intersection(ent_fp)
+            except Exception as exc:
+                logger.debug(
+                    "shapely intersection failed for slab %s vs entity %d: %s",
+                    slab.physical_name,
+                    idx,
+                    exc,
+                )
+                continue
+            if inter.is_empty or inter.area <= rel_tol:
+                continue
+            full_coverage = abs(inter.area - slab_area) <= rel_tol
+            emin, emax = z_range
+            violations: list[str] = []
+            for z_label, z in (("z-start", emin), ("z-end", emax)):
+                # Strictly interior z-face: always rejected.
+                if slab.zlo + tol < z < slab.zhi - tol:
+                    violations.append(f"{z_label}={z} is interior to slab z-range")
+                # At slab z-boundary AND partial coverage: rejected
+                # (asymmetric split with the opposite z-face).
+                elif (
+                    abs(z - slab.zlo) <= tol or abs(z - slab.zhi) <= tol
+                ) and not full_coverage:
+                    boundary = "z=zlo" if abs(z - slab.zlo) <= tol else "z=zhi"
+                    violations.append(
+                        f"{z_label}={z} sits on slab {boundary} with partial "
+                        f"xy coverage ({inter.area:.3g} of {slab_area:.3g})"
+                    )
+            if not violations:
+                continue
+            name = getattr(ent, "physical_name", None) or f"entity[{idx}]"
+            if isinstance(name, tuple):
+                name = "/".join(name) or f"entity[{idx}]"
+            raise StructuredFaceTopologySplitError(
+                f"Structured slab {slab.physical_name} at "
+                f"z=[{slab.zlo}, {slab.zhi}] is incompatible with entity "
+                f"{name} (index {idx}, z-range=[{emin}, {emax}], clipped "
+                f"bbox={inter.bounds}):\n"
+                + "\n".join(f"  - {v}" for v in violations)
+                + "\n\nThe structured-slab builder requires every "
+                "non-structured entity intersecting the slab to either "
+                "(a) lie strictly outside the slab z-range, (b) fully "
+                "cross the slab (z-range strictly contains [zlo, zhi]), "
+                "or (c) sit at z=zlo or z=zhi with footprint fully "
+                "covering the slab footprint (mirror)."
+            )
 
 
 # gmsh's OCC ``getBoundingBox`` adds ``Precision::Confusion()`` (~1e-7) of
