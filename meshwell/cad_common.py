@@ -131,12 +131,19 @@ def prepare_entities(
         from meshwell.structured_polyprism import (
             _StructuredPhantom,
             _StructuredPolyPrism,
+            _validate_slab_face_topology_symmetry,
             resolve_structured_slabs,
         )
 
         # Run the cascade once on the full list (uses the post-buffer
         # polygons; structured prisms participate in buffering above).
+        # ``resolve_structured_slabs`` includes the xy-partition cascade
+        # extension, so emitted slabs have single-component bottom/top
+        # OCC faces regardless of which non-structured entities touch
+        # their z-boundaries. The symmetry validator below is kept as a
+        # belt-and-suspenders guard -- it should never trigger.
         slabs = resolve_structured_slabs(entities_list)
+        _validate_slab_face_topology_symmetry(slabs, entities_list)
         structured_slabs_out.extend(slabs)
 
         # Build phantoms in source order so insertion order maps directly

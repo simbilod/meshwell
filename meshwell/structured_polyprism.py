@@ -69,6 +69,17 @@ class Slab:
     source_index: int = 0
     mesh_order: float = float("inf")
     fragment_fuzzy_value: float | None = None
+    # Arc reconstruction hints forwarded from the originating
+    # ``_StructuredPolyPrism``. When ``identify_arcs`` is True the
+    # phantom's ``instanciate_occ`` rebuilds the OCC wire with arc
+    # segments instead of straight polylines, giving cylindrical lateral
+    # faces. Each cylinder is a 4-corner OCC face (top arc + bottom arc
+    # + 2 vertical seam edges), which keeps the lateral
+    # ``setTransfiniteSurface`` call and the slab build's bottom/top
+    # ``setPeriodic`` pairing working unchanged.
+    identify_arcs: bool = False
+    min_arc_points: int = 4
+    arc_tolerance: float = 1e-3
 
 
 class _StructuredPolyPrism(PolyPrism):
@@ -174,6 +185,9 @@ def expand_slabs_for_entity(
                 physical_name=entity.physical_name,
                 source_index=source_index,
                 mesh_order=mesh_order,
+                identify_arcs=getattr(entity, "identify_arcs", False),
+                min_arc_points=getattr(entity, "min_arc_points", 4),
+                arc_tolerance=getattr(entity, "arc_tolerance", 1e-3),
             )
         )
     return out
@@ -379,26 +393,40 @@ class _StructuredPhantom:
             else [self.slab.footprint]
         )
         # Delegate wire construction to GeometryEntity helpers via a
-        # tiny adapter so we don't duplicate arc handling. The phantom
-        # itself never carries arcs (slabs are linear-segment polygons
-        # produced by shapely), so we use the simple polyline path.
+        # tiny adapter so we don't duplicate arc handling. When the
+        # originating ``_StructuredPolyPrism`` requested ``identify_arcs``,
+        # the slab carries the hint forward so the OCC wire is built with
+        # arc segments instead of straight polylines; the resulting
+        # cylindrical lateral faces still produce 4-corner OCC topology
+        # (top arc + bottom arc + 2 vertical seam edges), keeping the
+        # mesh-stage transfinite/periodic machinery happy.
         from meshwell.geometry_entity import GeometryEntity
 
-        adapter = GeometryEntity(point_tolerance=0.0)
+        identify_arcs = bool(getattr(self.slab, "identify_arcs", False))
+        min_arc_points = int(getattr(self.slab, "min_arc_points", 4))
+        arc_tolerance = float(getattr(self.slab, "arc_tolerance", 1e-3))
+        # ``GeometryEntity``'s arc-detection path computes
+        # ``-floor(log10(point_tolerance))``; passing 0 here raises.
+        # Match the cad-stage default (1e-3) so arc-snapping behaves
+        # consistently with the rest of the cad pipeline.
+        adapter = GeometryEntity(point_tolerance=arc_tolerance or 1e-3)
         result_solids = []
         for poly in polys:
             ext_vertices = [(x, y, self.slab.zlo) for x, y in poly.exterior.coords]
             outer = adapter._make_occ_wire_from_vertices(
-                ext_vertices, identify_arcs=False, min_arc_points=4, arc_tolerance=0.0
+                ext_vertices,
+                identify_arcs=identify_arcs,
+                min_arc_points=min_arc_points,
+                arc_tolerance=arc_tolerance,
             )
             mf = BRepBuilderAPI_MakeFace(outer)
             for interior in poly.interiors:
                 int_vertices = [(x, y, self.slab.zlo) for x, y in interior.coords]
                 hole = adapter._make_occ_wire_from_vertices(
                     int_vertices,
-                    identify_arcs=False,
-                    min_arc_points=4,
-                    arc_tolerance=0.0,
+                    identify_arcs=identify_arcs,
+                    min_arc_points=min_arc_points,
+                    arc_tolerance=arc_tolerance,
                 )
                 hole.Reverse()
                 mf.Add(hole)
@@ -1460,6 +1488,9 @@ def slabs_to_json(slabs: list[Slab]) -> list[dict]:
             "source_index": s.source_index,
             "mesh_order": s.mesh_order if s.mesh_order != float("inf") else None,
             "fragment_fuzzy_value": s.fragment_fuzzy_value,
+            "identify_arcs": s.identify_arcs,
+            "min_arc_points": s.min_arc_points,
+            "arc_tolerance": s.arc_tolerance,
         }
         for s in slabs
     ]
@@ -1480,6 +1511,9 @@ def slabs_from_json(data: list[dict]) -> list[Slab]:
             source_index=d["source_index"],
             mesh_order=d["mesh_order"] if d["mesh_order"] is not None else float("inf"),
             fragment_fuzzy_value=d.get("fragment_fuzzy_value"),
+            identify_arcs=d.get("identify_arcs", False),
+            min_arc_points=d.get("min_arc_points", 4),
+            arc_tolerance=d.get("arc_tolerance", 1e-3),
         )
         for d in data
     ]
