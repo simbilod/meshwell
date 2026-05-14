@@ -322,6 +322,18 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
                     mesh_order=slab.mesh_order,
                 )
             )
+            # NOTE: identify_arcs/min_arc_points/arc_tolerance are
+            # intentionally NOT propagated to resolved sub-slabs.
+            # Reactivating arc identification at the phantom level after
+            # the cascade has run produces highly fragmented OCC
+            # topology that the global BOPAlgo can't reconcile (verified
+            # 2026-05-13: propagating identify_arcs=True crashed the
+            # bench with cascaded "Different number of points" errors
+            # followed by a core dump). The arcs from the original
+            # _StructuredPolyPrism are honoured at the polygon-snap
+            # stage of cad_occ; the phantom builds straight-segment
+            # sub-prisms which then share boundary TShapes with the
+            # already-snapped neighbour entities via the global BOP.
 
     # Final pass: for each slab, compute the xy partition of its footprint
     # induced by (a) non-structured entities touching z=zlo or z=zhi and
@@ -1500,7 +1512,22 @@ def _apply_slab_horizontal_periodicity(
         try:
             gmsh.model.mesh.setPeriodic(2, [tf], [bf], affine)
         except Exception as exc:
-            logger.warning(
+            # ``Could not find all point correspondences`` is a
+            # recoverable setPeriodic failure: gmsh's all-or-nothing
+            # corner-pairing rejects the bottom/top pair when even one
+            # bounding vertex pair drifts past its internal tolerance
+            # after BOP fragmentation. ``_build_one_slab_conformal``
+            # later deposits a translated bottom mesh onto the top
+            # sub-face, so the conformal slab is still built correctly
+            # without periodicity on this face. Demote to debug.
+            #
+            # Genuine failures (e.g. ``Different number of points``)
+            # indicate real bottom/top topology mismatch and are kept
+            # at WARNING.
+            msg = str(exc)
+            recoverable = "point correspondence" in msg.lower()
+            log = logger.debug if recoverable else logger.warning
+            log(
                 "Failed to set periodic top=%d <- bottom=%d for slab %s: %s",
                 tf,
                 bf,
