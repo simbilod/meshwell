@@ -388,7 +388,15 @@ def _compute_face_partition(
             or abs(emin - slab.zhi) <= tol
             or abs(emax - slab.zhi) <= tol
         )
-        if not touches_z:
+        # 3D entity fully crossing the slab in z: its lateral wall cuts
+        # both slab.zlo and slab.zhi planes. Without this branch, BOP
+        # fragments the slab against the through-entity post-cascade,
+        # producing asymmetric bottom/top sub-face decompositions (bench
+        # crash on struct_ring_0: 3 bottom faces vs 2 top faces). Adding
+        # the entity's xy footprint as a splitter preemptively partitions
+        # both slab face planes identically.
+        crosses_z = (emin <= slab.zlo + tol) and (emax >= slab.zhi - tol)
+        if not (touches_z or crosses_z):
             continue
         ent_fp = _entity_footprint_multi(ent)
         if ent_fp is None or ent_fp.is_empty:
