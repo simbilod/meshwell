@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import pytest
 from shapely.geometry import Polygon
 
 from meshwell.orchestrator import generate_mesh
@@ -86,13 +85,6 @@ def test_pillar_crossing_slab_partitions_symmetrically(tmp_path: Path) -> None:
     assert out.exists()
 
 
-@pytest.mark.xfail(
-    reason="Phase 3 (R1) pending: arc tessellation differs between bottom and "
-    "top sub-faces, so setPeriodic raises 'Could not find periodic "
-    "counterpart of triangle nodes' even after Phase 1 makes the OCC "
-    "face decomposition mirror-symmetric.",
-    strict=True,
-)
 def test_multiple_pillars_through_arc_slab(tmp_path: Path) -> None:
     """Two pillars crossing an arc-bearing structured ring slab.
 
