@@ -402,6 +402,93 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
     return resolved
 
 
+@dataclass(frozen=True)
+class _IndexedArc:
+    """An arc identified on the original footprint, with its full vertex sequence preserved in boundary order.
+
+    The arc is immutable; center, radius, and point list come from the
+    pure-arc decomposition of the user-provided footprint.
+    """
+
+    arc_id: int
+    center: tuple[float, float, float]
+    radius: float
+    points: tuple[tuple[float, float, float], ...]  # length >= min_arc_points
+
+
+@dataclass
+class _ArcIndex:
+    """Lookup structure for classifying piece-boundary segments.
+
+    ``arcs``: every arc identified on the footprint's exterior + holes.
+    ``vertex_to_arcs``: maps rounded (x, y) coord -> list of
+    (arc_id, position-in-arc) tuples. A piece-boundary segment
+    (p_i, p_{i+1}) is on arc K iff both endpoints share an arc_id with
+    *adjacent* positions in K's vertex list.
+
+    Rounding granularity is ``ndigits`` = ``-floor(log10(point_tol))``
+    where ``point_tol`` is the same tolerance used by
+    ``GeometryEntity._make_occ_wire_from_vertices`` so we match its
+    quantization grid.
+    """
+
+    arcs: list[_IndexedArc]
+    vertex_to_arcs: dict[tuple[float, float], list[tuple[int, int]]]
+    ndigits: int
+
+
+def _build_arc_index_from_footprint(
+    footprint,
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+) -> "_ArcIndex":
+    """Decompose every exterior + interior ring of ``footprint`` once and index each arc by its vertex sequence.
+
+    Disabled (returns empty index) when ``identify_arcs`` is False.
+    The decomposition uses the same heuristic that ``GeometryEntity``
+    uses today, but only on the **pure-arc input** (the user-provided
+    polygon), where it is reliable.
+    """
+    import numpy as np
+
+    from meshwell.geometry_entity import GeometryEntity
+
+    ndigits = max(0, int(-np.floor(np.log10(max(arc_tolerance, 1e-12)))) + 1)
+    index = _ArcIndex(arcs=[], vertex_to_arcs={}, ndigits=ndigits)
+    if not identify_arcs:
+        return index
+
+    components = list(footprint.geoms) if hasattr(footprint, "geoms") else [footprint]
+    adapter = GeometryEntity(point_tolerance=max(arc_tolerance, 1e-12))
+    arc_counter = 0
+    for comp in components:
+        for ring in [comp.exterior, *comp.interiors]:
+            verts = [(x, y, 0.0) for x, y in list(ring.coords)]
+            segments = adapter.decompose_vertices(
+                verts,
+                identify_arcs=True,
+                min_arc_points=min_arc_points,
+                arc_tolerance=arc_tolerance,
+            )
+            for seg in segments:
+                if not seg.is_arc:
+                    continue
+                arc = _IndexedArc(
+                    arc_id=arc_counter,
+                    center=seg.center,
+                    radius=seg.radius,
+                    points=tuple(seg.points),
+                )
+                arc_counter += 1
+                index.arcs.append(arc)
+                for pos, (x, y, _z) in enumerate(arc.points):
+                    key = (round(x, ndigits), round(y, ndigits))
+                    index.vertex_to_arcs.setdefault(key, []).append((arc.arc_id, pos))
+
+    return index
+
+
 def _compute_face_partition(
     slab: "Slab",
     entities_list: list,
