@@ -290,31 +290,83 @@ EOF
 
 ---
 
-## Phase 2: Investigate the upstream physical-group tagging bug (R2 — REVISED)
+## Phase 2: Fix the BOPAlgo Modified() over-attribution for multi-partition phantoms (R2 — ROOT-CAUSE LOCATED)
 
-> **Important update (2026-05-13):** The Phase 2 hypothesis in the
-> original plan was wrong. After Phase 1 commit `bdc1ce6`, running the
-> bench with `MESHWELL_DEBUG_FACE_LOCATOR=1` revealed that the face
-> being rejected (e.g. face 609 at z=0.4 with bbox exactly matching
-> stack_0's footprint `(1, 14)-(2.5, 15.5)`) has physical group
-> `'struct_ring_0___None'` — a *different* slab's name. The face is
-> geometrically correct for stack_0 but its *tag* says struct_ring_0.
-> So `_face_belongs_to_slab` is correctly rejecting a wrongly-tagged
-> face; the bug is upstream in the physical-group assignment pipeline
-> (likely `cad_occ.py` / `occ_xao_writer.py`), not in the face-locator.
+> **Investigation complete (2026-05-13).** R2 root-causes to
+> `BOPAlgo_Builder.Modified()` over-attributing fragment pieces in the
+> global cad_occ fragment pass. Specifically, in dense scenes:
 >
-> This needs a separate investigation pass that traces how OCC faces
-> get their physical groups during XAO emission. Likely candidates:
+> 1. `_compute_face_partition` produces a 3-piece partition for
+>    `struct_ring_0` where piece[0] is an annulus-with-holes (main
+>    region minus pillar-overlap cutouts) and piece[1]/piece[2] are
+>    small interior pieces.
+> 2. `_StructuredPhantom.instanciate_occ` builds 3 sub-prisms, fuses
+>    them via internal `BOPAlgo_Builder`, returns the compound. The
+>    internal BOP produces **5 sub-solids** (not 3) — two extras come
+>    from fragmenting piece[0]'s annulus around piece[1]/piece[2]'s
+>    interior holes.
+> 3. The 5 sub-solids carry overlapping TShape state from the internal
+>    BOP's history map.
+> 4. In `cad_occ._fragment_all`, the global `BOPAlgo_Builder.Modified()`
+>    is called per original. For `struct_ring_0`'s 5 originals, it
+>    returns **97 pieces** (vs 3 for struct_ring_1 which has 3 originals)
+>    — almost every piece in the entire model is mis-attributed back to
+>    struct_ring_0.
+> 5. `_resolve_piece_ownership` picks lowest mesh_order winner. Since
+>    `struct_ring_0` (mo=2) beats stack (mo=3) / ring (mo=4) / pillar
+>    (mo=18) on every piece it claims, it ends up owning **39 of 53
+>    entities' pieces**.
+> 6. The XAO writer then tags those pieces with `struct_ring_0___None`,
+>    and the mesh-stage builder fails to locate stacks' bottom faces.
 >
-> * `cad_occ.py` `_remove_keep_false_top_dim` / phantom volume handling
->   may leave struct_ring_0 phantoms claiming faces in stack_0's xy.
-> * `occ_xao_writer.py` aabb-based group attribution
->   (`occ_xao_writer.py:116` `_aabbs_close`) may misroute faces when
->   many phantoms share z-planes.
+> **Evidence:** `scripts/inspect_modified.py` reports per-entity
+> Modified() output sizes; `scripts/inspect_ownership.py` confirms
+> 39-shape claim; `scripts/inspect_pre_bop.py` confirms pre-BOP shapes
+> are clean (all within struct_ring_0's bounds).
 >
-> Action: **defer Phase 2 to a dedicated debugging session**. Keep the
-> task list below but recognise that the fix is no longer a one-line
-> predicate change.
+> **Fixes attempted:**
+> * Replace internal BOP with `BRep_Builder.MakeCompound`: crashes the
+>   global BOP (core dump). Internal BOP is doing real geometric work
+>   the global pass relies on.
+> * `BRepBuilderAPI_Copy(bop.Shape(), True, True)`: doesn't change
+>   `Modified()` output (still 97 pieces). The shared TShape state
+>   survives the copy at the level OCP exposes.
+> * Skipping internal BOP for single-input case (already does): only
+>   helps when partition has 1 piece.
+>
+> **Fix paths (require deeper work):**
+>
+> * **A. Make partition pieces truly disjoint at the OCC level.**
+>   Instead of building piece[0] as an annulus-with-holes (one face
+>   with interior wires for piece[1]/piece[2] cutouts), reshape
+>   `_compute_face_partition` to emit *only* simply-connected pieces
+>   without holes. polygonize already does this in principle, but
+>   shapely may return polygons with interior rings for nested
+>   splitters. Verify by inspecting `piece[0].interiors` on the
+>   struct_ring case.
+>
+> * **B. Don't run internal BOP at all.** Return the 3 sub-prism
+>   solids directly to cad_occ (wrapped in a Compound), and let the
+>   global BOPAlgo_Builder discover partition-boundary TShape sharing
+>   via its own fuzzy. Tests indicate this crashes today because the
+>   bare-compound approach isn't compatible with how cad_occ.cut
+>   propagates shapes; needs an investigation of what assumption
+>   process_entities_cut_only makes about `ent.shapes`.
+>
+> * **C. Bypass cad_occ's global Modified() lookup for phantoms.**
+>   Phantoms know their own footprints. Instead of letting BOPAlgo's
+>   Modified() decide what struct_ring_0 owns, the cad_occ pipeline
+>   could short-circuit phantom ownership: any piece whose bbox lies
+>   inside the phantom's slab footprint at slab z-range is owned by
+>   that phantom. This is more invasive (changes cad_occ semantics
+>   for phantoms) but avoids the buggy OCP behaviour entirely.
+>
+> Recommendation: try Fix A first (smallest blast radius, addresses
+> root cause). If shapely's polygonize emits piece[0] with interior
+> rings, replace the partition strategy in
+> [_compute_face_partition](meshwell/structured_polyprism.py#L340)
+> with one that emits simply-connected pieces only (e.g., triangulate
+> piece[0] minus piece[1]/piece[2] explicitly).
 
 In dense scenes (after Phase 1 unblocks the primary crash),
 `_build_one_slab_conformal` raises `could not locate bottom OCC

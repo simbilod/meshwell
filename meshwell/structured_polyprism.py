@@ -596,6 +596,24 @@ class _StructuredPhantom:
         # mirror-symmetrically -- the property the mesh-stage slab
         # builder needs for clean ``setPeriodic`` and multi-sub-face
         # bottom/top reading.
+        #
+        # KNOWN ISSUE (R2, see plan):
+        # When a partition has a "main" piece with interior holes (e.g.
+        # an annulus with pillar-overlap cutouts), the internal BOP
+        # produces MORE sub-solids than partition pieces (~5 from 3 in
+        # the bench's struct_ring_0). These extra sub-solids share
+        # TShapes through the BOP's history map, and the *global*
+        # cad_occ BOPAlgo_Builder.Modified() then over-attributes pieces
+        # from across the entire scene back to this phantom's originals.
+        # As a result, in dense scenes the phantom can "steal" every
+        # piece in the model (97 mod_pieces from 5 originals observed
+        # in scripts/bench_structured.py), leaving stacks/rings/pillars
+        # with zero shapes. Fix requires reshaping how multi-piece
+        # phantoms feed the global BOP (e.g., make partition pieces
+        # truly geometrically simple, or skip internal BOP and let the
+        # global pass discover partition sharing). See
+        # docs/superpowers/plans/2026-05-13-structured-slab-arc-periodic-correctness.md
+        # Phase 2 for full diagnostic trail.
         from OCP.BOPAlgo import BOPAlgo_Builder
 
         bop = BOPAlgo_Builder()
