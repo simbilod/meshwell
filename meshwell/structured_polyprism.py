@@ -309,9 +309,10 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
         # a pre-partitioned solid for the neighbouring non-structured
         # entities at z=zlo / z=zhi.
         for slab in raw_slabs:
-            slab.face_partition = _compute_face_partition(
-                slab, entities_list, other_slabs=raw_slabs
-            )
+            (
+                slab.face_partition,
+                slab.face_partition_provenance,
+            ) = _compute_face_partition(slab, entities_list, other_slabs=raw_slabs)
         return raw_slabs
 
     raw_slabs.sort(key=lambda s: (s.mesh_order, s.source_index, s.zlo))
@@ -395,7 +396,7 @@ def resolve_structured_slabs(entities_list: list) -> list[Slab]:
     # so the OCC scene has mirror-symmetric bottom/top face decompositions
     # and matching decompositions across every stacked-slab interface.
     for slab in resolved:
-        slab.face_partition = _compute_face_partition(
+        slab.face_partition, slab.face_partition_provenance = _compute_face_partition(
             slab, entities_list, other_slabs=resolved
         )
 
@@ -593,7 +594,7 @@ def _compute_face_partition(
     entities_list: list,
     other_slabs: list["Slab"] | None = None,
     tol: float = 1e-6,
-) -> list[Polygon] | None:
+) -> tuple[list[Polygon] | None, list[PieceProvenance] | None]:
     """Return a disjoint Polygon partition of ``slab.footprint``, or None.
 
     Splitters at ``slab.zlo`` / ``slab.zhi``:
@@ -618,7 +619,7 @@ def _compute_face_partition(
 
     slab_area = slab.footprint.area
     if slab_area <= 0:
-        return None
+        return None, None
     area_floor = max(tol * tol, slab_area * 1e-9)
 
     splitters: list[Polygon | MultiPolygon] = []
@@ -682,7 +683,7 @@ def _compute_face_partition(
             splitters.append(clipped)
 
     if not splitters:
-        return None
+        return None, None
 
     lines: list = [slab.footprint.boundary]
     for sp in splitters:
@@ -796,8 +797,18 @@ def _compute_face_partition(
         pieces.append(poly)
 
     if len(pieces) <= 1:
-        return None
-    return pieces
+        return None, None
+    if slab.identify_arcs:
+        arc_index = _build_arc_index_from_footprint(
+            slab.footprint,
+            identify_arcs=True,
+            min_arc_points=slab.min_arc_points,
+            arc_tolerance=slab.arc_tolerance,
+        )
+        provenance = [_classify_piece_boundary(piece, arc_index) for piece in pieces]
+    else:
+        provenance = None
+    return pieces, provenance
 
 
 class _StructuredPhantom:
