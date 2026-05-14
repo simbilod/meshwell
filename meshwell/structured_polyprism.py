@@ -919,8 +919,44 @@ class _StructuredPhantom:
         # Match the cad-stage default (1e-3) so arc-snapping behaves
         # consistently with the rest of the cad pipeline.
         adapter = GeometryEntity(point_tolerance=arc_tolerance or 1e-3)
-        result_solids = []
-        for poly in polys:
+        provenance_list = getattr(self.slab, "face_partition_provenance", None)
+
+        def _shift_edge(edge, z):
+            # Stamp the slab.zlo onto each edge's points; provenance is
+            # computed at z=0 (face_partition is a 2D polygon set), so we
+            # raise to the slab's actual zlo here for OCC consumption.
+            if isinstance(edge, PieceArcEdge):
+                return PieceArcEdge(
+                    points=tuple((p[0], p[1], z) for p in edge.points),
+                    center=(edge.center[0], edge.center[1], z),
+                    radius=edge.radius,
+                )
+            return PieceLineEdge(
+                points=(
+                    (edge.points[0][0], edge.points[0][1], z),
+                    (edge.points[1][0], edge.points[1][1], z),
+                ),
+            )
+
+        def _build_face_for_piece(poly_idx, poly):
+            # When provenance is available, build wires from labeled edges
+            # so the splitter cuts stay straight and the original arcs
+            # stay as OCC arcs. Without provenance, fall back to the
+            # heuristic path (existing behaviour).
+            if provenance_list is not None and poly_idx < len(provenance_list):
+                prov = provenance_list[poly_idx]
+                outer_edges = [
+                    _shift_edge(e, self.slab.zlo) for e in prov.exterior_edges
+                ]
+                outer = adapter._make_occ_wire_from_labeled_segments(outer_edges)
+                mf = BRepBuilderAPI_MakeFace(outer)
+                for ring_edges in prov.interior_edges:
+                    shifted = [_shift_edge(e, self.slab.zlo) for e in ring_edges]
+                    hole = adapter._make_occ_wire_from_labeled_segments(shifted)
+                    hole.Reverse()
+                    mf.Add(hole)
+                return mf.Face()
+            # Legacy heuristic path.
             ext_vertices = [(x, y, self.slab.zlo) for x, y in poly.exterior.coords]
             outer = adapter._make_occ_wire_from_vertices(
                 ext_vertices,
@@ -939,7 +975,11 @@ class _StructuredPhantom:
                 )
                 hole.Reverse()
                 mf.Add(hole)
-            face = mf.Face()
+            return mf.Face()
+
+        result_solids = []
+        for idx, poly in enumerate(polys):
+            face = _build_face_for_piece(idx, poly)
             result_solids.append(BRepPrimAPI_MakePrism(face, vec).Shape())
 
         if len(result_solids) == 1:
@@ -1737,13 +1777,19 @@ def _apply_slab_horizontal_periodicity(
     # After phantom partitioning the decompositions are mirror-symmetric,
     # so every bottom sub-face has exactly one top counterpart with the
     # same xy bbox (within tolerance).
+    # Use the BOP fuzzy budget (stored on the slab) as the key resolution;
+    # after fragmentation OCC arc-face bboxes can drift by up to ~fuzzy in
+    # xy between the bottom (z=zlo) and top (z=zhi) faces, so quantizing
+    # with a finer tolerance produces false mismatches.
+    _xy_key_tol = _bbox_tol_for_slab(slab, tol)
+
     def _bbox_key(tag: int) -> tuple[int, int, int, int]:
         bb = _face_bbox(tag, bbox_cache)
         return (
-            round(bb[0] / max(tol, 1e-9)),
-            round(bb[1] / max(tol, 1e-9)),
-            round(bb[3] / max(tol, 1e-9)),
-            round(bb[4] / max(tol, 1e-9)),
+            round(bb[0] / _xy_key_tol),
+            round(bb[1] / _xy_key_tol),
+            round(bb[3] / _xy_key_tol),
+            round(bb[4] / _xy_key_tol),
         )
 
     top_by_key = {_bbox_key(t): t for t in top_faces}
@@ -2100,21 +2146,32 @@ def _build_one_slab_conformal(
 
     is_boundary = np.array([t in boundary_tags for t in node_tags_list], dtype=bool)
 
-    # Build the bottom-boundary -> top-boundary tag map by walking every
-    # top sub-face's bounding curves. Whether a curve lies on the slab's
-    # outer perimeter or on a partition boundary, the per-sub-face
-    # ``setPeriodic`` constraint guarantees it has a matching bottom
-    # counterpart at the translated xy.
-    top_boundary_lookup: dict[tuple[float, float], int] = {}
+    # Build the bottom-boundary-node-tag -> top-boundary-node-tag map.
+    # Strategy: for each top face, collect the CURVE (1D boundary) node
+    # tags to build the master -> slave mapping. Using ``getPeriodicNodes``
+    # alone would also return INTERIOR face-node pairs, which can cause
+    # stale-tag references when a prior slab's conformal build has cleared
+    # and re-populated an intermediate face (e.g. the shared face between
+    # two stacked slabs). Filtering to curve nodes avoids this.
+    #
+    # For the disc+partial-cover case, direct tag lookup is still correct:
+    # the curve nodes of the top face are at the same positions as the
+    # bottom face curve nodes (periodic constraint enforces translation).
+    # After OCC BOP with fragment_fuzzy, the top face's OCC curve positions
+    # may drift by ~fuzzy in xy, but the MESH nodes created by ``setPeriodic``
+    # are at exactly the translated positions -- so tag lookup is reliable.
+    bottom_to_top_tag: dict[int, int] = {}
     snap = max(tol, 1e-9)
     for tf in top_faces:
+        # Collect top-face CURVE node tags: these are the boundary nodes.
+        top_curve_tags: set[int] = set()
         try:
             top_curves = gmsh.model.getBoundary(
                 [(2, tf)], oriented=False, recursive=False
             )
         except Exception as exc:
             logger.debug("getBoundary failed for top face %d: %s", tf, exc)
-            continue
+            top_curves = []
         for cdim, ctag in top_curves:
             if cdim != 1:
                 continue
@@ -2127,11 +2184,50 @@ def _build_one_slab_conformal(
                     exc,
                 )
                 continue
-            tcd = np.asarray(tcd, dtype=float).reshape(-1, 3)
+            for t in tnt:
+                top_curve_tags.add(int(t))
+
+        # Use periodic node mapping to relate bottom boundary tags to top
+        # boundary tags (avoids coordinate arithmetic that breaks when BOP
+        # fuzzy shifts top curve vertices by ~fragment_fuzzy in xy).
+        try:
+            (
+                _master,
+                slave_tags,
+                master_tags,
+                _affine,
+            ) = gmsh.model.mesh.getPeriodicNodes(2, tf)
+            for s, m in zip(slave_tags, master_tags):
+                # Only include pairs where the slave IS a top-face curve
+                # node; interior periodic pairs are excluded to prevent
+                # stale-tag references after a prior slab's mesh.clear.
+                if int(s) in top_curve_tags:
+                    bottom_to_top_tag[int(m)] = int(s)
+        except Exception as exc:
+            logger.debug(
+                "getPeriodicNodes failed for top face %d, "
+                "falling back to coordinate lookup: %s",
+                tf,
+                exc,
+            )
+
+        # Coordinate-based fallback for curve nodes not covered by the
+        # periodic mapping (non-periodic top faces, or nodes not paired).
+        for cdim, ctag in top_curves:
+            if cdim != 1:
+                continue
+            try:
+                tnt, tcd, _ = gmsh.model.mesh.getNodes(1, ctag, includeBoundary=True)
+            except Exception:  # noqa: S112
+                continue
+            tcd_arr = np.asarray(tcd, dtype=float).reshape(-1, 3)
             for i, tag in enumerate(tnt):
-                x, y = tcd[i, 0], tcd[i, 1]
-                key = (round(x / snap), round(y / snap))
-                top_boundary_lookup[key] = int(tag)
+                t = int(tag)
+                if t not in bottom_to_top_tag.values():
+                    x, y = tcd_arr[i, 0], tcd_arr[i, 1]
+                    key = (round(x / snap), round(y / snap))
+                    if key not in bottom_to_top_tag:  # type: ignore[operator]
+                        bottom_to_top_tag[key] = t  # type: ignore[assignment]
 
     # Pick element type from the combined bottom mesh. Triangles win
     # over quads when both present (mixed types not currently supported).
@@ -2175,12 +2271,22 @@ def _build_one_slab_conformal(
         tags_i = np.empty(n_nodes, dtype=np.uint64)
         for j in range(n_nodes):
             if is_top_layer and is_boundary[j]:
-                # Reuse the existing top-face 1D-curve node at this xy.
-                key = (
-                    round(coord[j, 0] / snap),
-                    round(coord[j, 1] / snap),
-                )
-                tag = top_boundary_lookup.get(key)
+                # Reuse the existing top-face 1D-curve node that
+                # corresponds to this bottom boundary node. Prefer the
+                # direct tag lookup (from getPeriodicNodes); fall back to
+                # coordinate lookup for faces without periodicity.
+                bottom_tag = int(node_tags[j])
+                tag = bottom_to_top_tag.get(bottom_tag)
+                if tag is None:
+                    # Coordinate-based fallback: used for non-periodic
+                    # top faces or when the periodic mapping didn't cover
+                    # this node (e.g. partition-boundary nodes that are
+                    # shared between multiple top sub-faces).
+                    coord_key = (
+                        round(coord[j, 0] / snap),
+                        round(coord[j, 1] / snap),
+                    )
+                    tag = bottom_to_top_tag.get(coord_key)  # type: ignore[arg-type]
                 if tag is None:
                     # No matching top boundary node; allocate a new tag
                     # (this happens when bottom and top boundaries don't
@@ -2489,6 +2595,53 @@ def _find_all_occ_faces_for_slab(
     return result
 
 
+def _provenance_to_json(prov: "PieceProvenance") -> dict:
+    """Serialize a PieceProvenance to a JSON-safe dict."""
+
+    def _edge(e):
+        if isinstance(e, PieceArcEdge):
+            return {
+                "kind": "arc",
+                "points": [list(p) for p in e.points],
+                "center": list(e.center),
+                "radius": e.radius,
+            }
+        return {
+            "kind": "line",
+            "points": [list(p) for p in e.points],
+        }
+
+    return {
+        "exterior_edges": [_edge(e) for e in prov.exterior_edges],
+        "interior_edges": [[_edge(e) for e in ring] for ring in prov.interior_edges],
+    }
+
+
+def _load_provenance(raw) -> "list[PieceProvenance] | None":
+    """Deserialize a list of PieceProvenance dicts (inverse of _provenance_to_json)."""
+    if raw is None:
+        return None
+
+    def _edge(d):
+        if d["kind"] == "arc":
+            return PieceArcEdge(
+                points=tuple(tuple(p) for p in d["points"]),
+                center=tuple(d["center"]),
+                radius=d["radius"],
+            )
+        return PieceLineEdge(points=tuple(tuple(p) for p in d["points"]))
+
+    return [
+        PieceProvenance(
+            exterior_edges=[_edge(e) for e in piece_d["exterior_edges"]],
+            interior_edges=[
+                [_edge(e) for e in ring] for ring in piece_d["interior_edges"]
+            ],
+        )
+        for piece_d in raw
+    ]
+
+
 def slabs_to_json(slabs: list[Slab]) -> list[dict]:
     """Serialize a slab list to a JSON-safe list of dicts."""
     import shapely.wkt
@@ -2510,6 +2663,11 @@ def slabs_to_json(slabs: list[Slab]) -> list[dict]:
             "face_partition_wkt": (
                 [shapely.wkt.dumps(p, rounding_precision=12) for p in s.face_partition]
                 if s.face_partition is not None
+                else None
+            ),
+            "face_partition_provenance": (
+                [_provenance_to_json(p) for p in s.face_partition_provenance]
+                if s.face_partition_provenance is not None
                 else None
             ),
         }
@@ -2541,6 +2699,9 @@ def slabs_from_json(data: list[dict]) -> list[Slab]:
             min_arc_points=d.get("min_arc_points", 4),
             arc_tolerance=d.get("arc_tolerance", 1e-3),
             face_partition=_load_partition(d.get("face_partition_wkt")),
+            face_partition_provenance=_load_provenance(
+                d.get("face_partition_provenance")
+            ),
         )
         for d in data
     ]
