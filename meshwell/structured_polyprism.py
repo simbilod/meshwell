@@ -88,6 +88,59 @@ class Slab:
     # topology). ``None`` means "no partition needed" -- the phantom
     # builds a single prism from ``footprint`` directly.
     face_partition: list[Polygon] | None = None
+    # Per-piece edge provenance, parallel to ``face_partition``: entry
+    # ``face_partition_provenance[i]`` describes the boundary edges of
+    # ``face_partition[i]``. ``None`` (or when ``identify_arcs`` is
+    # False) means "treat every edge as a straight line", matching the
+    # existing polyline-only behaviour.
+    face_partition_provenance: list["PieceProvenance"] | None = None
+
+
+@dataclass(frozen=True)
+class PieceArcEdge:
+    """One arc-shaped edge on a face_partition piece boundary.
+
+    ``points`` lists the vertices along the arc in boundary-order
+    (first vertex == arc start, last vertex == arc end). ``center`` and
+    ``radius`` come from the originating footprint's arc decomposition;
+    they are NOT recomputed from the piece geometry, so adjacent pieces
+    sharing this arc always see identical (center, radius) values.
+    """
+
+    points: tuple[tuple[float, float, float], ...]
+    center: tuple[float, float, float]
+    radius: float
+
+
+@dataclass(frozen=True)
+class PieceLineEdge:
+    """One straight edge on a face_partition piece boundary.
+
+    Always exactly two endpoints. Used for: splitter cut segments,
+    bridge cuts, and any footprint-boundary segments that the arc index
+    did not claim.
+    """
+
+    points: tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+PieceEdge = PieceArcEdge | PieceLineEdge
+
+
+@dataclass
+class PieceProvenance:
+    """Edge-level provenance for one face_partition piece.
+
+    ``exterior_edges`` walks the piece's outer boundary in CCW order;
+    ``interior_edges`` is one edge-list per hole, each walked in CW
+    order. Concatenating ``points`` across the edge list reproduces the
+    shapely ``polygon.exterior.coords`` / ``polygon.interiors[i].coords``
+    (with the first vertex of each subsequent edge equal to the last
+    vertex of the previous one).
+    """
+
+    exterior_edges: list[PieceEdge]
+    interior_edges: list[list[PieceEdge]]
 
 
 class _StructuredPolyPrism(PolyPrism):
