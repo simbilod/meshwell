@@ -489,6 +489,105 @@ def _build_arc_index_from_footprint(
     return index
 
 
+def _classify_piece_boundary(
+    piece: Polygon,
+    arc_index: _ArcIndex,
+) -> PieceProvenance:
+    """Walk a piece's boundary and label each segment using the arc index.
+
+    Algorithm: for each consecutive pair of boundary vertices
+    ``(p_i, p_{i+1})``, look up both in ``arc_index.vertex_to_arcs``.
+    They lie on arc ``K`` iff a shared ``arc_id`` exists with adjacent
+    positions. Consecutive segments on the same arc are grouped into a
+    single :class:`PieceArcEdge`; everything else becomes a
+    :class:`PieceLineEdge`. The coordinate-quantization tolerance is
+    implicit via ``arc_index.ndigits``.
+    """
+
+    def _classify_ring(ring) -> list[PieceEdge]:
+        coords = list(ring.coords)
+        if len(coords) < 2:
+            return []
+        # Drop the duplicated closing vertex if present.
+        if coords[0] == coords[-1]:
+            coords = coords[:-1]
+        n = len(coords)
+        if n < 2:
+            return []
+        ndigits = arc_index.ndigits
+
+        def _key(xy):
+            return (round(xy[0], ndigits), round(xy[1], ndigits))
+
+        def _segment_arc(a_xy, b_xy):
+            """Return arc_id if (a, b) is one step along some arc, else None."""
+            a_lookup = arc_index.vertex_to_arcs.get(_key(a_xy), [])
+            b_lookup = arc_index.vertex_to_arcs.get(_key(b_xy), [])
+            if not a_lookup or not b_lookup:
+                return None
+            b_by_arc = dict(b_lookup)
+            for arc_id, a_pos in a_lookup:
+                b_pos = b_by_arc.get(arc_id)
+                if b_pos is None:
+                    continue
+                arc = arc_index.arcs[arc_id]
+                arc_len = len(arc.points)
+                # Adjacency: |b_pos - a_pos| == 1, with wrap for closed arcs.
+                if abs(b_pos - a_pos) == 1:
+                    return arc_id
+                # Wrap: only when the arc is closed (full circle).
+                if arc.points[0] == arc.points[-1] and {a_pos, b_pos} == {
+                    0,
+                    arc_len - 2,
+                }:
+                    return arc_id
+            return None
+
+        edges: list[PieceEdge] = []
+        # Walk the ring as ``n`` undirected edges (i -> (i+1) mod n).
+        # ``remaining`` counts edges still to emit; each iteration of the
+        # outer loop emits one edge (line or merged arc) and decrements
+        # ``remaining`` by the number of underlying ring-edges it covered.
+        # This avoids relying on ``i == 0`` to detect a full-ring close,
+        # which broke when polygonize started a cycle at any vertex
+        # other than the polygon's first one.
+        i = 0
+        remaining = n
+        while remaining > 0:
+            j = (i + 1) % n
+            a = coords[i]
+            b = coords[j]
+            arc_id = _segment_arc(a, b)
+            if arc_id is None:
+                edges.append(
+                    PieceLineEdge(points=((a[0], a[1], 0.0), (b[0], b[1], 0.0)))
+                )
+                i = j
+                remaining -= 1
+                continue
+            # Greedily extend along the same arc, decrementing ``remaining``
+            # for each ring-edge absorbed into the arc run.
+            run_indices = [i, j]
+            remaining -= 1
+            while remaining > 0:
+                last_idx = run_indices[-1]
+                k = (last_idx + 1) % n
+                next_arc = _segment_arc(coords[last_idx], coords[k])
+                if next_arc != arc_id:
+                    break
+                run_indices.append(k)
+                remaining -= 1
+            pts = tuple((coords[idx][0], coords[idx][1], 0.0) for idx in run_indices)
+            arc = arc_index.arcs[arc_id]
+            edges.append(PieceArcEdge(points=pts, center=arc.center, radius=arc.radius))
+            i = run_indices[-1]
+        return edges
+
+    exterior_edges = _classify_ring(piece.exterior)
+    interior_edges = [_classify_ring(ring) for ring in piece.interiors]
+    return PieceProvenance(exterior_edges=exterior_edges, interior_edges=interior_edges)
+
+
 def _compute_face_partition(
     slab: "Slab",
     entities_list: list,
