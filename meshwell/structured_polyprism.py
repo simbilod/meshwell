@@ -438,6 +438,103 @@ def _compute_face_partition(
         b = sp.boundary
         if not b.is_empty:
             lines.append(b)
+
+    # Bridge cuts: ensure every polygonize result is simply-connected
+    # (no interior rings). When the slab footprint has interior rings
+    # (e.g., an annulus) OR a splitter sits strictly inside the slab
+    # without touching its exterior, polygonize produces a piece with
+    # the ring/splitter as an interior hole. ``_StructuredPhantom``'s
+    # internal ``BOPAlgo_Builder`` then fragments such a piece-with-
+    # hole into multiple sub-solids with shared TShape state, which
+    # corrupts the global cad_occ fragment pass's ``Modified()``
+    # attribution (see plan Phase 2 / R2 for full trail).
+    #
+    # Each bridge is a single line segment from a point on the hole-
+    # creating loop to its closest point on slab.footprint.exterior.
+    # polygonize merges the bridge into the planar subdivision so the
+    # surrounding region becomes simply-connected.
+    # Each connected component of slab.footprint contributes its own
+    # exterior + interior rings. For MultiPolygon footprints, iterate
+    # components.
+    footprint_components = (
+        list(slab.footprint.geoms)
+        if hasattr(slab.footprint, "geoms")
+        else [slab.footprint]
+    )
+
+    # Collect (component_exterior, target_loop) bridge candidates. Each
+    # interior ring needs a bridge to its OWN component's exterior;
+    # splitter holes likewise bridge to the containing component's
+    # exterior.
+    bridge_candidates: list[tuple[object, object]] = []
+    for comp in footprint_components:
+        bridge_candidates.extend(
+            (comp.exterior, interior) for interior in comp.interiors
+        )
+    for sp in splitters:
+        # A splitter contributes a hole only when its boundary doesn't
+        # touch any component's exterior. If it touches, no bridge.
+        touches_any = False
+        for comp in footprint_components:
+            try:
+                if sp.touches(comp.exterior) or sp.intersects(comp.exterior):
+                    touches_any = True
+                    break
+            except Exception:  # noqa: S112
+                continue
+        if touches_any:
+            continue
+        # Pair this splitter with the component that contains its
+        # representative point.
+        try:
+            rep = sp.representative_point()
+        except Exception:  # noqa: S112
+            continue
+        sp_boundary = sp.boundary
+        if sp_boundary.is_empty:
+            continue
+        for comp in footprint_components:
+            try:
+                if comp.contains(rep):
+                    bridge_candidates.append((comp.exterior, sp_boundary))
+                    break
+            except Exception:  # noqa: S112
+                continue
+
+    if bridge_candidates:
+        from shapely.geometry import LineString, Point
+
+        seen_bridges: set[tuple[tuple[float, float], tuple[float, float]]] = set()
+        for exterior, target in bridge_candidates:
+            target_coords = list(target.coords) if hasattr(target, "coords") else []
+            if len(target_coords) < 2:
+                continue
+            # Use TWO bridges at opposite-ish positions so the planar
+            # subdivision actually splits the surrounding region into
+            # multiple simply-connected pieces. A single bridge is just
+            # an open segment in polygonize's line network -- the
+            # surrounding polygon still wraps around it and retains the
+            # interior ring. Two bridges open a real slit.
+            n = len(target_coords)
+            src_indices = [0, n // 2] if n >= 2 else [0]
+            for si in src_indices:
+                src = target_coords[si]
+                try:
+                    proj = exterior.interpolate(exterior.project(Point(*src)))
+                    src_xy = (round(src[0], 12), round(src[1], 12))
+                    dst_xy = (round(proj.x, 12), round(proj.y, 12))
+                    if src_xy == dst_xy:
+                        continue
+                    if (src_xy, dst_xy) in seen_bridges or (
+                        dst_xy,
+                        src_xy,
+                    ) in seen_bridges:
+                        continue
+                    seen_bridges.add((src_xy, dst_xy))
+                    lines.append(LineString([src_xy, dst_xy]))
+                except Exception:  # noqa: S112
+                    continue
+
     merged = unary_union(lines)
     pieces = []
     for poly in polygonize(merged):
