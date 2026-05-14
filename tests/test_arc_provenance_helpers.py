@@ -119,3 +119,47 @@ def test_classify_pure_rectangle_all_lines():
     )
     prov = _classify_piece_boundary(rect, index)
     assert all(isinstance(e, PieceLineEdge) for e in prov.exterior_edges)
+
+
+def test_make_wire_from_labeled_segments_pure_arc():
+    """Single PieceArcEdge -> single OCC arc edge, no heuristic involved."""
+    from meshwell.geometry_entity import GeometryEntity
+    from meshwell.structured_polyprism import PieceArcEdge
+
+    n = 48
+    pts = tuple(
+        (math.cos(2 * math.pi * k / n), math.sin(2 * math.pi * k / n), 0.0)
+        for k in range(n + 1)  # closed
+    )
+    edge = PieceArcEdge(points=pts, center=(0.0, 0.0, 0.0), radius=1.0)
+    g = GeometryEntity(point_tolerance=1e-3)
+    wire = g._make_occ_wire_from_labeled_segments([edge])
+    assert wire is not None
+    assert not wire.IsNull()
+
+
+def test_make_wire_from_labeled_segments_mixed():
+    """ArcEdge + LineEdge: the line edge stays straight.
+
+    The heuristic never runs and therefore cannot mis-classify the
+    splitter cut.
+    """
+    from meshwell.geometry_entity import GeometryEntity
+    from meshwell.structured_polyprism import PieceArcEdge, PieceLineEdge
+
+    arc_pts = tuple(
+        (math.cos(math.pi * k / 16), math.sin(math.pi * k / 16), 0.0)
+        for k in range(17)  # half circle, top
+    )
+    line1 = PieceLineEdge(
+        points=((arc_pts[-1][0], arc_pts[-1][1], 0.0), (1.0, -1.0, 0.0))
+    )
+    line2 = PieceLineEdge(points=((1.0, -1.0, 0.0), (-1.0, -1.0, 0.0)))
+    line3 = PieceLineEdge(
+        points=((-1.0, -1.0, 0.0), (arc_pts[0][0], arc_pts[0][1], 0.0))
+    )
+    arc = PieceArcEdge(points=arc_pts, center=(0.0, 0.0, 0.0), radius=1.0)
+    g = GeometryEntity(point_tolerance=1e-3)
+    wire = g._make_occ_wire_from_labeled_segments([arc, line1, line2, line3])
+    assert wire is not None
+    assert not wire.IsNull()

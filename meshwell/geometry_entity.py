@@ -566,6 +566,83 @@ class GeometryEntity:
             wire_builder.Add(edge)
         return wire_builder.Wire()
 
+    def _make_occ_wire_from_labeled_segments(self, segments) -> "TopoDS_Wire":
+        """Build an OCC wire from a list of already-classified edges.
+
+        ``segments`` is a list of ``PieceArcEdge`` / ``PieceLineEdge``
+        instances from :mod:`meshwell.structured_polyprism`. Unlike
+        :meth:`_make_occ_wire_from_vertices` this never runs the
+        heuristic arc-detector -- the provenance is authoritative.
+
+        Edges are emitted in list order; consecutive edges must share an
+        endpoint (caller responsibility). Coordinates are quantized to
+        ``self.point_tolerance`` to match :meth:`_make_occ_wire_from_vertices`.
+        """
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+        from OCP.GC import GC_MakeArcOfCircle
+        from OCP.gp import gp_Pnt
+
+        from meshwell.structured_polyprism import PieceArcEdge, PieceLineEdge
+
+        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
+
+        def _qpnt(coords):
+            return gp_Pnt(*[round(c, ndigits) for c in coords])
+
+        def _qkey(coords):
+            return tuple(round(c, ndigits) for c in coords)
+
+        wire_builder = BRepBuilderAPI_MakeWire()
+        for seg in segments:
+            if isinstance(seg, PieceArcEdge):
+                pts = list(seg.points)
+                if len(pts) < 3:
+                    # Degenerate arc -- treat as a line between endpoints.
+                    if _qkey(pts[0]) == _qkey(pts[-1]):
+                        continue
+                    wire_builder.Add(
+                        BRepBuilderAPI_MakeEdge(_qpnt(pts[0]), _qpnt(pts[-1])).Edge()
+                    )
+                    continue
+                # Check closedness after quantization so that floating-point
+                # near-duplicates (e.g. 1e-16 residual) are handled correctly.
+                is_closed = _qkey(pts[0]) == _qkey(pts[-1])
+                if is_closed:
+                    # Full circle: two 180-degree arcs (matches the existing
+                    # _make_occ_wire_from_vertices behaviour at line ~530).
+                    quarter = len(pts) // 4
+                    three_quarter = (len(pts) * 3) // 4
+                    mid = len(pts) // 2
+                    p_start = _qpnt(pts[0])
+                    p_mid = _qpnt(pts[mid])
+                    p_q = _qpnt(pts[quarter])
+                    p_3q = _qpnt(pts[three_quarter])
+                    arc1 = GC_MakeArcOfCircle(p_start, p_q, p_mid).Value()
+                    arc2 = GC_MakeArcOfCircle(p_mid, p_3q, p_start).Value()
+                    wire_builder.Add(BRepBuilderAPI_MakeEdge(arc1).Edge())
+                    wire_builder.Add(BRepBuilderAPI_MakeEdge(arc2).Edge())
+                else:
+                    mid = len(pts) // 2
+                    p_start = _qpnt(pts[0])
+                    p_mid = _qpnt(pts[mid])
+                    p_end = _qpnt(pts[-1])
+                    if _qkey(pts[0]) == _qkey(pts[-1]):
+                        continue
+                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                    wire_builder.Add(BRepBuilderAPI_MakeEdge(arc_geom).Edge())
+            elif isinstance(seg, PieceLineEdge):
+                p1 = _qpnt(seg.points[0])
+                p2 = _qpnt(seg.points[1])
+                if _qkey(seg.points[0]) == _qkey(seg.points[1]):
+                    continue
+                wire_builder.Add(BRepBuilderAPI_MakeEdge(p1, p2).Edge())
+            else:
+                raise TypeError(
+                    f"_make_occ_wire_from_labeled_segments: unknown segment "
+                    f"type {type(seg).__name__}"
+                )
+        return wire_builder.Wire()
+
     def _make_occ_face_from_vertices(
         self,
         vertices: list[tuple[float, float, float]],
