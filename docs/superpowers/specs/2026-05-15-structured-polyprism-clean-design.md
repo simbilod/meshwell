@@ -56,19 +56,21 @@ Run at `docs/superpowers/spikes/discrete_entity_displaced_vertex.py`, three phas
 
 ## The three-layer correctness strategy
 
-### Layer A — Plan stage records the partition; CAD stage encodes it via sewing (not fusing)
+### Layer A — Plan stage records the partition; CAD stage encodes it as one sub-prism per piece, no fuse
 
 Before any OCC work, the planner computes, for each slab, a `face_partition: list[Polygon]` of the slab's union footprint into pairwise-disjoint pieces.
 
-The CAD stage builds the phantom solid **piece-by-piece, joined by sewing**:
+The CAD stage builds **one OCC sub-prism per partition piece** (e.g. `BRepPrimAPI_MakePrism` on the piece's bottom face, extruded by `(0, 0, h)`). Adjacent sub-prisms have geometrically coincident vertical faces. **No per-phantom fuse step is run.**
 
-1. For each partition piece, build a bottom OCC face (the piece polygon at z=zlo) and a top OCC face (the same piece polygon at z=zhi). Adjacent pieces share OCC edges by construction — both pieces are built from the same partition's edge collection, so the same OCC edge tag is reused for the shared boundary.
-2. Build lateral OCC faces only on the **union footprint's outer boundary** — one lateral face per outer polygon edge. **No internal vertical seams are ever constructed**, so nothing has to be fused away.
-3. Sew all faces (`BRepBuilderAPI_Sewing`) → `MakeShell` → `MakeSolid`. Sewing joins faces along *already-coincident edges*; it is deterministic, has no fuzzy-tolerance interaction, and avoids the "Different number of points" / "BOPAlgo over-attribution" failure modes that motivated multiple layers of recovery code in `feat/structured` (`meshwell/structured_polyprism.py:989-1005`).
+Why this works without fusing:
 
-Result: a single OCC solid per slab whose bottom and top faces are pre-partitioned by `face_partition`, with N piece-bottoms and N piece-tops carrying known input tags.
+- The global fragment (`BRepAlgoAPI_BuilderAlgo`) runs against all entities anyway. It natively merges coincident input shapes: when sub-prism A's vertical face touches sub-prism B's vertical face, both inputs map to the same output face via `algo.Modified()`. Layer B's tag-tracking handles this with `dict[..., list[int]]`.
+- The per-phantom fuse step in `feat/structured` (`structured_polyprism.py:989-1005`) was both redundant and harmful: the in-code comment at L1005 explicitly states it "over-attributes pieces" in the global Modified() tracking. Dropping it eliminates that failure mode.
+- Internal seams don't constrain the slab volume mesh: the slab is built as a single `addDiscreteEntity(3, -1, [])` spanning all pieces, with our own wedge/hex elements. The OCC interior seam faces are marked "no auto-mesh" before `generate(2)` so they don't generate spurious 2D mesh inside the slab. (They still exist as OCC topology — the post-BOP map records them — but they carry no mesh data.)
 
-After the global fragment runs against neighbours, **bottom and top remain matched piece-by-piece by construction** (the partition preempted neighbour-induced asymmetry). If a neighbour cuts only the top of one piece, `algo.Modified(piece_top_face)` yields multiple output sub-faces — these are *all* known to belong to that piece. The Python-side bookkeeping in Layer B knows which output faces descend from which input piece face.
+Result of CAD stage: N sub-prisms registered per slab, all with known input OCC tags (bottom face, top face, lateral faces, all vertices, all edges). Top and bottom of each piece remain matched **by piece index**, so mesh-time routing is pure mapping — no point-in-polygon, no bbox lookup, no coordinate matching.
+
+If a neighbour cuts only the top of one piece, `algo.Modified(piece_top_face)` yields multiple output sub-faces — all known to belong to that piece. The Python-side bookkeeping in Layer B records them as `list[output_tag]` for the same `(slab, "top", piece_index)` key.
 
 Lateral OCC faces are 4-corner by construction (one rectangular vertical face per outer polygon edge, plus arc-rectangle for arc edges). "Mid-height" cut = a neighbour OCC vertex landing on a lateral face's interior with `zlo < z < zhi`. When detected (via `algo.Generated()` of the lateral face during the global fragment), that face is excluded from transfinite hints and meshed unstructured. Conformality is preserved via shared edges with neighbour OCC faces.
 
@@ -241,13 +243,15 @@ Built in `builder.py` by walking `StructuredPlan.slabs`, looking each slab back 
 ```
 1. User builds PolyPrism(..., structured=True, resolutions=[StructuredExtrusionResolutionSpec(...)])
 2. Orchestrator gathers structured entities → calls plan.build(entities) → StructuredPlan
-3. CAD backend (cad_occ or cad_gmsh) calls phantom.instantiate(plan) → builds one
-   sewn OCC solid per slab (piece-partitioned bottom/top faces, outer-only lateral
-   faces, BRepBuilderAPI_Sewing → MakeShell → MakeSolid) and registers them in the
-   OCC scene with their input-tag bookkeeping
-4. CAD backend runs the global fragment; phantom.extract_map(algo) walks
-   Modified()/Generated()/IsDeleted() to produce PhantomMap. Phantom volumes are
-   marked for non-recursive removal so their faces survive for the mesh stage.
+3. CAD backend (cad_occ or cad_gmsh) calls phantom.instantiate(plan) → builds N
+   sub-prisms per slab (one per partition piece via BRepPrimAPI_MakePrism), no
+   per-phantom fuse. Records input OCC tags for every vertex/edge/face/lateral.
+4. CAD backend runs the global fragment (against all entities including the
+   sub-prisms). Adjacent sub-prisms' coincident vertical faces are merged by the
+   global BOP. phantom.extract_map(algo) walks Modified()/Generated()/IsDeleted()
+   to produce PhantomMap. Phantom volumes are marked for non-recursive removal
+   so their faces survive for the mesh stage. Internal seam OCC faces are marked
+   "no auto-mesh" so they don't produce spurious 2D mesh inside the slab.
 5. Mesh backend calls builder.apply(plan, phantom_map) which:
    a. resolves StructuredMeshPlan from plan + entity resolutions
    b. marks top sub-faces "no auto-mesh"
