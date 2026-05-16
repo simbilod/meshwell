@@ -1,6 +1,7 @@
 """Gmsh polyprism definitions."""
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import gmsh
@@ -8,6 +9,10 @@ import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
 from meshwell.geometry_entity import GeometryEntity
+from meshwell.structured.spec import (
+    StructuredBufferTaperError,
+    StructuredExtrusionResolutionSpec,
+)
 from meshwell.validation import format_physical_name
 
 if TYPE_CHECKING:
@@ -44,7 +49,7 @@ class PolyPrism(GeometryEntity):
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
         structured: bool = False,
-        resolutions: list | None = None,
+        resolutions: list[Any] | None = None,
     ):
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
@@ -105,11 +110,6 @@ class PolyPrism(GeometryEntity):
         # Phase 1: structured-mode flag and validation.
         self.structured = structured
 
-        from meshwell.structured.spec import (
-            StructuredBufferTaperError,
-            StructuredExtrusionResolutionSpec,
-        )
-
         _structured_specs = [
             r
             for r in self.resolutions
@@ -143,8 +143,6 @@ class PolyPrism(GeometryEntity):
                     f"{ {z: b for z, b in buffers.items() if b != 0} }"
                 )
         elif _structured_specs:
-            import warnings
-
             warnings.warn(
                 "StructuredExtrusionResolutionSpec attached to a PolyPrism with "
                 "structured=False; the spec will be ignored. Pass "
