@@ -23,7 +23,9 @@ from shapely.geometry.polygon import orient
 from meshwell.structured.spec import (
     EdgeKey,
     FaceKey,
+    LateralKey,
     PhantomBuildResult,
+    PhantomMap,
     PhantomShape,
     StructuredPlan,
     VertexKey,
@@ -249,3 +251,56 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
                 )
             )
     return PhantomBuildResult(shapes=tuple(shapes))
+
+
+def _modified_or_unchanged(builder: Any, input_shape: Any) -> list[Any]:
+    """Return list of output shapes for input_shape.
+
+    Mirrors the cad_occ.py pattern: if Modified() is empty AND the shape
+    is not deleted, the shape passed through unchanged (input == output,
+    one element). Otherwise Modified() gives the actual successor list.
+    """
+    modified = builder.Modified(input_shape)
+    if modified.IsEmpty():
+        if builder.IsDeleted(input_shape):
+            return []
+        return [input_shape]
+    return list(modified)
+
+
+def extract_phantom_map(
+    build_result: PhantomBuildResult,
+    builder: Any,
+) -> PhantomMap:
+    """Walk the post-Perform BOP history to build the PhantomMap.
+
+    For every input OCC tag recorded in ``build_result``, ask the
+    ``builder`` (a ``BOPAlgo_Builder`` or any object exposing
+    ``Modified(shape)`` / ``IsDeleted(shape)``) what the input became
+    in the output.
+
+    Args:
+        build_result: From :func:`build_phantom_shapes`.
+        builder: Post-Perform BOP builder.
+
+    Returns:
+        :class:`PhantomMap` with all four output_*_by_key dicts
+        populated. Each value is a list because a single input can
+        split into many outputs.
+    """
+    pmap = PhantomMap()
+    for shape in build_result.shapes:
+        for face_key, in_face in shape.input_faces_by_key.items():
+            pmap.output_faces[face_key] = _modified_or_unchanged(builder, in_face)
+        for edge_key, in_edge in shape.input_edges_by_key.items():
+            pmap.output_edges[edge_key] = _modified_or_unchanged(builder, in_edge)
+        for vert_key, in_vert in shape.input_vertices_by_key.items():
+            pmap.output_vertices[vert_key] = _modified_or_unchanged(builder, in_vert)
+        for outer_edge_idx, in_lateral in shape.input_laterals_by_outer_edge.items():
+            lateral_key = LateralKey(
+                slab_index=shape.slab_index, outer_edge_index=outer_edge_idx
+            )
+            pmap.output_laterals[lateral_key] = _modified_or_unchanged(
+                builder, in_lateral
+            )
+    return pmap
