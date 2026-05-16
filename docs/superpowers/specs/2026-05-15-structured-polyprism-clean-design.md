@@ -56,11 +56,21 @@ Run at `docs/superpowers/spikes/discrete_entity_displaced_vertex.py`, three phas
 
 ## The three-layer correctness strategy
 
-### Layer A — Plan stage guarantees mirror-symmetric topology
+### Layer A — Plan stage records the partition; CAD stage encodes it via sewing (not fusing)
 
-Before any OCC work, the planner computes, for each slab, a single `face_partition: list[Polygon]` that is applied to *both* z=zlo and z=zhi. The phantom builds one OCC sub-prism per partition piece and fuses them. Result: bottom and top OCC face counts match by construction; sub-face *i* on the bottom has a 1:1 correspondence with sub-face *i* on the top.
+Before any OCC work, the planner computes, for each slab, a `face_partition: list[Polygon]` of the slab's union footprint into pairwise-disjoint pieces.
 
-Each sub-prism has 4-corner lateral faces *by construction* (one per piece-boundary segment). "Mid-height" cut = a neighbour OCC vertex landing on the lateral face's interior with `zlo < z < zhi`. When detected (during phantom build, via the BOP history walked for Layer B), that face is excluded from transfinite hints and meshed unstructured. Conformality is preserved via shared edges with neighbour OCC faces.
+The CAD stage builds the phantom solid **piece-by-piece, joined by sewing**:
+
+1. For each partition piece, build a bottom OCC face (the piece polygon at z=zlo) and a top OCC face (the same piece polygon at z=zhi). Adjacent pieces share OCC edges by construction — both pieces are built from the same partition's edge collection, so the same OCC edge tag is reused for the shared boundary.
+2. Build lateral OCC faces only on the **union footprint's outer boundary** — one lateral face per outer polygon edge. **No internal vertical seams are ever constructed**, so nothing has to be fused away.
+3. Sew all faces (`BRepBuilderAPI_Sewing`) → `MakeShell` → `MakeSolid`. Sewing joins faces along *already-coincident edges*; it is deterministic, has no fuzzy-tolerance interaction, and avoids the "Different number of points" / "BOPAlgo over-attribution" failure modes that motivated multiple layers of recovery code in `feat/structured` (`meshwell/structured_polyprism.py:989-1005`).
+
+Result: a single OCC solid per slab whose bottom and top faces are pre-partitioned by `face_partition`, with N piece-bottoms and N piece-tops carrying known input tags.
+
+After the global fragment runs against neighbours, **bottom and top remain matched piece-by-piece by construction** (the partition preempted neighbour-induced asymmetry). If a neighbour cuts only the top of one piece, `algo.Modified(piece_top_face)` yields multiple output sub-faces — these are *all* known to belong to that piece. The Python-side bookkeeping in Layer B knows which output faces descend from which input piece face.
+
+Lateral OCC faces are 4-corner by construction (one rectangular vertical face per outer polygon edge, plus arc-rectangle for arc edges). "Mid-height" cut = a neighbour OCC vertex landing on a lateral face's interior with `zlo < z < zhi`. When detected (via `algo.Generated()` of the lateral face during the global fragment), that face is excluded from transfinite hints and meshed unstructured. Conformality is preserved via shared edges with neighbour OCC faces.
 
 The face partition is computed once per slab from:
 - the slab's own footprint
@@ -69,29 +79,45 @@ The face partition is computed once per slab from:
 
 Arc segments are preserved through the partition by the provenance mechanism from the existing branch (ported as-is — the `2026-05-13-arc-provenance-face-partition.md` design is sound and reusable cleanly).
 
-### Layer B — CAD stage builds an explicit OCC vertex map via BOP history
+### Layer B — CAD stage builds an explicit OCC vertex/edge/face map via BOP history
 
-The structured pipeline owns the `BRepAlgoAPI_BuilderAlgo` (or equivalent) object that fragments the phantom against its neighbours. For each phantom sub-prism *p*:
+Because the phantom is constructed piece-by-piece (Layer A), every piece's bottom face, top face, vertices, and edges are created by *our* code with known input OCC tags. We record at construction time:
 
-1. At build time, record the input OCC vertex tags for each corner of *p*'s bottom face and each corner of *p*'s top face, keyed by `(piece_index, corner_index)`.
-2. After running the BOP, walk `algo.Modified(in_vertex)`, `algo.Generated(in_vertex)`, `algo.IsDeleted(in_vertex)` for every recorded input vertex.
-3. Build the map: `(piece i, bottom_corner k) → output_bot_vertex_tag` and `(piece i, top_corner k) → output_top_vertex_tag`.
+```
+input_face_by_key:    (slab i, "bot"/"top", piece k)            → input OCC face tag
+input_edge_by_key:    (slab i, "bot"/"top", piece k, edge j)    → input OCC edge tag
+input_vertex_by_key:  (slab i, "bot"/"top", piece k, corner j)  → input OCC vertex tag
+input_lateral_by_key: (slab i, "outer_edge" m)                  → input OCC lateral face tag
+```
 
-The map is keyed by piece/corner identity, not by tag or coords, so it survives BOP-induced splits, merges, and ~fuzzy displacement. This mirrors the pattern already established in `meshwell/cad_occ.py` (which uses `Modified()` for fragment-piece ownership tracking).
+After the global fragment runs against neighbours, walk `algo.Modified(in)`, `algo.Generated(in)`, `algo.IsDeleted(in)` for every recorded input tag to produce the post-BOP map:
 
-Same idea is extended to edges: `(piece i, edge k) → output_edge_tag`, used by the builder to identify the OCC curves on which top boundary nodes must land.
+```
+output_faces_by_key:    (slab i, side, piece k)         → list[output face tag]
+output_edges_by_key:    (slab i, side, piece k, edge j) → list[output edge tag]
+output_vertices_by_key: (slab i, side, piece k, corner) → list[output vertex tag]
+output_laterals_by_key: (slab i, outer_edge m)          → list[output lateral face tag]
+```
+
+`Modified()` returning a list (rather than a single tag) is the natural representation for neighbour-induced splits: a piece-top face cut by a neighbour becomes several output faces, all still belonging to that piece — mesh routing in Layer C iterates the list.
+
+The map is keyed by slab/side/piece/element-index, not by OCC tag or coords, so it survives BOP-induced splits, merges, and ~fuzzy displacement. This mirrors the pattern already established in `meshwell/cad_occ.py` (which uses `Modified()` for fragment-piece ownership tracking).
+
+When neighbour entities introduce new vertices on a lateral face mid-height, those vertices appear in `algo.Generated(input_lateral_face)`. The Layer A "mid-height cut" detection iterates those Generated() lists to decide which lateral faces lose their transfinite hint.
 
 ### Layer C — Mesh stage owns the top mesh; gmsh never independently meshes top OCC faces
 
-The mesh stage:
+For each slab, for each piece *k*:
 
-1. Marks all top sub-face entities as "no auto-mesh" before calling `mesh.generate(2)`. The 2D mesher only runs on bottom sub-faces and lateral faces.
-2. For each phantom sub-prism, derives its top sub-face mesh by transferring the bottom triangulation:
-   - **Boundary mesh nodes**: look up the corresponding top OCC vertex/edge via the Layer B map. Use the *actual position of that top OCC vertex* (BOP-displaced, read directly from OCC). For top boundary curve interior nodes, walk the OCC top edge's parametric curve and place nodes at the corresponding parameter as on the bottom.
-   - **Interior mesh nodes**: `bottom_xy + (0, 0, h)` — these don't correspond to any OCC vertex, so a pure translation is correct.
-3. Stamps the derived mesh directly onto the top sub-face entities (`gmsh.model.mesh.addNodes(2, top_sub_face, ...)` + `addElements(2, top_sub_face, ...)`).
-4. Builds the slab volume as a single `addDiscreteEntity(3, -1, [])` and adds wedge (or hex when `recombine=True`) elements bridging bottom→top via the node-by-node map. Element orientation is explicitly maintained (bottom triangle CCW when viewed from below).
-5. Runs a single global `gmsh.model.mesh.removeDuplicateNodes` at the very end. Tolerance = `2 × max(slab.fragment_fuzzy_value for slab in plan.slabs)`. The 2× factor allows for the worst case where both a bottom and a top OCC vertex moved by `fuzzy` in *opposite* directions during BOP, putting nominally-coincident nodes up to `2 × fuzzy` apart.
+1. Mark all `output_faces_by_key[(slab, "top", k)]` entries as "no auto-mesh" before calling `mesh.generate(2)`. The 2D mesher only runs on bottom faces and lateral faces.
+2. After `mesh.generate(2)`, gather the 2D mesh from every `output_faces_by_key[(slab, "bot", k)]` entry (one or several output faces, all belonging to piece *k*). This is the piece's bottom mesh — routed by **mapping**, not by point-in-polygon or bbox.
+3. Derive the piece's top mesh by transferring the bottom triangulation:
+   - **Boundary mesh nodes** that sit on a piece corner: look up via `output_vertices_by_key[(slab, "top", k, corner)]`, use that OCC vertex's actual position.
+   - **Boundary mesh nodes** that sit on a piece edge interior: look up via `output_edges_by_key[(slab, "top", k, edge)]`, walk the OCC top edge's parametric curve at the same parameter as the bottom edge, use that position.
+   - **Interior mesh nodes**: `bottom_xy + (0, 0, h)` — these don't correspond to any OCC vertex/edge, so a pure translation is correct.
+4. Stamp the derived mesh onto the corresponding output top face(s). If `output_faces_by_key[(slab, "top", k)]` has multiple entries (neighbour cut the top into several sub-faces), partition the derived mesh by point-in-polygon against each output top face's footprint. This is the *only* geometric routing in the pipeline, and it only fires when the user's neighbour actually introduced top-side cuts.
+5. Build the slab volume as a single `addDiscreteEntity(3, -1, [])` per slab, with wedge (or hex when `recombine=True`) elements bridging bottom→top via the node-by-node map. Element orientation is explicitly maintained (bottom triangle CCW when viewed from below).
+6. Run a single global `gmsh.model.mesh.removeDuplicateNodes` at the very end. Tolerance = `2 × max(slab.fragment_fuzzy_value for slab in plan.slabs)`. The 2× factor allows for the worst case where both a bottom and a top OCC vertex moved by `fuzzy` in *opposite* directions during BOP, putting nominally-coincident nodes up to `2 × fuzzy` apart.
 
 ---
 
@@ -157,29 +183,43 @@ class StructuredPlan:
     overlaps: list[OverlapPair]             # for mesh-stage cross-check
 ```
 
-### Internal — CAD stage adds the vertex map
+### Internal — CAD stage adds the OCC map
 
 ```python
+Side = Literal["bot", "top"]
+
 @dataclass(frozen=True)
-class VertexKey:
+class FaceKey:
     slab_index: int
+    side: Side
     piece_index: int
-    corner_index: int                       # within the piece's boundary
-    side: Literal["bot", "top"]
 
 @dataclass(frozen=True)
 class EdgeKey:
     slab_index: int
+    side: Side
     piece_index: int
     edge_index: int
-    side: Literal["bot", "top"]
+
+@dataclass(frozen=True)
+class VertexKey:
+    slab_index: int
+    side: Side
+    piece_index: int
+    corner_index: int
+
+@dataclass(frozen=True)
+class LateralKey:
+    slab_index: int
+    outer_edge_index: int
 
 @dataclass(frozen=True)
 class PhantomMap:
-    bot_vertex_to_top_vertex: dict[int, int]       # OCC vertex tags
-    bot_edge_to_top_edge: dict[int, int]
-    occ_vertex_by_key: dict[VertexKey, int]
-    occ_edge_by_key: dict[EdgeKey, int]
+    # Post-BOP OCC tags (lists because Modified() can split one input into many).
+    output_faces:    dict[FaceKey, list[int]]
+    output_edges:    dict[EdgeKey, list[int]]
+    output_vertices: dict[VertexKey, list[int]]
+    output_laterals: dict[LateralKey, list[int]]
 ```
 
 ### Internal — Mesh stage resolves mesh parameters
@@ -201,9 +241,13 @@ Built in `builder.py` by walking `StructuredPlan.slabs`, looking each slab back 
 ```
 1. User builds PolyPrism(..., structured=True, resolutions=[StructuredExtrusionResolutionSpec(...)])
 2. Orchestrator gathers structured entities → calls plan.build(entities) → StructuredPlan
-3. CAD backend (cad_occ or cad_gmsh) calls phantom.instantiate(plan) → registers
-   phantom sub-prisms in the OCC scene and returns PhantomMap from BOP history
-4. CAD backend runs the global fragment, marks phantoms for non-recursive removal
+3. CAD backend (cad_occ or cad_gmsh) calls phantom.instantiate(plan) → builds one
+   sewn OCC solid per slab (piece-partitioned bottom/top faces, outer-only lateral
+   faces, BRepBuilderAPI_Sewing → MakeShell → MakeSolid) and registers them in the
+   OCC scene with their input-tag bookkeeping
+4. CAD backend runs the global fragment; phantom.extract_map(algo) walks
+   Modified()/Generated()/IsDeleted() to produce PhantomMap. Phantom volumes are
+   marked for non-recursive removal so their faces survive for the mesh stage.
 5. Mesh backend calls builder.apply(plan, phantom_map) which:
    a. resolves StructuredMeshPlan from plan + entity resolutions
    b. marks top sub-faces "no auto-mesh"
