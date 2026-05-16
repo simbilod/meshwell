@@ -23,7 +23,9 @@ from shapely.geometry.polygon import orient
 from meshwell.structured.spec import (
     EdgeKey,
     FaceKey,
+    PhantomBuildResult,
     PhantomShape,
+    StructuredPlan,
     VertexKey,
 )
 
@@ -223,3 +225,27 @@ def _build_sub_prism(
         input_vertices_by_key=input_vertices,
         input_laterals_by_outer_edge=input_laterals,
     )
+
+
+def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
+    """For each slab, build one OCP sub-prism per partition piece.
+
+    Returns a :class:`PhantomBuildResult` with shapes in
+    (slab_index, piece_index) ascending order for deterministic
+    downstream processing.
+    """
+    shapes: list[PhantomShape] = []
+    for slab_index, slab in enumerate(plan.slabs):
+        if not slab.face_partition:
+            continue
+        for piece_index, piece in enumerate(slab.face_partition):
+            shapes.append(
+                _build_sub_prism(
+                    piece=piece,
+                    zlo=slab.zlo,
+                    zhi=slab.zhi,
+                    slab_index=slab_index,
+                    piece_index=piece_index,
+                )
+            )
+    return PhantomBuildResult(shapes=tuple(shapes))

@@ -126,3 +126,87 @@ def test_build_sub_prism_records_bottom_vertex_keys():
     )
     bot_verts = {k for k in out.input_vertices_by_key if k.side == "bot"}
     assert len(bot_verts) == 4
+
+
+def test_build_phantom_shapes_empty_plan_returns_empty_result():
+    from meshwell.structured.phantom import build_phantom_shapes
+    from meshwell.structured.spec import StructuredPlan
+
+    plan = StructuredPlan(slabs=(), z_planes=(), overlaps=())
+    result = build_phantom_shapes(plan)
+    assert result.shapes == ()
+
+
+def test_build_phantom_shapes_one_slab_one_piece():
+    """Single slab with a one-piece partition yields one PhantomShape."""
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+    from meshwell.structured.phantom import build_phantom_shapes
+
+    s = PolyPrism(
+        polygons=_unit_square(),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[3])],
+        physical_name="s",
+    )
+    plan = build_plan([s])
+    result = build_phantom_shapes(plan)
+    assert len(result.shapes) == 1
+    assert result.shapes[0].slab_index == 0
+    assert result.shapes[0].piece_index == 0
+
+
+def test_build_phantom_shapes_multi_piece_partition():
+    """A slab with a 2-piece face_partition yields 2 PhantomShapes."""
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+    from meshwell.structured.phantom import build_phantom_shapes
+
+    # 4x4 structured square; a non-structured neighbour on top covers half.
+    s = PolyPrism(
+        polygons=Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[3])],
+        physical_name="s",
+    )
+    n = PolyPrism(
+        polygons=Polygon([(0, 0), (2, 0), (2, 4), (0, 4)]),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="n",
+    )
+    plan = build_plan([s, n])
+    # face_partition should have 2 pieces (covered + uncovered halves).
+    assert len(plan.slabs[0].face_partition) == 2
+
+    result = build_phantom_shapes(plan)
+    assert len(result.shapes) == 2
+    assert {sh.slab_index for sh in result.shapes} == {0}
+    assert sorted(sh.piece_index for sh in result.shapes) == [0, 1]
+
+
+def test_build_phantom_shapes_is_deterministic_ordering():
+    """Output ordering is (slab_index, piece_index) ascending."""
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+    from meshwell.structured.phantom import build_phantom_shapes
+
+    s0 = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="s0",
+    )
+    s1 = PolyPrism(
+        polygons=Polygon([(10, 0), (11, 0), (11, 1), (10, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="s1",
+    )
+    plan = build_plan([s0, s1])
+    result = build_phantom_shapes(plan)
+    indices = [(sh.slab_index, sh.piece_index) for sh in result.shapes]
+    assert indices == sorted(indices)
