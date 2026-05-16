@@ -266,21 +266,6 @@ def _build_slab_volume(
     return vol_tag
 
 
-def _find_horizontal_face_at_z(z: float, tol: float = 1e-6) -> int | None:
-    """Return the gmsh face tag whose z-bbox is at z (within tol), else None.
-
-    Phase 3 minimum assumption: single piece, no neighbour cuts -> exactly
-    one bottom face at z=zlo and one top face at z=zhi for the slab.
-    """
-    import gmsh
-
-    for dim, tag in gmsh.model.getEntities(2):
-        bb = gmsh.model.getBoundingBox(dim, tag)
-        if abs(bb[2] - z) < tol and abs(bb[5] - z) < tol:
-            return tag
-    return None
-
-
 def _find_volume_containing_faces(
     bottom_face_tag: int, top_face_tag: int
 ) -> int | None:
@@ -302,100 +287,110 @@ def _find_volume_containing_faces(
 def apply_structured_mesh(
     plan: StructuredPlan,
     mesh_plan: StructuredMeshPlan,
-    phantom_map: Any,  # PhantomMap — Any to avoid circular type imports; reserved for Phase 4  # noqa: ARG001
+    phantom_map: Any,
     fuzzy_tol: float = 1e-6,
 ) -> list[int]:
-    """Run the mesh-stage Layer C: derive top meshes + build discrete 3D volumes.
+    """Run the mesh-stage Layer C: per-piece top mesh stamp + slab volume build.
 
-    Returns a list of (slab-index-parallel) discrete-3D entity tags so the
-    caller can assert/inspect.
+    Uses PhantomMap to route per (slab, piece). For Phase 4, requires
+    exactly one gmsh output face per (slab, side, piece) - raises if BOP
+    split a piece into multiple sub-faces (Phase 5+).
 
-    Phase 3 minimum: assumes single-piece partition per slab and no
-    neighbour cuts of horizontal faces. Multi-piece + neighbour-cut
-    handling lands in Phase 4.
+    Returns a flat list of all per-piece volume entity tags created or
+    populated (one per piece, not per slab).
     """
     import gmsh
+
+    from meshwell.structured.spec import FaceKey
+
+    # Phase 4 Task 2 will switch this to _map_phantom_faces_to_gmsh (TopExp-based).
+    face_map = _map_phantom_faces_to_gmsh_bbox(phantom_map, tol=fuzzy_tol)
 
     vol_tags: list[int] = []
     for slab_idx, slab in enumerate(plan.slabs):
         n_layers = mesh_plan.n_layers[slab_idx]
         recombine = mesh_plan.recombine[slab_idx]
-
-        bot_tag = _find_horizontal_face_at_z(slab.zlo, tol=fuzzy_tol)
-        top_tag = _find_horizontal_face_at_z(slab.zhi, tol=fuzzy_tol)
-        if bot_tag is None or top_tag is None:
-            raise RuntimeError(
-                f"Slab {slab.physical_name}: could not find bottom face "
-                f"at z={slab.zlo} or top face at z={slab.zhi} in gmsh model"
-            )
-
         height = slab.zhi - slab.zlo
 
-        if n_layers == 1:
-            # Single layer: bottom -> top is the only layer map.
-            layer_maps = [_stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)]
-            interior_layer_maps: list[dict[int, int]] = []
-            interior_layer_coords: list[list[float]] = []
-        else:
-            # Multi-layer: build (n_layers - 1) intermediate node maps,
-            # then stamp the top mesh as the n-th layer.
-            bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
-                2, bot_tag, includeBoundary=True
-            )
-            bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
-            bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
-            next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
-            interior_layer_maps = []
-            interior_layer_coords = []
-            for i_layer in range(1, n_layers):
-                m: dict[int, int] = {}
-                coords: list[float] = []
-                z_i = slab.zlo + height * (i_layer / n_layers)
-                for j, bt in enumerate(bot_node_tags):
-                    new_tag = next_tag
-                    next_tag += 1
-                    m[int(bt)] = new_tag
-                    coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
-                interior_layer_maps.append(m)
-                interior_layer_coords.append(coords)
-            top_map = _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
-            layer_maps = [*interior_layer_maps, top_map]
-
-        # Prefer adding elements directly to the existing OCC volume entity
-        # (identified by containment of both horizontal faces in its boundary).
-        # This means the OCC entity already has a mesh after apply_structured_mesh
-        # and Mesh.MeshOnlyEmpty=1 will skip it during generate(3).
-        # If no OCC volume is found (shouldn't happen in Phase 3), fall back to
-        # creating a new discrete entity.
-        occ_vol_tag = _find_volume_containing_faces(bot_tag, top_tag)
-
-        # Register interior layer nodes BEFORE addElements so all referenced
-        # node tags exist in gmsh at the time addElements validates them.
-        # We need a valid 3D entity tag for addNodes: use occ_vol_tag if available,
-        # else create a new discrete entity.
-        pre_vol_tag: int | None = occ_vol_tag
-        if n_layers > 1:
-            if pre_vol_tag is None:
-                pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
-            all_interior_tags: list[int] = []
-            all_interior_coords: list[float] = []
-            for m, coords in zip(interior_layer_maps, interior_layer_coords):
-                all_interior_tags.extend(m.values())
-                all_interior_coords.extend(coords)
-            if all_interior_tags:
-                gmsh.model.mesh.addNodes(
-                    3, pre_vol_tag, all_interior_tags, all_interior_coords
+        for piece_idx in range(len(slab.face_partition)):
+            bot_key = FaceKey(slab_idx, "bot", piece_idx)
+            top_key = FaceKey(slab_idx, "top", piece_idx)
+            bot_tags = face_map.get(bot_key, [])
+            top_tags = face_map.get(top_key, [])
+            if len(bot_tags) != 1 or len(top_tags) != 1:
+                raise RuntimeError(
+                    f"Slab {slab.physical_name} piece {piece_idx}: "
+                    f"expected exactly one bottom + one top gmsh face "
+                    f"(Phase 4 minimum); got bottom={bot_tags}, top={top_tags}. "
+                    f"Multi-output-face support is Phase 5+."
                 )
+            bot_tag = bot_tags[0]
+            top_tag = top_tags[0]
 
-        vol_tag = _build_slab_volume(
-            bottom_face_tag=bot_tag,
-            bot_to_top_layer_tags=layer_maps,
-            n_layers=n_layers,
-            recombine=recombine,
-            pre_allocated_vol_tag=pre_vol_tag,
-        )
+            if n_layers == 1:
+                # Single layer: bottom -> top is the only layer map.
+                layer_maps = [
+                    _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
+                ]
+                interior_layer_maps: list[dict[int, int]] = []
+                interior_layer_coords: list[list[float]] = []
+            else:
+                # Multi-layer: build (n_layers - 1) intermediate node maps,
+                # then stamp the top mesh as the n-th layer.
+                bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
+                    2, bot_tag, includeBoundary=True
+                )
+                bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
+                bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
+                next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+                interior_layer_maps = []
+                interior_layer_coords = []
+                for i_layer in range(1, n_layers):
+                    m: dict[int, int] = {}
+                    coords: list[float] = []
+                    z_i = slab.zlo + height * (i_layer / n_layers)
+                    for j, bt in enumerate(bot_node_tags):
+                        new_tag = next_tag
+                        next_tag += 1
+                        m[int(bt)] = new_tag
+                        coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
+                    interior_layer_maps.append(m)
+                    interior_layer_coords.append(coords)
+                top_map = _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
+                layer_maps = [*interior_layer_maps, top_map]
 
-        vol_tags.append(vol_tag)
+            # Prefer adding elements directly to the existing OCC volume entity
+            # (identified by containment of both horizontal faces in its boundary).
+            # This means the OCC entity already has a mesh after apply_structured_mesh
+            # and Mesh.MeshOnlyEmpty=1 will skip it during generate(3).
+            # If no OCC volume is found, fall back to creating a new discrete entity.
+            occ_vol_tag = _find_volume_containing_faces(bot_tag, top_tag)
+
+            # Register interior layer nodes BEFORE addElements so all referenced
+            # node tags exist in gmsh at the time addElements validates them.
+            pre_vol_tag: int | None = occ_vol_tag
+            if n_layers > 1:
+                if pre_vol_tag is None:
+                    pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
+                all_interior_tags: list[int] = []
+                all_interior_coords: list[float] = []
+                for m, coords in zip(interior_layer_maps, interior_layer_coords):
+                    all_interior_tags.extend(m.values())
+                    all_interior_coords.extend(coords)
+                if all_interior_tags:
+                    gmsh.model.mesh.addNodes(
+                        3, pre_vol_tag, all_interior_tags, all_interior_coords
+                    )
+
+            vol_tag = _build_slab_volume(
+                bottom_face_tag=bot_tag,
+                bot_to_top_layer_tags=layer_maps,
+                n_layers=n_layers,
+                recombine=recombine,
+                pre_allocated_vol_tag=pre_vol_tag,
+            )
+
+            vol_tags.append(vol_tag)
 
     # Global cleanup: merge ~coincident nodes.
     fuzzy_values = [
@@ -413,21 +408,30 @@ def apply_structured_mesh(
 
 
 def _occ_face_bbox(face: Any) -> tuple[float, float, float, float, float, float]:
-    """Return AABB (xmin, ymin, zmin, xmax, ymax, zmax) of an OCP TopoDS_Face."""
+    """Return tight AABB (xmin, ymin, zmin, xmax, ymax, zmax) of an OCP TopoDS_Face.
+
+    Uses SetGap(0) so the result matches gmsh getBoundingBox coordinates.
+    """
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
 
     b = Bnd_Box()
+    b.SetGap(0.0)
     BRepBndLib.Add_s(face, b)
     xmin, ymin, zmin, xmax, ymax, zmax = b.Get()
     return (xmin, ymin, zmin, xmax, ymax, zmax)
 
 
-def _map_phantom_faces_to_gmsh(
+def _map_phantom_faces_to_gmsh_bbox(
     phantom_map: Any,  # PhantomMap
     tol: float = 1e-6,
 ) -> dict[Any, list[int]]:  # dict[FaceKey, list[int]]
-    """Match each PhantomMap.output_faces entry (OCP TopoDS_Face) to a gmsh face tag.
+    """DEPRECATED — bbox-based mapper kept for apply_structured_mesh backward compat.
+
+    Phase 4 Task 2 will switch apply_structured_mesh to use the new
+    TopExp-index-based _map_phantom_faces_to_gmsh and remove this function.
+
+    Match each PhantomMap.output_faces entry (OCP TopoDS_Face) to a gmsh face tag.
 
     Returns a dict[FaceKey, list[int]] — the same shape as
     phantom_map.output_faces but with gmsh tags as values. Faces with no
@@ -465,4 +469,71 @@ def _map_phantom_faces_to_gmsh(
                 f"(OCP bbox {_occ_face_bbox(occ_faces[0])} not found in gmsh model)."
             )
         out[face_key] = gmsh_tags
+    return out
+
+
+def _build_xao_compound(occ_entities: list[Any]) -> Any:
+    """Reproduce the BREP compound that meshwell.occ_xao_writer.write_xao builds.
+
+    The compound is built from OCCLabeledEntity.shapes, filtering out
+    top-dim keep=False entities (mirrors occ_xao_writer.py:300-307).
+    gmsh loads exactly this compound from the XAO, assigning face tags
+    in TopExp::MapShapes(compound, TopAbs_FACE) order.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    max_dim = max((e.dim for e in occ_entities if e.shapes), default=0)
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for ent in occ_entities:
+        if ent.dim == max_dim and not ent.keep:
+            continue
+        for s in ent.shapes:
+            builder.Add(compound, s)
+    return compound
+
+
+def _map_phantom_faces_to_gmsh(
+    phantom_map: Any,  # PhantomMap
+    occ_entities: list[Any],  # list[OCCLabeledEntity]
+) -> dict[Any, list[int]]:  # dict[FaceKey, list[int]]
+    """Map each PhantomMap.output_faces entry (OCP TopoDS_Face) to gmsh face tags.
+
+    Implementation: gmsh assigns face tags in TopExp::MapShapes order
+    on the loaded BREP compound (empirically verified — see spike
+    docs/superpowers/spikes/xao_load_tag_determinism.py). We reproduce
+    the XAO compound, build a face-only IndexedMapOfShape on it, then
+    FindIndex(face) returns the 1-based index which equals the gmsh tag.
+
+    IsSame() comparison handles the case where phantom faces are
+    sub-shapes of user-entity solids (BOP TShape sharing).
+
+    Raises RuntimeError if any phantom face has no IsSame() match in
+    the compound (indicates a real architectural error, not a tolerance
+    issue).
+    """
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    compound = _build_xao_compound(occ_entities)
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(compound, TopAbs_FACE, fmap)
+
+    out: dict[Any, list[int]] = {}
+    for face_key, occ_faces in phantom_map.output_faces.items():
+        tags: list[int] = []
+        for f in occ_faces:
+            idx = fmap.FindIndex(f)  # 0 if not present
+            if idx == 0:
+                raise RuntimeError(
+                    f"PhantomMap face {face_key} has no IsSame() match in "
+                    f"the XAO compound. This indicates the phantom shape "
+                    f"was not properly included in cad_occ's BOP, OR "
+                    f"BOP eliminated it."
+                )
+            tags.append(idx)
+        out[face_key] = tags
     return out
