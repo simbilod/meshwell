@@ -255,3 +255,117 @@ def _build_slab_volume(
         3, vol_tag, [elem_3d_type], [elem_tags], [all_volume_nodes]
     )
     return vol_tag
+
+
+def _find_horizontal_face_at_z(z: float, tol: float = 1e-6) -> int | None:
+    """Return the gmsh face tag whose z-bbox is at z (within tol), else None.
+
+    Phase 3 minimum assumption: single piece, no neighbour cuts -> exactly
+    one bottom face at z=zlo and one top face at z=zhi for the slab.
+    """
+    import gmsh
+
+    for dim, tag in gmsh.model.getEntities(2):
+        bb = gmsh.model.getBoundingBox(dim, tag)
+        if abs(bb[2] - z) < tol and abs(bb[5] - z) < tol:
+            return tag
+    return None
+
+
+def apply_structured_mesh(
+    plan: StructuredPlan,
+    mesh_plan: StructuredMeshPlan,
+    phantom_map: Any,  # PhantomMap — Any to avoid circular type imports; reserved for Phase 4  # noqa: ARG001
+    fuzzy_tol: float = 1e-6,
+) -> list[int]:
+    """Run the mesh-stage Layer C: derive top meshes + build discrete 3D volumes.
+
+    Returns a list of (slab-index-parallel) discrete-3D entity tags so the
+    caller can assert/inspect.
+
+    Phase 3 minimum: assumes single-piece partition per slab and no
+    neighbour cuts of horizontal faces. Multi-piece + neighbour-cut
+    handling lands in Phase 4.
+    """
+    import gmsh
+
+    vol_tags: list[int] = []
+    for slab_idx, slab in enumerate(plan.slabs):
+        n_layers = mesh_plan.n_layers[slab_idx]
+        recombine = mesh_plan.recombine[slab_idx]
+
+        bot_tag = _find_horizontal_face_at_z(slab.zlo, tol=fuzzy_tol)
+        top_tag = _find_horizontal_face_at_z(slab.zhi, tol=fuzzy_tol)
+        if bot_tag is None or top_tag is None:
+            raise RuntimeError(
+                f"Slab {slab.physical_name}: could not find bottom face "
+                f"at z={slab.zlo} or top face at z={slab.zhi} in gmsh model"
+            )
+
+        height = slab.zhi - slab.zlo
+
+        if n_layers == 1:
+            # Single layer: bottom -> top is the only layer map.
+            layer_maps = [_stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)]
+            interior_layer_maps: list[dict[int, int]] = []
+            interior_layer_coords: list[list[float]] = []
+        else:
+            # Multi-layer: build (n_layers - 1) intermediate node maps,
+            # then stamp the top mesh as the n-th layer.
+            bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
+                2, bot_tag, includeBoundary=True
+            )
+            bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
+            bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
+            next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+            interior_layer_maps = []
+            interior_layer_coords = []
+            for i_layer in range(1, n_layers):
+                m: dict[int, int] = {}
+                coords: list[float] = []
+                z_i = slab.zlo + height * (i_layer / n_layers)
+                for j, bt in enumerate(bot_node_tags):
+                    new_tag = next_tag
+                    next_tag += 1
+                    m[int(bt)] = new_tag
+                    coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
+                interior_layer_maps.append(m)
+                interior_layer_coords.append(coords)
+            top_map = _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
+            layer_maps = [*interior_layer_maps, top_map]
+
+        vol_tag = _build_slab_volume(
+            bottom_face_tag=bot_tag,
+            bot_to_top_layer_tags=layer_maps,
+            n_layers=n_layers,
+            recombine=recombine,
+        )
+
+        # For n_layers > 1, the interior layer nodes have tags but no node
+        # data in gmsh yet — add them to the volume now.
+        if n_layers > 1:
+            all_interior_tags: list[int] = []
+            all_interior_coords: list[float] = []
+            for m, coords in zip(interior_layer_maps, interior_layer_coords):
+                all_interior_tags.extend(m.values())
+                all_interior_coords.extend(coords)
+            if all_interior_tags:
+                gmsh.model.mesh.addNodes(
+                    3, vol_tag, all_interior_tags, all_interior_coords
+                )
+
+        vol_tags.append(vol_tag)
+
+    # Global cleanup: merge ~coincident nodes.
+    fuzzy_values = [
+        slab.fragment_fuzzy_value
+        for slab in plan.slabs
+        if slab.fragment_fuzzy_value is not None
+    ]
+    fuzzy = max(fuzzy_values) if fuzzy_values else fuzzy_tol
+    try:
+        gmsh.model.mesh.removeDuplicateNodes(tag=[], tol=2 * fuzzy)
+    except TypeError:
+        gmsh.model.mesh.removeDuplicateNodes()
+
+    return vol_tags
