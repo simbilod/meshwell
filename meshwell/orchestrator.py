@@ -105,7 +105,7 @@ def generate_mesh(
         )
         phantom_map = extract_phantom_map(phantom_result, captured_builder[0])
         mesh_plan_obj = resolve_mesh_plan(plan, entities)
-        structured_state = (plan, mesh_plan_obj, phantom_map)
+        structured_state = (plan, mesh_plan_obj, phantom_map, occ_entities)
     else:
         occ_entities = cad_occ(entities, **cad_kwargs)
 
@@ -133,10 +133,10 @@ def generate_mesh(
         # Two-pass meshing: 2D first, apply_structured_mesh hook, then 3D
         # with Mesh.MeshOnlyEmpty=1 so the discrete entities built by
         # apply_structured_mesh are not re-meshed.
-        _plan, _mesh_plan, _phantom_map = structured_state
+        _plan, _mesh_plan, _phantom_map, _occ_entities = structured_state
 
         def _structured_hook() -> None:
-            apply_structured_mesh(_plan, _mesh_plan, _phantom_map)
+            apply_structured_mesh(_plan, _mesh_plan, _phantom_map, _occ_entities)
 
         return mesh(
             dim=dim,
