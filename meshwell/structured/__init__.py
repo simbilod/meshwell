@@ -12,8 +12,10 @@ users in Phase 1.
 """
 from __future__ import annotations
 
+from typing import Any
 
-def __getattr__(name: str):
+
+def __getattr__(name: str) -> Any:
     if name == "StructuredExtrusionResolutionSpec":
         from meshwell.structured.spec import StructuredExtrusionResolutionSpec
 
