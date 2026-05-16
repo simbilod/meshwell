@@ -1,0 +1,146 @@
+# ruff: noqa: S108, D103
+"""Demo of the clean structured-polyprism pipeline.
+
+Builds two small example scenes that exercise what the rewrite supports
+on ``feat/structured-clean`` today, generates meshes, and prints
+element-count summaries.
+
+Run::
+
+    .venv/bin/python scripts/demo_structured.py [output_dir]
+
+Output: two ``.msh`` files (single-piece and multi-piece) under
+``output_dir`` (defaults to ``/tmp/structured_demo``), plus a console
+report.
+
+Scenes
+------
+
+1. ``simple_slab`` — A 2x2 structured polyprism at z=[0, 1] with
+   n_layers=2. No neighbours. The slab volume is meshed as wedge
+   prisms. The single-piece end-to-end case.
+
+2. ``slab_with_top_cap`` — A 4x4 structured slab at z=[0, 1] with
+   n_layers=2 plus a non-structured ``cap`` at z=[1, 2] covering the
+   left half (x=[0, 2]). The slab's top face is partitioned into 2
+   pieces by the planner; the multi-piece routing introduced in
+   Phase 5(a) handles boundary-node correspondence via Layer B's
+   ``output_edges`` map. Both pieces produce wedge prisms; the cap
+   above produces tets.
+
+What this does NOT yet exercise
+-------------------------------
+
+- BOP cuts that split a piece's top into multiple sub-faces (Phase 5(b)).
+- Mid-height-cut lateral faces (Phase 5(c)).
+- Arc-bearing structured prisms (Phase 6+).
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import meshio
+from shapely.geometry import Polygon
+
+from meshwell.orchestrator import generate_mesh
+from meshwell.polyprism import PolyPrism
+from meshwell.structured import StructuredExtrusionResolutionSpec
+
+
+def _square(x: float, y: float, w: float, h: float) -> Polygon:
+    return Polygon([(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
+
+
+def _summarize_mesh(path: Path) -> None:
+    m = meshio.read(path)
+    print(f"\n  Mesh file: {path} ({path.stat().st_size:,} bytes)")
+    print(f"  Total points: {len(m.points)}")
+    print("  Cell blocks:")
+    for cb in m.cells:
+        print(f"    {cb.type:12s} count={len(cb.data)}")
+    print("  Physical groups:")
+    for name, (tag, dim) in sorted(m.field_data.items()):
+        print(f"    {name:20s} dim={dim}  tag={tag}")
+
+
+def scene_simple_slab(out_dir: Path) -> Path:
+    """Single structured polyprism, no neighbours."""
+    print("\n" + "=" * 70)
+    print("Scene 1: simple_slab")
+    print("=" * 70)
+    print(
+        "  A 2x2 structured polyprism at z=[0, 1] with n_layers=2.\n"
+        "  No neighbours -> face_partition has 1 piece.\n"
+        "  Expected: 2 wedge layers, no other 3D cells."
+    )
+
+    slab = PolyPrism(
+        polygons=_square(0, 0, 2, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+    )
+
+    out_msh = out_dir / "simple_slab.msh"
+    generate_mesh([slab], dim=3, output_mesh=out_msh, default_characteristic_length=0.5)
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
+def scene_slab_with_top_cap(out_dir: Path) -> Path:
+    """Structured slab + non-structured cap on top half.
+
+    Exercises Phase-4 multi-piece routing + Phase-5(a) edge-correspondence
+    boundary node lookup.
+    """
+    print("\n" + "=" * 70)
+    print("Scene 2: slab_with_top_cap")
+    print("=" * 70)
+    print(
+        "  4x4 structured slab at z=[0, 1], n_layers=2.\n"
+        "  Non-structured cap at z=[1, 2] covering x=[0, 2] (left half).\n"
+        "  -> face_partition has 2 pieces (covered + uncovered halves).\n"
+        "  Expected: wedge prisms in both slab pieces, tets in the cap."
+    )
+
+    slab = PolyPrism(
+        polygons=_square(0, 0, 4, 4),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+    )
+    cap = PolyPrism(
+        polygons=_square(0, 0, 2, 4),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+    )
+
+    out_msh = out_dir / "slab_with_top_cap.msh"
+    generate_mesh(
+        [slab, cap], dim=3, output_mesh=out_msh, default_characteristic_length=0.5
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
+def main() -> int:
+    out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/structured_demo")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {out_dir}")
+
+    scene_simple_slab(out_dir)
+    scene_slab_with_top_cap(out_dir)
+
+    print("\n" + "=" * 70)
+    print("Done.")
+    print("=" * 70)
+    print(f"Open the .msh files in gmsh:\n  gmsh {out_dir}/simple_slab.msh")
+    print(f"  gmsh {out_dir}/slab_with_top_cap.msh")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
