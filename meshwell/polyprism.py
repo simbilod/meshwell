@@ -43,6 +43,8 @@ class PolyPrism(GeometryEntity):
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
+        structured: bool = False,
+        resolutions: list | None = None,
     ):
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
@@ -96,6 +98,60 @@ class PolyPrism(GeometryEntity):
         self.physical_name = format_physical_name(physical_name)
         self.mesh_bool = mesh_bool
         self.additive = additive
+
+        # Resolutions list (used by structured pipeline and other consumers).
+        self.resolutions = list(resolutions) if resolutions else []
+
+        # Phase 1: structured-mode flag and validation.
+        self.structured = structured
+
+        from meshwell.structured.spec import (
+            StructuredBufferTaperError,
+            StructuredExtrusionResolutionSpec,
+        )
+
+        _structured_specs = [
+            r
+            for r in self.resolutions
+            if isinstance(r, StructuredExtrusionResolutionSpec)
+        ]
+
+        if self.structured:
+            if not _structured_specs:
+                raise ValueError(
+                    "PolyPrism(structured=True) requires a "
+                    "StructuredExtrusionResolutionSpec in resolutions=. None found."
+                )
+            if len(_structured_specs) > 1:
+                raise ValueError(
+                    "PolyPrism(structured=True) accepts at most one "
+                    "StructuredExtrusionResolutionSpec; "
+                    f"{len(_structured_specs)} were attached."
+                )
+            spec = _structured_specs[0]
+            n_intervals = len(buffers) - 1
+            if len(spec.n_layers) != n_intervals:
+                raise ValueError(
+                    f"StructuredExtrusionResolutionSpec.n_layers length "
+                    f"({len(spec.n_layers)}) must equal len(buffers) - 1 "
+                    f"({n_intervals}) for the owning PolyPrism."
+                )
+            if not all(b == 0 for b in buffers.values()):
+                raise StructuredBufferTaperError(
+                    "PolyPrism(structured=True) requires zero buffers "
+                    f"(uniform extrusion). Got non-zero entries: "
+                    f"{ {z: b for z, b in buffers.items() if b != 0} }"
+                )
+        elif _structured_specs:
+            import warnings
+
+            warnings.warn(
+                "StructuredExtrusionResolutionSpec attached to a PolyPrism with "
+                "structured=False; the spec will be ignored. Pass "
+                "structured=True to activate the structured pipeline.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     def _create_volumes_directly(self) -> list[int]:
         """Create GMSH volumes directly without using CAD class methods."""
