@@ -15,3 +15,16 @@ def test_structured_public_exports_present():
     from meshwell.structured import StructuredExtrusionResolutionSpec
 
     assert StructuredExtrusionResolutionSpec is not None
+
+
+def test_phase2_public_exports():
+    """Phase 2 adds build_phantom_shapes / extract_phantom_map / PhantomMap."""
+    from meshwell.structured import (
+        PhantomMap,
+        build_phantom_shapes,
+        extract_phantom_map,
+    )
+
+    assert PhantomMap is not None
+    assert build_phantom_shapes is not None
+    assert extract_phantom_map is not None
