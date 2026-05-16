@@ -214,3 +214,28 @@ class PhantomMap:
     # cut"). Phase 3's builder uses this to decide which lateral faces
     # to exclude from transfinite hints.
     lateral_has_midheight_cut: dict[LateralKey, bool] = field(default_factory=dict)
+
+
+class StructuredMeshOverlapError(ValueError):
+    """Raised when an overlap-pair winner and loser have different n_layers.
+
+    Plan-stage Policy B catches direct overlap mismatches at slab
+    construction. Mesh-stage catches the case where an OverlapPair
+    records a winner/loser whose spec n_layers actually disagree —
+    paranoid double-check before we commit to the loser-was-dominated
+    decision.
+    """
+
+
+@dataclass(frozen=True)
+class StructuredMeshPlan:
+    """Output of ``resolve_mesh_plan(plan, entities)``.
+
+    Carries the mesh-stage parameters resolved from each slab's owning
+    ``StructuredExtrusionResolutionSpec``. Parallel arrays: index i in
+    ``n_layers`` / ``recombine`` corresponds to ``plan.slabs[i]``.
+    """
+
+    slabs: tuple[Slab, ...]
+    n_layers: tuple[int, ...]
+    recombine: tuple[bool, ...]
