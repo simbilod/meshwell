@@ -5,7 +5,6 @@ top z-plane.
 """
 from __future__ import annotations
 
-import pytest
 from shapely.geometry import Polygon
 
 
@@ -38,17 +37,14 @@ def test_structured_slab_with_top_neighbour_face_partition_has_two_pieces():
 
 
 def test_structured_slab_with_top_neighbour_produces_multi_piece_wedges(tmp_path):
-    """Mesh test: structured slab with 2-piece face_partition (Phase 4 + skip for Phase 5).
+    """Mesh test: structured slab with 2-piece face_partition produces wedges.
 
     A structured slab whose top is partially covered by a non-structured
-    neighbour produces a 2-piece face_partition; both pieces should mesh correctly.
+    neighbour produces a 2-piece face_partition; both pieces mesh correctly.
 
-    Phase 5 deferral: when BOP fragments a piece's top face, the partition
-    boundary introduces new edge nodes that don't correspond to any bottom
-    boundary node by XY.  _stamp_top_face_mesh's boundary-node matcher
-    can't map those nodes and raises a KeyError.  Full support (iterating
-    over multiple output sub-faces and stitching their meshes) is deferred
-    to Phase 5.  This test is skipped until that work lands.
+    Phase 5(a): boundary node correspondence uses Layer B's output_edges map
+    (edge identity + XY matching) instead of the old XY-only approach, which
+    failed when BOP introduced top boundary nodes not present on the bottom.
     """
     import meshio
 
@@ -72,17 +68,7 @@ def test_structured_slab_with_top_neighbour_produces_multi_piece_wedges(tmp_path
     )
 
     out_msh = tmp_path / "multipiece.msh"
-    try:
-        generate_mesh(
-            [s, n], dim=3, output_mesh=out_msh, default_characteristic_length=0.5
-        )
-    except (KeyError, RuntimeError) as exc:
-        # KeyError: a bottom boundary node that lies on the BOP-introduced
-        # partition edge has no XY match on the top sub-face (_stamp_top_face_mesh).
-        # RuntimeError: "expected exactly one bottom + one top gmsh face" — the
-        # top of a piece was further split by BOP into multiple sub-faces.
-        # Both are the Phase-5 multi-output-face case.
-        pytest.skip(f"Multi-output-face routing is Phase 5+ (deferred): {exc!r}")
+    generate_mesh([s, n], dim=3, output_mesh=out_msh, default_characteristic_length=0.5)
 
     m = meshio.read(out_msh)
     cell_types = {cb.type for cb in m.cells}

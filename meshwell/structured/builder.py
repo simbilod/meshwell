@@ -82,13 +82,18 @@ def _stamp_top_face_mesh(
     top_face_tag: int,
     zlo: float,
     zhi: float,
+    edge_correspondence: dict[int, int] | None = None,
 ) -> dict[int, int]:
     """Replace the top OCC face's 2D mesh with a translated copy of the bottom's.
 
-    Phase 3 minimum: pure translation. Boundary node positions for the
-    top are computed as ``bottom_xy + (0, 0, zhi - zlo)``. The full Layer
-    B vertex-map lookup (for BOP-displaced boundary nodes) lands in
-    Phase 4.
+    When ``edge_correspondence`` is provided (Phase 5(a)+), boundary node
+    correspondence is established by edge identity + parametric position
+    instead of XY matching.  ``edge_correspondence`` maps
+    bot_edge_gmsh_tag -> top_edge_gmsh_tag for each bounding edge of the
+    bottom face.
+
+    When ``edge_correspondence`` is None (legacy path), falls back to the
+    old XY-matching approach (kept for single-piece no-BOP scenes).
 
     Returns a dict mapping bottom node tag -> newly-allocated top node
     tag (so the volume builder can use it for prism construction).
@@ -97,18 +102,7 @@ def _stamp_top_face_mesh(
 
     height = zhi - zlo
 
-    # Collect bottom mesh data before clearing anything.
-    bot_all_tags_arr, bot_all_coords_flat, _ = gmsh.model.mesh.getNodes(
-        2, bottom_face_tag, includeBoundary=True
-    )
-    bot_all_tags = np.asarray(bot_all_tags_arr, dtype=np.int64)
-    bot_all_coords = np.asarray(bot_all_coords_flat, dtype=float).reshape(-1, 3)
-
-    bot_int_tags_arr, _, _ = gmsh.model.mesh.getNodes(
-        2, bottom_face_tag, includeBoundary=False
-    )
-    bot_int_tags = set(bot_int_tags_arr.tolist())
-
+    # Collect bottom face's triangulation.
     elem_types, _, elem_nodes_per_type = gmsh.model.mesh.getElements(2, bottom_face_tag)
     bot_tri_nodes: list[np.ndarray] = []
     for et, en in zip(elem_types, elem_nodes_per_type):
@@ -118,56 +112,141 @@ def _stamp_top_face_mesh(
         return {}
     bot_triangles = np.concatenate(bot_tri_nodes, axis=0)
 
-    # Clear the top face's 2D mesh. Boundary nodes (on curves/vertices) survive.
-    with contextlib.suppress(Exception):
-        gmsh.model.mesh.clear([(2, top_face_tag)])
-
-    # After clearing, the top face retains its boundary (curve) nodes.
-    # Match them to bottom boundary nodes by XY position.
-    top_bnd_tags_arr, top_bnd_coords_flat, _ = gmsh.model.mesh.getNodes(
-        2, top_face_tag, includeBoundary=True
-    )
-    top_bnd_tags = np.asarray(top_bnd_tags_arr, dtype=np.int64)
-    top_bnd_coords = np.asarray(top_bnd_coords_flat, dtype=float).reshape(-1, 3)
-
     bot_to_top_tag: dict[int, int] = {}
 
-    # Build XY -> top-boundary-tag lookup for fast matching.
-    top_bnd_xy_to_tag: dict[tuple[float, float], int] = {}
-    for i, tt in enumerate(top_bnd_tags):
-        key = (round(top_bnd_coords[i, 0], 9), round(top_bnd_coords[i, 1], 9))
-        top_bnd_xy_to_tag[key] = int(tt)
+    if edge_correspondence is not None:
+        # --- Phase 5(a): edge-identity + parametric-position matching ---
 
-    # Map bottom boundary nodes -> existing top boundary nodes.
-    new_interior_tags: list[int] = []
-    new_interior_coords_flat: list[float] = []
-    next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
-    new_node_counter = 0
+        # Step 1: match boundary nodes per edge pair using XY position.
+        # Parametric matching is unreliable because BOP can reverse edge
+        # orientation (making top parametrize in the opposite direction).
+        # Since bot and top edges are the same curve at different Z,
+        # XY-distance matching is robust regardless of parametric orientation.
+        bot_face_boundary = gmsh.model.getBoundary(
+            [(2, bottom_face_tag)], oriented=False, recursive=False
+        )
+        for dim_b, bot_edge_tag in bot_face_boundary:
+            if dim_b != 1:
+                continue
+            top_edge_tag = edge_correspondence.get(bot_edge_tag)
+            if top_edge_tag is None:
+                continue
 
-    for i, bt in enumerate(bot_all_tags):
-        bt_int = int(bt)
-        if bt_int not in bot_int_tags:
-            # Boundary node: match to existing top boundary node by XY.
-            key = (round(bot_all_coords[i, 0], 9), round(bot_all_coords[i, 1], 9))
-            top_tt = top_bnd_xy_to_tag.get(key)
-            if top_tt is not None:
-                bot_to_top_tag[bt_int] = top_tt
-            # If not found (shouldn't happen in Phase 3), skip mapping.
-        else:
-            # Interior node: allocate a fresh tag on the top face.
-            new_tag = next_tag + new_node_counter
-            new_node_counter += 1
-            bot_to_top_tag[bt_int] = new_tag
-            new_interior_tags.append(new_tag)
-            new_interior_coords_flat.extend(
-                [bot_all_coords[i, 0], bot_all_coords[i, 1], zlo + height]
+            bot_ntags, bot_coords_flat_e, _ = gmsh.model.mesh.getNodes(
+                1, bot_edge_tag, includeBoundary=True
+            )
+            top_ntags, top_coords_flat_e, _ = gmsh.model.mesh.getNodes(
+                1, top_edge_tag, includeBoundary=True
             )
 
-    if new_interior_tags:
-        gmsh.model.mesh.addNodes(
-            2, top_face_tag, new_interior_tags, new_interior_coords_flat
-        )
+            bot_ntags = np.asarray(bot_ntags, dtype=np.int64)
+            top_ntags = np.asarray(top_ntags, dtype=np.int64)
+            bot_coords_e = np.asarray(bot_coords_flat_e, dtype=float).reshape(-1, 3)
+            top_coords_e = np.asarray(top_coords_flat_e, dtype=float).reshape(-1, 3)
 
+            if len(bot_ntags) != len(top_ntags):
+                raise RuntimeError(
+                    "Phase 5(a): bottom/top edge node count mismatch — "
+                    "gmsh's 1D mesher produced different node counts on "
+                    f"bottom edge {bot_edge_tag} ({len(bot_ntags)} nodes) "
+                    f"vs top edge {top_edge_tag} ({len(top_ntags)} nodes); "
+                    "need setPeriodic or remesh fix (future Phase work)."
+                )
+
+            # For each bot node, find the top node with matching XY.
+            for bi in range(len(bot_ntags)):
+                bx, by = bot_coords_e[bi, 0], bot_coords_e[bi, 1]
+                dists = np.hypot(top_coords_e[:, 0] - bx, top_coords_e[:, 1] - by)
+                ti = int(np.argmin(dists))
+                bot_to_top_tag[int(bot_ntags[bi])] = int(top_ntags[ti])
+
+        # Step 2: collect interior bottom nodes (boundary=False).
+        bot_int_tags_arr, bot_int_coords_flat, _ = gmsh.model.mesh.getNodes(
+            2, bottom_face_tag, includeBoundary=False
+        )
+        bot_int_tags_arr = np.asarray(bot_int_tags_arr, dtype=np.int64)
+        bot_int_coords = np.asarray(bot_int_coords_flat, dtype=float).reshape(-1, 3)
+
+        # Clear the top face's 2D mesh. Boundary nodes (on curves/vertices) survive.
+        with contextlib.suppress(Exception):
+            gmsh.model.mesh.clear([(2, top_face_tag)])
+
+        # Step 3: allocate fresh tags for interior nodes only.
+        next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+        new_interior_tags: list[int] = []
+        new_interior_coords_flat: list[float] = []
+        for i, bt in enumerate(bot_int_tags_arr):
+            new_tag = next_tag + i
+            bot_to_top_tag[int(bt)] = new_tag
+            new_interior_tags.append(new_tag)
+            new_interior_coords_flat.extend(
+                [bot_int_coords[i, 0], bot_int_coords[i, 1], zlo + height]
+            )
+
+        if new_interior_tags:
+            gmsh.model.mesh.addNodes(
+                2, top_face_tag, new_interior_tags, new_interior_coords_flat
+            )
+
+    else:
+        # --- Legacy path: XY-matching (no edge correspondence available) ---
+
+        # Collect all bottom mesh data before clearing anything.
+        bot_all_tags_arr, bot_all_coords_flat, _ = gmsh.model.mesh.getNodes(
+            2, bottom_face_tag, includeBoundary=True
+        )
+        bot_all_tags = np.asarray(bot_all_tags_arr, dtype=np.int64)
+        bot_all_coords = np.asarray(bot_all_coords_flat, dtype=float).reshape(-1, 3)
+
+        bot_int_tags_arr2, _, _ = gmsh.model.mesh.getNodes(
+            2, bottom_face_tag, includeBoundary=False
+        )
+        bot_int_tags = set(bot_int_tags_arr2.tolist())
+
+        # Clear the top face's 2D mesh. Boundary nodes (on curves/vertices) survive.
+        with contextlib.suppress(Exception):
+            gmsh.model.mesh.clear([(2, top_face_tag)])
+
+        top_bnd_tags_arr, top_bnd_coords_flat, _ = gmsh.model.mesh.getNodes(
+            2, top_face_tag, includeBoundary=True
+        )
+        top_bnd_tags = np.asarray(top_bnd_tags_arr, dtype=np.int64)
+        top_bnd_coords = np.asarray(top_bnd_coords_flat, dtype=float).reshape(-1, 3)
+
+        # Build XY -> top-boundary-tag lookup for fast matching.
+        top_bnd_xy_to_tag: dict[tuple[float, float], int] = {}
+        for i, tt in enumerate(top_bnd_tags):
+            key = (round(top_bnd_coords[i, 0], 9), round(top_bnd_coords[i, 1], 9))
+            top_bnd_xy_to_tag[key] = int(tt)
+
+        new_interior_tags2: list[int] = []
+        new_interior_coords_flat2: list[float] = []
+        next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+        new_node_counter = 0
+
+        for i, bt in enumerate(bot_all_tags):
+            bt_int = int(bt)
+            if bt_int not in bot_int_tags:
+                # Boundary node: match by XY.
+                key = (round(bot_all_coords[i, 0], 9), round(bot_all_coords[i, 1], 9))
+                top_tt = top_bnd_xy_to_tag.get(key)
+                if top_tt is not None:
+                    bot_to_top_tag[bt_int] = top_tt
+            else:
+                new_tag = next_tag + new_node_counter
+                new_node_counter += 1
+                bot_to_top_tag[bt_int] = new_tag
+                new_interior_tags2.append(new_tag)
+                new_interior_coords_flat2.extend(
+                    [bot_all_coords[i, 0], bot_all_coords[i, 1], zlo + height]
+                )
+
+        if new_interior_tags2:
+            gmsh.model.mesh.addNodes(
+                2, top_face_tag, new_interior_tags2, new_interior_coords_flat2
+            )
+
+    # Stamp triangles using the (boundary + interior) mapping.
     top_tri_nodes_flat: list[int] = []
     for tri in bot_triangles:
         a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
@@ -302,9 +381,10 @@ def apply_structured_mesh(
     """
     import gmsh
 
-    from meshwell.structured.spec import FaceKey
+    from meshwell.structured.spec import EdgeKey, FaceKey
 
     face_map = _map_phantom_faces_to_gmsh(phantom_map, occ_entities)
+    edge_map = _map_phantom_edges_to_gmsh(phantom_map, occ_entities)
 
     vol_tags: list[int] = []
     for slab_idx, slab in enumerate(plan.slabs):
@@ -327,10 +407,32 @@ def apply_structured_mesh(
             bot_tag = bot_tags[0]
             top_tag = top_tags[0]
 
+            # Build per-piece edge_correspondence: dict[bot_edge_gmsh_tag, top_edge_gmsh_tag].
+            edge_correspondence: dict[int, int] = {}
+            bot_face_boundary = gmsh.model.getBoundary(
+                [(2, bot_tag)], oriented=False, recursive=False
+            )
+            for dim_b, bot_edge_tag in bot_face_boundary:
+                if dim_b != 1:
+                    continue
+                for ek, tags in edge_map.items():
+                    if (
+                        ek.slab_index == slab_idx
+                        and ek.side == "bot"
+                        and ek.piece_index == piece_idx
+                        and bot_edge_tag in tags
+                    ):
+                        top_ek = EdgeKey(slab_idx, "top", piece_idx, ek.edge_index)
+                        if edge_map.get(top_ek):
+                            edge_correspondence[bot_edge_tag] = edge_map[top_ek][0]
+                        break
+
             if n_layers == 1:
                 # Single layer: bottom -> top is the only layer map.
                 layer_maps = [
-                    _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
+                    _stamp_top_face_mesh(
+                        bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+                    )
                 ]
                 interior_layer_maps: list[dict[int, int]] = []
                 interior_layer_coords: list[list[float]] = []
@@ -356,7 +458,9 @@ def apply_structured_mesh(
                         coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
                     interior_layer_maps.append(m)
                     interior_layer_coords.append(coords)
-                top_map = _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
+                top_map = _stamp_top_face_mesh(
+                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+                )
                 layer_maps = [*interior_layer_maps, top_map]
 
             # Prefer adding elements directly to the existing OCC volume entity
@@ -428,6 +532,43 @@ def _build_xao_compound(occ_entities: list[Any]) -> Any:
         for s in ent.shapes:
             builder.Add(compound, s)
     return compound
+
+
+def _map_phantom_edges_to_gmsh(
+    phantom_map: Any,  # PhantomMap
+    occ_entities: list[Any],  # list[OCCLabeledEntity]
+) -> dict[Any, list[int]]:  # dict[EdgeKey, list[int]]
+    """Map each PhantomMap.output_edges entry (OCP TopoDS_Edge) to gmsh edge tags.
+
+    Mirrors _map_phantom_faces_to_gmsh but uses TopAbs_EDGE. Per the spike
+    (docs/superpowers/spikes/xao_load_tag_determinism.py), gmsh assigns
+    tags in TopExp::MapShapes order per-dim, so the same lookup pattern
+    works for edges.
+
+    Returns dict[EdgeKey, list[int]] — gmsh edge tags per PhantomMap entry.
+    Raises RuntimeError if any input edge has no IsSame() match.
+    """
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    compound = _build_xao_compound(occ_entities)
+    emap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(compound, TopAbs_EDGE, emap)
+
+    out: dict[Any, list[int]] = {}
+    for edge_key, occ_edges in phantom_map.output_edges.items():
+        tags: list[int] = []
+        for e in occ_edges:
+            idx = emap.FindIndex(e)
+            if idx == 0:
+                raise RuntimeError(
+                    f"PhantomMap edge {edge_key} has no IsSame() match in "
+                    f"the XAO compound."
+                )
+            tags.append(idx)
+        out[edge_key] = tags
+    return out
 
 
 def _map_phantom_faces_to_gmsh(
