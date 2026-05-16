@@ -295,6 +295,8 @@ class CAD_OCC:
         self,
         entities: list[OCCLabeledEntity],
         progress_bars: bool = False,
+        extra_occ_shapes: list | None = None,
+        cad_occ_callback=None,
     ) -> list[OCCLabeledEntity]:
         """Fragment all entity shapes; assign pieces by mesh_order priority.
 
@@ -304,7 +306,7 @@ class CAD_OCC:
         """
         if not entities:
             return []
-        if len(entities) == 1:
+        if len(entities) == 1 and not extra_occ_shapes and cad_occ_callback is None:
             return entities
 
         builder = BOPAlgo_Builder()
@@ -323,12 +325,18 @@ class CAD_OCC:
             for s in ent.shapes:
                 builder.AddArgument(s)
 
+        for s in extra_occ_shapes or []:
+            builder.AddArgument(s)
+
         if progress_bars:
             print(
                 f"BOPAlgo_Builder.Perform() on {len(entities)} entities…",
                 flush=True,
             )
         builder.Perform()
+
+        if cad_occ_callback is not None:
+            cad_occ_callback(builder)
 
         piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = defaultdict(
             list
@@ -493,6 +501,8 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        extra_occ_shapes: list | None = None,
+        cad_occ_callback=None,
     ) -> list[OCCLabeledEntity]:
         """Instantiate, sequentially cut, then fragment all entities.
 
@@ -519,7 +529,12 @@ class CAD_OCC:
         )
         if not labeled_entities:
             return []
-        return self._fragment_all(labeled_entities, progress_bars=progress_bars)
+        return self._fragment_all(
+            labeled_entities,
+            progress_bars=progress_bars,
+            extra_occ_shapes=extra_occ_shapes,
+            cad_occ_callback=cad_occ_callback,
+        )
 
 
 def cad_occ(
@@ -530,6 +545,8 @@ def cad_occ(
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
+    extra_occ_shapes: list | None = None,
+    cad_occ_callback=None,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 
@@ -537,6 +554,23 @@ def cad_occ(
     gmsh-specific ``model`` / ``filename`` / tagging kwargs); the result
     feeds :func:`meshwell.occ_xao_writer.write_xao` to produce a tagged
     XAO gmsh can load.
+
+    Args:
+        entities_list: Ordered list of mesh entities to process.
+        point_tolerance: Coordinate quantization for entity instantiation.
+        n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
+        progress_bars: Whether to show tqdm progress bars.
+        cut_fuzzy_value: Fuzzy tolerance for ``BRepAlgoAPI_Cut``.
+        fragment_fuzzy_value: Fuzzy tolerance for the final ``BOPAlgo_Builder``.
+        perturbation: Outward shapely buffer applied before the cut cascade.
+        extra_occ_shapes: Optional list of additional OCP shapes added as
+            ``BOPAlgo_Builder`` arguments alongside entity shapes.  When
+            *None* (default) the behaviour is identical to before.
+        cad_occ_callback: Optional callable invoked with the
+            ``BOPAlgo_Builder`` instance immediately after ``Perform()``
+            and before history extraction.  Lets callers walk
+            ``Modified()`` / ``Generated()`` for phantom-shape tracking.
+            When *None* (default) no callback is made.
     """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
@@ -545,4 +579,9 @@ def cad_occ(
         fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
-    return processor.process_entities(entities_list, progress_bars=progress_bars)
+    return processor.process_entities(
+        entities_list,
+        progress_bars=progress_bars,
+        extra_occ_shapes=extra_occ_shapes,
+        cad_occ_callback=cad_occ_callback,
+    )
