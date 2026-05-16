@@ -253,6 +253,58 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     return PhantomBuildResult(shapes=tuple(shapes))
 
 
+_MIDHEIGHT_TOL = 1e-7
+
+
+def _slab_z_range_for_shape(shape: PhantomShape) -> tuple[float, float]:
+    """Recover (zlo, zhi) for a shape from its input bottom/top faces.
+
+    PhantomShape doesn't store zlo/zhi directly; read it from any
+    vertex on the bottom face (= zlo) and any vertex on the top face
+    (= zhi).
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    bot_key = FaceKey(
+        slab_index=shape.slab_index, side="bot", piece_index=shape.piece_index
+    )
+    top_key = FaceKey(
+        slab_index=shape.slab_index, side="top", piece_index=shape.piece_index
+    )
+    bot_face = shape.input_faces_by_key[bot_key]
+    top_face = shape.input_faces_by_key[top_key]
+
+    def _any_z(face: Any) -> float:
+        exp = TopExp_Explorer(face, TopAbs_VERTEX)
+        v = TopoDS.Vertex_s(exp.Current())
+        return BRep_Tool.Pnt_s(v).Z()
+
+    return _any_z(bot_face), _any_z(top_face)
+
+
+def _has_midheight_vertex(
+    builder: Any, lateral_face: Any, zlo: float, zhi: float
+) -> bool:
+    """True if BOP.Generated(lateral_face) produced any vertex with zlo < z < zhi."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopoDS import TopoDS
+
+    generated = builder.Generated(lateral_face)
+    if generated.IsEmpty():
+        return False
+    for sub in list(generated):
+        if sub.ShapeType() == TopAbs_VERTEX:
+            v = TopoDS.Vertex_s(sub)
+            z = BRep_Tool.Pnt_s(v).Z()
+            if zlo + _MIDHEIGHT_TOL < z < zhi - _MIDHEIGHT_TOL:
+                return True
+    return False
+
+
 def _modified_or_unchanged(builder: Any, input_shape: Any) -> list[Any]:
     """Return list of output shapes for input_shape.
 
@@ -302,5 +354,13 @@ def extract_phantom_map(
             )
             pmap.output_laterals[lateral_key] = _modified_or_unchanged(
                 builder, in_lateral
+            )
+        slab_zlo, slab_zhi = _slab_z_range_for_shape(shape)
+        for outer_edge_idx, in_lateral in shape.input_laterals_by_outer_edge.items():
+            lateral_key = LateralKey(
+                slab_index=shape.slab_index, outer_edge_index=outer_edge_idx
+            )
+            pmap.lateral_has_midheight_cut[lateral_key] = _has_midheight_vertex(
+                builder, in_lateral, slab_zlo, slab_zhi
             )
     return pmap

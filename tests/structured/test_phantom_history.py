@@ -111,3 +111,39 @@ def test_extract_phantom_map_records_all_input_keys():
         for i in shape.input_laterals_by_outer_edge
     }
     assert set(pmap.output_laterals.keys()) == expected_lateral_keys
+    assert set(pmap.lateral_has_midheight_cut.keys()) == expected_lateral_keys
+
+
+def test_lateral_no_midheight_cut_default():
+    """A phantom with no neighbours should have no mid-height cuts."""
+    from meshwell.structured.phantom import _build_sub_prism, extract_phantom_map
+    from meshwell.structured.spec import PhantomBuildResult
+
+    shape = _build_sub_prism(_square(), zlo=0.0, zhi=1.0, slab_index=0, piece_index=0)
+    builder = _run_bop(shape.solid)
+    pmap = extract_phantom_map(PhantomBuildResult(shapes=(shape,)), builder)
+    # All four laterals should have no mid-height cut.
+    assert all(not v for v in pmap.lateral_has_midheight_cut.values())
+
+
+def test_lateral_midheight_cut_detected_from_partial_neighbour():
+    """A neighbour that touches only part of a lateral face is a mid-height cut."""
+    from meshwell.structured.phantom import _build_sub_prism, extract_phantom_map
+    from meshwell.structured.spec import PhantomBuildResult
+    from tests.structured._occ_helpers import make_box
+
+    # Phantom z=[0,2], 4x4 footprint.
+    shape = _build_sub_prism(
+        _square(0, 0, 4, 4), zlo=0.0, zhi=2.0, slab_index=0, piece_index=0
+    )
+    # Neighbour box: protrudes into the y=4 lateral face but only at z in [0.5, 1.5].
+    # This puts new vertices at z=0.5 and z=1.5 on the lateral face -> mid-height cut.
+    neighbour = make_box(1.0, 3.5, 0.5, 2.0, 1.0, 1.0)
+    builder = _run_bop(shape.solid, neighbour)
+    pmap = extract_phantom_map(PhantomBuildResult(shapes=(shape,)), builder)
+
+    # At least one lateral should have a mid-height cut.
+    assert any(pmap.lateral_has_midheight_cut.values()), (
+        f"Expected mid-height cut on a lateral, got "
+        f"{dict(pmap.lateral_has_midheight_cut)}"
+    )

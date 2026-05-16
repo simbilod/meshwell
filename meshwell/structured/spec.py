@@ -209,3 +209,8 @@ class PhantomMap:
     output_edges: dict[EdgeKey, list[Any]] = field(default_factory=dict)
     output_vertices: dict[VertexKey, list[Any]] = field(default_factory=dict)
     output_laterals: dict[LateralKey, list[Any]] = field(default_factory=dict)
+    # Per-lateral flag: True iff BOP introduced a new vertex on the
+    # lateral face with z strictly between zlo and zhi (a "mid-height
+    # cut"). Phase 3's builder uses this to decide which lateral faces
+    # to exclude from transfinite hints.
+    lateral_has_midheight_cut: dict[LateralKey, bool] = field(default_factory=dict)
