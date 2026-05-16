@@ -4,23 +4,13 @@ Public surface:
 
 - :class:`StructuredExtrusionResolutionSpec` -- attach to a
   ``PolyPrism(structured=True)`` to specify per-z-interval layer counts.
-
-CAD-stage and mesh-stage internals (``Slab``, ``StructuredPlan``,
-``OverlapPair``, the planner) live in submodules and are loaded on demand
-by the orchestrator. They are not part of the public surface for end
-users in Phase 1.
+- :func:`build_plan` -- orchestrator-facing entry point: validates
+  structured entities, returns a frozen ``StructuredPlan`` for the
+  CAD + mesh stages.
 """
 from __future__ import annotations
 
-from typing import Any
+from meshwell.structured.plan import build_plan
+from meshwell.structured.spec import StructuredExtrusionResolutionSpec
 
-
-def __getattr__(name: str) -> Any:
-    if name == "StructuredExtrusionResolutionSpec":
-        from meshwell.structured.spec import StructuredExtrusionResolutionSpec
-
-        return StructuredExtrusionResolutionSpec
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = ["StructuredExtrusionResolutionSpec"]
+__all__ = ["StructuredExtrusionResolutionSpec", "build_plan"]

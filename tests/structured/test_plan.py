@@ -242,3 +242,46 @@ def test_face_partition_with_neighbour_on_top_plane():
     areas = sorted(p.area for p in slabs[0].face_partition)
     # Each piece has area 8 (2 wide x 4 tall).
     assert areas == pytest.approx([8.0, 8.0])
+
+
+def test_build_plan_empty_entities():
+    from meshwell.structured.plan import build_plan
+
+    plan = build_plan([])
+    assert plan.slabs == ()
+    assert plan.z_planes == ()
+    assert plan.overlaps == ()
+
+
+def test_build_plan_no_structured_entities():
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.plan import build_plan
+
+    u = PolyPrism(polygons=_square(), buffers={0.0: 0.0, 1.0: 0.0}, physical_name="u")
+    plan = build_plan([u])
+    assert plan.slabs == ()
+    assert plan.z_planes == ()
+    assert plan.overlaps == ()
+
+
+def test_build_plan_simple_structured_only():
+    from meshwell.structured.plan import build_plan
+
+    s = _structured(_square(), {0.0: 0.0, 1.0: 0.0, 2.5: 0.0}, [3, 4], "s")
+    plan = build_plan([s])
+    assert len(plan.slabs) == 2
+    assert plan.z_planes == (0.0, 1.0, 2.5)
+    assert plan.overlaps == ()
+    # Both slabs get a single-piece partition (no neighbours).
+    assert all(len(slab.face_partition) == 1 for slab in plan.slabs)
+
+
+def test_build_plan_returns_frozen():
+    """StructuredPlan is frozen; reassigning fields raises."""
+    import pytest
+
+    from meshwell.structured.plan import build_plan
+
+    plan = build_plan([])
+    with pytest.raises((AttributeError, TypeError)):
+        plan.slabs = ()  # frozen dataclass rejects reassignment

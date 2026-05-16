@@ -16,6 +16,7 @@ from meshwell.structured.spec import (
     Slab,
     StructuredExtrusionResolutionSpec,
     StructuredOverlapError,
+    StructuredPlan,
 )
 
 _Z_TOL = 1e-9  # exact-match tolerance for z-extent comparison
@@ -126,6 +127,10 @@ def validate_and_resolve_overlap(
         dominated = False
         for k_idx in kept_indices:
             kept = slabs[k_idx]
+            # Slabs from the same source entity occupy different z-intervals
+            # and cannot volumetrically overlap.
+            if kept.source_index == slab.source_index:
+                continue
             if not _footprints_overlap(kept, slab):
                 continue
             if not _z_extent_matches(kept, slab):
@@ -236,3 +241,36 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
             if slab.footprint.contains(piece.representative_point())
         ]
         slab.face_partition = pieces if pieces else [slab.footprint]
+
+
+def build_plan(entities: list[Any]) -> StructuredPlan:
+    """Top-level planner: entities -> validated, partitioned StructuredPlan.
+
+    Pipeline:
+
+    1. ``gather_structured_entities`` filters and pairs entities with specs.
+    2. ``expand_to_slabs`` produces one raw Slab per (entity, z-interval).
+    3. ``validate_and_resolve_overlap`` applies Policy B; drops losers,
+       records OverlapPairs. Raises ``StructuredOverlapError`` on mismatch.
+    4. ``compute_face_partition`` decorates each surviving slab with its
+       xy partition based on touching neighbour entities.
+
+    The returned StructuredPlan is frozen and ready for the phantom +
+    builder stages (Phase 2 / Phase 3).
+    """
+    pairs = gather_structured_entities(entities)
+    if not pairs:
+        return StructuredPlan(slabs=(), z_planes=(), overlaps=())
+    raw_slabs = expand_to_slabs(pairs)
+    kept_slabs, overlaps = validate_and_resolve_overlap(raw_slabs, entities)
+    compute_face_partition(kept_slabs, entities)
+    z_set: set[float] = set()
+    for s in kept_slabs:
+        z_set.add(s.zlo)
+        z_set.add(s.zhi)
+    z_planes = sorted(z_set)
+    return StructuredPlan(
+        slabs=tuple(kept_slabs),
+        z_planes=tuple(z_planes),
+        overlaps=tuple(overlaps),
+    )
