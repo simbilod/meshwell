@@ -8,7 +8,14 @@ from __future__ import annotations
 from itertools import pairwise
 from typing import Any
 
-from meshwell.structured.spec import Slab, StructuredExtrusionResolutionSpec
+from meshwell.structured.spec import (
+    OverlapPair,
+    Slab,
+    StructuredExtrusionResolutionSpec,
+    StructuredOverlapError,
+)
+
+_Z_TOL = 1e-9  # exact-match tolerance for z-extent comparison
 
 
 def gather_structured_entities(
@@ -67,3 +74,88 @@ def expand_to_slabs(
                 )
             )
     return slabs
+
+
+def _z_extent_matches(a: Slab, b: Slab) -> bool:
+    return abs(a.zlo - b.zlo) < _Z_TOL and abs(a.zhi - b.zhi) < _Z_TOL
+
+
+def _footprints_overlap(a: Slab, b: Slab) -> bool:
+    """True iff the two slab footprints share positive xy area."""
+    inter = a.footprint.intersection(b.footprint)
+    return (not inter.is_empty) and inter.area > 0
+
+
+def _n_layers_of_slab(slab: Slab, entities: list[Any]) -> int:
+    """Look up n_layers for slab via (source_index, z_interval_index)."""
+    ent = entities[slab.source_index]
+    specs = [
+        r
+        for r in (getattr(ent, "resolutions", None) or [])
+        if isinstance(r, StructuredExtrusionResolutionSpec)
+    ]
+    return specs[0].n_layers[slab.z_interval_index]
+
+
+def validate_and_resolve_overlap(
+    slabs: list[Slab],
+    entities: list[Any],
+) -> tuple[list[Slab], list[OverlapPair]]:
+    """Apply Policy B: drop volumetric overlap losers, fail on mismatch.
+
+    Returns (kept_slabs, overlap_pairs). Lower mesh_order wins; tie-break
+    by source_index then z_interval_index for determinism.
+    """
+    # Sort by (mesh_order, source_index, z_interval_index): winners first.
+    order = sorted(
+        range(len(slabs)),
+        key=lambda i: (
+            slabs[i].mesh_order,
+            slabs[i].source_index,
+            slabs[i].z_interval_index,
+        ),
+    )
+
+    kept_indices: list[int] = []
+    overlaps: list[OverlapPair] = []
+    for idx in order:
+        slab = slabs[idx]
+        dominated = False
+        for k_idx in kept_indices:
+            kept = slabs[k_idx]
+            if not _footprints_overlap(kept, slab):
+                continue
+            if not _z_extent_matches(kept, slab):
+                raise StructuredOverlapError(
+                    f"Volumetric overlap of structured prisms "
+                    f"{kept.physical_name} and {slab.physical_name} "
+                    f"requires matching z-extents (got "
+                    f"[{kept.zlo}, {kept.zhi}] vs "
+                    f"[{slab.zlo}, {slab.zhi}]). "
+                    f"Adjust the prisms so z-extents match exactly or so "
+                    f"footprints do not overlap."
+                )
+            kept_n = _n_layers_of_slab(kept, entities)
+            slab_n = _n_layers_of_slab(slab, entities)
+            if kept_n != slab_n:
+                raise StructuredOverlapError(
+                    f"Volumetric overlap of structured prisms "
+                    f"{kept.physical_name} (n_layers={kept_n}) and "
+                    f"{slab.physical_name} (n_layers={slab_n}) at "
+                    f"z=[{kept.zlo}, {kept.zhi}]: n_layers must agree."
+                )
+            overlaps.append(
+                OverlapPair(
+                    winner_slab_index=kept_indices.index(k_idx),
+                    loser_source_index=slab.source_index,
+                    loser_z_interval_index=slab.z_interval_index,
+                    z_extent=(slab.zlo, slab.zhi),
+                )
+            )
+            dominated = True
+            break
+        if not dominated:
+            kept_indices.append(idx)
+
+    kept_slabs = [slabs[i] for i in kept_indices]
+    return kept_slabs, overlaps

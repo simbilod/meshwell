@@ -120,3 +120,81 @@ def test_expand_propagates_arc_settings():
     assert slabs[0].identify_arcs is True
     assert slabs[0].min_arc_points == 8
     assert slabs[0].arc_tolerance == 5e-4
+
+
+def test_no_overlap_keeps_all_slabs():
+    from meshwell.structured.plan import (
+        expand_to_slabs,
+        gather_structured_entities,
+        validate_and_resolve_overlap,
+    )
+
+    s1 = _structured(_square(0, 0), {0.0: 0.0, 1.0: 0.0}, [3], "s1")
+    s2 = _structured(_square(2, 0), {0.0: 0.0, 1.0: 0.0}, [3], "s2")  # disjoint xy
+    slabs = expand_to_slabs(gather_structured_entities([s1, s2]))
+    kept, overlaps = validate_and_resolve_overlap(slabs, entities=[s1, s2])
+    assert len(kept) == 2
+    assert overlaps == []
+
+
+def test_valid_overlap_drops_loser_records_pair():
+    """Same z-extent, same n_layers, footprints overlap: lower mesh_order wins."""
+    from meshwell.structured.plan import (
+        expand_to_slabs,
+        gather_structured_entities,
+        validate_and_resolve_overlap,
+    )
+
+    # Lower mesh_order (1.0) wins; higher (2.0) is dropped.
+    s_lo = _structured(
+        _square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [3], "lo", mesh_order=2.0
+    )
+    s_hi = _structured(
+        _square(1, 1, 2, 2), {0.0: 0.0, 1.0: 0.0}, [3], "hi", mesh_order=1.0
+    )
+    slabs = expand_to_slabs(gather_structured_entities([s_lo, s_hi]))
+    kept, overlaps = validate_and_resolve_overlap(slabs, entities=[s_lo, s_hi])
+    # Only the winner (hi) survives.
+    assert len(kept) == 1
+    assert kept[0].physical_name == ("hi",)
+    # The loser pair was recorded.
+    assert len(overlaps) == 1
+    op = overlaps[0]
+    assert op.loser_source_index == 0  # s_lo's index in entities=
+    assert op.z_extent == (0.0, 1.0)
+
+
+def test_overlap_with_mismatched_z_extent_raises():
+    """Footprints overlap but z-extents differ: Policy B rejects."""
+    import pytest
+
+    from meshwell.structured.plan import (
+        expand_to_slabs,
+        gather_structured_entities,
+        validate_and_resolve_overlap,
+    )
+    from meshwell.structured.spec import StructuredOverlapError
+
+    s_lo = _structured(_square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [3], "lo")
+    s_hi = _structured(_square(1, 1, 2, 2), {0.5: 0.0, 1.5: 0.0}, [3], "hi")
+    slabs = expand_to_slabs(gather_structured_entities([s_lo, s_hi]))
+    with pytest.raises(StructuredOverlapError, match="z-extent"):
+        validate_and_resolve_overlap(slabs, entities=[s_lo, s_hi])
+
+
+def test_overlap_with_matching_z_but_mismatched_n_layers_raises():
+    """Same z-extent, different n_layers: Policy B rejects."""
+    import pytest
+
+    from meshwell.structured.plan import (
+        expand_to_slabs,
+        gather_structured_entities,
+        validate_and_resolve_overlap,
+    )
+    from meshwell.structured.spec import StructuredOverlapError
+
+    s_a = _structured(_square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [3], "a")
+    s_b = _structured(_square(1, 1, 2, 2), {0.0: 0.0, 1.0: 0.0}, [5], "b")  # 5 vs 3
+    slabs = expand_to_slabs(gather_structured_entities([s_a, s_b]))
+    with pytest.raises(StructuredOverlapError, match="n_layers"):
+        validate_and_resolve_overlap(slabs, entities=[s_a, s_b])
