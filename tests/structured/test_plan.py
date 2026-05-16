@@ -198,3 +198,47 @@ def test_overlap_with_matching_z_but_mismatched_n_layers_raises():
     slabs = expand_to_slabs(gather_structured_entities([s_a, s_b]))
     with pytest.raises(StructuredOverlapError, match="n_layers"):
         validate_and_resolve_overlap(slabs, entities=[s_a, s_b])
+
+
+def test_face_partition_no_neighbours_single_piece():
+    """No other entities touching the slab's z-planes: partition is one piece."""
+    from meshwell.structured.plan import (
+        compute_face_partition,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    s = _structured(_square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [3], "s")
+    slabs = expand_to_slabs(gather_structured_entities([s]))
+    compute_face_partition(slabs, entities=[s])
+    assert len(slabs[0].face_partition) == 1
+    # Single piece equals the footprint (within shapely's equality tolerance).
+    assert slabs[0].face_partition[0].equals(slabs[0].footprint)
+
+
+def test_face_partition_with_neighbour_on_top_plane():
+    """A non-structured prism touching the slab's top z-plane partitions the top."""
+    import pytest
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.plan import (
+        compute_face_partition,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    s = _structured(_square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [3], "s")
+    # Non-structured neighbour sits on top of s (its zmin == s.zhi == 1.0),
+    # covering the left half of s's footprint.
+    n = PolyPrism(
+        polygons=_square(0, 0, 2, 4),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="n",
+    )
+    slabs = expand_to_slabs(gather_structured_entities([s, n]))
+    compute_face_partition(slabs, entities=[s, n])
+    # Slab partition has 2 pieces: covered (xy left half) and uncovered (xy right half).
+    assert len(slabs[0].face_partition) == 2
+    areas = sorted(p.area for p in slabs[0].face_partition)
+    # Each piece has area 8 (2 wide x 4 tall).
+    assert areas == pytest.approx([8.0, 8.0])

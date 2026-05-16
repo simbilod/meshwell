@@ -8,6 +8,9 @@ from __future__ import annotations
 from itertools import pairwise
 from typing import Any
 
+from shapely.geometry import MultiPolygon, Polygon
+from shapely.ops import polygonize, unary_union
+
 from meshwell.structured.spec import (
     OverlapPair,
     Slab,
@@ -159,3 +162,77 @@ def validate_and_resolve_overlap(
 
     kept_slabs = [slabs[i] for i in kept_indices]
     return kept_slabs, overlaps
+
+
+def _entity_z_range(ent: Any) -> tuple[float, float] | None:
+    """Return (zmin, zmax) for an entity that has a buffers/z-range, else None."""
+    buffers = getattr(ent, "buffers", None)
+    if not buffers:
+        return None
+    return (min(buffers.keys()), max(buffers.keys()))
+
+
+def _entity_footprint(ent: Any) -> Polygon | MultiPolygon | None:
+    polys = getattr(ent, "polygons", None)
+    if polys is None:
+        return None
+    if isinstance(polys, list):
+        flat: list[Polygon] = []
+        for p in polys:
+            if isinstance(p, MultiPolygon):
+                flat.extend(p.geoms)
+            elif isinstance(p, Polygon):
+                flat.append(p)
+        if not flat:
+            return None
+        return flat[0] if len(flat) == 1 else MultiPolygon(flat)
+    return polys
+
+
+def _neighbours_touching_z(
+    z: float, entities: list[Any], skip_indices: set[int], tol: float = 1e-9
+) -> list[Polygon | MultiPolygon]:
+    """Footprints of entities whose buffers include z (within tol)."""
+    out: list[Polygon | MultiPolygon] = []
+    for i, ent in enumerate(entities):
+        if i in skip_indices:
+            continue
+        rng = _entity_z_range(ent)
+        if rng is None:
+            continue
+        zmin, zmax = rng
+        if abs(zmin - z) < tol or abs(zmax - z) < tol:
+            fp = _entity_footprint(ent)
+            if fp is not None:
+                out.append(fp)
+    return out
+
+
+def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
+    """Compute slab.face_partition in place.
+
+    For each slab, decompose its footprint into pairwise-disjoint pieces
+    based on the union of any neighbouring entity footprints touching
+    z=zlo or z=zhi. No-neighbour case: one piece = the whole footprint.
+    """
+    own_indices_by_slab = {id(s): {s.source_index} for s in slabs}
+
+    for slab in slabs:
+        skip = own_indices_by_slab[id(slab)]
+        neighbours_lo = _neighbours_touching_z(slab.zlo, entities, skip)
+        neighbours_hi = _neighbours_touching_z(slab.zhi, entities, skip)
+        all_neighbour_polys = neighbours_lo + neighbours_hi
+        if not all_neighbour_polys:
+            slab.face_partition = [slab.footprint]
+            continue
+        neighbour_union = unary_union(all_neighbour_polys)
+        seam_lines = neighbour_union.boundary
+        boundary = slab.footprint.boundary
+        combined = unary_union([boundary, seam_lines.intersection(slab.footprint)])
+        raw = list(polygonize(combined))
+        pieces = [
+            piece
+            for piece in raw
+            if slab.footprint.contains(piece.representative_point())
+        ]
+        slab.face_partition = pieces if pieces else [slab.footprint]
