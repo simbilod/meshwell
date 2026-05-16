@@ -189,6 +189,7 @@ def _build_slab_volume(
     bot_to_top_layer_tags: list[dict[int, int]],
     n_layers: int,
     recombine: bool,
+    pre_allocated_vol_tag: int | None = None,
 ) -> int:
     """Create one discrete 3D entity with wedge or hex elements.
 
@@ -203,6 +204,11 @@ def _build_slab_volume(
             len(bot_to_top_layer_tags).
         recombine: if True, build hex elements (type 5) instead of
             wedges (type 6). Bottom must have quads in that case.
+        pre_allocated_vol_tag: if not None, reuse this pre-allocated
+            discrete entity tag instead of creating a new one.  The
+            caller must have already added any interior nodes to it
+            before calling this function so that addElements finds all
+            referenced node tags in the model.
 
     Returns:
         The discrete 3D entity's tag.
@@ -230,7 +236,10 @@ def _build_slab_volume(
     bot_cells_flat = np.concatenate(bot_cells, axis=0)
     n_cells = bot_cells_flat.shape[0]
 
-    vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
+    if pre_allocated_vol_tag is not None:
+        vol_tag = pre_allocated_vol_tag
+    else:
+        vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
 
     layer_maps_with_zero: list[dict[int, int] | None] = [
         None,
@@ -269,6 +278,24 @@ def _find_horizontal_face_at_z(z: float, tol: float = 1e-6) -> int | None:
         bb = gmsh.model.getBoundingBox(dim, tag)
         if abs(bb[2] - z) < tol and abs(bb[5] - z) < tol:
             return tag
+    return None
+
+
+def _find_volume_containing_faces(
+    bottom_face_tag: int, top_face_tag: int
+) -> int | None:
+    """Return the gmsh 3D entity tag whose boundary includes both faces, or None.
+
+    Used to identify the OCC volume for a slab so we can add structured
+    elements directly to it (rather than creating a separate discrete entity).
+    """
+    import gmsh
+
+    for dim, vol_tag in gmsh.model.getEntities(3):
+        boundaries = gmsh.model.getBoundary([(dim, vol_tag)], oriented=False)
+        bnd_tags = {t for _, t in boundaries}
+        if bottom_face_tag in bnd_tags and top_face_tag in bnd_tags:
+            return vol_tag
     return None
 
 
@@ -334,16 +361,22 @@ def apply_structured_mesh(
             top_map = _stamp_top_face_mesh(bot_tag, top_tag, slab.zlo, slab.zhi)
             layer_maps = [*interior_layer_maps, top_map]
 
-        vol_tag = _build_slab_volume(
-            bottom_face_tag=bot_tag,
-            bot_to_top_layer_tags=layer_maps,
-            n_layers=n_layers,
-            recombine=recombine,
-        )
+        # Prefer adding elements directly to the existing OCC volume entity
+        # (identified by containment of both horizontal faces in its boundary).
+        # This means the OCC entity already has a mesh after apply_structured_mesh
+        # and Mesh.MeshOnlyEmpty=1 will skip it during generate(3).
+        # If no OCC volume is found (shouldn't happen in Phase 3), fall back to
+        # creating a new discrete entity.
+        occ_vol_tag = _find_volume_containing_faces(bot_tag, top_tag)
 
-        # For n_layers > 1, the interior layer nodes have tags but no node
-        # data in gmsh yet — add them to the volume now.
+        # Register interior layer nodes BEFORE addElements so all referenced
+        # node tags exist in gmsh at the time addElements validates them.
+        # We need a valid 3D entity tag for addNodes: use occ_vol_tag if available,
+        # else create a new discrete entity.
+        pre_vol_tag: int | None = occ_vol_tag
         if n_layers > 1:
+            if pre_vol_tag is None:
+                pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
             all_interior_tags: list[int] = []
             all_interior_coords: list[float] = []
             for m, coords in zip(interior_layer_maps, interior_layer_coords):
@@ -351,8 +384,16 @@ def apply_structured_mesh(
                 all_interior_coords.extend(coords)
             if all_interior_tags:
                 gmsh.model.mesh.addNodes(
-                    3, vol_tag, all_interior_tags, all_interior_coords
+                    3, pre_vol_tag, all_interior_tags, all_interior_coords
                 )
+
+        vol_tag = _build_slab_volume(
+            bottom_face_tag=bot_tag,
+            bot_to_top_layer_tags=layer_maps,
+            n_layers=n_layers,
+            recombine=recombine,
+            pre_allocated_vol_tag=pre_vol_tag,
+        )
 
         vol_tags.append(vol_tag)
 

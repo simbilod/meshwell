@@ -404,6 +404,7 @@ class Mesh:
         global_scaling: float,
         verbosity: int,
         optimization_flags: tuple[tuple[str, int]] | None,
+        pre_3d_hook=None,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -412,6 +413,21 @@ class Mesh:
         Retry-on-failure logic lives in ``process_geometry`` because a raised
         ``mesh.generate()`` leaves the gmsh runtime in a "busy" state that only
         a full finalize+reinit will clear.
+
+        Args:
+            dim: Mesh dimension passed to ``gmsh.model.mesh.generate(dim)``.
+            global_3D_algorithm: Active 3D algorithm id (for logger gating).
+            global_scaling: Value for ``Mesh.ScalingFactor``.
+            verbosity: Verbosity level (logger started when ``== 1``).
+            optimization_flags: Sequence of ``(method, niter)`` pairs for
+                ``gmsh.model.mesh.optimize``.
+            pre_3d_hook: Optional callable invoked between the 2D and 3D mesh
+                generation passes.  When not *None*, meshing is split into two
+                passes — ``generate(2)`` then ``generate(3)`` — with the hook
+                called in between (and ``Mesh.MeshOnlyEmpty`` set to 1 before
+                the 3D pass so already-meshed discrete entities are not
+                re-meshed).  When *None* (default), a single ``generate(dim)``
+                call is made, preserving the existing behaviour exactly.
         """
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
         gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 1e-5)
@@ -419,7 +435,14 @@ class Mesh:
         if global_3D_algorithm == 1 and verbosity:
             gmsh.logger.start()
 
-        self.model_manager.model.mesh.generate(dim)
+        if pre_3d_hook is not None and dim == 3:
+            self.model_manager.model.mesh.generate(2)
+            pre_3d_hook()
+            gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
+            self.model_manager.model.mesh.generate(3)
+            gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 0)
+        else:
+            self.model_manager.model.mesh.generate(dim)
 
         if optimization_flags:
             for optimization_flag, niter in optimization_flags:
@@ -491,6 +514,7 @@ class Mesh:
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
+        pre_3d_hook=None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -512,6 +536,8 @@ class Mesh:
             gmsh_version: GMSH version
             blueprint: mapping between entity and extrusion type
             interface_delimiter: String used to separate names in an interface
+            pre_3d_hook: Optional callable invoked between 2D and 3D mesh
+                generation (see :meth:`process_mesh`).
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -545,6 +571,7 @@ class Mesh:
                 global_scaling=global_scaling,
                 verbosity=verbosity,
                 optimization_flags=optimization_flags,
+                pre_3d_hook=pre_3d_hook,
             )
 
         if len(attempts) == 1:
@@ -598,6 +625,7 @@ def mesh(
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
+    pre_3d_hook=None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -624,6 +652,8 @@ def mesh(
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
         interface_delimiter: String used to separate names in an interface
+        pre_3d_hook: Optional callable invoked between 2D and 3D mesh
+            generation (see :meth:`Mesh.process_mesh`).
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -660,6 +690,7 @@ def mesh(
             resolution_specs=resolution_specs,
             gmsh_version=gmsh_version,
             interface_delimiter=interface_delimiter,
+            pre_3d_hook=pre_3d_hook,
         )
 
         # Save to file if output file provided

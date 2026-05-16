@@ -78,7 +78,36 @@ def generate_mesh(
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     cad_kwargs["progress_bars"] = progress_bars
 
-    occ_entities = cad_occ(entities, **cad_kwargs)
+    # --- Detect structured entities and set up the structured pipeline. ---
+    has_structured = any(getattr(e, "structured", False) for e in entities)
+    structured_state: tuple | None = None
+
+    if has_structured:
+        from meshwell.structured import (
+            build_phantom_shapes,
+            build_plan,
+            extract_phantom_map,
+        )
+        from meshwell.structured.builder import (
+            apply_structured_mesh,
+            resolve_mesh_plan,
+        )
+
+        plan = build_plan(entities)
+        phantom_result = build_phantom_shapes(plan)
+        extra = [s.solid for s in phantom_result.shapes]
+        captured_builder: list = []
+        occ_entities = cad_occ(
+            entities,
+            extra_occ_shapes=extra,
+            cad_occ_callback=lambda b: captured_builder.append(b),
+            **cad_kwargs,
+        )
+        phantom_map = extract_phantom_map(phantom_result, captured_builder[0])
+        mesh_plan_obj = resolve_mesh_plan(plan, entities)
+        structured_state = (plan, mesh_plan_obj, phantom_map)
+    else:
+        occ_entities = cad_occ(entities, **cad_kwargs)
 
     # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
     interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
@@ -100,6 +129,22 @@ def generate_mesh(
         mm.save_to_xao(Path(checkpoint_cad))
 
     # --- Stage 3: mesh. -------------------------------------------------
+    if has_structured:
+        # Two-pass meshing: 2D first, apply_structured_mesh hook, then 3D
+        # with Mesh.MeshOnlyEmpty=1 so the discrete entities built by
+        # apply_structured_mesh are not re-meshed.
+        _plan, _mesh_plan, _phantom_map = structured_state
+
+        def _structured_hook() -> None:
+            apply_structured_mesh(_plan, _mesh_plan, _phantom_map)
+
+        return mesh(
+            dim=dim,
+            model=mm,
+            output_file=Path(output_mesh) if output_mesh else None,
+            pre_3d_hook=_structured_hook,
+            **mesh_kwargs,
+        )
     return mesh(
         dim=dim,
         model=mm,
