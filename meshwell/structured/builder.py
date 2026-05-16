@@ -410,3 +410,59 @@ def apply_structured_mesh(
         gmsh.model.mesh.removeDuplicateNodes()
 
     return vol_tags
+
+
+def _occ_face_bbox(face: Any) -> tuple[float, float, float, float, float, float]:
+    """Return AABB (xmin, ymin, zmin, xmax, ymax, zmax) of an OCP TopoDS_Face."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    b = Bnd_Box()
+    BRepBndLib.Add_s(face, b)
+    xmin, ymin, zmin, xmax, ymax, zmax = b.Get()
+    return (xmin, ymin, zmin, xmax, ymax, zmax)
+
+
+def _map_phantom_faces_to_gmsh(
+    phantom_map: Any,  # PhantomMap
+    tol: float = 1e-6,
+) -> dict[Any, list[int]]:  # dict[FaceKey, list[int]]
+    """Match each PhantomMap.output_faces entry (OCP TopoDS_Face) to a gmsh face tag.
+
+    Returns a dict[FaceKey, list[int]] — the same shape as
+    phantom_map.output_faces but with gmsh tags as values. Faces with no
+    match raise RuntimeError.
+    """
+    import gmsh
+
+    def _round_bbox(bb: tuple[float, ...], tol: float) -> tuple[int, ...]:
+        scale = 1.0 / tol
+        return tuple(round(v * scale) for v in bb)
+
+    gmsh_by_bbox: dict[tuple[int, ...], list[int]] = {}
+    for dim, tag in gmsh.model.getEntities(2):
+        bb = gmsh.model.getBoundingBox(dim, tag)
+        gmsh_by_bbox.setdefault(_round_bbox(bb, tol), []).append(tag)
+
+    out: dict[Any, list[int]] = {}
+    for face_key, occ_faces in phantom_map.output_faces.items():
+        gmsh_tags: list[int] = []
+        for occ_face in occ_faces:
+            bb = _occ_face_bbox(occ_face)
+            key = _round_bbox(bb, tol)
+            matches = gmsh_by_bbox.get(key, [])
+            if not matches:
+                # Fallback: linear scan with loose tolerance (10x tol).
+                for dim, tag in gmsh.model.getEntities(2):
+                    gbb = gmsh.model.getBoundingBox(dim, tag)
+                    if all(abs(bb[i] - gbb[i]) < 10 * tol for i in range(6)):
+                        matches = [tag]
+                        break
+            gmsh_tags.extend(matches)
+        if not gmsh_tags:
+            raise RuntimeError(
+                f"PhantomMap face {face_key} has no matching gmsh face "
+                f"(OCP bbox {_occ_face_bbox(occ_faces[0])} not found in gmsh model)."
+            )
+        out[face_key] = gmsh_tags
+    return out
