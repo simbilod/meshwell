@@ -7,7 +7,7 @@ Phase 1 ships only ``StructuredExtrusionResolutionSpec`` and the CAD-stage
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -109,3 +109,103 @@ class StructuredPlan:
     slabs: tuple[Slab, ...]
     z_planes: tuple[float, ...]
     overlaps: tuple[OverlapPair, ...]
+
+
+Side = Literal["bot", "top"]
+
+
+@dataclass(frozen=True)
+class FaceKey:
+    """Identifies an input face by slab/side/piece.
+
+    Survives BOP because it indexes by piece identity, not by OCC tag.
+    """
+
+    slab_index: int
+    side: Side
+    piece_index: int
+
+
+@dataclass(frozen=True)
+class EdgeKey:
+    """Identifies an input boundary edge on a piece face."""
+
+    slab_index: int
+    side: Side
+    piece_index: int
+    edge_index: int
+
+
+@dataclass(frozen=True)
+class VertexKey:
+    """Identifies an input boundary corner on a piece face."""
+
+    slab_index: int
+    side: Side
+    piece_index: int
+    corner_index: int
+
+
+@dataclass(frozen=True)
+class LateralKey:
+    """Identifies an input lateral face on a slab.
+
+    ``outer_edge_index`` indexes into the slab's union-footprint outer
+    boundary.
+    """
+
+    slab_index: int
+    outer_edge_index: int
+
+
+@dataclass
+class PhantomShape:
+    """One partition piece's input OCC bookkeeping.
+
+    ``solid`` is the TopoDS_Solid produced by ``BRepPrimAPI_MakePrism``.
+    The four ``input_*`` dicts map our Phase-2 key types to the
+    corresponding input OCC sub-shapes (TopoDS_Face / TopoDS_Edge /
+    TopoDS_Vertex), captured at construction time so we can ask BOP
+    history what they became.
+
+    The values are OCC ``TopoDS_*`` objects (declared ``Any`` to avoid
+    importing OCP at type-check time when callers may not have it).
+    """
+
+    slab_index: int
+    piece_index: int
+    solid: Any
+    input_faces_by_key: dict[FaceKey, Any]
+    input_edges_by_key: dict[EdgeKey, Any]
+    input_vertices_by_key: dict[VertexKey, Any]
+    # Lateral faces are not piece-scoped on the union footprint — they're
+    # slab-scoped. But each piece may own zero or more lateral faces
+    # (those that coincide with an outer-boundary edge segment). The dict
+    # is keyed by the outer_edge_index they map to.
+    input_laterals_by_outer_edge: dict[int, Any]
+
+
+@dataclass(frozen=True)
+class PhantomBuildResult:
+    """Output of ``build_phantom_shapes(plan)``.
+
+    Contains one ``PhantomShape`` per (slab, piece) pair, in deterministic
+    order (slab_index ascending, then piece_index ascending).
+    """
+
+    shapes: tuple[PhantomShape, ...]
+
+
+@dataclass
+class PhantomMap:
+    """Post-BOP correspondence map.
+
+    Each input element maps to a *list* of output OCC tags because
+    BOP may split a single input into many output shapes (e.g. a
+    neighbour cut a piece's top face into 3 sub-faces).
+    """
+
+    output_faces: dict[FaceKey, list[Any]] = field(default_factory=dict)
+    output_edges: dict[EdgeKey, list[Any]] = field(default_factory=dict)
+    output_vertices: dict[VertexKey, list[Any]] = field(default_factory=dict)
+    output_laterals: dict[LateralKey, list[Any]] = field(default_factory=dict)
