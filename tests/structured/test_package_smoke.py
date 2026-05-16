@@ -28,3 +28,15 @@ def test_phase2_public_exports():
     assert PhantomMap is not None
     assert build_phantom_shapes is not None
     assert extract_phantom_map is not None
+
+
+def test_phase3_public_exports():
+    from meshwell.structured import (
+        StructuredMeshPlan,
+        apply_structured_mesh,
+        resolve_mesh_plan,
+    )
+
+    assert StructuredMeshPlan is not None
+    assert apply_structured_mesh is not None
+    assert resolve_mesh_plan is not None
