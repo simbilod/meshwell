@@ -106,6 +106,6 @@ class OverlapPair:
 class StructuredPlan:
     """Frozen output of the planner; consumed by phantom + builder stages."""
 
-    slabs: list[Slab]
-    z_planes: list[float]
-    overlaps: list[OverlapPair]
+    slabs: tuple[Slab, ...]
+    z_planes: tuple[float, ...]
+    overlaps: tuple[OverlapPair, ...]
