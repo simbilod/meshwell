@@ -182,3 +182,76 @@ def _stamp_top_face_mesh(
     )
 
     return bot_to_top_tag
+
+
+def _build_slab_volume(
+    bottom_face_tag: int,
+    bot_to_top_layer_tags: list[dict[int, int]],
+    n_layers: int,
+    recombine: bool,
+) -> int:
+    """Create one discrete 3D entity with wedge or hex elements.
+
+    Args:
+        bottom_face_tag: OCC face tag whose 2D mesh is the source
+            triangulation (or quad mesh, if recombine).
+        bot_to_top_layer_tags: list of length n_layers, each a dict
+            mapping bottom node tag -> the node tag in that layer.
+            Layer 0 is implicit (= bottom node tags themselves);
+            bot_to_top_layer_tags[i] maps to layer i+1.
+        n_layers: number of element layers in z. Must equal
+            len(bot_to_top_layer_tags).
+        recombine: if True, build hex elements (type 5) instead of
+            wedges (type 6). Bottom must have quads in that case.
+
+    Returns:
+        The discrete 3D entity's tag.
+    """
+    import gmsh
+
+    if len(bot_to_top_layer_tags) != n_layers:
+        raise ValueError(
+            f"Expected {n_layers} layer maps, got {len(bot_to_top_layer_tags)}"
+        )
+
+    elem_types, _, elem_nodes_per_type = gmsh.model.mesh.getElements(2, bottom_face_tag)
+    target_type = 3 if recombine else 2
+    elem_3d_type = 5 if recombine else 6
+    cells_per_face = 4 if recombine else 3
+    bot_cells: list[np.ndarray] = []
+    for et, en in zip(elem_types, elem_nodes_per_type):
+        if et == target_type:
+            bot_cells.append(np.asarray(en, dtype=np.int64).reshape(-1, cells_per_face))
+    if not bot_cells:
+        raise RuntimeError(
+            f"Bottom OCC face {bottom_face_tag} has no element type "
+            f"{target_type} (need {'quads' if recombine else 'triangles'})"
+        )
+    bot_cells_flat = np.concatenate(bot_cells, axis=0)
+    n_cells = bot_cells_flat.shape[0]
+
+    vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
+
+    layer_maps_with_zero: list[dict[int, int] | None] = [
+        None,
+        *list(bot_to_top_layer_tags),
+    ]
+
+    def _layer_tag(layer_idx: int, bot_node_tag: int) -> int:
+        if layer_idx == 0:
+            return bot_node_tag
+        return layer_maps_with_zero[layer_idx][bot_node_tag]
+
+    all_volume_nodes: list[int] = []
+    for cell in bot_cells_flat:
+        for layer_i in range(n_layers):
+            all_volume_nodes.extend(_layer_tag(layer_i, int(c)) for c in cell)
+            all_volume_nodes.extend(_layer_tag(layer_i + 1, int(c)) for c in cell)
+
+    next_elem_tag = int(gmsh.model.mesh.getMaxElementTag()) + 1
+    n_3d = n_cells * n_layers
+    elem_tags = list(range(next_elem_tag, next_elem_tag + n_3d))
+    gmsh.model.mesh.addElements(
+        3, vol_tag, [elem_3d_type], [elem_tags], [all_volume_nodes]
+    )
+    return vol_tag

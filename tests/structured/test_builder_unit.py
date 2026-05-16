@@ -85,3 +85,38 @@ def test_stamp_top_face_mesh_produces_matching_triangle_count(
     top_types, top_tags_, _ = gmsh.model.mesh.getElements(2, top_tag)
     n_top_tris = sum(len(t) for et, t in zip(top_types, top_tags_) if et == 2)
     assert n_top_tris == n_bot_tris
+
+
+def test_build_slab_volume_single_layer_produces_wedges(gmsh_session):  # noqa: ARG001
+    """Single-layer slab: triangles in bottom -> wedge prisms in volume."""
+    from meshwell.structured.builder import _build_slab_volume, _stamp_top_face_mesh
+
+    bot_tag, top_tag = _make_box_in_gmsh_and_mesh_2d(z_lo=0.0, z_hi=1.0)
+    bot_to_top = _stamp_top_face_mesh(bot_tag, top_tag, zlo=0.0, zhi=1.0)
+
+    # Count bottom triangles for comparison.
+    bot_types, bot_etags, _ = gmsh.model.mesh.getElements(2, bot_tag)
+    n_bot_tris = sum(len(t) for et, t in zip(bot_types, bot_etags) if et == 2)
+    assert n_bot_tris > 0
+
+    vol_tag = _build_slab_volume(
+        bottom_face_tag=bot_tag,
+        bot_to_top_layer_tags=[bot_to_top],
+        n_layers=1,
+        recombine=False,
+    )
+    assert vol_tag > 0
+    etypes, etags, _ = gmsh.model.mesh.getElements(3, vol_tag)
+    n_wedges = sum(len(t) for et, t in zip(etypes, etags) if et == 6)
+    assert n_wedges == n_bot_tris
+
+
+def test_build_slab_volume_multi_layer_skipped(gmsh_session):  # noqa: ARG001
+    """Multi-layer path is exercised in Task 6 end-to-end.
+
+    Intermediate node map allocation lives in apply_structured_mesh, not here.
+    """
+    pytest.skip(
+        "multi-layer wiring requires intermediate node maps allocated by "
+        "apply_structured_mesh; tested end-to-end in Task 6"
+    )
