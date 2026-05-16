@@ -405,6 +405,7 @@ class Mesh:
         verbosity: int,
         optimization_flags: tuple[tuple[str, int]] | None,
         pre_3d_hook=None,
+        pre_2d_hook=None,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -428,6 +429,10 @@ class Mesh:
                 the 3D pass so already-meshed discrete entities are not
                 re-meshed).  When *None* (default), a single ``generate(dim)``
                 call is made, preserving the existing behaviour exactly.
+            pre_2d_hook: Optional callable invoked just before
+                ``gmsh.model.mesh.generate(2)``.  Intended for applying
+                transfinite hints (e.g. setTransfiniteSurface on lateral OCC
+                faces) before the 2D mesher runs.  Ignored when dim < 2.
         """
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
         gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 1e-5)
@@ -436,12 +441,16 @@ class Mesh:
             gmsh.logger.start()
 
         if pre_3d_hook is not None and dim == 3:
+            if pre_2d_hook is not None:
+                pre_2d_hook()
             self.model_manager.model.mesh.generate(2)
             pre_3d_hook()
             gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
             self.model_manager.model.mesh.generate(3)
             gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 0)
         else:
+            if pre_2d_hook is not None and dim >= 2:
+                pre_2d_hook()
             self.model_manager.model.mesh.generate(dim)
 
         if optimization_flags:
@@ -515,6 +524,7 @@ class Mesh:
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
         pre_3d_hook=None,
+        pre_2d_hook=None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -538,6 +548,8 @@ class Mesh:
             interface_delimiter: String used to separate names in an interface
             pre_3d_hook: Optional callable invoked between 2D and 3D mesh
                 generation (see :meth:`process_mesh`).
+            pre_2d_hook: Optional callable invoked just before
+                ``gmsh.model.mesh.generate(2)`` (see :meth:`process_mesh`).
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -572,6 +584,7 @@ class Mesh:
                 verbosity=verbosity,
                 optimization_flags=optimization_flags,
                 pre_3d_hook=pre_3d_hook,
+                pre_2d_hook=pre_2d_hook,
             )
 
         if len(attempts) == 1:
@@ -626,6 +639,7 @@ def mesh(
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
     pre_3d_hook=None,
+    pre_2d_hook=None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -654,6 +668,8 @@ def mesh(
         interface_delimiter: String used to separate names in an interface
         pre_3d_hook: Optional callable invoked between 2D and 3D mesh
             generation (see :meth:`Mesh.process_mesh`).
+        pre_2d_hook: Optional callable invoked just before
+            ``gmsh.model.mesh.generate(2)`` (see :meth:`Mesh.process_mesh`).
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -691,6 +707,7 @@ def mesh(
             gmsh_version=gmsh_version,
             interface_delimiter=interface_delimiter,
             pre_3d_hook=pre_3d_hook,
+            pre_2d_hook=pre_2d_hook,
         )
 
         # Save to file if output file provided

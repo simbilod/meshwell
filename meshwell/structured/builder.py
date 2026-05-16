@@ -437,13 +437,20 @@ def apply_structured_mesh(
                 interior_layer_maps: list[dict[int, int]] = []
                 interior_layer_coords: list[list[float]] = []
             else:
-                # Multi-layer: build (n_layers - 1) intermediate node maps,
-                # then stamp the top mesh as the n-th layer.
+                # Multi-layer: stamp the top face first (so its new interior
+                # node tags are registered in gmsh before we allocate the
+                # intermediate-layer tags, avoiding tag collisions), then build
+                # (n_layers - 1) intermediate node maps between bottom and top.
+                top_map = _stamp_top_face_mesh(
+                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+                )
                 bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
                     2, bot_tag, includeBoundary=True
                 )
                 bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
                 bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
+                # Use max tag AFTER stamp so interior tags don't collide with
+                # the new top-interior nodes allocated by _stamp_top_face_mesh.
                 next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
                 interior_layer_maps = []
                 interior_layer_coords = []
@@ -458,9 +465,6 @@ def apply_structured_mesh(
                         coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
                     interior_layer_maps.append(m)
                     interior_layer_coords.append(coords)
-                top_map = _stamp_top_face_mesh(
-                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
-                )
                 layer_maps = [*interior_layer_maps, top_map]
 
             # Prefer adding elements directly to the existing OCC volume entity
@@ -569,6 +573,123 @@ def _map_phantom_edges_to_gmsh(
             tags.append(idx)
         out[edge_key] = tags
     return out
+
+
+def _map_phantom_laterals_to_gmsh(
+    phantom_map: Any,  # PhantomMap
+    occ_entities: list[Any],  # list[OCCLabeledEntity]
+) -> dict[Any, list[int]]:  # dict[LateralKey, list[int]]
+    """Map each PhantomMap.output_laterals entry (OCP TopoDS_Face) to gmsh face tags.
+
+    Mirrors _map_phantom_faces_to_gmsh but walks ``phantom_map.output_laterals``
+    using TopAbs_FACE (lateral faces are faces in the compound too).
+
+    Returns dict[LateralKey, list[int]] — gmsh face tags per LateralKey.
+    Raises RuntimeError if any lateral face has no IsSame() match.
+    """
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    compound = _build_xao_compound(occ_entities)
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(compound, TopAbs_FACE, fmap)
+
+    out: dict[Any, list[int]] = {}
+    for lat_key, occ_faces in phantom_map.output_laterals.items():
+        tags: list[int] = []
+        for f in occ_faces:
+            idx = fmap.FindIndex(f)
+            if idx == 0:
+                raise RuntimeError(
+                    f"PhantomMap lateral {lat_key} has no IsSame() match in "
+                    f"the XAO compound."
+                )
+            tags.append(idx)
+        out[lat_key] = tags
+    return out
+
+
+def apply_structured_transfinite_hints(
+    mesh_plan: Any,  # StructuredMeshPlan
+    phantom_map: Any,  # PhantomMap
+    occ_entities: list[Any],  # list[OCCLabeledEntity]
+) -> None:
+    """Apply setTransfiniteSurface to lateral OCC faces before 2D meshing.
+
+    For each LateralKey in phantom_map.output_laterals where
+    lateral_has_midheight_cut is False, set setTransfiniteCurve(n_layers+1)
+    on each VERTICAL bounding edge and setTransfiniteSurface on the face.
+    This forces gmsh's 2D mesher to produce a structured grid that matches
+    the wedge volume's implicit lateral structure exactly.
+
+    A VERTICAL edge is one whose two endpoint vertices have different z values.
+    Only vertical edges are constrained; horizontal edges may be shared with
+    non-structured neighbours and should not be forced to a conflicting count.
+
+    Each call is wrapped in try/except so that if gmsh complains (e.g. the
+    face has >4 corners due to a mid-height cut we didn't detect, or a curve
+    is already transfinite with a different count), that face is silently
+    skipped with a warning.
+    """
+    import logging
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+
+    if not phantom_map.output_laterals:
+        return
+
+    lateral_map = _map_phantom_laterals_to_gmsh(phantom_map, occ_entities)
+
+    for lat_key, face_tags in lateral_map.items():
+        if phantom_map.lateral_has_midheight_cut.get(lat_key, False):
+            continue
+
+        slab_idx = lat_key.slab_index
+        n_layers = mesh_plan.n_layers[slab_idx]
+
+        for face_tag in face_tags:
+            try:
+                bnd = gmsh.model.getBoundary(
+                    [(2, face_tag)], oriented=False, recursive=False
+                )
+                for dim_e, edge_tag in bnd:
+                    if dim_e != 1:
+                        continue
+                    # Determine if this edge is VERTICAL: endpoints differ in z.
+                    verts = gmsh.model.getBoundary(
+                        [(1, edge_tag)], oriented=False, recursive=False
+                    )
+                    if len(verts) != 2:
+                        continue
+                    z_vals = []
+                    for dim_v, vtag in verts:
+                        if dim_v != 0:
+                            continue
+                        coords = gmsh.model.getValue(0, vtag, [])
+                        z_vals.append(coords[2])
+                    if len(z_vals) == 2 and abs(z_vals[0] - z_vals[1]) > 1e-10:
+                        # Vertical edge: constrain node count to n_layers+1.
+                        try:
+                            gmsh.model.mesh.setTransfiniteCurve(edge_tag, n_layers + 1)
+                        except Exception as exc:
+                            logger.warning(
+                                "setTransfiniteCurve failed on edge %d "
+                                "(lateral %s): %s",
+                                edge_tag,
+                                lat_key,
+                                exc,
+                            )
+                gmsh.model.mesh.setTransfiniteSurface(face_tag)
+            except Exception as exc:
+                logger.warning(
+                    "setTransfiniteSurface failed on face %d " "(lateral %s): %s",
+                    face_tag,
+                    lat_key,
+                    exc,
+                )
 
 
 def _map_phantom_faces_to_gmsh(

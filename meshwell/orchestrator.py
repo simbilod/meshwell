@@ -90,6 +90,7 @@ def generate_mesh(
         )
         from meshwell.structured.builder import (
             apply_structured_mesh,
+            apply_structured_transfinite_hints,
             resolve_mesh_plan,
         )
 
@@ -138,11 +139,15 @@ def generate_mesh(
         def _structured_hook() -> None:
             apply_structured_mesh(_plan, _mesh_plan, _phantom_map, _occ_entities)
 
+        def _pre_2d_hook() -> None:
+            apply_structured_transfinite_hints(_mesh_plan, _phantom_map, _occ_entities)
+
         return mesh(
             dim=dim,
             model=mm,
             output_file=Path(output_mesh) if output_mesh else None,
             pre_3d_hook=_structured_hook,
+            pre_2d_hook=_pre_2d_hook,
             **mesh_kwargs,
         )
     return mesh(

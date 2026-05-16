@@ -37,6 +37,56 @@ def test_single_structured_slab_produces_wedge_mesh(tmp_path):
     assert "block" in m.field_data
 
 
+def test_simple_slab_lateral_mesh_is_conformal(tmp_path):
+    """Lateral OCC face triangles should be conformal with the wedge mesh.
+
+    Each boundary triangle must be either a wedge bot/top triangle or a
+    sub-triangle of a wedge lateral quad (no mid-height interior nodes).
+    """
+    import meshio
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+
+    sq = Polygon([(0, 0), (2, 0), (2, 2), (0, 2)])
+    p = PolyPrism(
+        polygons=sq,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+    )
+    out = tmp_path / "slab.msh"
+    generate_mesh([p], dim=3, output_mesh=out, default_characteristic_length=0.5)
+    m = meshio.read(out)
+
+    wedges = np.concatenate([cb.data for cb in m.cells if cb.type == "wedge"], axis=0)
+    wedge_tris = {frozenset((int(w[0]), int(w[1]), int(w[2]))) for w in wedges}
+    wedge_tris |= {frozenset((int(w[3]), int(w[4]), int(w[5]))) for w in wedges}
+    wedge_lateral_quads = set()
+    for w in wedges:
+        for i, j in [(0, 1), (1, 2), (2, 0)]:
+            wedge_lateral_quads.add(
+                frozenset((int(w[i]), int(w[j]), int(w[j + 3]), int(w[i + 3])))
+            )
+
+    orphans = 0
+    for cb in m.cells:
+        if cb.type != "triangle":
+            continue
+        for t in cb.data:
+            ts = frozenset((int(t[0]), int(t[1]), int(t[2])))
+            if ts in wedge_tris:
+                continue
+            if any(ts.issubset(q) for q in wedge_lateral_quads):
+                continue
+            orphans += 1
+    assert orphans == 0, f"{orphans} boundary triangles not conformal with wedge mesh"
+
+
 def test_single_structured_slab_default_characteristic_length(tmp_path):
     """Smoke: structured pipeline runs without exceptions."""
     from meshwell.orchestrator import generate_mesh
