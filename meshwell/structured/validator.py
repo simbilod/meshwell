@@ -764,13 +764,22 @@ def _check_prism_tet_interface(vol_tags: list[int], tol: float) -> list[Issue]:
 
 
 def _check_top_bottom_symmetry(vol_tags: list[int], tol: float) -> list[Issue]:
-    """Check that each structured volume's top-z and bottom-z node slices differ only in z.
+    """Each structured volume's z-planes must share the same (x, y) footprint within tol.
 
-    Within tol, every (x, y) in the bottom slice must have a matching (x, y)
-    in the top slice. Tet-only volumes are skipped.
+    The builder constructs structured volumes by stacking n_layers copies of
+    the bottom face's xy coordinates at fractional z values. All node planes
+    (z=zlo, z=zlo+h/n, ..., z=zhi) MUST share xy within tol; any drift
+    indicates a builder bug or post-processing corruption.
+
+    The check:
+    1. Clusters node z-coordinates into planes (within tol).
+    2. For each non-bottom plane, runs bidirectional nearest-neighbour
+       residual against the bottom plane via scipy.spatial.cKDTree.
+    3. Reports a per-plane error if the count differs or any residual > tol.
     """
     import gmsh
     import numpy as np
+    from scipy.spatial import cKDTree
 
     issues: list[Issue] = []
 
@@ -785,44 +794,64 @@ def _check_top_bottom_symmetry(vol_tags: list[int], tol: float) -> list[Issue]:
         if coords.shape[0] < 6:
             continue
 
-        z_min = float(np.min(coords[:, 2]))
-        z_max = float(np.max(coords[:, 2]))
-        bot_mask = np.abs(coords[:, 2] - z_min) <= tol
-        top_mask = np.abs(coords[:, 2] - z_max) <= tol
-        bot_xy = coords[bot_mask][:, :2]
-        top_xy = coords[top_mask][:, :2]
+        # Cluster z-coordinates into planes within tol. Sort z values, then
+        # walk and split a new plane whenever the gap exceeds tol.
+        z_sorted = np.sort(coords[:, 2])
+        plane_z_values: list[float] = [float(z_sorted[0])]
+        for z in z_sorted[1:]:
+            if z - plane_z_values[-1] > tol:
+                plane_z_values.append(float(z))
 
-        if bot_xy.shape[0] != top_xy.shape[0]:
-            issues.append(
-                Issue(
-                    severity="error",
-                    check="top_bottom_symmetry",
-                    message=(
-                        f"Structured vol {vol}: bottom has {bot_xy.shape[0]} nodes "
-                        f"but top has {top_xy.shape[0]} (non-isomorphic slices)."
-                    ),
-                    entities=(("vol_tag", vol),),
-                )
-            )
+        if len(plane_z_values) < 2:
+            # Single plane: cannot be a structured volume in any meaningful sense.
             continue
 
-        # For each bot xy, find nearest top xy. Max distance should be <= tol.
-        max_resid = 0.0
-        for i in range(bot_xy.shape[0]):
-            d = np.linalg.norm(top_xy - bot_xy[i : i + 1], axis=1)
-            max_resid = max(max_resid, float(d.min()))
-        if max_resid > tol:
-            issues.append(
-                Issue(
-                    severity="error",
-                    check="top_bottom_symmetry",
-                    message=(
-                        f"Structured vol {vol}: top\u2194bottom xy residual "
-                        f"{max_resid:.3e} exceeds tol {tol:.3e}."
-                    ),
-                    entities=(("vol_tag", vol),),
+        # Reference plane = lowest z.
+        z_ref = plane_z_values[0]
+        ref_mask = np.abs(coords[:, 2] - z_ref) <= tol
+        ref_xy = coords[ref_mask][:, :2]
+        if ref_xy.shape[0] == 0:
+            continue
+        ref_tree = cKDTree(ref_xy)
+
+        # Each non-bottom plane must match.
+        for plane_z in plane_z_values[1:]:
+            mask = np.abs(coords[:, 2] - plane_z) <= tol
+            plane_xy = coords[mask][:, :2]
+
+            if plane_xy.shape[0] != ref_xy.shape[0]:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        check="top_bottom_symmetry",
+                        message=(
+                            f"Structured vol {vol}: plane z={plane_z:.6g} has "
+                            f"{plane_xy.shape[0]} nodes but reference plane z="
+                            f"{z_ref:.6g} has {ref_xy.shape[0]} (non-isomorphic)."
+                        ),
+                        entities=(("vol_tag", vol),),
+                    )
                 )
-            )
+                continue
+
+            # Bidirectional nearest-neighbour residual.
+            plane_tree = cKDTree(plane_xy)
+            fwd = ref_tree.query(plane_xy)[0].max()
+            bwd = plane_tree.query(ref_xy)[0].max()
+            max_resid = float(max(fwd, bwd))
+            if max_resid > tol:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        check="top_bottom_symmetry",
+                        message=(
+                            f"Structured vol {vol}: plane z={plane_z:.6g} vs "
+                            f"reference z={z_ref:.6g}: xy residual "
+                            f"{max_resid:.3e} exceeds tol {tol:.3e}."
+                        ),
+                        entities=(("vol_tag", vol),),
+                    )
+                )
 
     return issues
 
