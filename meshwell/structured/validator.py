@@ -128,6 +128,89 @@ def _resolve_tol(tol: float | None) -> float:
         return _DEFAULT_TOL_FALLBACK
 
 
+def _check_near_duplicate_nodes(tol: float) -> tuple[list[Issue], list[Issue]]:
+    """Detect exact + near-duplicate node coordinates.
+
+    Returns ``(errors, warnings)``. Exact duplicates are reported as
+    errors (indicates ``removeDuplicateNodes`` was skipped or too tight).
+    Near-duplicates within ``tol`` but with non-zero offset are warnings.
+    """
+    import gmsh
+    import numpy as np
+
+    node_tags_arr, node_coords_flat, _ = gmsh.model.mesh.getNodes()
+    if len(node_tags_arr) == 0:
+        return [], []
+
+    node_tags = np.asarray(node_tags_arr, dtype=np.int64)
+    coords = np.asarray(node_coords_flat, dtype=float).reshape(-1, 3)
+    n = coords.shape[0]
+    if n < 2:
+        return [], []
+
+    # Spatial-hash bin = tol. Pairs within sqrt(3)*tol may straddle bins,
+    # so check the 27 neighbouring bins around each.
+    bin_size = max(tol, 1e-15)
+    bins = np.floor(coords / bin_size).astype(np.int64)
+
+    bucket: dict[tuple[int, int, int], list[int]] = {}
+    for i in range(n):
+        key = (int(bins[i, 0]), int(bins[i, 1]), int(bins[i, 2]))
+        bucket.setdefault(key, []).append(i)
+
+    errors: list[Issue] = []
+    warnings: list[Issue] = []
+    reported_pairs: set[tuple[int, int]] = set()
+
+    for i in range(n):
+        bi = (int(bins[i, 0]), int(bins[i, 1]), int(bins[i, 2]))
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    key = (bi[0] + dx, bi[1] + dy, bi[2] + dz)
+                    nbrs = bucket.get(key)
+                    if not nbrs:
+                        continue
+                    for j in nbrs:
+                        if j <= i:
+                            continue
+                        d2 = float(np.sum((coords[i] - coords[j]) ** 2))
+                        if d2 > tol * tol:
+                            continue
+                        pair = (int(node_tags[i]), int(node_tags[j]))
+                        if pair in reported_pairs:
+                            continue
+                        reported_pairs.add(pair)
+                        if d2 == 0.0:
+                            errors.append(
+                                Issue(
+                                    severity="error",
+                                    check="near_duplicate_nodes",
+                                    message=(
+                                        f"Exact duplicate node coords at "
+                                        f"({coords[i, 0]:.6g}, {coords[i, 1]:.6g}, "
+                                        f"{coords[i, 2]:.6g}); removeDuplicateNodes "
+                                        f"may have been skipped."
+                                    ),
+                                    entities=(("node", pair[0]), ("node", pair[1])),
+                                )
+                            )
+                        else:
+                            warnings.append(
+                                Issue(
+                                    severity="warning",
+                                    check="near_duplicate_nodes",
+                                    message=(
+                                        f"Near-duplicate node pair: distance "
+                                        f"{d2 ** 0.5:.3e} < tol {tol:.3e}."
+                                    ),
+                                    entities=(("node", pair[0]), ("node", pair[1])),
+                                )
+                            )
+
+    return errors, warnings
+
+
 def validate_structured_mesh(
     plan: "StructuredPlan",  # noqa: ARG001
     mesh_plan: "StructuredMeshPlan",  # noqa: ARG001
@@ -135,7 +218,7 @@ def validate_structured_mesh(
     occ_entities: list[Any],  # noqa: ARG001
     vol_tags: list[int],  # noqa: ARG001
     *,
-    tol: float | None = None,  # noqa: ARG001
+    tol: float | None = None,
     include_quality: bool = False,  # noqa: ARG001
 ) -> ValidationResult:
     """Validate the live-gmsh-session mesh against the builder's plan.
@@ -167,7 +250,13 @@ def validate_structured_mesh(
     Raises:
         RuntimeError: if no gmsh model is initialized.
     """
+    resolved_tol = _resolve_tol(tol)
+
     errors: list[Issue] = []
     warnings: list[Issue] = []
-    # Checks are added one at a time in subsequent tasks.
+
+    dup_errors, dup_warnings = _check_near_duplicate_nodes(resolved_tol)
+    errors.extend(dup_errors)
+    warnings.extend(dup_warnings)
+
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
