@@ -33,11 +33,17 @@ Scenes
    Phase 5(b) routes each bottom triangle to the right sub-face by
    centroid XY and builds wedges correctly.
 
+8. ``disc_embedded_arc`` — Phase 6(a1): a structured disc with
+   ``identify_arcs=True`` embedded inside an unstructured cladding box.
+   Exercises the arc-aware phantom sub-prism builder so that BOP sees
+   shared TShapes between the phantom and the original PolyPrism.
+
 What this does NOT yet exercise
 -------------------------------
 
 - Mid-height-cut lateral faces (Phase 5(c), now rejected at plan stage).
-- Arc-bearing structured prisms (Phase 6+).
+- Split-arc cases (Phase 6(a2)): arc-bearing footprint with multiple
+  face_partition pieces (raises NotImplementedError).
 """
 from __future__ import annotations
 
@@ -357,6 +363,63 @@ def scene_overlapping_top_neighbours(out_dir: Path) -> Path:
     return out_msh
 
 
+def scene_disc_embedded_arc(out_dir: Path) -> Path:
+    """Phase 6(a1): arc-bearing disc inside a larger unstructured cladding.
+
+    Exercises: identify_arcs=True on a structured PolyPrism. The phantom
+    sub-prism is now built with true OCC arc edges (two 180-degree arcs for
+    the full circle) so that BOP can find shared TShapes between the phantom
+    and the original PolyPrism. Previously this failed with
+    "Invalid boundary mesh (overlapping facets)".
+
+    Cladding z-range [-1, 2] is wider than the disc z-range [0, 1] so the
+    disc's face_partition stays as 1 piece (no split-arc case).
+    """
+    import math
+
+    print("\n" + "=" * 70)
+    print("Scene 8: disc_embedded_arc (Phase 6(a1))")
+    print("=" * 70)
+    print(
+        "  Structured disc (identify_arcs=True) z=[0, 1], radius=1.\n"
+        "  Unstructured cladding box z=[-1, 2], xy=[-3, 3]x[-3, 3].\n"
+        "  -> disc phantom uses true OCC arc edges; BOP sees shared TShapes.\n"
+        "  Expected: wedge prisms in disc, tets in cladding."
+    )
+
+    n = 32
+    disc_poly = Polygon(
+        [
+            (math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n))
+            for i in range(n)
+        ]
+    )
+    disc = PolyPrism(
+        polygons=disc_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="disc",
+        mesh_order=1.0,
+    )
+    cladding = PolyPrism(
+        polygons=Polygon([(-3, -3), (3, -3), (3, 3), (-3, 3)]),
+        buffers={-1.0: 0.0, 2.0: 0.0},
+        physical_name="cladding",
+        mesh_order=2.0,
+    )
+
+    out_msh = out_dir / "disc_embedded_arc.msh"
+    generate_mesh(
+        [disc, cladding], dim=3, output_mesh=out_msh, default_characteristic_length=0.4
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
 def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/structured_demo")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -370,6 +433,7 @@ def main() -> int:
         ("side_by_side", scene_side_by_side),
         ("midheight_cut_rejected", scene_midheight_cut_rejected),
         ("overlapping_top_neighbours", scene_overlapping_top_neighbours),
+        ("disc_embedded_arc", scene_disc_embedded_arc),
     ]
     results: list[tuple[str, str, Path | None]] = []
     for name, fn in scenes_to_run:
