@@ -124,7 +124,7 @@ def _resolve_tol(tol: float | None) -> float:
         if min_edge <= 0:
             return _DEFAULT_TOL_FALLBACK
         return min_edge * 1e-6
-    except Exception:
+    except (AttributeError, RuntimeError, ValueError):
         return _DEFAULT_TOL_FALLBACK
 
 

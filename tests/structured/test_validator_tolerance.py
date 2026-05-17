@@ -19,7 +19,7 @@ def gmsh_unit_cube_meshed():
     gmsh.finalize()
 
 
-def test_resolve_tol_returns_explicit_value(gmsh_unit_cube_meshed):  # noqa: ARG001
+def test_resolve_tol_returns_explicit_value():
     assert _resolve_tol(1e-8) == 1e-8
 
 
