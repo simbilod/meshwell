@@ -336,6 +336,67 @@ def _check_plan_mesh_consistency(
     return issues
 
 
+def _check_internal_seams_unmeshed(phantom_map: "PhantomMap") -> list[Issue]:
+    """Faces shared between two pieces of the same slab must carry no 2D elements.
+
+    Mirrors the detection logic in
+    ``meshwell.structured.builder.apply_structured_mesh`` (the block
+    that calls ``gmsh.model.mesh.clear([(2, face_tag)])`` for interior
+    seam faces). Reports any face that the builder should have cleared
+    but didn't (still has 2D elements).
+
+    Accepts int gmsh tags directly in ``phantom_map.output_laterals``
+    values (test convenience). Real pipeline values (TopoDS_Face) are
+    wired in Task 8.
+    """
+    import gmsh
+
+    issues: list[Issue] = []
+
+    # Group LateralKey occurrences by underlying value (gmsh face tag).
+    value_to_keys: dict[int, list] = {}
+    for key, values in phantom_map.output_laterals.items():
+        for v in values:
+            if isinstance(v, int):
+                value_to_keys.setdefault(v, []).append(key)
+
+    for face_tag, keys in value_to_keys.items():
+        if len(keys) < 2:
+            continue
+        slabs = {k.slab_index for k in keys}
+        pieces = {k.piece_index for k in keys}
+        if len(slabs) != 1 or len(pieces) < 2:
+            continue
+        # This face identifies an internal seam. Check it has no 2D elements.
+        _elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(2, face_tag)
+        total_2d = sum(len(t) for t in elem_tags_per_type)
+        if total_2d > 0:
+            issues.append(
+                Issue(
+                    severity="error",
+                    check="internal_seam_unmeshed",
+                    message=(
+                        f"Internal seam face {face_tag} carries {total_2d} "
+                        f"2D elements; should have been cleared by the builder."
+                    ),
+                    entities=(
+                        ("face", face_tag),
+                        (
+                            "seam_keys",
+                            tuple(
+                                sorted(
+                                    (k.slab_index, k.piece_index, k.outer_edge_index)
+                                    for k in keys
+                                )
+                            ),
+                        ),
+                    ),
+                )
+            )
+
+    return issues
+
+
 def _check_watertight(vol_tags: list[int]) -> list[Issue]:
     """For each volume, every face appears in 1 or 2 elements of that volume.
 
@@ -393,7 +454,7 @@ def _check_watertight(vol_tags: list[int]) -> list[Issue]:
 def validate_structured_mesh(
     plan: "StructuredPlan",
     mesh_plan: "StructuredMeshPlan",
-    phantom_map: "PhantomMap",  # noqa: ARG001
+    phantom_map: "PhantomMap",
     occ_entities: list[Any],  # noqa: ARG001
     vol_tags: list[int],
     *,
@@ -445,5 +506,6 @@ def validate_structured_mesh(
 
     errors.extend(_check_plan_mesh_consistency(plan, mesh_plan, vol_tags))
     errors.extend(_check_watertight(vol_tags))
+    errors.extend(_check_internal_seams_unmeshed(phantom_map))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
