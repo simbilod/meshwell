@@ -19,6 +19,7 @@ from meshwell.structured.phantom import build_phantom_shapes, extract_phantom_ma
 from meshwell.structured.plan import build_plan
 from meshwell.structured.spec import (
     PhantomMap,
+    StructuredArcSplitError,
     StructuredExtrusionResolutionSpec,
     StructuredMeshPlan,
     StructuredMidHeightCutError,
@@ -27,6 +28,7 @@ from meshwell.structured.spec import (
 
 __all__ = [
     "PhantomMap",
+    "StructuredArcSplitError",
     "StructuredExtrusionResolutionSpec",
     "StructuredMeshPlan",
     "StructuredMidHeightCutError",

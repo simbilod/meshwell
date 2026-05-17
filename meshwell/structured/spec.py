@@ -79,6 +79,36 @@ class StructuredBufferTaperError(ValueError):
     """
 
 
+class StructuredArcSplitError(ValueError):
+    """Raised when a structured arc slab is split at a non-polygon-vertex position.
+
+    When a neighbour entity's boundary crosses one of the slab's arc edges
+    at a position that is NOT a polygon vertex of the original arc, the
+    planner's polygon-based partition lands at the polygon-edge crossing
+    (chord intersection), while OCC's BOP later cuts the true arc at the
+    geometric intersection point. The two differ by a few percent of the
+    polygon edge length; BOP then introduces extra OCC sub-faces and
+    micro-vertices that the planner did not predict, breaking the
+    structured-wedge construction (manifests as 6-corner laterals or
+    duplicate-node mappings downstream).
+
+    Remediation (any of):
+      - Densify the arc footprint so a polygon vertex falls on the
+        neighbour boundary (the disc polygon vertex at angle θ has
+        x = r * cos(θ), so choose neighbour cut x accordingly).
+      - Align the neighbour boundary with an existing polygon vertex
+        (e.g. cut at x=0 for a 32-vertex disc whose vertices include
+        (0, r) and (0, -r)).
+      - Move the neighbour off the arc footprint entirely.
+      - Drop identify_arcs=True for the slab (use the polygonal
+        approximation throughout).
+
+    Phase 6(a3) future work would project true arc/seam intersection
+    points into the piece polygons at plan time, eliminating the need
+    for this validation.
+    """
+
+
 @dataclass(frozen=True)
 class PieceArcEdge:
     """One arc segment on a piece boundary.

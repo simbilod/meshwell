@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Any
 
+import shapely
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
@@ -552,17 +553,234 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
         # the correct OCC geometry without provenance. This avoids TShape mismatches
         # that arise from differences in seam rotation between the provenance arc
         # classifier and the canonical-seam-aware heuristic decomposer.
-        if slab.identify_arcs and len(slab.face_partition) > 1:
-            arc_index = _build_arc_index_from_footprint(
+        arc_index_for_slab = None
+        if slab.identify_arcs:
+            arc_index_for_slab = _build_arc_index_from_footprint(
                 slab.footprint,
                 identify_arcs=True,
                 min_arc_points=slab.min_arc_points,
                 arc_tolerance=slab.arc_tolerance,
             )
+        if (
+            slab.identify_arcs
+            and arc_index_for_slab is not None
+            and len(slab.face_partition) > 1
+        ):
             slab.face_partition_provenance = [
-                _classify_piece_boundary(piece, arc_index)
+                _classify_piece_boundary(piece, arc_index_for_slab)
                 for piece in slab.face_partition
             ]
+        # Validate neighbour boundaries against true arc geometry — must run
+        # whenever the slab has arcs AND has any neighbour, regardless of
+        # whether polygonize captured the cuts (it can silently miss off-
+        # vertex cuts, leaving the bad case to surface as a BOP failure).
+        if (
+            slab.identify_arcs
+            and arc_index_for_slab is not None
+            and all_neighbour_polys
+        ):
+            _validate_arc_neighbour_alignment(
+                slab,
+                arc_index_for_slab,
+                all_neighbour_polys,
+                tol=slab.arc_tolerance,
+            )
+
+
+def _validate_arc_neighbour_alignment(
+    slab: Slab,
+    arc_index: _ArcIndex,
+    neighbour_polys: list,
+    tol: float,
+) -> None:
+    """Raise StructuredArcSplitError on non-polygon-vertex arc crossings.
+
+    For each neighbour boundary segment, analytically intersect with each
+    arc's true circle; raise if any intersection inside the slab footprint
+    is not at an original arc polygon vertex.
+
+    Runs BEFORE polygonize (which can silently miss off-vertex cuts).
+    For each arc center + radius, for each neighbour boundary edge that
+    overlaps the arc's xy-bbox, compute the analytic segment-circle
+    intersection. Each intersection point inside the slab footprint must
+    be at an arc polygon vertex; otherwise the polygon-based partition
+    will disagree with BOP's true-arc cut downstream.
+    """
+    from meshwell.structured.spec import StructuredArcSplitError
+
+    if not arc_index.arcs:
+        return
+
+    ndigits = arc_index.ndigits
+    near_arc_tol = max(tol, 1e-9)
+
+    def _on_polygon_vertex(x: float, y: float) -> bool:
+        return (round(x, ndigits), round(y, ndigits)) in arc_index.vertex_to_arcs
+
+    for nb_idx, nb_poly in enumerate(neighbour_polys):
+        rings = [list(nb_poly.exterior.coords)]
+        rings.extend(list(h.coords) for h in nb_poly.interiors)
+
+        for ring_coords in rings:
+            for i in range(len(ring_coords) - 1):
+                p1 = ring_coords[i]
+                p2 = ring_coords[i + 1]
+
+                for arc in arc_index.arcs:
+                    cx, cy = arc.center[0], arc.center[1]
+                    r = arc.radius
+
+                    # Quick bbox reject: if segment bbox doesn't overlap arc bbox.
+                    arc_xmin = cx - r - near_arc_tol
+                    arc_xmax = cx + r + near_arc_tol
+                    arc_ymin = cy - r - near_arc_tol
+                    arc_ymax = cy + r + near_arc_tol
+                    seg_xmin, seg_xmax = sorted([p1[0], p2[0]])
+                    seg_ymin, seg_ymax = sorted([p1[1], p2[1]])
+                    if (
+                        seg_xmax < arc_xmin
+                        or seg_xmin > arc_xmax
+                        or seg_ymax < arc_ymin
+                        or seg_ymin > arc_ymax
+                    ):
+                        continue
+
+                    # Analytic segment-circle intersection.
+                    dx = p2[0] - p1[0]
+                    dy = p2[1] - p1[1]
+                    fx = p1[0] - cx
+                    fy = p1[1] - cy
+                    a = dx * dx + dy * dy
+                    b = 2 * (fx * dx + fy * dy)
+                    c = fx * fx + fy * fy - r * r
+                    disc = b * b - 4 * a * c
+                    if disc < 0 or a == 0:
+                        continue
+                    sd = disc**0.5
+                    # Polygon-arc deviation upper bound: r * (1 - cos(dθ/2)).
+                    # For a polygon with min_arc_points covering an arc, dθ
+                    # ≤ 2π / min_arc_points; conservatively buffer by 1% of r.
+                    interior_buffer = max(near_arc_tol, 0.05 * r)
+                    inside_region = slab.footprint.buffer(interior_buffer)
+                    for t in ((-b - sd) / (2 * a), (-b + sd) / (2 * a)):
+                        if t < -near_arc_tol or t > 1 + near_arc_tol:
+                            continue
+                        ix = p1[0] + t * dx
+                        iy = p1[1] + t * dy
+                        # Must be inside the slab footprint (buffered to
+                        # absorb polygon-vs-arc deviation up to ~r%).
+                        if not inside_region.contains(shapely.geometry.Point(ix, iy)):
+                            continue
+                        if _on_polygon_vertex(ix, iy):
+                            continue
+                        raise StructuredArcSplitError(
+                            f"Slab {slab.physical_name}: neighbour "
+                            f"#{nb_idx} boundary segment "
+                            f"({p1[0]:.4f}, {p1[1]:.4f}) -> "
+                            f"({p2[0]:.4f}, {p2[1]:.4f}) crosses arc "
+                            f"(center=({cx:.4f}, {cy:.4f}), r={r:.4f}) at "
+                            f"xy=({ix:.6f}, {iy:.6f}), which is not an "
+                            f"original arc polygon vertex of the slab's "
+                            f"footprint.\n\n"
+                            f"The polygon-based partition will disagree "
+                            f"with BOP's true-arc cut, producing extra OCC "
+                            f"sub-faces / micro-vertices that break the "
+                            f"structured wedge construction.\n\n"
+                            f"Remediation (any of):\n"
+                            f"  - Align the neighbour boundary with an "
+                            f"existing polygon vertex of the arc "
+                            f"(e.g. for a 32-vertex disc, x=0 falls on "
+                            f"polygon vertices at (0, +r) and (0, -r)).\n"
+                            f"  - Densify the arc polygon at construction "
+                            f"so a polygon vertex lands at the cut "
+                            f"position.\n"
+                            f"  - Move the neighbour off the arc "
+                            f"footprint.\n"
+                            f"  - Set identify_arcs=False on the slab to "
+                            f"use the polygon approximation throughout."
+                        )
+
+
+def _validate_arc_partition_aligned(
+    slab: Slab,
+    arc_index: _ArcIndex,
+    tol: float,
+) -> None:
+    """Legacy / unused: post-polygonize check kept as documentation only.
+
+    Raises StructuredArcSplitError if a piece-boundary vertex lies near
+    an arc circle but isn't an arc polygon vertex.
+
+    polygonize introduces a NEW polygon vertex where the neighbour
+    boundary's straight edge crosses the slab polygon's chord. That new
+    vertex lies on the chord — slightly OFF the true arc circle (offset
+    grows with chord length). BOP, on the other hand, cuts the true OCC
+    arc at the geometric arc/line intersection point. The two
+    intersection positions disagree by up to ~chord_length * (1 - cos(θ/2))
+    for a chord subtending angle θ. The mismatch produces extra OCC
+    sub-faces / 6-corner laterals downstream.
+
+    Detection: walk each piece's polygon ring. For each vertex that
+    lies near one of the original arcs' circles (within arc_tolerance)
+    but is NOT in arc_index.vertex_to_arcs (= it's a polygonize-
+    introduced crossing, not an original arc polygon vertex), raise.
+    """
+    from meshwell.structured.spec import StructuredArcSplitError
+
+    if slab.face_partition_provenance is None or not arc_index.arcs:
+        return
+
+    ndigits = arc_index.ndigits
+
+    def _key(x: float, y: float) -> tuple[float, float]:
+        return (round(x, ndigits), round(y, ndigits))
+
+    # Tolerance for "vertex lies near an arc circle": use arc_tolerance
+    # times a safety factor so small polygon-vs-arc offsets are caught.
+    near_arc_tol = tol
+
+    for piece_idx, piece in enumerate(slab.face_partition):
+        # Walk all rings (exterior + interiors) of the piece polygon.
+        rings = [("exterior", list(piece.exterior.coords))]
+        for h_idx, interior in enumerate(piece.interiors):
+            rings.append((f"interior[{h_idx}]", list(interior.coords)))
+
+        for ring_name, coords in rings:
+            for x, y in coords:
+                if _key(x, y) in arc_index.vertex_to_arcs:
+                    continue  # original arc polygon vertex — fine
+                # Check distance to each arc's circle.
+                for arc in arc_index.arcs:
+                    cx, cy = arc.center[0], arc.center[1]
+                    dist_to_circle = abs(
+                        ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 - arc.radius
+                    )
+                    if dist_to_circle < near_arc_tol:
+                        # This vertex sits near the arc circle but isn't an
+                        # original polygon vertex of it — polygonize crossing.
+                        raise StructuredArcSplitError(
+                            f"Slab {slab.physical_name} piece {piece_idx} "
+                            f"({ring_name}): a neighbour boundary cuts the "
+                            f"arc (center=({cx:.4f}, {cy:.4f}), "
+                            f"r={arc.radius:.4f}) at xy=({x:.6f}, {y:.6f}), "
+                            f"which is not an original arc polygon vertex "
+                            f"of the slab's footprint (distance to circle: "
+                            f"{dist_to_circle:.2e}). The polygon-based "
+                            f"partition will disagree with BOP's true-arc "
+                            f"cut, producing extra OCC sub-faces.\n\n"
+                            f"Remediation (any of):\n"
+                            f"  - Align the neighbour boundary with an "
+                            f"existing polygon vertex of the arc "
+                            f"(e.g. for a 32-vertex disc, x=0 falls on "
+                            f"polygon vertices at (0, +r) and (0, -r)).\n"
+                            f"  - Densify the arc polygon at construction "
+                            f"so a polygon vertex lands at the cut "
+                            f"position.\n"
+                            f"  - Move the neighbour off the arc "
+                            f"footprint.\n"
+                            f"  - Set identify_arcs=False on the slab to "
+                            f"use the polygon approximation throughout."
+                        )
 
 
 @phase_timed("plan")
