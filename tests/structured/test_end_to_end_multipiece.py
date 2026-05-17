@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from shapely.geometry import Polygon
 
+# Validator import: used by tests that call generate_mesh(validate_structured=True).
+from meshwell.structured.validator import validate_structured_mesh  # noqa: F401
+
 
 def _square(x=0, y=0, w=1, h=1) -> Polygon:
     return Polygon([(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
@@ -47,7 +50,6 @@ def test_structured_slab_with_top_neighbour_produces_multi_piece_wedges(tmp_path
     failed when BOP introduced top boundary nodes not present on the bottom.
     """
     import meshio
-
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
     from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -68,7 +70,13 @@ def test_structured_slab_with_top_neighbour_produces_multi_piece_wedges(tmp_path
     )
 
     out_msh = tmp_path / "multipiece.msh"
-    generate_mesh([s, n], dim=3, output_mesh=out_msh, default_characteristic_length=0.5)
+    generate_mesh(
+        [s, n],
+        dim=3,
+        output_mesh=out_msh,
+        default_characteristic_length=0.5,
+        validate_structured=True,
+    )
 
     m = meshio.read(out_msh)
     cell_types = {cb.type for cb in m.cells}

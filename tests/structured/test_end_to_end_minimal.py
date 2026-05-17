@@ -3,6 +3,12 @@ from __future__ import annotations
 
 from shapely.geometry import Polygon
 
+# Validator import: used by tests that call generate_mesh(validate_structured=True).
+# The import is at module level so pytest shows a clean ImportError if the
+# validator module is missing, rather than a confusing AttributeError at
+# assertion time.
+from meshwell.structured.validator import validate_structured_mesh  # noqa: F401
+
 
 def _square(x=0, y=0, w=1, h=1) -> Polygon:
     return Polygon([(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
@@ -11,7 +17,6 @@ def _square(x=0, y=0, w=1, h=1) -> Polygon:
 def test_single_structured_slab_produces_wedge_mesh(tmp_path):
     """A single structured PolyPrism with n_layers=2 produces wedges in the mesh."""
     import meshio
-
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
     from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -25,7 +30,13 @@ def test_single_structured_slab_produces_wedge_mesh(tmp_path):
     )
 
     out_msh = tmp_path / "structured.msh"
-    generate_mesh([p], dim=3, output_mesh=out_msh, default_characteristic_length=0.5)
+    generate_mesh(
+        [p],
+        dim=3,
+        output_mesh=out_msh,
+        default_characteristic_length=0.5,
+        validate_structured=True,
+    )
 
     m = meshio.read(out_msh)
     # Wedge cells should be present. meshio may name them "wedge" or "wedge15"
@@ -43,10 +54,10 @@ def test_simple_slab_lateral_mesh_is_conformal(tmp_path):
     Each boundary triangle must be either a wedge bot/top triangle or a
     sub-triangle of a wedge lateral quad (no mid-height interior nodes).
     """
-    import meshio
     import numpy as np
     from shapely.geometry import Polygon
 
+    import meshio
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
     from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -60,7 +71,13 @@ def test_simple_slab_lateral_mesh_is_conformal(tmp_path):
         physical_name="slab",
     )
     out = tmp_path / "slab.msh"
-    generate_mesh([p], dim=3, output_mesh=out, default_characteristic_length=0.5)
+    generate_mesh(
+        [p],
+        dim=3,
+        output_mesh=out,
+        default_characteristic_length=0.5,
+        validate_structured=True,
+    )
     m = meshio.read(out)
 
     wedges = np.concatenate([cb.data for cb in m.cells if cb.type == "wedge"], axis=0)
@@ -101,7 +118,13 @@ def test_single_structured_slab_default_characteristic_length(tmp_path):
         physical_name="b",
     )
     out_msh = tmp_path / "smoke.msh"
-    generate_mesh([p], dim=3, output_mesh=out_msh, default_characteristic_length=1.0)
+    generate_mesh(
+        [p],
+        dim=3,
+        output_mesh=out_msh,
+        default_characteristic_length=1.0,
+        validate_structured=True,
+    )
     assert out_msh.exists()
 
 
@@ -117,10 +140,10 @@ def test_multipiece_slab_with_top_cap_no_true_orphans(tmp_path):
     triangle nor a sub-triangle of a wedge lateral quad nor a tet-only
     cap triangle nor an interface triangle shared by wedge and tet regions.
     """
-    import meshio
     import numpy as np
     from shapely.geometry import Polygon
 
+    import meshio
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
     from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -140,7 +163,11 @@ def test_multipiece_slab_with_top_cap_no_true_orphans(tmp_path):
 
     out_msh = tmp_path / "slab_with_top_cap.msh"
     generate_mesh(
-        [slab, cap], dim=3, output_mesh=out_msh, default_characteristic_length=0.5
+        [slab, cap],
+        dim=3,
+        output_mesh=out_msh,
+        default_characteristic_length=0.5,
+        validate_structured=True,
     )
 
     m = meshio.read(out_msh)
