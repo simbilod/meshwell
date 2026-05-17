@@ -201,3 +201,85 @@ def test_wedge_quad_with_t_junction_on_tet_side_reported(
     )
     iface_errors = [i for i in result.errors if i.check == "prism_tet_interface"]
     assert len(iface_errors) >= 1
+
+
+def test_check2_failure_is_geometrically_localized(
+    gmsh_session,  # noqa: ARG001
+    empty_pm,
+):
+    """When check 2 fails, the report should mention the geometric refinement."""
+    plan, mesh_plan, pm = empty_pm
+
+    # Two nodes at nearly the same place (different IDs) form a face on each side.
+    coords = [
+        0,
+        0,
+        0,  # 1
+        1,
+        0,
+        0,  # 2
+        0,
+        1,
+        0,  # 3
+        0,
+        0,
+        1,  # 4
+        1,
+        0,
+        1,  # 5
+        0,
+        1,
+        1,  # 6
+        0,
+        0,
+        0.0001,  # 7 — near-duplicate of node 1 (different id)
+        2,
+        0,
+        0,  # 8
+    ]
+    gmsh.model.mesh.addNodes(
+        3,
+        gmsh.model.addDiscreteEntity(3, -1, []),
+        [1, 2, 3, 4, 5, 6, 7, 8],
+        coords,
+    )
+
+    wedge_vol = gmsh.model.addDiscreteEntity(3, -1, [])
+    gmsh.model.mesh.addElements(3, wedge_vol, [6], [[100]], [[1, 2, 3, 4, 5, 6]])
+
+    tet_vol = gmsh.model.addDiscreteEntity(3, -1, [])
+    # Tet uses node 7 (near-duplicate of 1) instead of node 1.
+    gmsh.model.mesh.addElements(
+        3,
+        tet_vol,
+        [4],
+        [[200, 201]],
+        [
+            [
+                7,
+                2,
+                5,
+                8,
+                7,
+                5,
+                4,
+                8,
+            ]
+        ],
+    )
+
+    result = validate_structured_mesh(
+        plan,
+        mesh_plan,
+        pm,
+        occ_entities=[],
+        vol_tags=[wedge_vol, tet_vol],
+        tol=1e-3,  # tol large enough to catch the offset
+    )
+    iface_errors = [i for i in result.errors if i.check == "prism_tet_interface"]
+    assert any(
+        "near-duplicate" in i.message.lower()
+        or "duplicate" in i.message.lower()
+        or "candidate exists at matching coords" in i.message.lower()
+        for i in iface_errors
+    )

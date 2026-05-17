@@ -479,7 +479,77 @@ _ELEM_PRISM = 6  # 6-node prism
 _STRUCTURED_TYPES = (_ELEM_HEX, _ELEM_PRISM)
 
 
-def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
+def _localize_face_mismatch(
+    face_key: frozenset[int],
+    tet_vols: list[int],
+    tol: float,
+) -> tuple[bool, str]:
+    """Geometrically localize a check-2 face mismatch.
+
+    Given a structured face that check 2 couldn't match topologically,
+    look for a geometrically-matching tet-side face within ``tol``.
+
+    Returns ``(near_duplicate_found, refinement_string)`` where
+    ``near_duplicate_found`` is True when tet-side nodes at matching
+    coordinates (but with different IDs) were detected, and
+    ``refinement_string`` is a short message to append to the error.
+    Returns ``(False, "")`` when the structured face's nodes can't be
+    looked up (degenerate mesh state).
+    """
+    import gmsh
+    import numpy as np
+
+    # Coords of the structured face's nodes.
+    struct_coords: list[np.ndarray] = []
+    for n in face_key:
+        try:
+            xyz, _, _, _ = gmsh.model.mesh.getNode(int(n))
+            struct_coords.append(np.asarray(xyz, dtype=float))
+        except Exception:  # noqa: S112
+            continue
+    if not struct_coords:
+        return False, ""
+    struct_pts = np.stack(struct_coords)
+
+    # Scan all triangle faces on tet vols. For each tet-side node NOT in
+    # the structured face, check if its coordinates are within tol of any
+    # structured face node — that signals a near-duplicate substitution.
+    matched_node_ids: list[int] = []
+    for tv in tet_vols:
+        elem_types, _, _ = gmsh.model.mesh.getElements(3, tv)
+        for et in elem_types:
+            try:
+                tri = gmsh.model.mesh.getElementFaceNodes(int(et), 3, tv)
+                tri_arr = np.asarray(tri, dtype=np.int64).reshape(-1, 3)
+            except Exception:  # noqa: S112
+                continue
+            for row in tri_arr:
+                for n in row:
+                    if int(n) in face_key:
+                        continue
+                    try:
+                        xyz, _, _, _ = gmsh.model.mesh.getNode(int(n))
+                        p = np.asarray(xyz, dtype=float)
+                    except Exception:  # noqa: S112
+                        continue
+                    dists = np.linalg.norm(struct_pts - p, axis=1)
+                    if float(dists.min()) <= tol:
+                        matched_node_ids.append(int(n))
+
+    if matched_node_ids:
+        return (
+            True,
+            f" Localization: candidate exists at matching coords but with "
+            f"different node IDs (near-duplicate on tet side: nodes "
+            f"{sorted(set(matched_node_ids))[:5]}).",
+        )
+    return (
+        False,
+        " Localization: no candidate within tol — likely hole or misalignment.",
+    )
+
+
+def _check_prism_tet_interface(vol_tags: list[int], tol: float) -> list[Issue]:
     """Check that structured/tet face matching is conformal.
 
     Faces shared between a structured volume (wedge/hex) and a tet
@@ -574,6 +644,9 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
             if not matched:
                 referenced = any(face_key.issubset(tet_node_set[tv]) for tv in tet_vols)
                 if referenced:
+                    _near_dup, refinement = _localize_face_mismatch(
+                        face_key, tet_vols, tol
+                    )
                     issues.append(
                         Issue(
                             severity="error",
@@ -581,6 +654,7 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
                             message=(
                                 f"Structured vol {sv} triangle face has no exact "
                                 f"match in any tet volume (possible T-junction)."
+                                + refinement
                             ),
                             entities=(
                                 ("vol_tag", sv),
@@ -607,6 +681,9 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
                     face_key.issubset(tet_node_set[tv]) for tv in tet_vols
                 )
                 if touches_tet:
+                    _near_dup, refinement = _localize_face_mismatch(
+                        face_key, tet_vols, tol
+                    )
                     issues.append(
                         Issue(
                             severity="error",
@@ -614,6 +691,7 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
                             message=(
                                 f"Structured vol {sv} quad face has 0 covering tet "
                                 f"triangles (T-junction or missing element)."
+                                + refinement
                             ),
                             entities=(
                                 ("vol_tag", sv),
@@ -621,6 +699,29 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
                             ),
                         )
                     )
+                else:
+                    # Topological gate missed; try coordinate-based localization
+                    # to catch near-duplicate node substitutions (node IDs differ
+                    # but coordinates match within tol).
+                    near_dup, refinement = _localize_face_mismatch(
+                        face_key, tet_vols, tol
+                    )
+                    if near_dup:
+                        issues.append(
+                            Issue(
+                                severity="error",
+                                check="prism_tet_interface",
+                                message=(
+                                    f"Structured vol {sv} quad face has 0 covering tet "
+                                    f"triangles (T-junction or missing element)."
+                                    + refinement
+                                ),
+                                entities=(
+                                    ("vol_tag", sv),
+                                    ("face_nodes", tuple(sorted(face_key))),
+                                ),
+                            )
+                        )
             elif len(covering_tris) != 2:
                 issues.append(
                     Issue(
@@ -718,6 +819,6 @@ def validate_structured_mesh(
     errors.extend(_check_plan_mesh_consistency(plan, mesh_plan, vol_tags))
     errors.extend(_check_watertight(vol_tags))
     errors.extend(_check_internal_seams_unmeshed(phantom_map, occ_entities))
-    errors.extend(_check_prism_tet_interface(vol_tags))
+    errors.extend(_check_prism_tet_interface(vol_tags, resolved_tol))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
