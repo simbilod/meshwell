@@ -180,6 +180,26 @@ def _compute_physical_groups(
         for name in ent.physical_name:
             groups.setdefault((ent.dim, name), []).extend(leaves)
 
+    # 1b. intra-entity seam detection: sub-shape ids that appear on >=2 of an
+    #     entity's own leaves are internal seams between sub-solids of the
+    #     SAME logical entity (e.g., when BOP fragments split a single entity
+    #     into multiple solids). They should NOT be tagged as exterior faces.
+    entity_intra_shared: list[set[int]] = []
+    for ent in entities:
+        if ent.dim != max_dim or ent.dim == 0:
+            entity_intra_shared.append(set())
+            continue
+        sid_leaf_count: dict[int, int] = {}
+        for s in ent.shapes:
+            leaf_sids: set[int] = set()
+            for _sub, sid in _leaf_subshapes(s, ent.dim - 1):
+                leaf_sids.add(sid)
+            for sid in leaf_sids:
+                sid_leaf_count[sid] = sid_leaf_count.get(sid, 0) + 1
+        entity_intra_shared.append(
+            {sid for sid, count in sid_leaf_count.items() if count >= 2}
+        )
+
     # 2. tag_interfaces: include pairs where at least one side is keep=True,
     #    so kept neighbours can name boundaries shared with helper
     #    (keep=False) entities. Pairs where both sides are keep=False have
@@ -247,7 +267,9 @@ def _compute_physical_groups(
             continue
         boundary_dim = ent.dim - 1
         bids = set(entity_boundary[i].keys())
-        exterior = bids - entity_interface_ids[i] - lower_dim_ids
+        exterior = (
+            bids - entity_interface_ids[i] - lower_dim_ids - entity_intra_shared[i]
+        )
         exterior_shapes = [entity_boundary[i][bid] for bid in exterior]
         if not exterior_shapes:
             continue
