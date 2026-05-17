@@ -30,6 +30,7 @@ exactly; tests that pin one pin the other.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
@@ -295,8 +296,8 @@ class CAD_OCC:
         self,
         entities: list[OCCLabeledEntity],
         progress_bars: bool = False,
-        extra_occ_shapes: list | None = None,
-        cad_occ_callback=None,
+        extra_occ_shapes: list[Any] | None = None,
+        cad_occ_callback: Callable[[Any], None] | None = None,
     ) -> list[OCCLabeledEntity]:
         """Fragment all entity shapes; assign pieces by mesh_order priority.
 
@@ -501,8 +502,8 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
-        extra_occ_shapes: list | None = None,
-        cad_occ_callback=None,
+        extra_occ_shapes: list[Any] | None = None,
+        cad_occ_callback: Callable[[Any], None] | None = None,
     ) -> list[OCCLabeledEntity]:
         """Instantiate, sequentially cut, then fragment all entities.
 
@@ -545,8 +546,8 @@ def cad_occ(
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
-    extra_occ_shapes: list | None = None,
-    cad_occ_callback=None,
+    extra_occ_shapes: list[Any] | None = None,
+    cad_occ_callback: Callable[[Any], None] | None = None,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 

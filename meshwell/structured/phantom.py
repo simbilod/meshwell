@@ -167,15 +167,27 @@ def _build_sub_prism(
         c2 = outer_coords[(edge_i + 1) % n_outer]
 
         bot_edge = _find_outer_edge(bot_edges_all, c1, c2)
-        if bot_edge is not None:
-            input_edges[EdgeKey(slab_index, "bot", piece_index, edge_i)] = bot_edge
-            lateral_face = prism_builder.Generated(bot_edge).First()
-            input_laterals[edge_i] = lateral_face
+        if bot_edge is None:
+            raise RuntimeError(
+                f"_find_outer_edge: no outer edge match for polygon edge {edge_i} "
+                f"of piece. This indicates an oriented-polygon mismatch between "
+                f"shapely and OCC (run shapely.geometry.polygon.orient at the "
+                f"piece level before building OCC faces)."
+            )
+        input_edges[EdgeKey(slab_index, "bot", piece_index, edge_i)] = bot_edge
+        lateral_face = prism_builder.Generated(bot_edge).First()
+        input_laterals[edge_i] = lateral_face
 
         # Top edges have z=zhi; match by same (x,y) coordinate pair.
         top_edge = _find_outer_edge(top_edges_all, c1, c2)
-        if top_edge is not None:
-            input_edges[EdgeKey(slab_index, "top", piece_index, edge_i)] = top_edge
+        if top_edge is None:
+            raise RuntimeError(
+                f"_find_outer_edge: no outer edge match for polygon edge {edge_i} "
+                f"of piece. This indicates an oriented-polygon mismatch between "
+                f"shapely and OCC (run shapely.geometry.polygon.orient at the "
+                f"piece level before building OCC faces)."
+            )
+        input_edges[EdgeKey(slab_index, "top", piece_index, edge_i)] = top_edge
 
     from OCP.TopoDS import TopoDS
 

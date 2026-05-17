@@ -160,6 +160,19 @@ def _stamp_top_face_mesh(
                 ti = int(np.argmin(dists))
                 bot_to_top_tag[int(bot_ntags[bi])] = int(top_ntags[ti])
 
+        # Phase 6 cleanup: defensive check. Greedy argmin pairing can't produce
+        # duplicates for valid vertical extrusions (corresponding nodes are at
+        # XY distance ~0). If it does, top mesh stamping is broken.
+        _n_vals = len(bot_to_top_tag.values())
+        _n_unique = len(set(bot_to_top_tag.values()))
+        if _n_unique != _n_vals:
+            raise RuntimeError(
+                f"_stamp_top_face_mesh: greedy argmin produced duplicate top tags "
+                f"for distinct bot nodes ({_n_vals} mappings, "
+                f"{_n_unique} unique). Inputs likely have "
+                f"a degenerate edge (zero XY extent)."
+            )
+
         # Step 2: collect interior bottom nodes (boundary=False).
         bot_int_tags_arr, bot_int_coords_flat, _ = gmsh.model.mesh.getNodes(
             2, bottom_face_tag, includeBoundary=False

@@ -104,6 +104,11 @@ def generate_mesh(
             cad_occ_callback=lambda b: captured_builder.append(b),
             **cad_kwargs,
         )
+        if len(captured_builder) != 1:
+            raise RuntimeError(
+                f"cad_occ_callback should fire exactly once after BOPAlgo_Builder.Perform(); "
+                f"got {len(captured_builder)} invocations."
+            )
         phantom_map = extract_phantom_map(phantom_result, captured_builder[0])
         mesh_plan_obj = resolve_mesh_plan(plan, entities)
         structured_state = (plan, mesh_plan_obj, phantom_map, occ_entities)
