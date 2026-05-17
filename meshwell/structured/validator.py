@@ -509,29 +509,26 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
             vol_kind[vol] = "other"
 
     # Collect all faces per volume: structured (tri + quad) vs. tet (tri).
-    tri_faces_by_vol: dict[int, dict[frozenset[int], list[int]]] = {}
-    quad_faces_by_vol: dict[int, dict[frozenset[int], list[int]]] = {}
+    # Values are occurrence counts; the downstream checks only need to know
+    # whether a face appears once (boundary) or more (internal/shared).
+    tri_faces_by_vol: dict[int, dict[frozenset[int], int]] = {}
+    quad_faces_by_vol: dict[int, dict[frozenset[int], int]] = {}
 
     for vol in vol_kind:
         elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(3, vol)
-        tri_map: dict[frozenset[int], list[int]] = {}
-        quad_map: dict[frozenset[int], list[int]] = {}
-        for et, tags_for_type in zip(elem_types, elem_tags_per_type):
+        tri_map: dict[frozenset[int], int] = {}
+        quad_map: dict[frozenset[int], int] = {}
+        for et, _ in zip(elem_types, elem_tags_per_type):
             tri = gmsh.model.mesh.getElementFaceNodes(int(et), 3, vol)
             tri_arr = np.asarray(tri, dtype=np.int64).reshape(-1, 3)
-            n_elems = len(tags_for_type)
-            per_elem = tri_arr.shape[0] // n_elems if n_elems else 0
-            for k, row in enumerate(tri_arr):
+            for row in tri_arr:
                 key = frozenset(int(x) for x in row)
-                elem_tag = int(tags_for_type[k // max(per_elem, 1)])
-                tri_map.setdefault(key, []).append(elem_tag)
+                tri_map[key] = tri_map.get(key, 0) + 1
             quad = gmsh.model.mesh.getElementFaceNodes(int(et), 4, vol)
             quad_arr = np.asarray(quad, dtype=np.int64).reshape(-1, 4)
-            per_elem_q = quad_arr.shape[0] // n_elems if n_elems else 0
-            for k, row in enumerate(quad_arr):
+            for row in quad_arr:
                 key = frozenset(int(x) for x in row)
-                elem_tag = int(tags_for_type[k // max(per_elem_q, 1)])
-                quad_map.setdefault(key, []).append(elem_tag)
+                quad_map[key] = quad_map.get(key, 0) + 1
         tri_faces_by_vol[vol] = tri_map
         quad_faces_by_vol[vol] = quad_map
 
@@ -541,10 +538,11 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
     structured_vols = [v for v, k in vol_kind.items() if k == "structured"]
     tet_vols = [v for v, k in vol_kind.items() if k == "tet"]
 
-    # Precompute the set of node tags used by each tet volume so we can
-    # cheaply ask "does this structured face lie on the tet boundary?"
-    # (a face is on the interface only if ALL its nodes appear in the tet
-    # volume; sharing 1-2 nodes is just an incidental edge/corner contact).
+    # tet_node_set is the union of all nodes referenced by triangular
+    # faces of each tet volume. We use it as the "is on the prism/tet
+    # interface" gate. Assumes every tet volume that participates in
+    # the interface has boundary triangles — true for any closed tet
+    # region adjacent to a structured slab.
     tet_node_set: dict[int, set[int]] = {}
     for tv in tet_vols:
         nodes_used: set[int] = set()
@@ -552,13 +550,28 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
             nodes_used.update(fk)
         tet_node_set[tv] = nodes_used
 
+    # Inverted index: for each tet vol, map each node tag to the set of
+    # triangle face keys that contain it. Lets the per-quad covering loop
+    # skip tri faces that don't touch any of the quad's 4 nodes.
+    tet_node_to_tris: dict[int, dict[int, set[frozenset[int]]]] = {}
+    for tv in tet_vols:
+        per_node: dict[int, set[frozenset[int]]] = {}
+        for tri_key in tri_faces_by_vol[tv]:
+            for n in tri_key:
+                per_node.setdefault(n, set()).add(tri_key)
+        tet_node_to_tris[tv] = per_node
+
     for sv in structured_vols:
+        # If no tet volumes exist, prism/tet conformality checks are vacuous.
+        if not tet_vols:
+            continue
+
         # Triangle faces.
-        for face_key, owners in tri_faces_by_vol[sv].items():
-            if len(owners) != 1:
+        for face_key, count in tri_faces_by_vol[sv].items():
+            if count != 1:
                 continue  # Internal to the structured volume.
             matched = any(face_key in tri_faces_by_vol[tv] for tv in tet_vols)
-            if not matched and tet_vols:
+            if not matched:
                 referenced = any(face_key.issubset(tet_node_set[tv]) for tv in tet_vols)
                 if referenced:
                     issues.append(
@@ -577,18 +590,18 @@ def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
                     )
 
         # Quad faces.
-        for face_key, owners in quad_faces_by_vol[sv].items():
-            if len(owners) != 1:
+        for face_key, count in quad_faces_by_vol[sv].items():
+            if count != 1:
                 continue
             covering_tris: list[frozenset[int]] = []
             for tv in tet_vols:
+                # Only scan tri keys that share at least one node with the quad.
+                candidates: set[frozenset[int]] = set()
+                for n in face_key:
+                    candidates.update(tet_node_to_tris[tv].get(n, set()))
                 covering_tris.extend(
-                    tri_key
-                    for tri_key in tri_faces_by_vol[tv]
-                    if tri_key.issubset(face_key)
+                    tri_key for tri_key in candidates if tri_key.issubset(face_key)
                 )
-            if not tet_vols:
-                continue
             if len(covering_tris) == 0:
                 touches_tet = any(
                     face_key.issubset(tet_node_set[tv]) for tv in tet_vols
