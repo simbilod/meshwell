@@ -1,4 +1,8 @@
 """Unit tests for Issue / ValidationResult dataclasses."""
+import dataclasses
+
+import pytest
+
 from meshwell.structured.validator import Issue, ValidationResult
 
 
@@ -13,6 +17,8 @@ def test_issue_is_frozen_dataclass():
     assert issue.check == "watertight"
     assert issue.message == "hole in volume"
     assert issue.entities == (("face", 42),)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        issue.check = "other"
 
 
 def test_validation_result_truthy_when_no_errors():
@@ -51,6 +57,9 @@ def test_format_report_groups_by_check():
     error_idx = report.index("ERRORS")
     warning_idx = report.index("WARNINGS")
     assert error_idx < warning_idx
+    assert report.count("[watertight]") == 1
+    assert report.count("[interface]") == 1
+    assert report.count("[near_duplicates]") == 1
 
 
 def test_format_report_empty_result_is_clean():
