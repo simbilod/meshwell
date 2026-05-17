@@ -126,20 +126,165 @@ def scene_slab_with_top_cap(out_dir: Path) -> Path:
     return out_msh
 
 
+def scene_embedded_slab(out_dir: Path) -> Path:
+    """Structured slab fully embedded inside a larger unstructured cladding box.
+
+    Cladding has lower priority (mesh_order=2.0); slab wins. Cladding gets
+    fragmented into: top cap (z=[1,2]), bottom cap (z=[-1,0]), and a
+    side ring (xy outside the slab footprint). Slab has neighbours on all
+    6 lateral surfaces.
+
+    Exercises: neighbour cuts on bottom plane + top plane (both planes
+    have neighbour); structured-vs-unstructured priority resolution.
+    """
+    print("\n" + "=" * 70)
+    print("Scene 3: embedded_slab")
+    print("=" * 70)
+    print(
+        "  Structured slab z=[0, 1], xy=[0, 4]x[0, 4], n_layers=2,\n"
+        "  embedded inside unstructured cladding z=[-1, 2], xy=[-2, 6]x[-2, 6].\n"
+        "  -> slab has neighbours on bottom + top + all 4 lateral sides.\n"
+        "  Expected: wedges in slab, tets in cladding (split into 6 pieces by BOP)."
+    )
+
+    slab = PolyPrism(
+        polygons=_square(0, 0, 4, 4),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+        mesh_order=1.0,
+    )
+    cladding = PolyPrism(
+        polygons=_square(-2, -2, 8, 8),
+        buffers={-1.0: 0.0, 2.0: 0.0},
+        physical_name="cladding",
+        mesh_order=2.0,
+    )
+
+    out_msh = out_dir / "embedded_slab.msh"
+    generate_mesh(
+        [slab, cladding], dim=3, output_mesh=out_msh, default_characteristic_length=1.0
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
+def scene_stacked_structured(out_dir: Path) -> Path:
+    """Two structured slabs stacked z=[0,1] and z=[1,2], sharing the z=1 plane.
+
+    Each slab has its own n_layers. They share OCC faces at z=1 via BOP.
+    Both should mesh as wedges, conformally joined at the interface.
+
+    Exercises: structured-on-structured stacking; per-slab phantom
+    construction with shared interface face.
+    """
+    print("\n" + "=" * 70)
+    print("Scene 4: stacked_structured")
+    print("=" * 70)
+    print(
+        "  Lower structured slab z=[0, 1], n_layers=2.\n"
+        "  Upper structured slab z=[1, 2], n_layers=3.\n"
+        "  Same xy=[0, 2]x[0, 2] footprint, sharing the z=1 plane.\n"
+        "  Expected: wedges in both slabs, conformal across z=1 interface."
+    )
+
+    lower = PolyPrism(
+        polygons=_square(0, 0, 2, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="lower",
+    )
+    upper = PolyPrism(
+        polygons=_square(0, 0, 2, 2),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[3])],
+        physical_name="upper",
+    )
+
+    out_msh = out_dir / "stacked_structured.msh"
+    generate_mesh(
+        [lower, upper], dim=3, output_mesh=out_msh, default_characteristic_length=0.5
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
+def scene_side_by_side(out_dir: Path) -> Path:
+    """Structured + unstructured side by side, sharing a lateral face.
+
+    Both occupy z=[0, 1]. Structured at xy=[0, 2]x[0, 2]; unstructured at
+    xy=[2, 4]x[0, 2]. They share the lateral face at x=2.
+
+    Exercises: lateral face shared between structured slab and an
+    unstructured neighbour at the same z range; conformal interface on
+    the shared lateral.
+    """
+    print("\n" + "=" * 70)
+    print("Scene 5: side_by_side")
+    print("=" * 70)
+    print(
+        "  Structured slab z=[0, 1], xy=[0, 2]x[0, 2], n_layers=2.\n"
+        "  Unstructured neighbour z=[0, 1], xy=[2, 4]x[0, 2].\n"
+        "  -> shared lateral face at x=2.\n"
+        "  Expected: wedges in slab, tets in neighbour, conformal at x=2."
+    )
+
+    slab = PolyPrism(
+        polygons=_square(0, 0, 2, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+    )
+    side = PolyPrism(
+        polygons=_square(2, 0, 2, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="side",
+    )
+
+    out_msh = out_dir / "side_by_side.msh"
+    generate_mesh(
+        [slab, side], dim=3, output_mesh=out_msh, default_characteristic_length=0.5
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
 def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/structured_demo")
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {out_dir}")
 
-    scene_simple_slab(out_dir)
-    scene_slab_with_top_cap(out_dir)
+    scenes_to_run = [
+        ("simple_slab", scene_simple_slab),
+        ("slab_with_top_cap", scene_slab_with_top_cap),
+        ("embedded_slab", scene_embedded_slab),
+        ("stacked_structured", scene_stacked_structured),
+        ("side_by_side", scene_side_by_side),
+    ]
+    results: list[tuple[str, str, Path | None]] = []
+    for name, fn in scenes_to_run:
+        try:
+            path = fn(out_dir)
+            results.append((name, "OK", path))
+        except Exception as e:
+            print(f"\n  !! Scene {name} FAILED: {type(e).__name__}: {e}")
+            results.append((name, "FAIL", None))
 
     print("\n" + "=" * 70)
-    print("Done.")
+    print("Summary")
     print("=" * 70)
-    print(f"Open the .msh files in gmsh:\n  gmsh {out_dir}/simple_slab.msh")
-    print(f"  gmsh {out_dir}/slab_with_top_cap.msh")
-    return 0
+    for name, status, path in results:
+        if status == "OK":
+            print(f"  {status} {name}: {path}")
+        else:
+            print(f"  {status} {name}: see error above")
+    n_ok = sum(1 for _, s, _ in results if s == "OK")
+    print(f"\n{n_ok}/{len(results)} scenes succeeded.")
+    return 0 if n_ok == len(results) else 1
 
 
 if __name__ == "__main__":

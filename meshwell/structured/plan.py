@@ -90,6 +90,17 @@ def _footprints_overlap(a: Slab, b: Slab) -> bool:
     return (not inter.is_empty) and inter.area > 0
 
 
+def _z_volumetric_overlap(a: Slab, b: Slab) -> bool:
+    """True iff the two slabs' z-extents overlap with positive measure.
+
+    Face-touching (e.g. a.zhi == b.zlo) is NOT volumetric overlap — stacked
+    structured slabs sharing a z-plane are allowed and don't trigger Policy B.
+    """
+    lo = max(a.zlo, b.zlo)
+    hi = min(a.zhi, b.zhi)
+    return (hi - lo) > _Z_TOL
+
+
 def _n_layers_of_slab(slab: Slab, entities: list[Any]) -> int:
     """Look up n_layers for slab via (source_index, z_interval_index)."""
     ent = entities[slab.source_index]
@@ -132,6 +143,10 @@ def validate_and_resolve_overlap(
             if kept.source_index == slab.source_index:
                 continue
             if not _footprints_overlap(kept, slab):
+                continue
+            if not _z_volumetric_overlap(kept, slab):
+                # Footprints overlap but z-extents are disjoint (stacked or
+                # vertically separated) — not volumetric overlap, no Policy B.
                 continue
             if not _z_extent_matches(kept, slab):
                 raise StructuredOverlapError(
