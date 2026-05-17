@@ -354,7 +354,12 @@ def _check_internal_seams_unmeshed(phantom_map: "PhantomMap") -> list[Issue]:
     issues: list[Issue] = []
 
     # Group LateralKey occurrences by underlying value (gmsh face tag).
-    value_to_keys: dict[int, list] = {}
+    # int-passthrough: tests inject gmsh face tags directly. Real-pipeline
+    # values are OCC TopoDS_Face objects, resolved to gmsh tags in Task 8.
+    # Non-int values are skipped here; Task 8 will add the OCC→gmsh path.
+    from meshwell.structured.spec import LateralKey  # local import, avoids cycle
+
+    value_to_keys: dict[int, list[LateralKey]] = {}
     for key, values in phantom_map.output_laterals.items():
         for v in values:
             if isinstance(v, int):
