@@ -228,6 +228,71 @@ def _neighbours_touching_z(
     return out
 
 
+def _validate_no_mid_height_cuts(
+    slabs: list[Slab],
+    entities: list[Any],
+    tol: float = 1e-9,
+) -> None:
+    """Raise StructuredMidHeightCutError if any neighbour would cut a slab mid-height.
+
+    A mid-height cut occurs when a neighbour entity has a z-endpoint
+    (zmin or zmax) strictly inside a slab's (zlo, zhi) range AND its xy
+    footprint intersects the slab's footprint with positive area. The
+    BOP would then introduce a vertex on the slab's lateral OCC face at
+    that intermediate z — the structured mesh stage can't form a
+    conformal wedge grid through such a face (Layer C's wedge layering
+    only has nodes at the n_layers grid).
+
+    Fail-fast diagnostic: clear remediation message instructs the user
+    to add the offending z as a buffer-key on the structured polyprism.
+    """
+    from meshwell.structured.spec import StructuredMidHeightCutError
+
+    structured_source_indices = {s.source_index for s in slabs}
+    for slab in slabs:
+        slab_fp = slab.footprint
+        for i, ent in enumerate(entities):
+            # Skip the slab's own owning entity (and any sibling sub-slab
+            # of the same entity — same source_index).
+            if i == slab.source_index:
+                continue
+            # Skip other structured entities — Policy B already catches
+            # structured/structured volumetric overlap with mismatched z.
+            if i in structured_source_indices and getattr(ent, "structured", False):
+                continue
+            rng = _entity_z_range(ent)
+            if rng is None:
+                continue
+            zmin, zmax = rng
+            cut_zs: list[float] = []
+            if slab.zlo + tol < zmin < slab.zhi - tol:
+                cut_zs.append(zmin)
+            if slab.zlo + tol < zmax < slab.zhi - tol:
+                cut_zs.append(zmax)
+            if not cut_zs:
+                continue
+            ent_fp = _entity_footprint(ent)
+            if ent_fp is None:
+                continue
+            inter = slab_fp.intersection(ent_fp)
+            if inter.is_empty or inter.area <= 0:
+                continue
+            # We have a mid-height cut.
+            cut_z = cut_zs[0]
+            neighbour_name = getattr(ent, "physical_name", ("?",))
+            raise StructuredMidHeightCutError(
+                f"Neighbour {neighbour_name} (z=[{zmin}, {zmax}]) would "
+                f"mid-height-cut structured slab {slab.physical_name} "
+                f"(z=[{slab.zlo}, {slab.zhi}]) at z={cut_z}. "
+                f"The structured pipeline can't form a conformal wedge "
+                f"grid through a lateral face cut at an intermediate z. "
+                f"Remediation: add {cut_z} as a buffer-key on the "
+                f"structured polyprism {slab.physical_name} (with explicit "
+                f"n_layers split for the new sub-interval), or move the "
+                f"neighbour to share the slab's existing zlo/zhi planes."
+            )
+
+
 def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
     """Compute slab.face_partition in place.
 
@@ -278,6 +343,7 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
         return StructuredPlan(slabs=(), z_planes=(), overlaps=())
     raw_slabs = expand_to_slabs(pairs)
     kept_slabs, overlaps = validate_and_resolve_overlap(raw_slabs, entities)
+    _validate_no_mid_height_cuts(kept_slabs, entities)
     compute_face_partition(kept_slabs, entities)
     z_set: set[float] = set()
     for s in kept_slabs:

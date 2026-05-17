@@ -56,6 +56,22 @@ class StructuredOverlapError(ValueError):
     """
 
 
+class StructuredMidHeightCutError(ValueError):
+    """Raised when a neighbour entity would cut a structured slab mid-height.
+
+    A neighbour with z-endpoint (zmin or zmax) strictly inside a structured
+    slab's z-extent and with xy footprint intersecting the slab's footprint
+    would introduce vertices on the slab's lateral OCC faces at intermediate
+    z values. The structured mesh stage cannot produce a conformal wedge
+    grid in that case (would need tet/pyramid bridging — Phase 6+).
+
+    Remediation: add the neighbour's z-endpoint as an additional buffer-key
+    on the structured polyprism so it becomes a slab boundary (with explicit
+    n_layers split), or move the neighbour to share the slab's existing
+    zlo/zhi planes.
+    """
+
+
 class StructuredBufferTaperError(ValueError):
     """Raised when ``PolyPrism(structured=True)`` is used with non-zero buffers.
 

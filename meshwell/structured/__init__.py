@@ -21,12 +21,16 @@ from meshwell.structured.spec import (
     PhantomMap,
     StructuredExtrusionResolutionSpec,
     StructuredMeshPlan,
+    StructuredMidHeightCutError,
+    StructuredOverlapError,
 )
 
 __all__ = [
     "PhantomMap",
     "StructuredExtrusionResolutionSpec",
     "StructuredMeshPlan",
+    "StructuredMidHeightCutError",
+    "StructuredOverlapError",
     "apply_structured_mesh",
     "build_phantom_shapes",
     "build_plan",

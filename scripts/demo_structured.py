@@ -253,6 +253,58 @@ def scene_side_by_side(out_dir: Path) -> Path:
     return out_msh
 
 
+def scene_midheight_cut_rejected(out_dir: Path) -> Path | None:
+    """Mid-height cut by a neighbour should be rejected at plan stage.
+
+    Structured slab z=[0, 1]; unstructured neighbour z=[0.3, 1.5] that
+    intrudes into the slab xy. The neighbour's zmin=0.3 is STRICTLY
+    inside the slab's z-extent (0 < 0.3 < 1), which would cause BOP to
+    introduce a vertex on the slab's lateral face at z=0.3 — a
+    mid-height cut the structured pipeline can't form a conformal wedge
+    grid through.
+
+    Phase 5(c) detects this at plan stage and raises
+    StructuredMidHeightCutError with a remediation message.
+    """
+    print("\n" + "=" * 70)
+    print("Scene 6: midheight_cut_rejected (expected to raise)")
+    print("=" * 70)
+    print(
+        "  Structured slab z=[0, 1] + neighbour z=[0.3, 1.5] intruding\n"
+        "  laterally. Neighbour zmin=0.3 is strictly inside slab z-extent.\n"
+        "  Expected: StructuredMidHeightCutError with remediation guidance."
+    )
+
+    from meshwell.structured.spec import StructuredMidHeightCutError
+
+    slab = PolyPrism(
+        polygons=_square(0, 0, 4, 4),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+    )
+    intruder = PolyPrism(
+        polygons=_square(3, 1, 2, 2),  # overlaps slab in xy
+        buffers={0.3: 0.0, 1.5: 0.0},  # zmin=0.3 strictly inside [0, 1]
+        physical_name="intruder",
+    )
+
+    out_msh = out_dir / "midheight_cut_rejected.msh"
+    try:
+        generate_mesh(
+            [slab, intruder],
+            dim=3,
+            output_mesh=out_msh,
+            default_characteristic_length=0.5,
+        )
+        print("  !! ERROR: expected StructuredMidHeightCutError, got success!")
+        return out_msh
+    except StructuredMidHeightCutError as e:
+        print(f"  OK - raised as expected:\n    {str(e)[:200]}")
+        return None
+
+
 def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/structured_demo")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -264,6 +316,7 @@ def main() -> int:
         ("embedded_slab", scene_embedded_slab),
         ("stacked_structured", scene_stacked_structured),
         ("side_by_side", scene_side_by_side),
+        ("midheight_cut_rejected", scene_midheight_cut_rejected),
     ]
     results: list[tuple[str, str, Path | None]] = []
     for name, fn in scenes_to_run:
