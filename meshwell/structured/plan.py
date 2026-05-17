@@ -310,10 +310,13 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
         if not all_neighbour_polys:
             slab.face_partition = [slab.footprint]
             continue
-        neighbour_union = unary_union(all_neighbour_polys)
-        seam_lines = neighbour_union.boundary
+        # Phase 5(d): use individual neighbour boundaries (common refinement) so
+        # overlapping neighbours' internal seams appear in the partition. Otherwise
+        # BOP cuts the slab face at boundaries the planner didn't anticipate,
+        # producing multi-output-face per piece.
+        all_boundaries = unary_union([poly.boundary for poly in all_neighbour_polys])
         boundary = slab.footprint.boundary
-        combined = unary_union([boundary, seam_lines.intersection(slab.footprint)])
+        combined = unary_union([boundary, all_boundaries.intersection(slab.footprint)])
         raw = list(polygonize(combined))
         pieces = [
             piece

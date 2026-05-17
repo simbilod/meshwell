@@ -285,3 +285,32 @@ def test_build_plan_returns_frozen():
     plan = build_plan([])
     with pytest.raises((AttributeError, TypeError)):
         plan.slabs = ()  # frozen dataclass rejects reassignment
+
+
+def test_face_partition_overlapping_neighbours_common_refinement():
+    """Phase 5(d): overlapping neighbours at slab top produce a 3-piece partition.
+
+    (A-only, AB-overlap, B-only), not 1 piece.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.plan import (
+        compute_face_partition,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    s = _structured(_square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [2], "s")
+    a = PolyPrism(
+        polygons=_square(0, 0, 3, 4),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="a",
+    )
+    b = PolyPrism(
+        polygons=_square(1, 0, 3, 4),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="b",
+    )
+    slabs = expand_to_slabs(gather_structured_entities([s, a, b]))
+    compute_face_partition(slabs, entities=[s, a, b])
+    # 3 pieces: x in [0,1] (A only), x in [1,3] (AB), x in [3,4] (B only)
+    assert len(slabs[0].face_partition) == 3

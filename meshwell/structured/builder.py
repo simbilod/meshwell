@@ -263,132 +263,6 @@ def _stamp_top_face_mesh(
     return bot_to_top_tag
 
 
-def _stamp_top_face_mesh_multi(
-    bottom_face_tag: int,
-    top_face_tags: list[int],
-    zlo: float,
-    zhi: float,
-    edge_correspondence: dict[int, int] | None = None,
-) -> dict[int, int]:
-    """Multi-top-face variant: build bot->top mapping without touching top meshes.
-
-    When BOP splits a slab partition piece's top OCC face into N sub-faces,
-    the top sub-faces already carry a valid 2D mesh from the generate(2) pass
-    that is conforming with the neighbour volumes (a, b, ...).  We must NOT
-    clear or re-stamp them (doing so causes PLC errors in TetGen).
-
-    Strategy:
-    - Collect all existing top-sub-face nodes (boundary + interior) into a
-      global XY -> top-node-tag lookup.
-    - Match each bottom boundary node to a top node by XY position.
-    - For bottom interior nodes (no matching top node — different mesh density),
-      allocate fresh nodes at z=zhi; they will be registered in the discrete
-      volume entity by the caller.
-    - Return the unified bot -> top node-tag dict.
-
-    The __multi_top_interior__ key in the returned dict carries a list of
-    (tag, x, y, z) tuples for the fresh interior nodes so the caller can
-    add them to the volume entity before calling addElements.
-    """
-    import gmsh
-
-    if len(top_face_tags) == 1:
-        # Fast path: delegate to single-face version.
-        return _stamp_top_face_mesh(
-            bottom_face_tag, top_face_tags[0], zlo, zhi, edge_correspondence
-        )
-
-    height = zhi - zlo
-
-    # --- Read all bottom nodes ---
-    bot_all_tags_arr, bot_all_coords_flat, _ = gmsh.model.mesh.getNodes(
-        2, bottom_face_tag, includeBoundary=True
-    )
-    bot_all_tags = np.asarray(bot_all_tags_arr, dtype=np.int64)
-    bot_all_coords = np.asarray(bot_all_coords_flat, dtype=float).reshape(-1, 3)
-
-    bot_int_tags_arr, bot_int_coords_flat, _ = gmsh.model.mesh.getNodes(
-        2, bottom_face_tag, includeBoundary=False
-    )
-    bot_int_tags_set = {int(t) for t in bot_int_tags_arr}
-    bot_int_coords = np.asarray(bot_int_coords_flat, dtype=float).reshape(-1, 3)
-    bot_int_tags_list = [int(t) for t in bot_int_tags_arr]
-
-    # --- Collect ALL top sub-face nodes for XY matching (don't clear them) ---
-    global_top_xy_to_tag: dict[tuple[float, float], int] = {}
-    for tt in top_face_tags:
-        ttags_arr, tcoords_flat, _ = gmsh.model.mesh.getNodes(
-            2, tt, includeBoundary=True
-        )
-        ttags = np.asarray(ttags_arr, dtype=np.int64)
-        tcoords = np.asarray(tcoords_flat, dtype=float).reshape(-1, 3)
-        for i2, ttag in enumerate(ttags):
-            key = (round(tcoords[i2, 0], 9), round(tcoords[i2, 1], 9))
-            global_top_xy_to_tag[key] = int(ttag)
-
-    bot_to_top_tag: dict[int, int] = {}
-
-    # --- Match boundary nodes via edge correspondence (known edges) ---
-    if edge_correspondence is not None:
-        bot_face_boundary = gmsh.model.getBoundary(
-            [(2, bottom_face_tag)], oriented=False, recursive=False
-        )
-        for dim_b, bot_edge_tag in bot_face_boundary:
-            if dim_b != 1:
-                continue
-            top_edge_tag = edge_correspondence.get(bot_edge_tag)
-            if top_edge_tag is None:
-                continue  # BOP-introduced edge: fall through to XY fallback
-            bot_ntags, bot_coords_flat_e, _ = gmsh.model.mesh.getNodes(
-                1, bot_edge_tag, includeBoundary=True
-            )
-            top_ntags, top_coords_flat_e, _ = gmsh.model.mesh.getNodes(
-                1, top_edge_tag, includeBoundary=True
-            )
-            bot_ntags = np.asarray(bot_ntags, dtype=np.int64)
-            top_ntags = np.asarray(top_ntags, dtype=np.int64)
-            bot_coords_e = np.asarray(bot_coords_flat_e, dtype=float).reshape(-1, 3)
-            top_coords_e = np.asarray(top_coords_flat_e, dtype=float).reshape(-1, 3)
-
-            if len(bot_ntags) != len(top_ntags):
-                continue  # count mismatch; fall through to XY
-
-            for bi in range(len(bot_ntags)):
-                bx, by = bot_coords_e[bi, 0], bot_coords_e[bi, 1]
-                dists = np.hypot(top_coords_e[:, 0] - bx, top_coords_e[:, 1] - by)
-                ti = int(np.argmin(dists))
-                bot_to_top_tag[int(bot_ntags[bi])] = int(top_ntags[ti])
-
-    # XY fallback for all unmatched boundary nodes.
-    for i, bt in enumerate(bot_all_tags):
-        bt_int = int(bt)
-        if bt_int in bot_int_tags_set:
-            continue
-        if bt_int not in bot_to_top_tag:
-            bx, by = bot_all_coords[i, 0], bot_all_coords[i, 1]
-            key = (round(bx, 9), round(by, 9))
-            top_tt = global_top_xy_to_tag.get(key)
-            if top_tt is not None:
-                bot_to_top_tag[bt_int] = top_tt
-
-    # --- Allocate fresh top-layer nodes for interior bottom nodes ---
-    # These nodes will be registered by the caller in the discrete volume entity.
-    next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
-    new_interior: list[tuple[int, float, float, float]] = []
-    for i, bt in enumerate(bot_int_tags_list):
-        new_tag = next_tag + i
-        bot_to_top_tag[bt] = new_tag
-        new_interior.append(
-            (new_tag, bot_int_coords[i, 0], bot_int_coords[i, 1], zlo + height)
-        )
-
-    # Stash the new interior nodes list so the caller can register them.
-    # We use a sentinel key (not an int) in the dict; callers must pop it.
-    bot_to_top_tag["__multi_top_interior__"] = new_interior  # type: ignore[assignment]
-
-    return bot_to_top_tag
-
-
 def _build_slab_volume(
     bottom_face_tag: int,
     bot_to_top_layer_tags: list[dict[int, int]],
@@ -498,9 +372,8 @@ def apply_structured_mesh(
 ) -> list[int]:
     """Run the mesh-stage Layer C: per-piece top mesh stamp + slab volume build.
 
-    Uses PhantomMap to route per (slab, piece). Phase 5(b): accepts multiple
-    top gmsh output faces per piece (BOP-split case). Bot is still required
-    to be exactly 1 face (multi-output-bot deferred to a future phase).
+    Uses PhantomMap to route per (slab, piece). Phase 5(d): each piece has
+    exactly 1 bot + 1 top OCC face by construction (common-refinement partition).
 
     Returns a flat list of all per-piece volume entity tags created or
     populated (one per piece, not per slab).
@@ -552,25 +425,20 @@ def apply_structured_mesh(
             bot_tags = face_map.get(bot_key, [])
             top_tags = face_map.get(top_key, [])
 
-            # Phase 5(b): accept multiple top sub-faces (BOP split); bot must
-            # still be exactly 1 face (multi-output-bot is deferred).
-            if len(bot_tags) != 1:
+            if len(bot_tags) != 1 or len(top_tags) != 1:
                 raise RuntimeError(
-                    f"Slab {slab.physical_name} piece {piece_idx}: "
-                    f"expected exactly one bottom gmsh face; got bottom={bot_tags}. "
-                    f"Multi-output-bot support is a future Phase extension."
-                )
-            if len(top_tags) == 0:
-                raise RuntimeError(
-                    f"Slab {slab.physical_name} piece {piece_idx}: "
-                    f"no top gmsh faces found (top={top_tags})."
+                    f"Slab {slab.physical_name} piece {piece_idx}: Phase 5(d) "
+                    f"compute_face_partition should produce a common-refinement "
+                    f"partition where each piece has exactly 1 bot + 1 top OCC face "
+                    f"after BOP. Got bot={bot_tags}, top={top_tags}. This indicates a "
+                    f"BOP outcome the planner didn't anticipate (fuzzy tolerance edge "
+                    f"case, non-axis-aligned neighbour producing extra micro-faces, "
+                    f"non-polygonal cut, etc.)."
                 )
             bot_tag = bot_tags[0]
+            top_tag = top_tags[0]
 
             # Build per-piece edge_correspondence: dict[bot_edge_gmsh_tag, top_edge_gmsh_tag].
-            # For the multi-top case, we map bot edges -> top edges for known pairs.
-            # BOP-introduced edges inside the top have no correspondence entry
-            # (handled by XY fallback in _stamp_top_face_mesh_multi).
             edge_correspondence: dict[int, int] = {}
             bot_face_boundary = gmsh.model.getBoundary(
                 [(2, bot_tag)], oriented=False, recursive=False
@@ -590,34 +458,29 @@ def apply_structured_mesh(
                             edge_correspondence[bot_edge_tag] = edge_map[top_ek][0]
                         break
 
-            is_multi_top = len(top_tags) > 1
-
             if n_layers == 1:
                 # Single layer: bottom -> top is the only layer map.
-                top_map = _stamp_top_face_mesh_multi(
-                    bot_tag, top_tags, slab.zlo, slab.zhi, edge_correspondence
+                top_map = _stamp_top_face_mesh(
+                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
                 )
-                # Pop sentinel before using the map as layer_maps.
-                multi_top_interior: list = top_map.pop("__multi_top_interior__", [])  # type: ignore[arg-type]
                 layer_maps = [top_map]
                 interior_layer_maps: list[dict[int, int]] = []
                 interior_layer_coords: list[list[float]] = []
             else:
-                # Multi-layer: stamp the top face(s) first (so new interior node
+                # Multi-layer: stamp the top face first (so new interior node
                 # tags are registered before allocating intermediate-layer tags,
                 # avoiding tag collisions), then build (n_layers - 1) intermediate
                 # node maps between bottom and top.
-                top_map = _stamp_top_face_mesh_multi(
-                    bot_tag, top_tags, slab.zlo, slab.zhi, edge_correspondence
+                top_map = _stamp_top_face_mesh(
+                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
                 )
-                multi_top_interior = top_map.pop("__multi_top_interior__", [])  # type: ignore[arg-type]
                 bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
                     2, bot_tag, includeBoundary=True
                 )
                 bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
                 bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
                 # Use max tag AFTER stamp so interior tags don't collide with
-                # the new top-interior nodes allocated by _stamp_top_face_mesh_multi.
+                # the new top-interior nodes allocated by _stamp_top_face_mesh.
                 next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
                 interior_layer_maps = []
                 interior_layer_coords = []
@@ -634,26 +497,16 @@ def apply_structured_mesh(
                     interior_layer_coords.append(coords)
                 layer_maps = [*interior_layer_maps, top_map]
 
-            # Find the OCC volume entity containing both the bottom face and at
-            # least one top sub-face.  In the multi-top case, a single OCC slab
-            # volume typically contains ALL top sub-faces (BOP split them but kept
-            # them in the same solid).  We add wedge elements directly to that
-            # OCC volume so it retains its physical-group membership and
-            # MeshOnlyEmpty=1 skips re-meshing it in the 3D pass.
-            occ_vol_tag: int | None = None
-            for tt in top_tags:
-                occ_vol_tag = _find_volume_containing_faces(bot_tag, tt)
-                if occ_vol_tag is not None:
-                    break
+            # Find the OCC volume entity containing both the bottom face and the
+            # top face. Add wedge elements directly to that OCC volume so it
+            # retains its physical-group membership and MeshOnlyEmpty=1 skips
+            # re-meshing it in the 3D pass.
+            occ_vol_tag: int | None = _find_volume_containing_faces(bot_tag, top_tag)
 
             # Register all interior nodes BEFORE addElements so all referenced
             # node tags exist in gmsh at the time addElements validates them.
-            # This includes:
-            #   (a) intermediate layer nodes (n_layers > 1)
-            #   (b) multi-top fresh top-layer interior nodes (is_multi_top)
             pre_vol_tag: int | None = occ_vol_tag
-            needs_pre_vol = n_layers > 1 or (is_multi_top and multi_top_interior)
-            if needs_pre_vol and pre_vol_tag is None:
+            if n_layers > 1 and pre_vol_tag is None:
                 pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
 
             all_pre_tags: list[int] = []
@@ -663,11 +516,6 @@ def apply_structured_mesh(
                 for m, coords in zip(interior_layer_maps, interior_layer_coords):
                     all_pre_tags.extend(m.values())
                     all_pre_coords.extend(coords)
-
-            if is_multi_top and multi_top_interior and pre_vol_tag is not None:
-                for tag, x, y, z in multi_top_interior:
-                    all_pre_tags.append(tag)
-                    all_pre_coords.extend([x, y, z])
 
             if all_pre_tags and pre_vol_tag is not None:
                 gmsh.model.mesh.addNodes(3, pre_vol_tag, all_pre_tags, all_pre_coords)
