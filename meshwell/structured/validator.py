@@ -18,9 +18,7 @@ from dataclasses import dataclass
 from itertools import product
 from typing import TYPE_CHECKING, Any, Literal
 
-from meshwell.structured.builder import (
-    _map_phantom_laterals_to_gmsh,  # re-exported here so tests can monkeypatch
-)
+from meshwell.structured.builder import _map_phantom_laterals_to_gmsh
 
 if TYPE_CHECKING:
     from meshwell.structured.spec import (
@@ -361,15 +359,20 @@ def _check_internal_seams_unmeshed(
 
     # Resolve lateral keys → gmsh face tags once.
     lateral_to_gmsh: dict[Any, list[int]] = {}
-    use_direct_int_path = any(
-        isinstance(v, int)
-        for vals in phantom_map.output_laterals.values()
-        for v in vals
-    )
-    if use_direct_int_path:
+    # Classify all values across all keys: all int (test path) vs all non-int
+    # (real pipeline). A mix indicates caller bug; refuse silently degrading.
+    all_values = [v for vals in phantom_map.output_laterals.values() for v in vals]
+    int_count = sum(1 for v in all_values if isinstance(v, int))
+    if all_values and int_count not in (0, len(all_values)):
+        raise ValueError(
+            "phantom_map.output_laterals contains a mix of int gmsh tags "
+            "and non-int values; expected all-int (test path) or all-OCC "
+            "(real pipeline). Mixed maps would silently miss seam checks."
+        )
+
+    if int_count == len(all_values) and all_values:
         lateral_to_gmsh = {
-            k: [int(v) for v in vals if isinstance(v, int)]
-            for k, vals in phantom_map.output_laterals.items()
+            k: [int(v) for v in vals] for k, vals in phantom_map.output_laterals.items()
         }
     elif phantom_map.output_laterals:
         lateral_to_gmsh = _map_phantom_laterals_to_gmsh(phantom_map, occ_entities)

@@ -153,3 +153,26 @@ def test_internal_seam_via_lateral_gmsh_map(
     )
     seam_errors = [i for i in result.errors if i.check == "internal_seam_unmeshed"]
     assert len(seam_errors) >= 1
+
+
+def test_mixed_int_and_object_raises(gmsh_session, empty_pm):  # noqa: ARG001
+    """Mixed int + non-int values in output_laterals must raise ValueError.
+
+    A phantom_map.output_laterals with a mix of int gmsh tags and non-int
+    (OCC) values is a caller bug; the validator must refuse rather than
+    silently miss the non-int entries.
+    """
+    plan, mesh_plan = empty_pm
+
+    pm = PhantomMap()
+    pm.output_laterals[LateralKey(0, 0, 0)] = [42, object()]
+
+    with pytest.raises(ValueError, match="mix"):
+        validate_structured_mesh(
+            plan,
+            mesh_plan,
+            pm,
+            occ_entities=[],
+            vol_tags=[],
+            tol=1e-6,
+        )
