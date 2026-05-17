@@ -95,6 +95,7 @@ def _group_by_check(issues: tuple[Issue, ...]) -> dict[str, list[Issue]]:
 
 
 _DEFAULT_TOL_FALLBACK = 1e-9
+_QUALITY_WARNING_THRESHOLD = 1e-3
 
 
 def _resolve_tol(tol: float | None) -> float:
@@ -215,8 +216,8 @@ def _check_element_quality() -> tuple[list[Issue], list[Issue]]:
     SICN (Scaled Inverse Condition Number) metric is in [0, 1] for
     valid elements and negative for tangled elements.
 
-    - minSICN <= 0   → error (tangled / inverted element).
-    - minSICN < 1e-3 → warning (near-degenerate).
+    - minSICN <= 0                              → error (tangled / inverted element).
+    - minSICN < ``_QUALITY_WARNING_THRESHOLD``  → warning (near-degenerate).
     """
     import gmsh
 
@@ -227,29 +228,33 @@ def _check_element_quality() -> tuple[list[Issue], list[Issue]]:
     if not elem_types:
         return errors, warnings
 
-    all_tags: list[int] = []
-    for tags in elem_tags_per_type:
-        all_tags.extend(int(t) for t in tags)
+    tag_to_type: dict[int, int] = {}
+    for et, tags in zip(elem_types, elem_tags_per_type):
+        for t in tags:
+            tag_to_type[int(t)] = int(et)
+
+    all_tags = list(tag_to_type.keys())
     if not all_tags:
         return errors, warnings
 
     sicn = gmsh.model.mesh.getElementQualities(all_tags, "minSICN")
     for tag, q in zip(all_tags, sicn):
+        et = tag_to_type[int(tag)]
         if q <= 0:
             errors.append(
                 Issue(
                     severity="error",
                     check="element_quality",
-                    message=f"Element {tag} has minSICN={q:.3e} (tangled/inverted).",
+                    message=f"Element {tag} (type {et}) has minSICN={q:.3e} (tangled/inverted).",
                     entities=(("element", int(tag)),),
                 )
             )
-        elif q < 1e-3:
+        elif q < _QUALITY_WARNING_THRESHOLD:
             warnings.append(
                 Issue(
                     severity="warning",
                     check="element_quality",
-                    message=f"Element {tag} has minSICN={q:.3e} (near-degenerate).",
+                    message=f"Element {tag} (type {et}) has minSICN={q:.3e} (near-degenerate).",
                     entities=(("element", int(tag)),),
                 )
             )

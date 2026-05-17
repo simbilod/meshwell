@@ -98,6 +98,10 @@ def test_negative_jacobian_reported_as_error(
         1.0,  # 6: top2
     ]
     gmsh.model.mesh.addNodes(3, ent, [1, 2, 3, 4, 5, 6], coords)
+    # Relies on gmsh interpreting the prism's local frame from node order:
+    # reversing the top winding produces a negative determinant.
+    # This is stable across recent gmsh versions; if it ever changes,
+    # use gmsh.model.mesh.getJacobian directly to confirm sign.
     # Element type 6 = 6-node prism.
     gmsh.model.mesh.addElements(3, ent, [6], [[100]], [[1, 2, 3, 4, 5, 6]])
 
