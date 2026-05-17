@@ -472,6 +472,183 @@ def _check_watertight(vol_tags: list[int]) -> list[Issue]:
     return issues
 
 
+# Gmsh element type codes used here.
+_ELEM_TET = 4  # 4-node tet
+_ELEM_HEX = 5  # 8-node hex
+_ELEM_PRISM = 6  # 6-node prism
+_STRUCTURED_TYPES = (_ELEM_HEX, _ELEM_PRISM)
+
+
+def _check_prism_tet_interface(vol_tags: list[int]) -> list[Issue]:
+    """Check that structured/tet face matching is conformal.
+
+    Faces shared between a structured volume (wedge/hex) and a tet
+    volume must be matched 1:1 (triangle face) or 2 triangles on the
+    tet side spanning the same 4 nodes (quad face).
+    """
+    import gmsh
+    import numpy as np
+
+    if not vol_tags:
+        return []
+
+    issues: list[Issue] = []
+
+    # Classify each volume by its element types.
+    vol_kind: dict[int, str] = {}
+    for vol in vol_tags:
+        elem_types, _, _ = gmsh.model.mesh.getElements(3, vol)
+        types = {int(t) for t in elem_types}
+        if len(types) == 0:
+            continue
+        if types & set(_STRUCTURED_TYPES):
+            vol_kind[vol] = "structured"
+        elif _ELEM_TET in types:
+            vol_kind[vol] = "tet"
+        else:
+            vol_kind[vol] = "other"
+
+    # Collect all faces per volume: structured (tri + quad) vs. tet (tri).
+    tri_faces_by_vol: dict[int, dict[frozenset[int], list[int]]] = {}
+    quad_faces_by_vol: dict[int, dict[frozenset[int], list[int]]] = {}
+
+    for vol in vol_kind:
+        elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(3, vol)
+        tri_map: dict[frozenset[int], list[int]] = {}
+        quad_map: dict[frozenset[int], list[int]] = {}
+        for et, tags_for_type in zip(elem_types, elem_tags_per_type):
+            tri = gmsh.model.mesh.getElementFaceNodes(int(et), 3, vol)
+            tri_arr = np.asarray(tri, dtype=np.int64).reshape(-1, 3)
+            n_elems = len(tags_for_type)
+            per_elem = tri_arr.shape[0] // n_elems if n_elems else 0
+            for k, row in enumerate(tri_arr):
+                key = frozenset(int(x) for x in row)
+                elem_tag = int(tags_for_type[k // max(per_elem, 1)])
+                tri_map.setdefault(key, []).append(elem_tag)
+            quad = gmsh.model.mesh.getElementFaceNodes(int(et), 4, vol)
+            quad_arr = np.asarray(quad, dtype=np.int64).reshape(-1, 4)
+            per_elem_q = quad_arr.shape[0] // n_elems if n_elems else 0
+            for k, row in enumerate(quad_arr):
+                key = frozenset(int(x) for x in row)
+                elem_tag = int(tags_for_type[k // max(per_elem_q, 1)])
+                quad_map.setdefault(key, []).append(elem_tag)
+        tri_faces_by_vol[vol] = tri_map
+        quad_faces_by_vol[vol] = quad_map
+
+    # For each structured volume, find faces that bound it (count == 1 in
+    # its own face map) -- those that don't match a counterpart on a tet
+    # volume are non-conformal.
+    structured_vols = [v for v, k in vol_kind.items() if k == "structured"]
+    tet_vols = [v for v, k in vol_kind.items() if k == "tet"]
+
+    # Precompute the set of node tags used by each tet volume so we can
+    # cheaply ask "does this structured face lie on the tet boundary?"
+    # (a face is on the interface only if ALL its nodes appear in the tet
+    # volume; sharing 1-2 nodes is just an incidental edge/corner contact).
+    tet_node_set: dict[int, set[int]] = {}
+    for tv in tet_vols:
+        nodes_used: set[int] = set()
+        for fk in tri_faces_by_vol[tv]:
+            nodes_used.update(fk)
+        tet_node_set[tv] = nodes_used
+
+    for sv in structured_vols:
+        # Triangle faces.
+        for face_key, owners in tri_faces_by_vol[sv].items():
+            if len(owners) != 1:
+                continue  # Internal to the structured volume.
+            matched = any(face_key in tri_faces_by_vol[tv] for tv in tet_vols)
+            if not matched and tet_vols:
+                referenced = any(face_key.issubset(tet_node_set[tv]) for tv in tet_vols)
+                if referenced:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            check="prism_tet_interface",
+                            message=(
+                                f"Structured vol {sv} triangle face has no exact "
+                                f"match in any tet volume (possible T-junction)."
+                            ),
+                            entities=(
+                                ("vol_tag", sv),
+                                ("face_nodes", tuple(sorted(face_key))),
+                            ),
+                        )
+                    )
+
+        # Quad faces.
+        for face_key, owners in quad_faces_by_vol[sv].items():
+            if len(owners) != 1:
+                continue
+            covering_tris: list[frozenset[int]] = []
+            for tv in tet_vols:
+                covering_tris.extend(
+                    tri_key
+                    for tri_key in tri_faces_by_vol[tv]
+                    if tri_key.issubset(face_key)
+                )
+            if not tet_vols:
+                continue
+            if len(covering_tris) == 0:
+                touches_tet = any(
+                    face_key.issubset(tet_node_set[tv]) for tv in tet_vols
+                )
+                if touches_tet:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            check="prism_tet_interface",
+                            message=(
+                                f"Structured vol {sv} quad face has 0 covering tet "
+                                f"triangles (T-junction or missing element)."
+                            ),
+                            entities=(
+                                ("vol_tag", sv),
+                                ("face_nodes", tuple(sorted(face_key))),
+                            ),
+                        )
+                    )
+            elif len(covering_tris) != 2:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        check="prism_tet_interface",
+                        message=(
+                            f"Structured vol {sv} quad face has "
+                            f"{len(covering_tris)} covering tet triangles "
+                            f"(expected 2 for clean quad split)."
+                        ),
+                        entities=(
+                            ("vol_tag", sv),
+                            ("face_nodes", tuple(sorted(face_key))),
+                        ),
+                    )
+                )
+            else:
+                union = covering_tris[0] | covering_tris[1]
+                if union != face_key:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            check="prism_tet_interface",
+                            message=(
+                                f"Structured vol {sv} quad face: two covering tet "
+                                f"triangles don't span the full quad (extra Steiner node)."
+                            ),
+                            entities=(
+                                ("vol_tag", sv),
+                                ("face_nodes", tuple(sorted(face_key))),
+                                (
+                                    "tet_tris",
+                                    tuple(tuple(sorted(t)) for t in covering_tris),
+                                ),
+                            ),
+                        )
+                    )
+
+    return issues
+
+
 def validate_structured_mesh(
     plan: "StructuredPlan",
     mesh_plan: "StructuredMeshPlan",
@@ -528,5 +705,6 @@ def validate_structured_mesh(
     errors.extend(_check_plan_mesh_consistency(plan, mesh_plan, vol_tags))
     errors.extend(_check_watertight(vol_tags))
     errors.extend(_check_internal_seams_unmeshed(phantom_map, occ_entities))
+    errors.extend(_check_prism_tet_interface(vol_tags))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
