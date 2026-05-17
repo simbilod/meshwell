@@ -1,17 +1,16 @@
 # ruff: noqa: S108, D103
 """Demo of the clean structured-polyprism pipeline.
 
-Builds two small example scenes that exercise what the rewrite supports
-on ``feat/structured-clean`` today, generates meshes, and prints
+Builds example scenes that exercise what the rewrite supports on
+``feat/structured-clean`` today, generates meshes, and prints
 element-count summaries.
 
 Run::
 
     .venv/bin/python scripts/demo_structured.py [output_dir]
 
-Output: two ``.msh`` files (single-piece and multi-piece) under
-``output_dir`` (defaults to ``/tmp/structured_demo``), plus a console
-report.
+Output: ``.msh`` files under ``output_dir`` (defaults to
+``/tmp/structured_demo``), plus a console report.
 
 Scenes
 ------
@@ -28,11 +27,16 @@ Scenes
    ``output_edges`` map. Both pieces produce wedge prisms; the cap
    above produces tets.
 
+7. ``overlapping_top_neighbours`` — Phase 5(b): two non-structured
+   neighbours at z=[1, 2] with overlapping xy footprints sitting on
+   the slab top. BOP splits the slab's top OCC face into 3 sub-faces;
+   Phase 5(b) routes each bottom triangle to the right sub-face by
+   centroid XY and builds wedges correctly.
+
 What this does NOT yet exercise
 -------------------------------
 
-- BOP cuts that split a piece's top into multiple sub-faces (Phase 5(b)).
-- Mid-height-cut lateral faces (Phase 5(c)).
+- Mid-height-cut lateral faces (Phase 5(c), now rejected at plan stage).
 - Arc-bearing structured prisms (Phase 6+).
 """
 from __future__ import annotations
@@ -305,6 +309,54 @@ def scene_midheight_cut_rejected(out_dir: Path) -> Path | None:
         return None
 
 
+def scene_overlapping_top_neighbours(out_dir: Path) -> Path:
+    """Phase 5(b): slab with two overlapping non-structured top neighbours.
+
+    Slab at z=[0, 1]. Neighbour A at z=[1, 2] covers x=[0, 3]; neighbour B
+    at z=[1, 2] covers x=[1, 4]. Their xy union covers the full slab top,
+    so Phase 1's planner makes 1 piece. BOP splits the slab's top OCC face
+    into 3 sub-faces (A-only, AB-overlap, B-only). Phase 5(b) routes per
+    centroid XY and builds wedges correctly.
+
+    Exercises: _stamp_top_face_mesh_multi + multi-top OCC volume lookup.
+    """
+    print("\n" + "=" * 70)
+    print("Scene 7: overlapping_top_neighbours (Phase 5(b))")
+    print("=" * 70)
+    print(
+        "  Structured slab z=[0, 1], xy=[0, 4]x[0, 4], n_layers=2.\n"
+        "  Neighbour A at z=[1, 2], xy=[0, 3]x[0, 4].\n"
+        "  Neighbour B at z=[1, 2], xy=[1, 4]x[0, 4].  (overlap: x=[1, 3])\n"
+        "  -> BOP splits slab top into 3 sub-faces.\n"
+        "  Expected: wedges in slab, tets in A and B."
+    )
+
+    slab = PolyPrism(
+        polygons=_square(0, 0, 4, 4),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        physical_name="slab",
+    )
+    a = PolyPrism(
+        polygons=_square(0, 0, 3, 4),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="a",
+    )
+    b = PolyPrism(
+        polygons=_square(1, 0, 3, 4),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="b",
+    )
+
+    out_msh = out_dir / "overlapping_top_neighbours.msh"
+    generate_mesh(
+        [slab, a, b], dim=3, output_mesh=out_msh, default_characteristic_length=0.5
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
 def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/structured_demo")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -317,6 +369,7 @@ def main() -> int:
         ("stacked_structured", scene_stacked_structured),
         ("side_by_side", scene_side_by_side),
         ("midheight_cut_rejected", scene_midheight_cut_rejected),
+        ("overlapping_top_neighbours", scene_overlapping_top_neighbours),
     ]
     results: list[tuple[str, str, Path | None]] = []
     for name, fn in scenes_to_run:
