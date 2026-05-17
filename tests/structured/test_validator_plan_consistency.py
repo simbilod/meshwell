@@ -32,7 +32,12 @@ def _empty_slab(z_interval_index: int, n_pieces: int) -> Slab:
 
 
 def _make_wedges(vol_tag: int, count: int, start_node: int = 1) -> int:
-    """Add `count` disjoint wedge elements to `vol_tag`. Returns next free node."""
+    """Add `count` disjoint wedge elements to `vol_tag`. Returns next free node.
+
+    Topology correctness doesn't matter for this check: the validator only
+    queries element counts via gmsh.model.mesh.getElements; the wedges
+    don't need to share nodes or form a valid mesh.
+    """
     nodes: list[int] = []
     coords: list[float] = []
     elem_node_lists: list[int] = []

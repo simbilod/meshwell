@@ -281,11 +281,15 @@ def _check_plan_mesh_consistency(
                     f"vol_tag count {len(vol_tags)} does not match expected "
                     f"piece count {expected_pieces} from the plan."
                 ),
-                entities=(("vol_tags", tuple(vol_tags)),),
+                entities=(("vol_tag_list", tuple(vol_tags)),),
             )
         )
         return issues
 
+    # vol_tags is flat in (slab, piece) lexicographic order, matching the
+    # iteration order in apply_structured_mesh. A future refactor that
+    # reorders vol_tags must update this walk to keep slab/piece
+    # attribution correct in error messages.
     cursor = 0
     for slab_idx, slab in enumerate(plan.slabs):
         n_layers = int(mesh_plan.n_layers[slab_idx])
