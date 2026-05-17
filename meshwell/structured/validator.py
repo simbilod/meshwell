@@ -208,6 +208,54 @@ def _check_near_duplicate_nodes(tol: float) -> tuple[list[Issue], list[Issue]]:
     return errors, warnings
 
 
+def _check_element_quality() -> tuple[list[Issue], list[Issue]]:
+    """Flag negative-Jacobian and near-degenerate elements.
+
+    Uses ``gmsh.model.mesh.getElementQualities(..., "minSICN")``. The
+    SICN (Scaled Inverse Condition Number) metric is in [0, 1] for
+    valid elements and negative for tangled elements.
+
+    - minSICN <= 0   → error (tangled / inverted element).
+    - minSICN < 1e-3 → warning (near-degenerate).
+    """
+    import gmsh
+
+    errors: list[Issue] = []
+    warnings: list[Issue] = []
+
+    elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(3)
+    if not elem_types:
+        return errors, warnings
+
+    all_tags: list[int] = []
+    for tags in elem_tags_per_type:
+        all_tags.extend(int(t) for t in tags)
+    if not all_tags:
+        return errors, warnings
+
+    sicn = gmsh.model.mesh.getElementQualities(all_tags, "minSICN")
+    for tag, q in zip(all_tags, sicn):
+        if q <= 0:
+            errors.append(
+                Issue(
+                    severity="error",
+                    check="element_quality",
+                    message=f"Element {tag} has minSICN={q:.3e} (tangled/inverted).",
+                    entities=(("element", int(tag)),),
+                )
+            )
+        elif q < 1e-3:
+            warnings.append(
+                Issue(
+                    severity="warning",
+                    check="element_quality",
+                    message=f"Element {tag} has minSICN={q:.3e} (near-degenerate).",
+                    entities=(("element", int(tag)),),
+                )
+            )
+    return errors, warnings
+
+
 def validate_structured_mesh(
     plan: "StructuredPlan",  # noqa: ARG001
     mesh_plan: "StructuredMeshPlan",  # noqa: ARG001
@@ -216,7 +264,7 @@ def validate_structured_mesh(
     vol_tags: list[int],  # noqa: ARG001
     *,
     tol: float | None = None,
-    include_quality: bool = False,  # noqa: ARG001
+    include_quality: bool = False,
 ) -> ValidationResult:
     """Validate the live-gmsh-session mesh against the builder's plan.
 
@@ -255,5 +303,10 @@ def validate_structured_mesh(
     dup_errors, dup_warnings = _check_near_duplicate_nodes(resolved_tol)
     errors.extend(dup_errors)
     warnings.extend(dup_warnings)
+
+    if include_quality:
+        q_errors, q_warnings = _check_element_quality()
+        errors.extend(q_errors)
+        warnings.extend(q_warnings)
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
