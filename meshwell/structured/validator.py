@@ -336,6 +336,60 @@ def _check_plan_mesh_consistency(
     return issues
 
 
+def _check_watertight(vol_tags: list[int]) -> list[Issue]:
+    """For each volume, every face appears in 1 or 2 elements of that volume.
+
+    Scans triangular faces (face_type=3) and quad faces (face_type=4) via
+    ``gmsh.model.mesh.getElementFaceNodes``. That API returns an empty array
+    (not an exception) when an element type has no faces of the requested
+    kind, so no try/except is needed.
+
+    A face shared by 3+ elements within the same volume indicates geometric
+    overlap — this would normally be impossible in a valid structured mesh but
+    can occur if vol_tags are mis-assigned or elements are accidentally
+    duplicated.
+    """
+    import gmsh
+    import numpy as np
+
+    issues: list[Issue] = []
+
+    for vol in vol_tags:
+        elem_types, _elem_tags_per_type, _ = gmsh.model.mesh.getElements(3, vol)
+        if len(elem_types) == 0:
+            continue
+
+        face_count: dict[frozenset[int], int] = {}
+        for et in elem_types:
+            for face_type in (3, 4):
+                face_nodes = gmsh.model.mesh.getElementFaceNodes(et, face_type, vol)
+                if len(face_nodes) == 0:
+                    continue
+                arr = np.asarray(face_nodes, dtype=np.int64).reshape(-1, face_type)
+                for row in arr:
+                    key = frozenset(int(x) for x in row)
+                    face_count[key] = face_count.get(key, 0) + 1
+
+        for face_key, count in face_count.items():
+            if count > 2:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        check="watertight",
+                        message=(
+                            f"vol_tag {vol}: face shared by {count} elements "
+                            f"(should be 1 boundary or 2 internal)."
+                        ),
+                        entities=(
+                            ("vol_tag", vol),
+                            ("face_nodes", tuple(sorted(face_key))),
+                        ),
+                    )
+                )
+
+    return issues
+
+
 def validate_structured_mesh(
     plan: "StructuredPlan",
     mesh_plan: "StructuredMeshPlan",
@@ -390,5 +444,6 @@ def validate_structured_mesh(
         warnings.extend(q_warnings)
 
     errors.extend(_check_plan_mesh_consistency(plan, mesh_plan, vol_tags))
+    errors.extend(_check_watertight(vol_tags))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
