@@ -1,15 +1,28 @@
 """Conformality validator for structured-polyprism meshes.
 
 Runs in the live gmsh session immediately after
-``apply_structured_mesh``. Reports topological and geometric
-conformality failures between the structured wedge/hex slabs and the
-surrounding tet regions.
+``meshwell.structured.builder.apply_structured_mesh``. Reports
+topological and geometric conformality failures between the
+structured wedge/hex slabs and the surrounding tet regions.
 
 Public API:
 
-- :class:`Issue` — one validation finding (severity + check name + message + entities).
+- :class:`Issue` — one validation finding.
 - :class:`ValidationResult` — collected errors + warnings + report formatter.
-- :func:`validate_structured_mesh` — entry point. See its docstring.
+- :class:`StructuredMeshValidationError` — raised by the orchestrator hook on failure.
+- :func:`validate_structured_mesh` — entry point.
+
+Checks performed (in order):
+
+1. Watertight per-volume face occurrence (each face appears in 1 or 2 elements of the volume).
+2. Prism↔tet interface face matching (triangle 1:1, quad split into 2 tet triangles).
+3. Internal-seam faces (between two pieces of the same slab) carry no 2D elements.
+4. Plan↔mesh element-count consistency (each piece's elements is a multiple of n_layers).
+5. Near-duplicate node detection (exact = error, within-tol = warning).
+6. Geometric localization of check-2 failures (refines error messages).
+7. Element quality via ``gmsh.model.mesh.getElementQualities`` (opt-in via ``include_quality=True``).
+8. Top↔bottom z-translation symmetry (structured volumes only; per-volume effective
+   tolerance accommodates OCC CAD precision).
 """
 from __future__ import annotations
 
@@ -962,6 +975,8 @@ def validate_structured_mesh(
 
     Raises:
         RuntimeError: if no gmsh model is initialized.
+
+    See module docstring for the full list of checks (8 total) run in order.
     """
     resolved_tol = _resolve_tol(tol)
 
