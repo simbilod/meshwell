@@ -31,6 +31,15 @@ if TYPE_CHECKING:
 Severity = Literal["error", "warning"]
 
 
+class StructuredMeshValidationError(ValueError):
+    """Raised when the produced mesh fails one or more conformality checks.
+
+    Triggered by ``validate_structured_mesh`` or its orchestrator hook.
+    The full ``ValidationResult.format_report()`` output is in ``args[0]``.
+    Subclasses ``ValueError`` so existing ``except ValueError`` paths catch it.
+    """
+
+
 @dataclass(frozen=True)
 class Issue:
     """One validation finding.
@@ -789,6 +798,16 @@ def _check_top_bottom_symmetry(vol_tags: list[int], tol: float) -> list[Issue]:
 
     issues: list[Issue] = []
 
+    if not vol_tags:
+        return issues
+
+    # Build global node-coord lookup once (hoisted out of the per-volume loop).
+    all_tags_arr, all_coords_flat, _ = gmsh.model.mesh.getNodes()
+    if len(all_tags_arr) == 0:
+        return issues
+    all_coords = np.asarray(all_coords_flat, dtype=float).reshape(-1, 3)
+    tag_to_idx = {int(t): i for i, t in enumerate(all_tags_arr)}
+
     for vol in vol_tags:
         # Collect node tags referenced by structured elements (wedge=6, hex=5) only.
         # Excludes OCC boundary nodes placed by gmsh's 1D mesher, which can carry
@@ -831,12 +850,7 @@ def _check_top_bottom_symmetry(vol_tags: list[int], tol: float) -> list[Issue]:
             except (AttributeError, RuntimeError, ValueError):
                 pass
 
-        # Build a coord lookup from a single getNodes() call (cached globally).
-        all_tags_arr, all_coords_flat, _ = gmsh.model.mesh.getNodes()
-        if len(all_tags_arr) == 0:
-            continue
-        all_coords = np.asarray(all_coords_flat, dtype=float).reshape(-1, 3)
-        tag_to_idx = {int(t): i for i, t in enumerate(all_tags_arr)}
+        # Use the precomputed global node-coord lookup.
         coord_rows: list[np.ndarray] = []
         for nt in structured_node_tags:
             idx = tag_to_idx.get(nt)

@@ -38,9 +38,9 @@ def generate_mesh(
         validate_structured: When ``True`` and the scene contains structured
             entities, run :func:`meshwell.structured.validator.validate_structured_mesh`
             immediately after ``apply_structured_mesh`` (while gmsh is still
-            live).  Raises ``AssertionError`` with a full conformality report
-            if any errors are found.  Ignored when no structured entities are
-            present.
+            live).  Raises ``StructuredMeshValidationError`` with a full
+            conformality report if any errors are found.  Ignored when no
+            structured entities are present.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -153,13 +153,16 @@ def generate_mesh(
                 _plan, _mesh_plan, _phantom_map, _occ_entities
             )
             if validate_structured:
-                from meshwell.structured.validator import validate_structured_mesh
+                from meshwell.structured.validator import (
+                    StructuredMeshValidationError,
+                    validate_structured_mesh,
+                )
 
                 result = validate_structured_mesh(
                     _plan, _mesh_plan, _phantom_map, _occ_entities, vol_tags
                 )
                 if not result:
-                    raise AssertionError(result.format_report())
+                    raise StructuredMeshValidationError(result.format_report())
 
         def _pre_2d_hook() -> None:
             apply_structured_transfinite_hints(_mesh_plan, _phantom_map, _occ_entities)
