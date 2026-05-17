@@ -739,7 +739,7 @@ def apply_structured_transfinite_hints(
                 gmsh.model.mesh.setTransfiniteSurface(face_tag)
             except Exception as exc:
                 logger.warning(
-                    "setTransfiniteSurface failed on face %d " "(lateral %s): %s",
+                    "setTransfiniteSurface failed on face %d (lateral %s): %s",
                     face_tag,
                     lat_key,
                     exc,

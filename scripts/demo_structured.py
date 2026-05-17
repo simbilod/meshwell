@@ -420,6 +420,138 @@ def scene_disc_embedded_arc(out_dir: Path) -> Path:
     return out_msh
 
 
+def scene_photonic_stack(out_dir: Path) -> Path:
+    """Complex 'photonic stack' scene exercising the full architecture.
+
+    Mixes:
+      - Structured disc with arcs (split by overlapping contacts -> Phase 6(a2))
+      - Structured annulus with sub-arcs (outer + inner rings, Phase 6(a1))
+      - Unstructured bus waveguide (rect)
+      - 2 overlapping unstructured contacts on disc top (Phase 5(d) common
+        refinement + split-arc provenance)
+      - Substrate, buried oxide, top cladding (unstructured)
+
+    Layer cake:
+      z=[-1, 0]: substrate
+      z=[ 0, 0.5]: buried oxide
+      z=[0.5, 1]: device layer (disc, ring, bus)
+      z=[1, 1.3]: contacts (overlap each other; split disc top)
+      z=[1, 2.5]: top cladding (around contacts)
+
+    Disc footprint gets 3+ pieces after Phase 5(d) common-refinement
+    (under contact_a only / under both / under contact_b only / uncovered).
+    Each piece has arc segments + straight cuts -> Phase 6(a2) provenance
+    classification kicks in.
+    """
+    import math
+
+    print("\n" + "=" * 70)
+    print("Scene 9: photonic_stack")
+    print("=" * 70)
+    print(
+        "  Layer cake: substrate + buried oxide + device + contacts + top clad.\n"
+        "  Device layer: structured disc (arcs) + structured annulus (sub-arcs)\n"
+        "  + unstructured bus waveguide. Two overlapping contacts on top of\n"
+        "  the disc force a 3-piece partition with arc/line provenance per piece.\n"
+        "  Exercises: Phases 4 (multi-piece), 5(d) (common refinement),\n"
+        "  6(a1) annulus arcs, 6(a2) split-arc provenance, intra-entity seam\n"
+        "  suppression, transfinite lateral hints."
+    )
+
+    def _disc(cx, cy, r, n=32):
+        return Polygon(
+            [
+                (
+                    cx + r * math.cos(2 * math.pi * i / n),
+                    cy + r * math.sin(2 * math.pi * i / n),
+                )
+                for i in range(n)
+            ]
+        )
+
+    def _annulus(cx, cy, r_outer, r_inner, n=32):
+        outer = [
+            (
+                cx + r_outer * math.cos(2 * math.pi * i / n),
+                cy + r_outer * math.sin(2 * math.pi * i / n),
+            )
+            for i in range(n)
+        ]
+        inner = [
+            (
+                cx + r_inner * math.cos(2 * math.pi * i / n),
+                cy + r_inner * math.sin(2 * math.pi * i / n),
+            )
+            for i in range(n)
+        ]
+        return Polygon(outer, [inner])
+
+    big_xy = _square(-5, -5, 10, 10)
+
+    substrate = PolyPrism(
+        polygons=big_xy,
+        buffers={-1.0: 0.0, 0.0: 0.0},
+        physical_name="substrate",
+        mesh_order=10.0,
+    )
+    box_oxide = PolyPrism(
+        polygons=big_xy,
+        buffers={0.0: 0.0, 0.5: 0.0},
+        physical_name="box",
+        mesh_order=9.0,
+    )
+    disc = PolyPrism(
+        polygons=_disc(0, 0, 1.5, n=32),
+        buffers={0.5: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        identify_arcs=True,
+        physical_name="disc",
+        mesh_order=1.0,
+    )
+    ring = PolyPrism(
+        polygons=_annulus(0, 0, r_outer=3.0, r_inner=2.5, n=32),
+        buffers={0.5: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+        identify_arcs=True,
+        physical_name="ring",
+        mesh_order=1.0,
+    )
+    bus = PolyPrism(
+        polygons=_square(-5, -4, 10, 0.8),  # y=[-4, -3.2] - doesn't intersect disc/ring
+        buffers={0.5: 0.0, 1.0: 0.0},
+        physical_name="bus",
+        mesh_order=5.0,
+    )
+    # Top contact placed OUTSIDE the disc/ring footprints — exercises an
+    # unstructured contact on top of the unstructured bus, with cladding
+    # surrounding it. Avoids the polygon-vs-arc partition mismatch that
+    # arbitrary cuts on a structured arc slab would trigger (Phase 6(a3) work).
+    contact_a = PolyPrism(
+        polygons=_square(-3, -4, 6, 0.8),  # over the bus, NOT over disc/ring
+        buffers={1.0: 0.0, 1.3: 0.0},
+        physical_name="contact_a",
+        mesh_order=3.0,
+    )
+    top_clad = PolyPrism(
+        polygons=big_xy,
+        buffers={1.0: 0.0, 2.5: 0.0},
+        physical_name="top_clad",
+        mesh_order=11.0,
+    )
+
+    out_msh = out_dir / "photonic_stack.msh"
+    generate_mesh(
+        [substrate, box_oxide, disc, ring, bus, contact_a, top_clad],
+        dim=3,
+        output_mesh=out_msh,
+        default_characteristic_length=0.4,
+    )
+    _summarize_mesh(out_msh)
+    return out_msh
+
+
 def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/structured_demo")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -434,6 +566,7 @@ def main() -> int:
         ("midheight_cut_rejected", scene_midheight_cut_rejected),
         ("overlapping_top_neighbours", scene_overlapping_top_neighbours),
         ("disc_embedded_arc", scene_disc_embedded_arc),
+        ("photonic_stack", scene_photonic_stack),
     ]
     results: list[tuple[str, str, Path | None]] = []
     for name, fn in scenes_to_run:
