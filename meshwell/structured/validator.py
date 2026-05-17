@@ -113,7 +113,7 @@ def _resolve_tol(tol: float | None) -> float:
 
     try:
         elem_types, elem_tags, _ = gmsh.model.mesh.getElements(3)
-        if not elem_types:
+        if len(elem_types) == 0:
             return _DEFAULT_TOL_FALLBACK
         # Concatenate all 3D element tags across types.
         all_tags = [t for tags in elem_tags for t in tags]
@@ -225,7 +225,7 @@ def _check_element_quality() -> tuple[list[Issue], list[Issue]]:
     warnings: list[Issue] = []
 
     elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(3)
-    if not elem_types:
+    if len(elem_types) == 0:
         return errors, warnings
 
     tag_to_type: dict[int, int] = {}

@@ -109,6 +109,6 @@ def test_three_tets_sharing_a_face_reported_as_error(
     )
     wt_errors = [i for i in result.errors if i.check == "watertight"]
     assert len(wt_errors) >= 1
-    assert any(
-        "3 elements" in i.message or "3 occurrences" in i.message for i in wt_errors
-    )
+    assert any("shared by 3" in i.message for i in wt_errors)
+    # Also verify the entities tuple includes the face_nodes key.
+    assert any(any(kind == "face_nodes" for kind, _ in i.entities) for i in wt_errors)
