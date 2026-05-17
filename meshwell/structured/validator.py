@@ -763,6 +763,70 @@ def _check_prism_tet_interface(vol_tags: list[int], tol: float) -> list[Issue]:
     return issues
 
 
+def _check_top_bottom_symmetry(vol_tags: list[int], tol: float) -> list[Issue]:
+    """Check that each structured volume's top-z and bottom-z node slices differ only in z.
+
+    Within tol, every (x, y) in the bottom slice must have a matching (x, y)
+    in the top slice. Tet-only volumes are skipped.
+    """
+    import gmsh
+    import numpy as np
+
+    issues: list[Issue] = []
+
+    for vol in vol_tags:
+        elem_types, _, _ = gmsh.model.mesh.getElements(3, vol)
+        types = {int(t) for t in elem_types}
+        if not (types & set(_STRUCTURED_TYPES)):
+            continue
+
+        _, coords_flat, _ = gmsh.model.mesh.getNodes(3, vol, includeBoundary=True)
+        coords = np.asarray(coords_flat, dtype=float).reshape(-1, 3)
+        if coords.shape[0] < 6:
+            continue
+
+        z_min = float(np.min(coords[:, 2]))
+        z_max = float(np.max(coords[:, 2]))
+        bot_mask = np.abs(coords[:, 2] - z_min) <= tol
+        top_mask = np.abs(coords[:, 2] - z_max) <= tol
+        bot_xy = coords[bot_mask][:, :2]
+        top_xy = coords[top_mask][:, :2]
+
+        if bot_xy.shape[0] != top_xy.shape[0]:
+            issues.append(
+                Issue(
+                    severity="error",
+                    check="top_bottom_symmetry",
+                    message=(
+                        f"Structured vol {vol}: bottom has {bot_xy.shape[0]} nodes "
+                        f"but top has {top_xy.shape[0]} (non-isomorphic slices)."
+                    ),
+                    entities=(("vol_tag", vol),),
+                )
+            )
+            continue
+
+        # For each bot xy, find nearest top xy. Max distance should be <= tol.
+        max_resid = 0.0
+        for i in range(bot_xy.shape[0]):
+            d = np.linalg.norm(top_xy - bot_xy[i : i + 1], axis=1)
+            max_resid = max(max_resid, float(d.min()))
+        if max_resid > tol:
+            issues.append(
+                Issue(
+                    severity="error",
+                    check="top_bottom_symmetry",
+                    message=(
+                        f"Structured vol {vol}: top\u2194bottom xy residual "
+                        f"{max_resid:.3e} exceeds tol {tol:.3e}."
+                    ),
+                    entities=(("vol_tag", vol),),
+                )
+            )
+
+    return issues
+
+
 def validate_structured_mesh(
     plan: "StructuredPlan",
     mesh_plan: "StructuredMeshPlan",
@@ -820,5 +884,6 @@ def validate_structured_mesh(
     errors.extend(_check_watertight(vol_tags))
     errors.extend(_check_internal_seams_unmeshed(phantom_map, occ_entities))
     errors.extend(_check_prism_tet_interface(vol_tags, resolved_tol))
+    errors.extend(_check_top_bottom_symmetry(vol_tags, resolved_tol))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
