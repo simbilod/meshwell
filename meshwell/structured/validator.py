@@ -484,36 +484,33 @@ def _localize_face_mismatch(
     tet_vols: list[int],
     tol: float,
 ) -> tuple[bool, str]:
-    """Geometrically localize a check-2 face mismatch.
+    """Geometrically localize a check-2 face mismatch within ``tol``.
 
     Given a structured face that check 2 couldn't match topologically,
     look for a geometrically-matching tet-side face within ``tol``.
 
-    Returns ``(near_duplicate_found, refinement_string)`` where
-    ``near_duplicate_found`` is True when tet-side nodes at matching
-    coordinates (but with different IDs) were detected, and
-    ``refinement_string`` is a short message to append to the error.
-    Returns ``(False, "")`` when the structured face's nodes can't be
-    looked up (degenerate mesh state).
+    Returns ``(near_dup_found, refinement_string)``.
     """
     import gmsh
     import numpy as np
 
+    # Build a global node-coord lookup once. For the structured face nodes
+    # and for the tet-side node candidates we'll fetch coords from this.
+    all_node_tags_arr, all_coords_flat, _ = gmsh.model.mesh.getNodes()
+    if len(all_node_tags_arr) == 0:
+        return False, ""
+    node_to_xyz: dict[int, np.ndarray] = {}
+    coords_arr = np.asarray(all_coords_flat, dtype=float).reshape(-1, 3)
+    for i, t in enumerate(all_node_tags_arr):
+        node_to_xyz[int(t)] = coords_arr[i]
+
     # Coords of the structured face's nodes.
-    struct_coords: list[np.ndarray] = []
-    for n in face_key:
-        try:
-            xyz, _, _, _ = gmsh.model.mesh.getNode(int(n))
-            struct_coords.append(np.asarray(xyz, dtype=float))
-        except Exception:  # noqa: S112
-            continue
+    struct_coords = [node_to_xyz[n] for n in face_key if n in node_to_xyz]
     if not struct_coords:
         return False, ""
     struct_pts = np.stack(struct_coords)
 
-    # Scan all triangle faces on tet vols. For each tet-side node NOT in
-    # the structured face, check if its coordinates are within tol of any
-    # structured face node — that signals a near-duplicate substitution.
+    # Scan tet-side triangle face nodes NOT in face_key for coord-proximity.
     matched_node_ids: list[int] = []
     for tv in tet_vols:
         elem_types, _, _ = gmsh.model.mesh.getElements(3, tv)
@@ -521,27 +518,25 @@ def _localize_face_mismatch(
             try:
                 tri = gmsh.model.mesh.getElementFaceNodes(int(et), 3, tv)
                 tri_arr = np.asarray(tri, dtype=np.int64).reshape(-1, 3)
-            except Exception:  # noqa: S112
+            except (RuntimeError, ValueError):
                 continue
             for row in tri_arr:
                 for n in row:
-                    if int(n) in face_key:
+                    ni = int(n)
+                    if ni in face_key:
                         continue
-                    try:
-                        xyz, _, _, _ = gmsh.model.mesh.getNode(int(n))
-                        p = np.asarray(xyz, dtype=float)
-                    except Exception:  # noqa: S112
+                    p = node_to_xyz.get(ni)
+                    if p is None:
                         continue
                     dists = np.linalg.norm(struct_pts - p, axis=1)
                     if float(dists.min()) <= tol:
-                        matched_node_ids.append(int(n))
+                        matched_node_ids.append(ni)
 
     if matched_node_ids:
-        return (
-            True,
+        return True, (
             f" Localization: candidate exists at matching coords but with "
             f"different node IDs (near-duplicate on tet side: nodes "
-            f"{sorted(set(matched_node_ids))[:5]}).",
+            f"{sorted(set(matched_node_ids))[:5]})."
         )
     return (
         False,
@@ -644,6 +639,10 @@ def _check_prism_tet_interface(vol_tags: list[int], tol: float) -> list[Issue]:
             if not matched:
                 referenced = any(face_key.issubset(tet_node_set[tv]) for tv in tet_vols)
                 if referenced:
+                    # near_dup is informational here, not gating: a triangle face
+                    # whose node IDs aren't in the tet vol can't have appeared in
+                    # the topology-match step, so reaching this branch already
+                    # implies the topological gate (referenced=True) fired.
                     _near_dup, refinement = _localize_face_mismatch(
                         face_key, tet_vols, tol
                     )
@@ -700,9 +699,10 @@ def _check_prism_tet_interface(vol_tags: list[int], tol: float) -> list[Issue]:
                         )
                     )
                 else:
-                    # Topological gate missed; try coordinate-based localization
-                    # to catch near-duplicate node substitutions (node IDs differ
-                    # but coordinates match within tol).
+                    # Fallback: topology gate (touches_tet) missed. Try a coordinate
+                    # scan to catch the near-duplicate-node-substitution case
+                    # where node IDs on the tet side don't intersect this face's
+                    # IDs at all but the geometry overlaps.
                     near_dup, refinement = _localize_face_mismatch(
                         face_key, tet_vols, tol
                     )
