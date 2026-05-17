@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import product
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -160,53 +161,49 @@ def _check_near_duplicate_nodes(tol: float) -> tuple[list[Issue], list[Issue]]:
 
     errors: list[Issue] = []
     warnings: list[Issue] = []
-    reported_pairs: set[tuple[int, int]] = set()
 
     for i in range(n):
         bi = (int(bins[i, 0]), int(bins[i, 1]), int(bins[i, 2]))
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    key = (bi[0] + dx, bi[1] + dy, bi[2] + dz)
-                    nbrs = bucket.get(key)
-                    if not nbrs:
-                        continue
-                    for j in nbrs:
-                        if j <= i:
-                            continue
-                        d2 = float(np.sum((coords[i] - coords[j]) ** 2))
-                        if d2 > tol * tol:
-                            continue
-                        pair = (int(node_tags[i]), int(node_tags[j]))
-                        if pair in reported_pairs:
-                            continue
-                        reported_pairs.add(pair)
-                        if d2 == 0.0:
-                            errors.append(
-                                Issue(
-                                    severity="error",
-                                    check="near_duplicate_nodes",
-                                    message=(
-                                        f"Exact duplicate node coords at "
-                                        f"({coords[i, 0]:.6g}, {coords[i, 1]:.6g}, "
-                                        f"{coords[i, 2]:.6g}); removeDuplicateNodes "
-                                        f"may have been skipped."
-                                    ),
-                                    entities=(("node", pair[0]), ("node", pair[1])),
-                                )
-                            )
-                        else:
-                            warnings.append(
-                                Issue(
-                                    severity="warning",
-                                    check="near_duplicate_nodes",
-                                    message=(
-                                        f"Near-duplicate node pair: distance "
-                                        f"{d2 ** 0.5:.3e} < tol {tol:.3e}."
-                                    ),
-                                    entities=(("node", pair[0]), ("node", pair[1])),
-                                )
-                            )
+        for dx, dy, dz in product((-1, 0, 1), repeat=3):
+            key = (bi[0] + dx, bi[1] + dy, bi[2] + dz)
+            nbrs = bucket.get(key)
+            if not nbrs:
+                continue
+            for j in nbrs:
+                if j <= i:
+                    continue
+                d2 = float(np.sum((coords[i] - coords[j]) ** 2))
+                if d2 > tol * tol:
+                    continue
+                pair = (int(node_tags[i]), int(node_tags[j]))
+                if d2 == 0.0:
+                    errors.append(
+                        Issue(
+                            severity="error",
+                            check="near_duplicate_nodes",
+                            message=(
+                                f"Exact duplicate node coords at "
+                                f"({coords[i, 0]:.6g}, {coords[i, 1]:.6g}, "
+                                f"{coords[i, 2]:.6g}); removeDuplicateNodes "
+                                f"may have been skipped."
+                            ),
+                            entities=(("node", pair[0]), ("node", pair[1])),
+                        )
+                    )
+                else:
+                    warnings.append(
+                        Issue(
+                            severity="warning",
+                            check="near_duplicate_nodes",
+                            message=(
+                                f"Near-duplicate node pair near "
+                                f"({coords[i, 0]:.6g}, {coords[i, 1]:.6g}, "
+                                f"{coords[i, 2]:.6g}): distance "
+                                f"{d2 ** 0.5:.3e} < tol {tol:.3e}."
+                            ),
+                            entities=(("node", pair[0]), ("node", pair[1])),
+                        )
+                    )
 
     return errors, warnings
 

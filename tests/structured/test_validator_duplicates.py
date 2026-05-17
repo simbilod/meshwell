@@ -19,6 +19,16 @@ def empty_inputs():
     return plan, mesh_plan, phantom_map
 
 
+@pytest.fixture
+def gmsh_session():
+    gmsh.initialize()
+    gmsh.model.add("test")
+    try:
+        yield
+    finally:
+        gmsh.finalize()
+
+
 def _add_lone_node(x: float, y: float, z: float) -> int:
     """Helper: add a node to a fresh discrete 3D entity, return its tag."""
     ent = gmsh.model.addDiscreteEntity(3, -1, [])
@@ -28,10 +38,8 @@ def _add_lone_node(x: float, y: float, z: float) -> int:
     return new_tag
 
 
-def test_unique_nodes_no_issue(empty_inputs):
+def test_unique_nodes_no_issue(gmsh_session, empty_inputs):  # noqa: ARG001
     plan, mesh_plan, phantom_map = empty_inputs
-    gmsh.initialize()
-    gmsh.model.add("unique")
     _add_lone_node(0.0, 0.0, 0.0)
     _add_lone_node(1.0, 0.0, 0.0)
     _add_lone_node(0.0, 1.0, 0.0)
@@ -43,13 +51,12 @@ def test_unique_nodes_no_issue(empty_inputs):
         i for i in result.errors + result.warnings if i.check == "near_duplicate_nodes"
     ]
     assert duplicate_issues == []
-    gmsh.finalize()
 
 
-def test_exact_duplicate_nodes_reported_as_error(empty_inputs):
+def test_exact_duplicate_nodes_reported_as_error(
+    gmsh_session, empty_inputs  # noqa: ARG001
+):
     plan, mesh_plan, phantom_map = empty_inputs
-    gmsh.initialize()
-    gmsh.model.add("exact_dup")
     _add_lone_node(0.5, 0.5, 0.5)
     _add_lone_node(0.5, 0.5, 0.5)  # Exact duplicate.
 
@@ -58,13 +65,12 @@ def test_exact_duplicate_nodes_reported_as_error(empty_inputs):
     )
     exact_errors = [i for i in result.errors if i.check == "near_duplicate_nodes"]
     assert len(exact_errors) >= 1
-    gmsh.finalize()
 
 
-def test_near_duplicate_nodes_reported_as_warning(empty_inputs):
+def test_near_duplicate_nodes_reported_as_warning(
+    gmsh_session, empty_inputs  # noqa: ARG001
+):
     plan, mesh_plan, phantom_map = empty_inputs
-    gmsh.initialize()
-    gmsh.model.add("near_dup")
     _add_lone_node(0.5, 0.5, 0.5)
     _add_lone_node(0.5 + 1e-9, 0.5, 0.5)  # 1 nm offset.
 
@@ -73,4 +79,3 @@ def test_near_duplicate_nodes_reported_as_warning(empty_inputs):
     )
     near_warnings = [i for i in result.warnings if i.check == "near_duplicate_nodes"]
     assert len(near_warnings) >= 1
-    gmsh.finalize()
