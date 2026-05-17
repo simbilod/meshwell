@@ -108,3 +108,48 @@ def test_internal_seam_without_2d_elements_passes(
     )
     seam_errors = [i for i in result.errors if i.check == "internal_seam_unmeshed"]
     assert seam_errors == []
+
+
+def test_internal_seam_via_lateral_gmsh_map(
+    gmsh_session,  # noqa: ARG001
+    empty_pm,
+    monkeypatch,
+):
+    """Pipeline path: PhantomMap values are TopoDS_Face.
+
+    The validator resolves them to gmsh face tags via
+    _map_phantom_laterals_to_gmsh.  We monkeypatch that helper to return
+    a known mapping.
+    """
+    plan, mesh_plan = empty_pm
+
+    face_tag = gmsh.model.addDiscreteEntity(2, -1, [])
+    gmsh.model.mesh.addNodes(2, face_tag, [1, 2, 3], [0, 0, 0, 1, 0, 0, 0, 1, 0])
+    gmsh.model.mesh.addElements(2, face_tag, [2], [[20]], [[1, 2, 3]])
+
+    pm = PhantomMap()
+    key_a = LateralKey(0, 0, 0)
+    key_b = LateralKey(0, 1, 0)
+    # Use sentinel objects to stand in for TopoDS_Face values.
+    sentinel_face = object()
+    pm.output_laterals[key_a] = [sentinel_face]
+    pm.output_laterals[key_b] = [sentinel_face]
+
+    def fake_map(phantom_map, occ_entities):  # noqa: ARG001
+        return {key_a: [face_tag], key_b: [face_tag]}
+
+    monkeypatch.setattr(
+        "meshwell.structured.validator._map_phantom_laterals_to_gmsh",
+        fake_map,
+    )
+
+    result = validate_structured_mesh(
+        plan,
+        mesh_plan,
+        pm,
+        occ_entities=[],
+        vol_tags=[],
+        tol=1e-6,
+    )
+    seam_errors = [i for i in result.errors if i.check == "internal_seam_unmeshed"]
+    assert len(seam_errors) >= 1

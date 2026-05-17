@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from itertools import product
 from typing import TYPE_CHECKING, Any, Literal
 
+from meshwell.structured.builder import (
+    _map_phantom_laterals_to_gmsh,  # re-exported here so tests can monkeypatch
+)
+
 if TYPE_CHECKING:
     from meshwell.structured.spec import (
         PhantomMap,
@@ -336,43 +340,52 @@ def _check_plan_mesh_consistency(
     return issues
 
 
-def _check_internal_seams_unmeshed(phantom_map: "PhantomMap") -> list[Issue]:
+def _check_internal_seams_unmeshed(
+    phantom_map: "PhantomMap",
+    occ_entities: list[Any],
+) -> list[Issue]:
     """Faces shared between two pieces of the same slab must carry no 2D elements.
 
-    Mirrors the detection logic in
-    ``meshwell.structured.builder.apply_structured_mesh`` (the block
-    that calls ``gmsh.model.mesh.clear([(2, face_tag)])`` for interior
-    seam faces). Reports any face that the builder should have cleared
-    but didn't (still has 2D elements).
+    Mirrors detection logic in meshwell.structured.builder.apply_structured_mesh.
+    Reports any face that the builder should have cleared but didn't.
 
-    Accepts int gmsh tags directly in ``phantom_map.output_laterals``
-    values (test convenience). Real pipeline values (TopoDS_Face) are
-    wired in Task 8.
+    Two code paths for resolving phantom_map.output_laterals values:
+    (a) Tests pass int gmsh tags directly in output_laterals values.
+    (b) Real pipeline passes TopoDS_Face values; use the lateral map.
     """
     import gmsh
 
-    issues: list[Issue] = []
-
-    # Group LateralKey occurrences by underlying value (gmsh face tag).
-    # int-passthrough: tests inject gmsh face tags directly. Real-pipeline
-    # values are OCC TopoDS_Face objects, resolved to gmsh tags in Task 8.
-    # Non-int values are skipped here; Task 8 will add the OCC→gmsh path.
     from meshwell.structured.spec import LateralKey  # local import, avoids cycle
 
-    value_to_keys: dict[int, list[LateralKey]] = {}
-    for key, values in phantom_map.output_laterals.items():
-        for v in values:
-            if isinstance(v, int):
-                value_to_keys.setdefault(v, []).append(key)
+    issues: list[Issue] = []
 
-    for face_tag, keys in value_to_keys.items():
+    # Resolve lateral keys → gmsh face tags once.
+    lateral_to_gmsh: dict[Any, list[int]] = {}
+    use_direct_int_path = any(
+        isinstance(v, int)
+        for vals in phantom_map.output_laterals.values()
+        for v in vals
+    )
+    if use_direct_int_path:
+        lateral_to_gmsh = {
+            k: [int(v) for v in vals if isinstance(v, int)]
+            for k, vals in phantom_map.output_laterals.items()
+        }
+    elif phantom_map.output_laterals:
+        lateral_to_gmsh = _map_phantom_laterals_to_gmsh(phantom_map, occ_entities)
+
+    face_tag_to_keys: dict[int, list[LateralKey]] = {}
+    for key, tags in lateral_to_gmsh.items():
+        for tag in tags:
+            face_tag_to_keys.setdefault(int(tag), []).append(key)
+
+    for face_tag, keys in face_tag_to_keys.items():
         if len(keys) < 2:
             continue
         slabs = {k.slab_index for k in keys}
         pieces = {k.piece_index for k in keys}
         if len(slabs) != 1 or len(pieces) < 2:
             continue
-        # This face identifies an internal seam. Check it has no 2D elements.
         _elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(2, face_tag)
         total_2d = sum(len(t) for t in elem_tags_per_type)
         if total_2d > 0:
@@ -460,7 +473,7 @@ def validate_structured_mesh(
     plan: "StructuredPlan",
     mesh_plan: "StructuredMeshPlan",
     phantom_map: "PhantomMap",
-    occ_entities: list[Any],  # noqa: ARG001
+    occ_entities: list[Any],
     vol_tags: list[int],
     *,
     tol: float | None = None,
@@ -511,6 +524,6 @@ def validate_structured_mesh(
 
     errors.extend(_check_plan_mesh_consistency(plan, mesh_plan, vol_tags))
     errors.extend(_check_watertight(vol_tags))
-    errors.extend(_check_internal_seams_unmeshed(phantom_map))
+    errors.extend(_check_internal_seams_unmeshed(phantom_map, occ_entities))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
