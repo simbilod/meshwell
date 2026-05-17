@@ -79,6 +79,50 @@ class StructuredBufferTaperError(ValueError):
     """
 
 
+@dataclass(frozen=True)
+class PieceArcEdge:
+    """One arc segment on a piece boundary.
+
+    ``points``: ordered (x, y, z) coords of all polygon vertices that lie
+    on this arc segment, in boundary traversal order. At least 2 points.
+    ``center``: (cx, cy, cz) of the fitted circle.
+    ``radius``: arc radius.
+    """
+
+    points: tuple[tuple[float, float, float], ...]
+    center: tuple[float, float, float]
+    radius: float
+
+
+@dataclass(frozen=True)
+class PieceLineEdge:
+    """One straight line segment on a piece boundary.
+
+    ``points``: ordered (x, y, z) coords. Exactly 2 points (start, end).
+    A straight cut introduced by the partition seam, OR an original
+    line segment from the slab footprint (when identify_arcs is False
+    or the segment didn't fit a circle).
+    """
+
+    points: tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+@dataclass
+class PieceProvenance:
+    """Labelled boundary of one face_partition piece.
+
+    ``exterior_edges``: ordered list of arc/line edges along the
+    piece's outer ring, in boundary traversal order.
+    ``interior_edges``: list of lists (one per interior ring, in order).
+    Each inner-ring entry is its own ordered list of arc/line edges.
+
+    A piece with no holes has ``interior_edges = []``.
+    """
+
+    exterior_edges: list["PieceArcEdge | PieceLineEdge"]
+    interior_edges: list[list["PieceArcEdge | PieceLineEdge"]]
+
+
 @dataclass
 class Slab:
     """One structured-polyprism z-interval, CAD-stage data only.
@@ -101,6 +145,11 @@ class Slab:
     fragment_fuzzy_value: float | None = None
     # Populated by compute_face_partition (default: one piece = the whole footprint).
     face_partition: list["Polygon"] = field(default_factory=list)
+    # Per-piece edge provenance, parallel to face_partition: entry
+    # face_partition_provenance[i] describes the boundary edges of
+    # face_partition[i]. None means "treat every edge as a straight line"
+    # (matching the existing polyline-only behaviour).
+    face_partition_provenance: "list[PieceProvenance] | None" = None
 
 
 @dataclass(frozen=True)

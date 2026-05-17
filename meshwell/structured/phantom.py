@@ -28,6 +28,9 @@ from meshwell.structured.spec import (
     PhantomBuildResult,
     PhantomMap,
     PhantomShape,
+    PieceArcEdge,
+    PieceLineEdge,
+    PieceProvenance,
     StructuredPlan,
     VertexKey,
 )
@@ -285,6 +288,132 @@ def _make_face_from_polygon_with_arcs(
     return face_builder.Face()
 
 
+def _make_occ_wire_from_labeled_segments(
+    segments: list[PieceArcEdge | PieceLineEdge],
+    point_tolerance: float = _POINT_TOLERANCE,
+) -> Any:
+    """Build an OCC wire from a list of already-classified provenance edges.
+
+    Unlike ``_make_arc_wire_from_coords``, this never runs the heuristic
+    arc-detector — the provenance is authoritative.
+
+    ``segments`` must be in boundary traversal order; consecutive edges must
+    share an endpoint (caller's responsibility). Coordinates are quantized
+    to ``point_tolerance`` to match ``_make_arc_wire_from_coords``.
+    """
+    import numpy as np
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt
+
+    ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
+
+    def _qpnt(coords: tuple[float, float, float]) -> gp_Pnt:
+        return gp_Pnt(*(round(c, ndigits) for c in coords))
+
+    def _qkey(coords: tuple[float, float, float]) -> tuple:
+        return tuple(round(c, ndigits) for c in coords)
+
+    wire_builder = BRepBuilderAPI_MakeWire()
+    for seg in segments:
+        if isinstance(seg, PieceArcEdge):
+            pts = list(seg.points)
+            if len(pts) < 2:
+                continue
+            is_closed = _qkey(pts[0]) == _qkey(pts[-1])
+            if is_closed:
+                if len(pts) < 4:
+                    continue  # degenerate closed arc with too few unique points
+                # Full circle: two arcs (matches _make_arc_wire_from_coords behaviour).
+                quarter = len(pts) // 4
+                mid = len(pts) // 2
+                three_quarter = (len(pts) * 3) // 4
+                p_start = _qpnt(pts[0])
+                p_q = _qpnt(pts[quarter])
+                p_mid = _qpnt(pts[mid])
+                p_3q = _qpnt(pts[three_quarter])
+                p_end = _qpnt(pts[-1])
+                arc1 = GC_MakeArcOfCircle(p_start, p_q, p_mid).Value()
+                arc2 = GC_MakeArcOfCircle(p_mid, p_3q, p_end).Value()
+                wire_builder.Add(BRepBuilderAPI_MakeEdge(arc1).Edge())
+                wire_builder.Add(BRepBuilderAPI_MakeEdge(arc2).Edge())
+            else:
+                if len(pts) < 2:
+                    continue
+                if _qkey(pts[0]) == _qkey(pts[-1]):
+                    continue
+                if len(pts) == 2:
+                    # Only two points on arc — build as line (degenerate arc).
+                    wire_builder.Add(
+                        BRepBuilderAPI_MakeEdge(_qpnt(pts[0]), _qpnt(pts[-1])).Edge()
+                    )
+                else:
+                    mid = len(pts) // 2
+                    p_start = _qpnt(pts[0])
+                    p_mid = _qpnt(pts[mid])
+                    p_end = _qpnt(pts[-1])
+                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                    wire_builder.Add(BRepBuilderAPI_MakeEdge(arc_geom).Edge())
+        elif isinstance(seg, PieceLineEdge):
+            p1 = _qpnt(seg.points[0])
+            p2 = _qpnt(seg.points[1])
+            if _qkey(seg.points[0]) == _qkey(seg.points[1]):
+                continue
+            wire_builder.Add(BRepBuilderAPI_MakeEdge(p1, p2).Edge())
+        else:
+            raise TypeError(
+                f"_make_occ_wire_from_labeled_segments: unknown segment "
+                f"type {type(seg).__name__}"
+            )
+    return wire_builder.Wire()
+
+
+def _shift_provenance_edge(
+    edge: PieceArcEdge | PieceLineEdge,
+    z: float,
+) -> PieceArcEdge | PieceLineEdge:
+    """Stamp height ``z`` onto each edge's points.
+
+    Provenance is computed at z=0 (face_partition is a 2-D polygon set),
+    so we raise to the slab's actual zlo here for OCC consumption.
+    """
+    if isinstance(edge, PieceArcEdge):
+        return PieceArcEdge(
+            points=tuple((p[0], p[1], z) for p in edge.points),
+            center=(edge.center[0], edge.center[1], z),
+            radius=edge.radius,
+        )
+    return PieceLineEdge(
+        points=(
+            (edge.points[0][0], edge.points[0][1], z),
+            (edge.points[1][0], edge.points[1][1], z),
+        ),
+    )
+
+
+def _make_face_from_provenance(
+    provenance: PieceProvenance,
+    z: float,
+    point_tolerance: float = _POINT_TOLERANCE,
+) -> Any:
+    """Build a planar TopoDS_Face at height z from a PieceProvenance.
+
+    Exterior ring is built from provenance.exterior_edges; each interior
+    ring from provenance.interior_edges[i]. Arc edges are built with
+    GC_MakeArcOfCircle, line edges with BRepBuilderAPI_MakeEdge.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+    outer_edges = [_shift_provenance_edge(e, z) for e in provenance.exterior_edges]
+    outer_wire = _make_occ_wire_from_labeled_segments(outer_edges, point_tolerance)
+    face_builder = BRepBuilderAPI_MakeFace(outer_wire)
+    for ring_edges in provenance.interior_edges:
+        shifted = [_shift_provenance_edge(e, z) for e in ring_edges]
+        hole_wire = _make_occ_wire_from_labeled_segments(shifted, point_tolerance)
+        face_builder.Add(hole_wire)
+    return face_builder.Face()
+
+
 def _build_sub_prism(
     piece: Polygon,
     zlo: float,
@@ -294,6 +423,7 @@ def _build_sub_prism(
     identify_arcs: bool = False,
     min_arc_points: int = 4,
     arc_tolerance: float = 1e-3,
+    provenance: PieceProvenance | None = None,
 ) -> PhantomShape:
     """Build one OCP sub-prism for a single partition piece.
 
@@ -322,13 +452,17 @@ def _build_sub_prism(
 
     height = zhi - zlo
     poly = orient(piece, sign=1.0)
-    bottom_face = _make_face_from_polygon_with_arcs(
-        poly,
-        z=zlo,
-        identify_arcs=identify_arcs,
-        min_arc_points=min_arc_points,
-        arc_tolerance=arc_tolerance,
-    )
+    if provenance is not None:
+        # Provenance path: use labeled edges directly — no heuristic re-detection.
+        bottom_face = _make_face_from_provenance(provenance, z=zlo)
+    else:
+        bottom_face = _make_face_from_polygon_with_arcs(
+            poly,
+            z=zlo,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
     prism_builder = BRepPrimAPI_MakePrism(bottom_face, gp_Vec(0.0, 0.0, height))
     solid = prism_builder.Shape()
     top_face = prism_builder.LastShape()
@@ -555,18 +689,14 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
         if not slab.face_partition:
             continue
 
-        # Phase 6(a1) guard: split-arc provenance (multiple pieces from an
-        # arc-bearing footprint) is not yet implemented. Phase 6(a2) will
-        # replace this error with proper per-segment arc tagging.
-        if slab.identify_arcs and len(slab.face_partition) > 1:
-            raise NotImplementedError(
-                f"Slab {slab.physical_name}: identify_arcs=True is only supported "
-                f"for single-piece face_partition in Phase 6(a1). Got "
-                f"{len(slab.face_partition)} pieces — split-arc provenance is "
-                f"Phase 6(a2)."
-            )
+        provenance_list = (
+            slab.face_partition_provenance
+        )  # None or list[PieceProvenance]
 
         for piece_index, piece in enumerate(slab.face_partition):
+            piece_provenance: PieceProvenance | None = None
+            if provenance_list is not None and piece_index < len(provenance_list):
+                piece_provenance = provenance_list[piece_index]
             shapes.append(
                 _build_sub_prism(
                     piece=piece,
@@ -577,6 +707,7 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
                     identify_arcs=slab.identify_arcs,
                     min_arc_points=slab.min_arc_points,
                     arc_tolerance=slab.arc_tolerance,
+                    provenance=piece_provenance,
                 )
             )
     return PhantomBuildResult(shapes=tuple(shapes))

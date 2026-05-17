@@ -5,6 +5,8 @@ helpers handle the pipeline steps (gather, expand, validate, partition).
 """
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Any
 
@@ -14,6 +16,9 @@ from shapely.ops import polygonize, unary_union
 from meshwell.structured.logging import phase_timed
 from meshwell.structured.spec import (
     OverlapPair,
+    PieceArcEdge,
+    PieceLineEdge,
+    PieceProvenance,
     Slab,
     StructuredExtrusionResolutionSpec,
     StructuredOverlapError,
@@ -294,12 +299,226 @@ def _validate_no_mid_height_cuts(
             )
 
 
+@dataclass(frozen=True)
+class _IndexedArc:
+    """An arc identified on the original footprint.
+
+    Full vertex sequence preserved in boundary order.
+    """
+
+    arc_id: int
+    center: tuple[float, float, float]
+    radius: float
+    points: tuple[tuple[float, float, float], ...]  # length >= min_arc_points
+
+
+@dataclass
+class _ArcIndex:
+    """Lookup structure for classifying piece-boundary segments.
+
+    ``arcs``: every arc identified on the footprint's exterior + holes.
+    ``vertex_to_arcs``: maps rounded (x, y) coord -> list of
+    (arc_id, position-in-arc) tuples. A piece-boundary segment
+    (p_i, p_{i+1}) is on arc K iff both endpoints share an arc_id with
+    *adjacent* positions in K's vertex list.
+
+    Rounding granularity is ``ndigits`` = ``-floor(log10(arc_tolerance))``
+    where ``arc_tolerance`` is the same tolerance used by the arc-detection
+    heuristic so we match its quantization grid.
+    """
+
+    arcs: list[_IndexedArc] = field(default_factory=list)
+    vertex_to_arcs: dict[tuple[float, float], list[tuple[int, int]]] = field(
+        default_factory=dict
+    )
+    ndigits: int = 3
+
+
+def _build_arc_index_from_footprint(
+    footprint: Polygon | MultiPolygon,
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+) -> _ArcIndex:
+    """Decompose every ring of ``footprint`` and index each arc by its vertices.
+
+    Disabled (returns empty index) when ``identify_arcs`` is False.
+    The decomposition uses the same heuristic that ``GeometryEntity``
+    uses today, but only on the **pure-arc input** (the user-provided
+    polygon), where it is reliable.
+    """
+    ndigits = max(0, int(-math.floor(math.log10(max(arc_tolerance, 1e-12)))))
+    index = _ArcIndex(ndigits=ndigits)
+    if not identify_arcs:
+        return index
+
+    from meshwell.geometry_entity import GeometryEntity
+
+    components: list[Polygon] = (
+        list(footprint.geoms) if hasattr(footprint, "geoms") else [footprint]
+    )
+    adapter = GeometryEntity(point_tolerance=max(arc_tolerance, 1e-12))
+    arc_counter = 0
+    for comp in components:
+        for ring in [comp.exterior, *comp.interiors]:
+            verts: list[tuple[float, float, float]] = [
+                (x, y, 0.0) for x, y in list(ring.coords)
+            ]
+            segments = adapter.decompose_vertices(
+                verts,
+                identify_arcs=True,
+                min_arc_points=min_arc_points,
+                arc_tolerance=arc_tolerance,
+            )
+            for seg in segments:
+                if not seg.is_arc:
+                    continue
+                arc = _IndexedArc(
+                    arc_id=arc_counter,
+                    center=seg.center,
+                    radius=seg.radius,
+                    points=tuple(seg.points),
+                )
+                arc_counter += 1
+                index.arcs.append(arc)
+                for pos, (x, y, _z) in enumerate(arc.points):
+                    key = (round(x, ndigits), round(y, ndigits))
+                    index.vertex_to_arcs.setdefault(key, []).append((arc.arc_id, pos))
+
+    return index
+
+
+def _classify_piece_boundary(
+    piece: Polygon,
+    arc_index: _ArcIndex,
+) -> PieceProvenance:
+    """Walk the piece's exterior + interior rings, labeling each segment.
+
+    For each consecutive pair (v_i, v_i+1) on a piece ring:
+    - If BOTH are in arc_index.vertex_to_arcs with a SHARED arc_id AND
+      the position difference is consistent with being on that arc,
+      this segment is part of an arc — extend the running PieceArcEdge.
+    - Otherwise close the running arc edge (if any) and start a
+      PieceLineEdge containing this segment.
+
+    Returns PieceProvenance with the resulting exterior and interior
+    edge lists.
+    """
+
+    def _classify_ring(ring) -> list[PieceArcEdge | PieceLineEdge]:
+        coords = list(ring.coords)
+        if len(coords) < 2:
+            return []
+        # Drop the duplicated closing vertex if present.
+        if coords[0] == coords[-1]:
+            coords = coords[:-1]
+        # Strip consecutive near-duplicate vertices using rounded key comparison.
+        # Shapely may emit tiny floating-point noise (e.g. 1.2e-16) at seam
+        # vertices that makes coords appear distinct while they round to the
+        # same arc-index key. Use the arc_index ndigits for deduplication so
+        # the vertex sequence matches the index keys exactly.
+        ndigits = arc_index.ndigits
+
+        def _key(xy):
+            return (round(xy[0], ndigits), round(xy[1], ndigits))
+
+        deduped: list = [coords[0]]
+        for c in coords[1:]:
+            if _key(c) != _key(deduped[-1]):
+                deduped.append(c)
+        coords = deduped
+        n = len(coords)
+        if n < 2:
+            return []
+
+        def _segment_arc_id(a_xy, b_xy) -> int | None:
+            """Return arc_id if (a, b) is one step along some arc, else None.
+
+            Note: a vertex may appear at multiple positions in the same arc
+            when the arc is closed (arc.points[0] == arc.points[-1]) — both
+            pos 0 and pos arc_len-1 map to the same coordinate. We check ALL
+            (arc_id, pos) combinations for b_xy.
+            """
+            a_lookup = arc_index.vertex_to_arcs.get(_key(a_xy), [])
+            b_lookup = arc_index.vertex_to_arcs.get(_key(b_xy), [])
+            if not a_lookup or not b_lookup:
+                return None
+            # Group b positions by arc_id (multiple positions possible for same arc).
+            b_by_arc: dict[int, list[int]] = {}
+            for arc_id, pos in b_lookup:
+                b_by_arc.setdefault(arc_id, []).append(pos)
+            for arc_id, a_pos in a_lookup:
+                b_positions = b_by_arc.get(arc_id)
+                if not b_positions:
+                    continue
+                arc = arc_index.arcs[arc_id]
+                arc_len = len(arc.points)
+                for b_pos in b_positions:
+                    # Adjacency: |b_pos - a_pos| == 1
+                    if abs(b_pos - a_pos) == 1:
+                        return arc_id
+                    # Wrap: only when the arc is closed (first == last vertex).
+                    if arc.points[0] == arc.points[-1] and {a_pos, b_pos} == {
+                        0,
+                        arc_len - 2,
+                    }:
+                        return arc_id
+            return None
+
+        edges: list[PieceArcEdge | PieceLineEdge] = []
+        i = 0
+        visited = 0
+        while visited < n:
+            j = (i + 1) % n
+            a = coords[i]
+            b = coords[j]
+            arc_id = _segment_arc_id(a, b)
+            if arc_id is None:
+                edges.append(
+                    PieceLineEdge(points=((a[0], a[1], 0.0), (b[0], b[1], 0.0)))
+                )
+                i = j
+                visited += 1
+                continue
+            # Greedily extend along the same arc, but at most (n - visited)
+            # steps total so we never wrap around and double-cover the ring.
+            remaining = n - visited
+            run_indices = [i, j]
+            steps_taken = 1
+            while steps_taken < remaining:
+                k = (run_indices[-1] + 1) % n
+                next_arc = _segment_arc_id(coords[run_indices[-1]], coords[k])
+                if next_arc != arc_id:
+                    break
+                run_indices.append(k)
+                steps_taken += 1
+            pts = tuple((coords[idx][0], coords[idx][1], 0.0) for idx in run_indices)
+            arc = arc_index.arcs[arc_id]
+            edges.append(PieceArcEdge(points=pts, center=arc.center, radius=arc.radius))
+            # Advance past every vertex in the run except the last.
+            steps = len(run_indices) - 1
+            visited += steps
+            i = run_indices[-1]
+        return edges
+
+    exterior_edges = _classify_ring(piece.exterior)
+    interior_edges = [_classify_ring(ring) for ring in piece.interiors]
+    return PieceProvenance(exterior_edges=exterior_edges, interior_edges=interior_edges)
+
+
 def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
-    """Compute slab.face_partition in place.
+    """Compute slab.face_partition (and face_partition_provenance) in place.
 
     For each slab, decompose its footprint into pairwise-disjoint pieces
     based on the union of any neighbouring entity footprints touching
     z=zlo or z=zhi. No-neighbour case: one piece = the whole footprint.
+
+    When ``slab.identify_arcs=True``, also computes
+    ``slab.face_partition_provenance``: a parallel list of
+    :class:`PieceProvenance` objects that label each piece's boundary
+    segments as arc-inherited or straight-cut. The arc index is built once
+    from the original footprint (where the heuristic is reliable), avoiding
+    mis-classification of seam-cut vertices.
     """
     own_indices_by_slab = {id(s): {s.source_index} for s in slabs}
 
@@ -310,6 +529,9 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
         all_neighbour_polys = neighbours_lo + neighbours_hi
         if not all_neighbour_polys:
             slab.face_partition = [slab.footprint]
+            # Single piece = no split: the heuristic path in phantom.py
+            # (_make_arc_wire_from_coords) produces OCC geometry that
+            # exactly matches PolyPrism.instanciate_occ. No provenance needed.
             continue
         # Phase 5(d): use individual neighbour boundaries (common refinement) so
         # overlapping neighbours' internal seams appear in the partition. Otherwise
@@ -325,6 +547,22 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
             if slab.footprint.contains(piece.representative_point())
         ]
         slab.face_partition = pieces if pieces else [slab.footprint]
+        # Provenance is only needed when there are multiple pieces (split case).
+        # When there is only one piece, the heuristic path in phantom.py produces
+        # the correct OCC geometry without provenance. This avoids TShape mismatches
+        # that arise from differences in seam rotation between the provenance arc
+        # classifier and the canonical-seam-aware heuristic decomposer.
+        if slab.identify_arcs and len(slab.face_partition) > 1:
+            arc_index = _build_arc_index_from_footprint(
+                slab.footprint,
+                identify_arcs=True,
+                min_arc_points=slab.min_arc_points,
+                arc_tolerance=slab.arc_tolerance,
+            )
+            slab.face_partition_provenance = [
+                _classify_piece_boundary(piece, arc_index)
+                for piece in slab.face_partition
+            ]
 
 
 @phase_timed("plan")

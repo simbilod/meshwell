@@ -1,13 +1,13 @@
-"""Phase 6(a1): single-piece arc structured polyprism tests.
+"""Phase 6(a1) + Phase 6(a2): arc structured polyprism tests.
 
-Split-arc cases are Phase 6(a2) and raise NotImplementedError for now.
+Phase 6(a1): single-piece arc structured polyprisms.
+Phase 6(a2): split-arc provenance for multi-piece partitions.
 """
 from __future__ import annotations
 
 import math
 
 import meshio
-import pytest
 from shapely.geometry import Polygon
 
 
@@ -122,8 +122,12 @@ def test_disc_embedded_in_cladding_meshes(tmp_path):
     assert "cladding" in m.field_data
 
 
-def test_split_disc_raises_not_implemented_for_now(tmp_path):
-    """Phase 6(a2) -- split-arc provenance not yet implemented."""
+def test_split_disc_meshes_with_provenance(tmp_path):
+    """Phase 6(a2): split disc meshes with provenance.
+
+    A disc split by a top neighbour into multiple pieces should mesh
+    correctly via arc-provenance lookup.
+    """
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
     from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -137,17 +141,21 @@ def test_split_disc_raises_not_implemented_for_now(tmp_path):
         physical_name="disc",
         mesh_order=1.0,
     )
-    # Top neighbour cuts the disc into multiple pieces
+    # Top neighbour cuts the disc into multiple pieces (two half-disc pieces).
     cap = PolyPrism(
         polygons=Polygon([(-2, 0), (2, 0), (2, 2), (-2, 2)]),
         buffers={1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
         mesh_order=2.0,
     )
-    with pytest.raises(NotImplementedError, match="Phase 6\\(a2\\)"):
-        generate_mesh(
-            [disc, cap],
-            dim=3,
-            output_mesh=tmp_path / "split.msh",
-            default_characteristic_length=0.3,
-        )
+    out = tmp_path / "split.msh"
+    generate_mesh(
+        [disc, cap], dim=3, output_mesh=out, default_characteristic_length=0.3
+    )
+    m = meshio.read(out)
+    cell_types = {cb.type for cb in m.cells}
+    assert any(
+        ct in cell_types for ct in ("wedge", "wedge6")
+    ), f"Expected wedge cells; got {cell_types}"
+    assert "disc" in m.field_data
+    assert "cap" in m.field_data
