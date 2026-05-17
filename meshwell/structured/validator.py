@@ -93,6 +93,41 @@ def _group_by_check(issues: tuple[Issue, ...]) -> dict[str, list[Issue]]:
     return dict(out)
 
 
+_DEFAULT_TOL_FALLBACK = 1e-9
+
+
+def _resolve_tol(tol: float | None) -> float:
+    """Pick a coordinate tolerance for geometric checks.
+
+    If ``tol`` is given, returns it unchanged. Otherwise derives from
+    the minimum edge length of the current gmsh mesh:
+    ``min_edge_length * 1e-6``. Falls back to ``1e-9`` when no elements
+    exist in the model yet.
+    """
+    if tol is not None:
+        return float(tol)
+
+    import gmsh
+
+    try:
+        elem_types, elem_tags, _ = gmsh.model.mesh.getElements(3)
+        if not elem_types:
+            return _DEFAULT_TOL_FALLBACK
+        # Concatenate all 3D element tags across types.
+        all_tags = [t for tags in elem_tags for t in tags]
+        if not all_tags:
+            return _DEFAULT_TOL_FALLBACK
+        min_edges = gmsh.model.mesh.getElementQualities(all_tags, "minEdge")
+        if len(min_edges) == 0:
+            return _DEFAULT_TOL_FALLBACK
+        min_edge = float(min(min_edges))
+        if min_edge <= 0:
+            return _DEFAULT_TOL_FALLBACK
+        return min_edge * 1e-6
+    except Exception:
+        return _DEFAULT_TOL_FALLBACK
+
+
 def validate_structured_mesh(
     plan: "StructuredPlan",  # noqa: ARG001
     mesh_plan: "StructuredMeshPlan",  # noqa: ARG001
