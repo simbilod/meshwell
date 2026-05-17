@@ -20,6 +20,7 @@ from typing import Any
 from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
+from meshwell.structured.logging import phase_timed
 from meshwell.structured.spec import (
     EdgeKey,
     FaceKey,
@@ -241,6 +242,7 @@ def _build_sub_prism(
     )
 
 
+@phase_timed("phantom_build")
 def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     """For each slab, build one OCP sub-prism per partition piece.
 
@@ -332,6 +334,7 @@ def _modified_or_unchanged(builder: Any, input_shape: Any) -> list[Any]:
     return list(modified)
 
 
+@phase_timed("phantom_map")
 def extract_phantom_map(
     build_result: PhantomBuildResult,
     builder: Any,

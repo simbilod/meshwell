@@ -11,6 +11,7 @@ from typing import Any
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
+from meshwell.structured.logging import phase_timed
 from meshwell.structured.spec import (
     OverlapPair,
     Slab,
@@ -326,6 +327,7 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
         slab.face_partition = pieces if pieces else [slab.footprint]
 
 
+@phase_timed("plan")
 def build_plan(entities: list[Any]) -> StructuredPlan:
     """Top-level planner: entities -> validated, partitioned StructuredPlan.
 

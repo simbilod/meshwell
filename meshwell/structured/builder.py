@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 
+from meshwell.structured.logging import phase_timed, phase_timer
 from meshwell.structured.spec import (
     StructuredExtrusionResolutionSpec,
     StructuredMeshOverlapError,
@@ -31,6 +32,7 @@ def _spec_of(entity: Any) -> StructuredExtrusionResolutionSpec | None:
     return None
 
 
+@phase_timed("resolve_mesh_plan")
 def resolve_mesh_plan(plan: StructuredPlan, entities: list[Any]) -> StructuredMeshPlan:
     """Look up (n_layers, recombine) for each slab via its owning spec.
 
@@ -376,6 +378,7 @@ def _find_volume_containing_faces(
     return None
 
 
+@phase_timed("mesh_apply")
 def apply_structured_mesh(
     plan: StructuredPlan,
     mesh_plan: StructuredMeshPlan,
@@ -433,115 +436,120 @@ def apply_structured_mesh(
         height = slab.zhi - slab.zlo
 
         for piece_idx in range(len(slab.face_partition)):
-            bot_key = FaceKey(slab_idx, "bot", piece_idx)
-            top_key = FaceKey(slab_idx, "top", piece_idx)
-            bot_tags = face_map.get(bot_key, [])
-            top_tags = face_map.get(top_key, [])
+            with phase_timer("mesh_apply_per_slab"):
+                bot_key = FaceKey(slab_idx, "bot", piece_idx)
+                top_key = FaceKey(slab_idx, "top", piece_idx)
+                bot_tags = face_map.get(bot_key, [])
+                top_tags = face_map.get(top_key, [])
 
-            if len(bot_tags) != 1 or len(top_tags) != 1:
-                raise RuntimeError(
-                    f"Slab {slab.physical_name} piece {piece_idx}: Phase 5(d) "
-                    f"compute_face_partition should produce a common-refinement "
-                    f"partition where each piece has exactly 1 bot + 1 top OCC face "
-                    f"after BOP. Got bot={bot_tags}, top={top_tags}. This indicates a "
-                    f"BOP outcome the planner didn't anticipate (fuzzy tolerance edge "
-                    f"case, non-axis-aligned neighbour producing extra micro-faces, "
-                    f"non-polygonal cut, etc.)."
+                if len(bot_tags) != 1 or len(top_tags) != 1:
+                    raise RuntimeError(
+                        f"Slab {slab.physical_name} piece {piece_idx}: Phase 5(d) "
+                        f"compute_face_partition should produce a common-refinement "
+                        f"partition where each piece has exactly 1 bot + 1 top OCC face "
+                        f"after BOP. Got bot={bot_tags}, top={top_tags}. This indicates a "
+                        f"BOP outcome the planner didn't anticipate (fuzzy tolerance edge "
+                        f"case, non-axis-aligned neighbour producing extra micro-faces, "
+                        f"non-polygonal cut, etc.)."
+                    )
+                bot_tag = bot_tags[0]
+                top_tag = top_tags[0]
+
+                # Build per-piece edge_correspondence: dict[bot_edge_gmsh_tag, top_edge_gmsh_tag].
+                edge_correspondence: dict[int, int] = {}
+                bot_face_boundary = gmsh.model.getBoundary(
+                    [(2, bot_tag)], oriented=False, recursive=False
                 )
-            bot_tag = bot_tags[0]
-            top_tag = top_tags[0]
+                for dim_b, bot_edge_tag in bot_face_boundary:
+                    if dim_b != 1:
+                        continue
+                    for ek, tags in edge_map.items():
+                        if (
+                            ek.slab_index == slab_idx
+                            and ek.side == "bot"
+                            and ek.piece_index == piece_idx
+                            and bot_edge_tag in tags
+                        ):
+                            top_ek = EdgeKey(slab_idx, "top", piece_idx, ek.edge_index)
+                            if edge_map.get(top_ek):
+                                edge_correspondence[bot_edge_tag] = edge_map[top_ek][0]
+                            break
 
-            # Build per-piece edge_correspondence: dict[bot_edge_gmsh_tag, top_edge_gmsh_tag].
-            edge_correspondence: dict[int, int] = {}
-            bot_face_boundary = gmsh.model.getBoundary(
-                [(2, bot_tag)], oriented=False, recursive=False
-            )
-            for dim_b, bot_edge_tag in bot_face_boundary:
-                if dim_b != 1:
-                    continue
-                for ek, tags in edge_map.items():
-                    if (
-                        ek.slab_index == slab_idx
-                        and ek.side == "bot"
-                        and ek.piece_index == piece_idx
-                        and bot_edge_tag in tags
-                    ):
-                        top_ek = EdgeKey(slab_idx, "top", piece_idx, ek.edge_index)
-                        if edge_map.get(top_ek):
-                            edge_correspondence[bot_edge_tag] = edge_map[top_ek][0]
-                        break
+                if n_layers == 1:
+                    # Single layer: bottom -> top is the only layer map.
+                    top_map = _stamp_top_face_mesh(
+                        bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+                    )
+                    layer_maps = [top_map]
+                    interior_layer_maps: list[dict[int, int]] = []
+                    interior_layer_coords: list[list[float]] = []
+                else:
+                    # Multi-layer: stamp the top face first (so new interior node
+                    # tags are registered before allocating intermediate-layer tags,
+                    # avoiding tag collisions), then build (n_layers - 1) intermediate
+                    # node maps between bottom and top.
+                    top_map = _stamp_top_face_mesh(
+                        bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+                    )
+                    bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
+                        2, bot_tag, includeBoundary=True
+                    )
+                    bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
+                    bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
+                    # Use max tag AFTER stamp so interior tags don't collide with
+                    # the new top-interior nodes allocated by _stamp_top_face_mesh.
+                    next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+                    interior_layer_maps = []
+                    interior_layer_coords = []
+                    for i_layer in range(1, n_layers):
+                        m: dict[int, int] = {}
+                        coords: list[float] = []
+                        z_i = slab.zlo + height * (i_layer / n_layers)
+                        for j, bt in enumerate(bot_node_tags):
+                            new_tag = next_tag
+                            next_tag += 1
+                            m[int(bt)] = new_tag
+                            coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
+                        interior_layer_maps.append(m)
+                        interior_layer_coords.append(coords)
+                    layer_maps = [*interior_layer_maps, top_map]
 
-            if n_layers == 1:
-                # Single layer: bottom -> top is the only layer map.
-                top_map = _stamp_top_face_mesh(
-                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+                # Find the OCC volume entity containing both the bottom face and the
+                # top face. Add wedge elements directly to that OCC volume so it
+                # retains its physical-group membership and MeshOnlyEmpty=1 skips
+                # re-meshing it in the 3D pass.
+                occ_vol_tag: int | None = _find_volume_containing_faces(
+                    bot_tag, top_tag
                 )
-                layer_maps = [top_map]
-                interior_layer_maps: list[dict[int, int]] = []
-                interior_layer_coords: list[list[float]] = []
-            else:
-                # Multi-layer: stamp the top face first (so new interior node
-                # tags are registered before allocating intermediate-layer tags,
-                # avoiding tag collisions), then build (n_layers - 1) intermediate
-                # node maps between bottom and top.
-                top_map = _stamp_top_face_mesh(
-                    bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
+
+                # Register all interior nodes BEFORE addElements so all referenced
+                # node tags exist in gmsh at the time addElements validates them.
+                pre_vol_tag: int | None = occ_vol_tag
+                if n_layers > 1 and pre_vol_tag is None:
+                    pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
+
+                all_pre_tags: list[int] = []
+                all_pre_coords: list[float] = []
+
+                if n_layers > 1 and pre_vol_tag is not None:
+                    for m, coords in zip(interior_layer_maps, interior_layer_coords):
+                        all_pre_tags.extend(m.values())
+                        all_pre_coords.extend(coords)
+
+                if all_pre_tags and pre_vol_tag is not None:
+                    gmsh.model.mesh.addNodes(
+                        3, pre_vol_tag, all_pre_tags, all_pre_coords
+                    )
+
+                vol_tag = _build_slab_volume(
+                    bottom_face_tag=bot_tag,
+                    bot_to_top_layer_tags=layer_maps,
+                    n_layers=n_layers,
+                    recombine=recombine,
+                    pre_allocated_vol_tag=pre_vol_tag,
                 )
-                bot_node_tags_arr, bot_coords_flat, _ = gmsh.model.mesh.getNodes(
-                    2, bot_tag, includeBoundary=True
-                )
-                bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
-                bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(-1, 3)
-                # Use max tag AFTER stamp so interior tags don't collide with
-                # the new top-interior nodes allocated by _stamp_top_face_mesh.
-                next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
-                interior_layer_maps = []
-                interior_layer_coords = []
-                for i_layer in range(1, n_layers):
-                    m: dict[int, int] = {}
-                    coords: list[float] = []
-                    z_i = slab.zlo + height * (i_layer / n_layers)
-                    for j, bt in enumerate(bot_node_tags):
-                        new_tag = next_tag
-                        next_tag += 1
-                        m[int(bt)] = new_tag
-                        coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
-                    interior_layer_maps.append(m)
-                    interior_layer_coords.append(coords)
-                layer_maps = [*interior_layer_maps, top_map]
 
-            # Find the OCC volume entity containing both the bottom face and the
-            # top face. Add wedge elements directly to that OCC volume so it
-            # retains its physical-group membership and MeshOnlyEmpty=1 skips
-            # re-meshing it in the 3D pass.
-            occ_vol_tag: int | None = _find_volume_containing_faces(bot_tag, top_tag)
-
-            # Register all interior nodes BEFORE addElements so all referenced
-            # node tags exist in gmsh at the time addElements validates them.
-            pre_vol_tag: int | None = occ_vol_tag
-            if n_layers > 1 and pre_vol_tag is None:
-                pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
-
-            all_pre_tags: list[int] = []
-            all_pre_coords: list[float] = []
-
-            if n_layers > 1 and pre_vol_tag is not None:
-                for m, coords in zip(interior_layer_maps, interior_layer_coords):
-                    all_pre_tags.extend(m.values())
-                    all_pre_coords.extend(coords)
-
-            if all_pre_tags and pre_vol_tag is not None:
-                gmsh.model.mesh.addNodes(3, pre_vol_tag, all_pre_tags, all_pre_coords)
-
-            vol_tag = _build_slab_volume(
-                bottom_face_tag=bot_tag,
-                bot_to_top_layer_tags=layer_maps,
-                n_layers=n_layers,
-                recombine=recombine,
-                pre_allocated_vol_tag=pre_vol_tag,
-            )
-
-            vol_tags.append(vol_tag)
+                vol_tags.append(vol_tag)
 
     # Global cleanup: merge ~coincident nodes.
     fuzzy_values = [
@@ -551,9 +559,11 @@ def apply_structured_mesh(
     ]
     fuzzy = max(fuzzy_values) if fuzzy_values else fuzzy_tol
     try:
-        gmsh.model.mesh.removeDuplicateNodes(tag=[], tol=2 * fuzzy)
+        with phase_timer("removeDuplicateNodes"):
+            gmsh.model.mesh.removeDuplicateNodes(tag=[], tol=2 * fuzzy)
     except TypeError:
-        gmsh.model.mesh.removeDuplicateNodes()
+        with phase_timer("removeDuplicateNodes"):
+            gmsh.model.mesh.removeDuplicateNodes()
 
     return vol_tags
 
@@ -653,6 +663,7 @@ def _map_phantom_laterals_to_gmsh(
     return out
 
 
+@phase_timed("transfinite_hints")
 def apply_structured_transfinite_hints(
     mesh_plan: Any,  # StructuredMeshPlan
     phantom_map: Any,  # PhantomMap
