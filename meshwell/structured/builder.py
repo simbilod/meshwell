@@ -379,12 +379,40 @@ def apply_structured_mesh(
     Returns a flat list of all per-piece volume entity tags created or
     populated (one per piece, not per slab).
     """
+    import logging
+
     import gmsh
 
     from meshwell.structured.spec import EdgeKey, FaceKey
 
+    logger = logging.getLogger(__name__)
+
     face_map = _map_phantom_faces_to_gmsh(phantom_map, occ_entities)
     edge_map = _map_phantom_edges_to_gmsh(phantom_map, occ_entities)
+
+    # Suppress interior-seam 2D meshes: each output lateral face shared between
+    # two pieces of the same slab is an internal seam that doesn't need
+    # a 2D mesh (the wedge volume covers it implicitly). Clear those faces.
+    if phantom_map.output_laterals:
+        lateral_gmsh_map = _map_phantom_laterals_to_gmsh(phantom_map, occ_entities)
+        face_tag_to_keys: dict[int, list[Any]] = {}
+        for lk, gtags in lateral_gmsh_map.items():
+            for gtag in gtags:
+                face_tag_to_keys.setdefault(gtag, []).append(lk)
+        for face_tag, keys in face_tag_to_keys.items():
+            if len(keys) >= 2:
+                slabs = {k.slab_index for k in keys}
+                pieces = {k.piece_index for k in keys}
+                if len(slabs) == 1 and len(pieces) >= 2:
+                    try:
+                        gmsh.model.mesh.clear([(2, face_tag)])
+                        logger.debug(
+                            "Cleared interior seam face %d (keys: %s)", face_tag, keys
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "clear failed on interior seam face %d: %s", face_tag, e
+                        )
 
     vol_tags: list[int] = []
     for slab_idx, slab in enumerate(plan.slabs):

@@ -38,8 +38,9 @@ def test_vertex_key_includes_corner_index():
 def test_lateral_key_fields():
     from meshwell.structured.spec import LateralKey
 
-    k = LateralKey(slab_index=1, outer_edge_index=2)
+    k = LateralKey(slab_index=1, piece_index=3, outer_edge_index=2)
     assert k.slab_index == 1
+    assert k.piece_index == 3
     assert k.outer_edge_index == 2
 
 

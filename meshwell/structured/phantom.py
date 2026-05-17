@@ -350,7 +350,9 @@ def extract_phantom_map(
             pmap.output_vertices[vert_key] = _modified_or_unchanged(builder, in_vert)
         for outer_edge_idx, in_lateral in shape.input_laterals_by_outer_edge.items():
             lateral_key = LateralKey(
-                slab_index=shape.slab_index, outer_edge_index=outer_edge_idx
+                slab_index=shape.slab_index,
+                piece_index=shape.piece_index,
+                outer_edge_index=outer_edge_idx,
             )
             pmap.output_laterals[lateral_key] = _modified_or_unchanged(
                 builder, in_lateral
@@ -358,7 +360,9 @@ def extract_phantom_map(
         slab_zlo, slab_zhi = _slab_z_range_for_shape(shape)
         for outer_edge_idx, in_lateral in shape.input_laterals_by_outer_edge.items():
             lateral_key = LateralKey(
-                slab_index=shape.slab_index, outer_edge_index=outer_edge_idx
+                slab_index=shape.slab_index,
+                piece_index=shape.piece_index,
+                outer_edge_index=outer_edge_idx,
             )
             pmap.lateral_has_midheight_cut[lateral_key] = _has_midheight_vertex(
                 builder, in_lateral, slab_zlo, slab_zhi

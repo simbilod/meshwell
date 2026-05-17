@@ -107,7 +107,7 @@ def test_extract_phantom_map_records_all_input_keys():
     assert set(pmap.output_edges.keys()) == set(shape.input_edges_by_key.keys())
     assert set(pmap.output_vertices.keys()) == set(shape.input_vertices_by_key.keys())
     expected_lateral_keys = {
-        LateralKey(slab_index=0, outer_edge_index=i)
+        LateralKey(slab_index=0, piece_index=0, outer_edge_index=i)
         for i in shape.input_laterals_by_outer_edge
     }
     assert set(pmap.output_laterals.keys()) == expected_lateral_keys

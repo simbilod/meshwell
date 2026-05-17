@@ -148,13 +148,15 @@ class VertexKey:
 
 @dataclass(frozen=True)
 class LateralKey:
-    """Identifies an input lateral face on a slab.
+    """Identifies an input lateral face on a slab piece.
 
-    ``outer_edge_index`` indexes into the slab's union-footprint outer
-    boundary.
+    ``piece_index`` disambiguates per-piece outer edges so that two pieces
+    of the same slab both numbered outer_edge_index=0 do not collide.
+    ``outer_edge_index`` indexes into that piece's outer boundary.
     """
 
     slab_index: int
+    piece_index: int
     outer_edge_index: int
 
 
