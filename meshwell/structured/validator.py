@@ -261,12 +261,83 @@ def _check_element_quality() -> tuple[list[Issue], list[Issue]]:
     return errors, warnings
 
 
+def _check_plan_mesh_consistency(
+    plan: "StructuredPlan",
+    mesh_plan: "StructuredMeshPlan",
+    vol_tags: list[int],
+) -> list[Issue]:
+    """Each plan piece has a vol_tag; each vol_tag holds n_layers x N elements."""
+    import gmsh
+
+    issues: list[Issue] = []
+
+    expected_pieces = sum(len(s.face_partition) for s in plan.slabs)
+    if len(vol_tags) != expected_pieces:
+        issues.append(
+            Issue(
+                severity="error",
+                check="plan_mesh_consistency",
+                message=(
+                    f"vol_tag count {len(vol_tags)} does not match expected "
+                    f"piece count {expected_pieces} from the plan."
+                ),
+                entities=(("vol_tags", tuple(vol_tags)),),
+            )
+        )
+        return issues
+
+    cursor = 0
+    for slab_idx, slab in enumerate(plan.slabs):
+        n_layers = int(mesh_plan.n_layers[slab_idx])
+        for piece_idx in range(len(slab.face_partition)):
+            vol = vol_tags[cursor]
+            cursor += 1
+
+            _elem_types, elem_tags_per_type, _ = gmsh.model.mesh.getElements(3, vol)
+            total = sum(len(t) for t in elem_tags_per_type)
+
+            if total == 0:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        check="plan_mesh_consistency",
+                        message=(
+                            f"Slab {slab_idx} piece {piece_idx} (vol_tag {vol}) "
+                            f"has zero elements; expected multiple of n_layers={n_layers}."
+                        ),
+                        entities=(
+                            ("slab_piece", (slab_idx, piece_idx)),
+                            ("vol_tag", vol),
+                        ),
+                    )
+                )
+                continue
+
+            if total % n_layers != 0:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        check="plan_mesh_consistency",
+                        message=(
+                            f"Slab {slab_idx} piece {piece_idx} (vol_tag {vol}) "
+                            f"has {total} elements, not a multiple of n_layers={n_layers}."
+                        ),
+                        entities=(
+                            ("slab_piece", (slab_idx, piece_idx)),
+                            ("vol_tag", vol),
+                        ),
+                    )
+                )
+
+    return issues
+
+
 def validate_structured_mesh(
-    plan: "StructuredPlan",  # noqa: ARG001
-    mesh_plan: "StructuredMeshPlan",  # noqa: ARG001
+    plan: "StructuredPlan",
+    mesh_plan: "StructuredMeshPlan",
     phantom_map: "PhantomMap",  # noqa: ARG001
     occ_entities: list[Any],  # noqa: ARG001
-    vol_tags: list[int],  # noqa: ARG001
+    vol_tags: list[int],
     *,
     tol: float | None = None,
     include_quality: bool = False,
@@ -313,5 +384,7 @@ def validate_structured_mesh(
         q_errors, q_warnings = _check_element_quality()
         errors.extend(q_errors)
         warnings.extend(q_warnings)
+
+    errors.extend(_check_plan_mesh_consistency(plan, mesh_plan, vol_tags))
 
     return ValidationResult(errors=tuple(errors), warnings=tuple(warnings))
