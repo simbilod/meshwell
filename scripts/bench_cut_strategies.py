@@ -29,7 +29,6 @@ from typing import Any
 
 from shapely.geometry import Polygon
 
-from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.BRep import BRep_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Splitter
 from OCP.BRepGProp import BRepGProp

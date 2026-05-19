@@ -224,43 +224,6 @@ def main() -> None:
         print(f"# n_bodies={n}")
         print("#" * 100)
 
-        # --- correctness/perf with both filter modes ---
-        ents_modern = build_dense_scene(n_bodies=n)
-        prepare_entities(ents_modern, perturbation=1e-5, resolve_snap=1e-3)
-        ents_legacy_no_build = build_dense_scene(n_bodies=n)
-        prepare_entities(ents_legacy_no_build, perturbation=1e-5, resolve_snap=1e-3)
-        ents_legacy_with_build = build_dense_scene(n_bodies=n)
-        prepare_entities(ents_legacy_with_build, perturbation=1e-5, resolve_snap=1e-3)
-        ents_legacy_filter_modern = build_dense_scene(n_bodies=n)
-        prepare_entities(
-            ents_legacy_filter_modern, perturbation=1e-5, resolve_snap=1e-3
-        )
-
-        results: list[StrategyResult] = []
-        results.append(
-            run_strategy_with_filter(
-                "baseline (modern filter)", cut_baseline, ents_modern, True
-            )
-        )
-        results.append(
-            run_strategy_with_filter(
-                "f_cut_compound (modern filter)",
-                cut_f_cut_compound,
-                build_dense_scene(n_bodies=n).__class__ and ents_modern
-                if False
-                else (
-                    lambda: (
-                        prepare_entities(
-                            _e := build_dense_scene(n_bodies=n),
-                            perturbation=1e-5,
-                            resolve_snap=1e-3,
-                        )
-                        or _e
-                    )
-                )(),
-                True,
-            )
-        )
         # cleaner: rebuild for each
         results = []
         for name, fn, mode in [
