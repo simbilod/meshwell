@@ -504,6 +504,7 @@ class CAD_OCC:
                 # from shapely + z-interval and skip OCC distance entirely.
                 # Returns None when no metadata or tapered envelope -- then
                 # fall through to per-(s, ts) _shapes_actually_overlap.
+                # See _polyprism_fast_overlap for the full three-way contract.
                 fast = self._polyprism_fast_overlap(labeled, prev)
                 if fast is False:
                     continue
@@ -527,6 +528,9 @@ class CAD_OCC:
                         self._shapes_actually_overlap(s, ts) for s in labeled.shapes
                     ):
                         continue
+                    # fast is True: pair overlap is exact, AABB per sub-shape
+                    # above is sufficient. fast is None: OCC check above
+                    # confirmed real overlap.
                     tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
