@@ -300,6 +300,66 @@ def _validate_no_mid_height_cuts(
             )
 
 
+def _validate_no_unstructured_lateral_neighbour(
+    slabs: list[Slab],
+    entities: list[Any],
+    tol: float = 1e-9,
+) -> None:
+    """Raise if any unstructured neighbour shares a lateral face with a slab.
+
+    A wedge or hex lateral face is topologically a quad; a tet-meshed
+    neighbour on the other side presents triangular faces. The two
+    don't match one-to-one, breaking volume-element conformality. We
+    refuse to plan such a configuration rather than silently producing
+    a non-conformal mesh.
+    """
+    from meshwell.structured.spec import StructuredLateralUnstructuredNeighbourError
+
+    structured_source_indices = {s.source_index for s in slabs}
+    for slab in slabs:
+        slab_boundary = slab.footprint.boundary
+        for i, ent in enumerate(entities):
+            if i == slab.source_index:
+                continue
+            if i in structured_source_indices and getattr(ent, "structured", False):
+                continue
+            # mesh_bool=False / keep=False entities are carving helpers —
+            # not present in the final mesh, so they can't introduce a
+            # tet/wedge interface. Check both attribute names since the
+            # planner sees user-facing entities (mesh_bool) while internal
+            # _MeshEntity uses keep.
+            if not getattr(ent, "mesh_bool", True):
+                continue
+            if not getattr(ent, "keep", True):
+                continue
+            rng = _entity_z_range(ent)
+            if rng is None:
+                continue
+            zmin, zmax = rng
+            z_overlap = min(slab.zhi, zmax) - max(slab.zlo, zmin)
+            if z_overlap <= tol:
+                continue
+            ent_fp = _entity_footprint(ent)
+            if ent_fp is None:
+                continue
+            shared = slab_boundary.intersection(ent_fp)
+            if shared.is_empty or shared.length <= tol:
+                continue
+            neighbour_name = getattr(ent, "physical_name", ("?",))
+            raise StructuredLateralUnstructuredNeighbourError(
+                f"Unstructured neighbour {neighbour_name} "
+                f"(z=[{zmin}, {zmax}]) shares a lateral face with "
+                f"structured slab {slab.physical_name} "
+                f"(z=[{slab.zlo}, {slab.zhi}]) along a curve of length "
+                f"{shared.length:.6g}. Wedge/hex lateral faces are "
+                f"topologically quads; tet neighbour faces are tris — "
+                f"the mesh would be non-conformal at this interface. "
+                f"Remediation: make the neighbour structured, or move "
+                f"its xy footprint off the slab's boundary, or separate "
+                f"them in z so the z-ranges don't overlap."
+            )
+
+
 @dataclass(frozen=True)
 class _IndexedArc:
     """An arc identified on the original footprint.
@@ -805,6 +865,7 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
     raw_slabs = expand_to_slabs(pairs)
     kept_slabs, overlaps = validate_and_resolve_overlap(raw_slabs, entities)
     _validate_no_mid_height_cuts(kept_slabs, entities)
+    _validate_no_unstructured_lateral_neighbour(kept_slabs, entities)
     compute_face_partition(kept_slabs, entities)
     z_set: set[float] = set()
     for s in kept_slabs:

@@ -82,10 +82,15 @@ def test_neighbour_at_slab_zlo_zhi_planes_does_not_raise():
 
 
 def test_neighbour_z_envelopes_slab_does_not_raise():
-    """Enveloping cladding (z-range extends beyond slab on both sides) is fine.
+    """Enveloping z-range (extends beyond slab on both sides) is fine.
 
     Neither zmin nor zmax falls inside the slab z-extent, so no
     mid-height cut from this neighbour.
+
+    Note: xy footprint is disjoint from the slab. An unstructured
+    neighbour that overlapped the slab in xy would trip the lateral-
+    neighbour conformality check (see test_lateral_neighbour.py),
+    which is a different concern from mid-height cuts.
     """
     from meshwell.polyprism import PolyPrism
     from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
@@ -98,7 +103,7 @@ def test_neighbour_z_envelopes_slab_does_not_raise():
         physical_name="slab",
     )
     cladding = PolyPrism(
-        polygons=_square(-2, -2, 8, 8),
+        polygons=_square(10, 10, 4, 4),  # xy disjoint from slab
         buffers={-1.0: 0.0, 2.0: 0.0},  # zmin=-1 and zmax=2 both outside (0,1)
         physical_name="cladding",
     )

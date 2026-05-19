@@ -43,6 +43,7 @@ def resolve_mesh_plan(plan: StructuredPlan, entities: list[Any]) -> StructuredMe
     """
     n_layers_list: list[int] = []
     recombine_list: list[bool] = []
+    recombine_lat_list: list[bool] = []
     for slab in plan.slabs:
         owner = entities[slab.source_index]
         spec = _spec_of(owner)
@@ -53,6 +54,7 @@ def resolve_mesh_plan(plan: StructuredPlan, entities: list[Any]) -> StructuredMe
             )
         n_layers_list.append(int(spec.n_layers[slab.z_interval_index]))
         recombine_list.append(bool(spec.recombine))
+        recombine_lat_list.append(bool(spec.recombine_lateral_faces))
 
     for op in plan.overlaps:
         winner = plan.slabs[op.winner_slab_index]
@@ -76,6 +78,7 @@ def resolve_mesh_plan(plan: StructuredPlan, entities: list[Any]) -> StructuredMe
         slabs=plan.slabs,
         n_layers=tuple(n_layers_list),
         recombine=tuple(recombine_list),
+        recombine_lateral_faces=tuple(recombine_lat_list),
     )
 
 
@@ -703,6 +706,7 @@ def apply_structured_transfinite_hints(
 
         slab_idx = lat_key.slab_index
         n_layers = mesh_plan.n_layers[slab_idx]
+        recombine_lat = mesh_plan.recombine_lateral_faces[slab_idx]
 
         for face_tag in face_tags:
             try:
@@ -737,6 +741,8 @@ def apply_structured_transfinite_hints(
                                 exc,
                             )
                 gmsh.model.mesh.setTransfiniteSurface(face_tag)
+                if recombine_lat:
+                    gmsh.model.mesh.setRecombine(2, face_tag)
             except Exception as exc:
                 logger.warning(
                     "setTransfiniteSurface failed on face %d (lateral %s): %s",

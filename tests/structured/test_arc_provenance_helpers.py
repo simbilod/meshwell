@@ -398,7 +398,6 @@ class TestIntegration:
     def test_disc_split_by_rectangle_top_cover(self, tmp_path):
         """Disc cut by a rectangular top cover: 2 pieces, each with arc+line."""
         import meshio
-
         from meshwell.orchestrator import generate_mesh
         from meshwell.polyprism import PolyPrism
         from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -431,13 +430,21 @@ class TestIntegration:
         ), f"Expected wedge cells; got {cell_types}"
         assert "disc" in m.field_data
 
-    def test_disc_embedded_no_split_provenance_not_used(self, tmp_path):
-        """Disc in cladding: single piece, heuristic path (no provenance computed)."""
-        import meshio
+    def test_disc_embedded_in_cladding_rejected(self, tmp_path):
+        """Disc-in-unstructured-cladding is rejected by the lateral conformality check.
+
+        The disc's arc lateral surface would be shared with the tet-meshed
+        cladding — quad/tri face-topology mismatch. ``build_plan`` raises
+        ``StructuredLateralUnstructuredNeighbourError`` before any meshing.
+        """
+        import pytest
 
         from meshwell.orchestrator import generate_mesh
         from meshwell.polyprism import PolyPrism
-        from meshwell.structured import StructuredExtrusionResolutionSpec
+        from meshwell.structured import (
+            StructuredExtrusionResolutionSpec,
+            StructuredLateralUnstructuredNeighbourError,
+        )
 
         disc = PolyPrism(
             polygons=_disc(n=32),
@@ -455,12 +462,13 @@ class TestIntegration:
             mesh_order=2.0,
         )
         out = tmp_path / "embedded.msh"
-        generate_mesh(
-            [disc, cladding], dim=3, output_mesh=out, default_characteristic_length=0.5
-        )
-        m = meshio.read(out)
-        assert "disc" in m.field_data
-        assert "cladding" in m.field_data
+        with pytest.raises(StructuredLateralUnstructuredNeighbourError):
+            generate_mesh(
+                [disc, cladding],
+                dim=3,
+                output_mesh=out,
+                default_characteristic_length=0.5,
+            )
 
     def test_provenance_field_set_only_for_split_slabs(self):
         """Split arc slabs get provenance; single-piece slabs get None."""
@@ -512,7 +520,6 @@ class TestIntegration:
     def test_disc_split_by_two_overlapping_covers(self, tmp_path):
         """Disc split by 2 overlapping top covers: 3+ pieces, each with some arc."""
         import meshio
-
         from meshwell.orchestrator import generate_mesh
         from meshwell.polyprism import PolyPrism
         from meshwell.structured import StructuredExtrusionResolutionSpec
@@ -555,7 +562,6 @@ class TestIntegration:
     def test_annulus_split_by_partial_cover(self, tmp_path):
         """Annulus with partial top cover: outer+inner arcs + cut line."""
         import meshio
-
         from meshwell.orchestrator import generate_mesh
         from meshwell.polyprism import PolyPrism
         from meshwell.structured import StructuredExtrusionResolutionSpec

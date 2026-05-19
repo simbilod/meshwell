@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import math
 
-import meshio
+import pytest
 from shapely.geometry import Polygon
+
+import meshio
 
 
 def _disc(cx=0.0, cy=0.0, r=1.0, n=32):
@@ -88,15 +90,20 @@ def test_annulus_structured_single_piece_meshes(tmp_path):
     assert any(ct in cell_types for ct in ("wedge", "wedge6"))
 
 
-def test_disc_embedded_in_cladding_meshes(tmp_path):
-    """Disc inside larger cladding: single-piece partition.
+def test_disc_embedded_in_cladding_rejected(tmp_path):
+    """Disc inside an unstructured cladding is now rejected at plan time.
 
-    Cladding has zmin and zmax both outside slab z-range, so it doesn't
-    split the slab top/bot.
+    The disc's circular lateral surface would be shared with the tet-meshed
+    cladding — quad/tri face-topology mismatch, non-conformal. The
+    structured pipeline raises ``StructuredLateralUnstructuredNeighbourError``
+    rather than silently producing a non-conformal mesh.
     """
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
-    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured import (
+        StructuredExtrusionResolutionSpec,
+        StructuredLateralUnstructuredNeighbourError,
+    )
 
     disc = PolyPrism(
         polygons=_disc(),
@@ -114,12 +121,10 @@ def test_disc_embedded_in_cladding_meshes(tmp_path):
         mesh_order=2.0,
     )
     out = tmp_path / "embedded.msh"
-    generate_mesh(
-        [disc, cladding], dim=3, output_mesh=out, default_characteristic_length=0.4
-    )
-    m = meshio.read(out)
-    assert "disc" in m.field_data
-    assert "cladding" in m.field_data
+    with pytest.raises(StructuredLateralUnstructuredNeighbourError):
+        generate_mesh(
+            [disc, cladding], dim=3, output_mesh=out, default_characteristic_length=0.4
+        )
 
 
 def test_split_disc_meshes_with_provenance(tmp_path):

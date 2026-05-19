@@ -29,6 +29,18 @@ class StructuredExtrusionResolutionSpec(BaseModel):
         recombine: When True, the slab volume is meshed with hex
             elements (gmsh element type 5) instead of wedges
             (element type 6).
+        recombine_lateral_faces: When True, the slab's lateral OCC faces
+            are recombined into quads (gmsh ``setRecombine`` after the
+            existing ``setTransfiniteSurface``). Wedge volume cells stay
+            as wedges (use ``recombine`` for hex volumes). Use this when
+            a downstream solver requires the wedge boundary-face mesh to
+            match the wedge element topology (i.e. quads on the three
+            lateral faces) instead of the gmsh-default triangulated
+            lateral surface mesh. Only safe when each lateral face is
+            either external or shared with another structured slab; if a
+            tet-meshed neighbour shares the lateral, the recombined
+            quads will not match the tet's triangular boundary faces and
+            the mesh will be non-conformal across that interface.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -37,6 +49,7 @@ class StructuredExtrusionResolutionSpec(BaseModel):
         ..., min_length=1, description="positive layer counts, one per z-interval"
     )
     recombine: bool = False
+    recombine_lateral_faces: bool = False
 
     @field_validator("n_layers")
     @classmethod
@@ -76,6 +89,32 @@ class StructuredBufferTaperError(ValueError):
     """Raised when ``PolyPrism(structured=True)`` is used with non-zero buffers.
 
     Structured mode requires uniform extrusion; tapered geometry is not supported.
+    """
+
+
+class StructuredLateralUnstructuredNeighbourError(ValueError):
+    """Raised when an unstructured neighbour shares a lateral face with a structured slab.
+
+    A structured slab is meshed with wedge cells (or hex when
+    ``recombine=True``). Wedge lateral faces are topologically quads; hex
+    lateral faces are quads. An unstructured (tet-meshed) neighbour
+    sharing a portion of the slab's lateral surface produces a quad/tri
+    face-topology mismatch at the shared interface — non-conformal at
+    the volume-element level. Even when gmsh writes the surface mesh as
+    triangles on both sides, the underlying wedge cell still has a quad
+    lateral face that no tet face matches one-to-one.
+
+    Detected when an entity is not structured, its z-range overlaps the
+    slab's [zlo, zhi] with positive extent, and its xy footprint shares
+    1D contact with the slab's footprint boundary.
+
+    Remediation (any of):
+      - Make the neighbour structured as well (matching footprint
+        adjacency and z-planes).
+      - Move the neighbour so its xy footprint is disjoint from the
+        slab's boundary, or fully separate in z.
+      - Future: pyramid-layer bridging between wedge and tet regions
+        (not implemented).
     """
 
 
@@ -330,9 +369,11 @@ class StructuredMeshPlan:
 
     Carries the mesh-stage parameters resolved from each slab's owning
     ``StructuredExtrusionResolutionSpec``. Parallel arrays: index i in
-    ``n_layers`` / ``recombine`` corresponds to ``plan.slabs[i]``.
+    ``n_layers`` / ``recombine`` / ``recombine_lateral_faces``
+    corresponds to ``plan.slabs[i]``.
     """
 
     slabs: tuple[Slab, ...]
     n_layers: tuple[int, ...]
     recombine: tuple[bool, ...]
+    recombine_lateral_faces: tuple[bool, ...]
