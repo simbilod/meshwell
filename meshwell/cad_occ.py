@@ -249,6 +249,41 @@ class CAD_OCC:
             return True
         return ext.Value() <= self.cut_fuzzy_value
 
+    def _polyprism_fast_overlap(
+        self,
+        a: OCCLabeledEntity,
+        b: OCCLabeledEntity,
+    ) -> bool | None:
+        """Cheap shapely + z-interval overlap test for polyprism-vs-polyprism.
+
+        Returns:
+            ``False``: the entities are definitively disjoint (skip cut).
+            ``True``: definitively overlapping. Only returned when BOTH
+                ``overlap_exact`` flags are True -- the shapely + interval
+                test is then mathematically equivalent to the OCC distance
+                check, so the OCC call can be skipped.
+            ``None``: cannot decide. Either side lacks metadata, or both
+                sides are present but at least one is a conservative
+                tapered envelope (``overlap_exact=False``) and the cheap
+                test passed; the caller must fall through to
+                :meth:`_shapes_actually_overlap` for confirmation.
+
+        Spec: ``docs/superpowers/specs/2026-05-19-cad-occ-polyprism-overlap-fastpath-design.md``.
+        """
+        if a.overlap_footprint is None or b.overlap_footprint is None:
+            return None
+        az, bz = a.overlap_zrange, b.overlap_zrange
+        # Signed gap between z-intervals (negative = overlap, positive = gap).
+        # Clamp to 0; we only care whether the gap exceeds the fuzzy.
+        z_gap = max(0.0, max(az[0], bz[0]) - min(az[1], bz[1]))
+        if z_gap > self.cut_fuzzy_value:
+            return False
+        if not a.overlap_footprint.dwithin(b.overlap_footprint, self.cut_fuzzy_value):
+            return False
+        if a.overlap_exact and b.overlap_exact:
+            return True
+        return None
+
     def _bboxes_overlap(
         self,
         b1: tuple[float, ...],
