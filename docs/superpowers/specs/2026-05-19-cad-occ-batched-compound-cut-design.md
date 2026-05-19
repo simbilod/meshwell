@@ -1,6 +1,6 @@
 # cad_occ: replace sequential per-tool cuts with a batched compound cut
 
-**Status:** approved (2026-05-19), pending implementation
+**Status:** implemented (2026-05-19, commit `d996894`)
 **Author:** simbilod (with Claude)
 **Related:** [`meshwell/cad_occ.py`](../../../meshwell/cad_occ.py)
 

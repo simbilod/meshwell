@@ -7,6 +7,9 @@ metal+helper bodies' case mentioned in cad_occ.py:467-472.
 
 Also reports the cost of the full pipeline (cut + fragment) so we can put the
 cut-strategy speedups in context.
+
+NOTE: ``tests/test_cad_occ_batched_compound_cut.py`` imports ``build_dense_scene``
+from this module. Do not delete or rename this file without updating the test.
 """
 from __future__ import annotations
 
