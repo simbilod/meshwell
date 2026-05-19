@@ -130,7 +130,7 @@ class CAD_OCC:
                 get snapped before the TopoDS graph is built.
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
             cut_fuzzy_value: Fuzzy passed to ``BRepAlgoAPI_Cut`` in the
-                sequential per-entity cut cascade. Defaults to
+                batched compound cut per entity. Defaults to
                 ``perturbation / 2`` (mirrors cad_gmsh's
                 ``tolerance_boolean = perturbation / 2``). Tight by design --
                 a loose cut fuzzy merges the buffered overlap into the lower
@@ -490,6 +490,7 @@ class CAD_OCC:
 
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
+                    result = s
                     try:
                         cut_op = BRepAlgoAPI_Cut(s, tool_compound)
                         cut_op.SetFuzzyValue(self.cut_fuzzy_value)
@@ -501,7 +502,6 @@ class CAD_OCC:
                             f"Warning: BRepAlgoAPI_Cut failed for entity "
                             f"{orig_idx}: {e}"
                         )
-                        result = s
                     if result is not None:
                         # Flatten compound wrapper so BOPAlgo_Builder.Modified()
                         # in the final fragment pass tracks sub-shape provenance.
