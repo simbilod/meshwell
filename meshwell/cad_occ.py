@@ -65,6 +65,13 @@ class OCCLabeledEntity:
 
     ``shapes`` holds the fragment pieces this entity owns after the
     all-fragment pass.
+
+    ``overlap_footprint`` / ``overlap_zrange`` / ``overlap_exact`` are
+    populated when the source entity exposes
+    :meth:`meshwell.geometry_entity.GeometryEntity.overlap_metadata`.
+    Consumed by :meth:`CAD_OCC._polyprism_fast_overlap` to bypass the
+    OCC distance check for polyprism-vs-polyprism pairs. See spec
+    ``docs/superpowers/specs/2026-05-19-cad-occ-polyprism-overlap-fastpath-design.md``.
     """
 
     shapes: list[TopoDS_Shape]
@@ -73,6 +80,9 @@ class OCCLabeledEntity:
     keep: bool
     dim: int
     mesh_order: float | None = None
+    overlap_footprint: Any | None = None
+    overlap_zrange: tuple[float, float] | None = None
+    overlap_exact: bool = False
 
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
@@ -285,6 +295,14 @@ class CAD_OCC:
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
+        # Opt-in metadata for the polyprism fast-overlap path. ``getattr``
+        # so entities predating the API still work.
+        md_getter = getattr(entity_obj, "overlap_metadata", None)
+        md = md_getter() if callable(md_getter) else None
+        if md is None:
+            footprint, zrange, exact = None, None, False
+        else:
+            footprint, zrange, exact = md
         return OCCLabeledEntity(
             shapes=[shape],
             physical_name=physical_name,
@@ -292,6 +310,9 @@ class CAD_OCC:
             keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
+            overlap_footprint=footprint,
+            overlap_zrange=zrange,
+            overlap_exact=exact,
         )
 
     def _fragment_all(
