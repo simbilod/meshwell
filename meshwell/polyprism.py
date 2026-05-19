@@ -163,7 +163,16 @@ class PolyPrism(GeometryEntity):
         buffer key. The test is only necessary -- ``is_exact=False`` tells
         the gate to fall through to OCC if the cheap test cannot prove the
         pair is disjoint.
+
+        Returns ``None`` when a non-trivial translation or rotation is
+        configured: the stored ``polygons`` / ``buffered_polygons`` /
+        ``zmin`` / ``zmax`` describe the pre-transformation geometry, but
+        ``instanciate_occ`` returns the transformed shape. Falling back to
+        ``None`` forces the cad_occ gate to use the OCC distance check on
+        the actual transformed shapes.
         """
+        if self.translation is not None or self.rotation_angle != 0.0:
+            return None
         if self.extrude:
             footprint = (
                 shapely.unary_union(self.polygons)

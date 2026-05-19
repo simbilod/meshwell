@@ -15,7 +15,7 @@ Add a polyprism-aware fast-path to the cut-cascade's overlap gate. When both ent
 
 The batched-compound cut change (commit `6d4e02b`) eliminated the per-tool BOP loop and made `_shapes_actually_overlap` part of the dominant inner-loop cost — it runs once per `(current entity sub-shape, candidate tool sub-shape)` pair and uses `BRepExtrema_DistShapeShape`, an O(face-count × face-count) OCC computation.
 
-Most production scenes (photonic stacks, EM device CAD) are built almost exclusively from `PolyPrism` entities. For those entities the geometry is fully described by a 2D shapely polygon plus two scalar z bounds — the OCC distance call is far more work than needed. A shapely intersection + scalar interval check is orders of magnitude cheaper, and for axis-aligned extrusions it is provably equivalent.
+Most production scenes are built almost exclusively from `PolyPrism` entities. For those entities the geometry is fully described by a 2D shapely polygon plus two scalar z bounds — the OCC distance call is far more work than needed. A shapely intersection + scalar interval check is orders of magnitude cheaper, and for axis-aligned extrusions it is provably equivalent.
 
 ## Design
 
@@ -73,8 +73,15 @@ def overlap_metadata(self):
         return (footprint, (self.zmin, self.zmax), True)
     # Tapered case: footprint = union of buffered cross-sections,
     # zrange = full extent. Conservative bound: necessary but not sufficient.
-    z_keys = [z for z, _ in self.buffered_polygons]
-    footprint = shapely.unary_union([p for _, p in self.buffered_polygons])
+    # NOTE: buffered_polygons is list[list[tuple[float, Polygon]]] -- one
+    # inner list per input polygon. The implementation flattens both levels.
+    all_polygons = []
+    z_keys = set()
+    for entry in self.buffered_polygons:
+        for z, polygon in entry:
+            all_polygons.append(polygon)
+            z_keys.add(z)
+    footprint = shapely.unary_union(all_polygons)
     return (footprint, (min(z_keys), max(z_keys)), False)
 ```
 

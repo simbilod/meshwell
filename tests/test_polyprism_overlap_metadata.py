@@ -72,3 +72,33 @@ def test_polysurface_metadata_defaults_to_none():
     """Non-polyprism entities opt out of the fast-path by returning None."""
     ps = PolySurface(polygons=_square(0, 0, 1, 1), physical_name="s")
     assert ps.overlap_metadata() is None
+
+
+def test_translated_polyprism_metadata_returns_none():
+    """Translated polyprism opts out of the fast-path.
+
+    Stored polygons / zrange describe pre-transformation geometry but
+    instanciate_occ returns the translated shape. Falling back to None
+    forces cad_occ to use OCC distance on the actual transformed shape.
+    """
+    ent = PolyPrism(
+        polygons=_square(0, 0, 1, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="t",
+        translation=(0.0, 0.0, 100.0),
+    )
+    assert ent.overlap_metadata() is None
+
+
+def test_rotated_polyprism_metadata_returns_none():
+    """Rotated polyprism opts out of the fast-path.
+
+    Stored xy footprint doesn't match the rotated shape's footprint.
+    """
+    ent = PolyPrism(
+        polygons=_square(0, 0, 1, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="r",
+        rotation_angle=0.5,  # ~28.6 degrees -- non-trivial
+    )
+    assert ent.overlap_metadata() is None
