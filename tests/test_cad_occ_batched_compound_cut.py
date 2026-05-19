@@ -82,7 +82,7 @@ def test_dense_substrate_cut_yields_one_solid_per_entity(n_bodies):
         assert (
             total_solids == expected_solids
         ), f"{name}: got {total_solids} SOLIDs, expected {expected_solids}"
-        # Allow 0.5% absolute tolerance on volume (perturbation buffer adds
+        # Allow 0.5% relative tolerance on volume (perturbation buffer adds
         # ~0.05% on the 20x20 face; small bodies cut some material too).
         assert math.isclose(total_volume, expected_vol, rel_tol=5e-3), (
             f"{name}: volume {total_volume:.4f} differs from expected "
