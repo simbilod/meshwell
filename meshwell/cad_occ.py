@@ -499,6 +499,14 @@ class CAD_OCC:
                 p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
                 if p_ord >= l_ord:
                     continue
+                # Per-entity-pair fast-path: when both sides are polyprisms
+                # with exact (footprint, z) metadata, decide overlap purely
+                # from shapely + z-interval and skip OCC distance entirely.
+                # Returns None when no metadata or tapered envelope -- then
+                # fall through to per-(s, ts) _shapes_actually_overlap.
+                fast = self._polyprism_fast_overlap(labeled, prev)
+                if fast is False:
+                    continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
                     if tb is None:
@@ -511,8 +519,11 @@ class CAD_OCC:
                     # on AABB-overlapping but volume-disjoint shapes can
                     # silently split the object into multiple SOLIDs and
                     # produce duplicate face TShapes that prevent
-                    # downstream meshing.
-                    if not any(
+                    # downstream meshing. The fast-path above already
+                    # handled the polyprism-vs-polyprism case; only fall
+                    # into _shapes_actually_overlap when the fast-path
+                    # couldn't decide (fast is None).
+                    if fast is None and not any(
                         self._shapes_actually_overlap(s, ts) for s in labeled.shapes
                     ):
                         continue
