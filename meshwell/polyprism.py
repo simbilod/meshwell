@@ -151,6 +151,37 @@ class PolyPrism(GeometryEntity):
                 stacklevel=2,
             )
 
+    def overlap_metadata(self):
+        """Cheap (footprint, z-interval, is_exact) tuple for cad_occ's fast-path.
+
+        ``extrude=True`` (axis-aligned, all buffers zero): the 3D shape is
+        mathematically the union footprint x [zmin, zmax] -- the test is
+        necessary AND sufficient, so ``is_exact=True``.
+
+        ``extrude=False`` (tapered): footprint is the union of every buffered
+        cross-section (a conservative xy envelope), zrange spans every
+        buffer key. The test is only necessary -- ``is_exact=False`` tells
+        the gate to fall through to OCC if the cheap test cannot prove the
+        pair is disjoint.
+        """
+        if self.extrude:
+            footprint = (
+                shapely.unary_union(self.polygons)
+                if isinstance(self.polygons, list)
+                else self.polygons
+            )
+            return (footprint, (self.zmin, self.zmax), True)
+        # buffered_polygons is a list of list[tuple[float, Polygon]]
+        # Flatten all polygons across all entries (input polygons/multipolygons)
+        all_polygons = []
+        z_keys = set()
+        for entry in self.buffered_polygons:
+            for z, polygon in entry:
+                all_polygons.append(polygon)
+                z_keys.add(z)
+        footprint = shapely.unary_union(all_polygons)
+        return (footprint, (min(z_keys), max(z_keys)), False)
+
     def _create_volumes_directly(self) -> list[int]:
         """Create GMSH volumes directly without using CAD class methods."""
         if self.extrude:

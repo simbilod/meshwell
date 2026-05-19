@@ -165,6 +165,22 @@ class GeometryEntity:
         # Track created lines to avoid duplicates and ensure proper edge sharing (strictly instance-local)
         self._lines: dict[tuple[int, int], int] = {}
 
+    def overlap_metadata(
+        self,
+    ) -> tuple[Any, tuple[float, float], bool] | None:
+        """Return ``(xy_envelope, (zmin, zmax), is_exact)`` or ``None``.
+
+        Subclasses that have a cheap, prismatic representation override this
+        to opt into the :mod:`meshwell.cad_occ` fast-overlap path. When
+        ``is_exact`` is ``True`` the entity is mathematically the Cartesian
+        product ``xy_envelope x [zmin, zmax]``; the cut-prep gate may then
+        skip the OCC distance check entirely.
+
+        Default returns ``None`` (opt-out -- the gate falls through to the
+        existing ``BRepExtrema_DistShapeShape`` check).
+        """
+        return None
+
     def _parse_coords(self, coords: tuple[float, float]) -> tuple[float, float, float]:
         """Convert 2D coordinates to 3D, choosing z=0 if not provided."""
         return (coords[0], coords[1], 0) if len(coords) == 2 else coords
