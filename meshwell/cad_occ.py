@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
 from OCP.BOPAlgo import BOPAlgo_Builder
+from OCP.BRep import BRep_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -48,6 +49,7 @@ from OCP.TopAbs import (
     TopAbs_VERTEX,
 )
 from OCP.TopExp import TopExp_Explorer
+from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
@@ -461,24 +463,39 @@ class CAD_OCC:
                     tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
-                # Sequential per-tool cuts -- matches
-                # ``gmsh.model.occ.cut(obj, [tools])`` which iterates
-                # internally. Bundling all tools into a single
-                # ``TopoDS_Compound`` and calling ``BRepAlgoAPI_Cut(s,
-                # compound)`` (or feeding a ``TopTools_ListOfShape``) was
-                # observed to produce empty results (zero SOLIDs) for
-                # large bodies like a substrate cut against ~10
-                # metal+helper bodies, even though the same body against
-                # each tool individually retains 1 SOLID per cut.
+                # Batched compound cut. Bundles all surviving tools into
+                # a single TopoDS_Compound and does one BRepAlgoAPI_Cut
+                # per substrate piece. Empirically ~3-4x faster than the
+                # per-tool sequential cascade on dense scenes (cut step
+                # dominates ~90% of the full CAD pipeline cost there).
+                #
+                # The _shapes_actually_overlap pre-filter above is
+                # LOAD-BEARING for the batched form: without it,
+                # AABB-overlapping but volume-disjoint tools would enter
+                # the compound and OCC would silently split the substrate
+                # into multiple SOLIDs with duplicate TShapes (see the
+                # detailed warning on _shapes_actually_overlap). An
+                # earlier implementation using AABB-only pre-filtering
+                # hit this bug and adopted sequential cuts as a workaround
+                # (see commits aa77f21 + 146b05a, Apr 2026). Reverting to
+                # the batched form is safe now that the geometric-overlap
+                # gate is in place; the regression test
+                # ``tests/test_cad_occ_batched_compound_cut.py`` locks
+                # this in.
+                tool_compound = TopoDS_Compound()
+                cb = BRep_Builder()
+                cb.MakeCompound(tool_compound)
+                for ts in tool_shapes:
+                    cb.Add(tool_compound, ts)
+
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     try:
-                        result = s
-                        for ts in tool_shapes:
-                            cut_op = BRepAlgoAPI_Cut(result, ts)
-                            cut_op.SetFuzzyValue(self.cut_fuzzy_value)
-                            cut_op.Build()
-                            result = cut_op.Shape()
+                        cut_op = BRepAlgoAPI_Cut(s, tool_compound)
+                        cut_op.SetFuzzyValue(self.cut_fuzzy_value)
+                        cut_op.SetRunParallel(self.n_threads > 1)
+                        cut_op.Build()
+                        result = cut_op.Shape()
                     except Exception as e:  # pragma: no cover -- defensive
                         print(
                             f"Warning: BRepAlgoAPI_Cut failed for entity "
