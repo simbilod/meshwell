@@ -190,6 +190,8 @@ class CAD_OCC:
         ensures that Modified() can locate the fragment pieces originating
         from each cut entity.
         """
+        if shape.IsNull():
+            return []
         if shape.ShapeType() != TopAbs_ShapeEnum.TopAbs_COMPOUND:
             return [shape]
 
