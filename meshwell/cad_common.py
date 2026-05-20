@@ -17,6 +17,7 @@ for backend-specific instantiation.
 """
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import shapely
@@ -32,8 +33,19 @@ def prepare_entities(
 ) -> None:
     """In-place pre-pass shared by cad_gmsh and cad_occ.
 
-    Mutates polygon entities and InterfaceTags. Must NOT be called
-    twice on the same list -- the second buffer would compound.
+    Mutates polygon entities and InterfaceTags. Safe to call multiple
+    times on the same list: a private ``_meshwell_prepared`` flag is
+    set on each polygon-bearing entity after the buffer step, and
+    subsequent calls skip already-prepared entities so the outward
+    buffer does not compound.
+
+    The InterfaceTag resolution pass runs on every call (it operates
+    per-tag against the current polygon set), so newly added tags or
+    tags whose referenced entities changed still resolve correctly.
+
+    If a caller legitimately mutates an entity's geometry between
+    calls, use :func:`clear_preparation` to drop the flag so the
+    buffer pass re-applies.
 
     Args:
         entities_list: List of entities to process.
@@ -47,6 +59,9 @@ def prepare_entities(
         return
 
     # ----- Pass A: buffer all polygon-bearing entities (shapely only) -----
+    # Compute the global bbox over ALL polygon-bearing entities (including
+    # already-prepared ones), so the bbox clip is consistent between calls
+    # that mix fresh and prepared entities.
     xmin, ymin, xmax, ymax = (
         float("inf"),
         float("inf"),
@@ -84,6 +99,9 @@ def prepare_entities(
     for ent in entities_list:
         if not hasattr(ent, "polygons"):
             continue
+        if getattr(ent, "_meshwell_prepared", False):
+            # Already buffered in a prior call; skip to keep idempotent.
+            continue
         if isinstance(ent.polygons, list):
             ent.polygons = [
                 shapely.set_precision(p, grid_size=relaxed_grid, mode="pointwise")
@@ -99,8 +117,12 @@ def prepare_entities(
                 .buffer(perturbation, join_style=2)
                 .intersection(global_bbox)
             )
+        ent._meshwell_prepared = True
 
     # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
+    # The resolve pass is NOT gated by `_meshwell_prepared` because
+    # InterfaceTag resolution is a per-tag operation; new tags or tags
+    # whose referenced polygons changed must resolve every call.
     polygon_ents: dict[str, list[Any]] = {}
     for ent in entities_list:
         if not hasattr(ent, "polygons"):
@@ -114,3 +136,16 @@ def prepare_entities(
     for ent in entities_list:
         if isinstance(ent, InterfaceTag):
             ent.resolve(polygon_ents, default_snap=snap)
+
+
+def clear_preparation(entities_list: list[Any]) -> None:
+    """Clear the ``_meshwell_prepared`` flag set by :func:`prepare_entities`.
+
+    Use when entity geometry has been mutated between ``cad_occ`` /
+    ``cad_gmsh`` calls and you need the outward buffer step to re-run.
+    """
+    for ent in entities_list:
+        if hasattr(ent, "_meshwell_prepared"):
+            # Slotted dataclasses may forbid del; best effort.
+            with contextlib.suppress(AttributeError):
+                del ent._meshwell_prepared
