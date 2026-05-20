@@ -215,6 +215,25 @@ class CAD_OCC:
                 return dim
         return -1
 
+    @staticmethod
+    def _clamp_shape_tolerance(shape: TopoDS_Shape, max_tol: float) -> None:
+        """Clamp every sub-shape's tolerance to ``max_tol`` in-place.
+
+        OCC BOPs grow vertex/edge tolerances during intersection. Across
+        a cut cascade this drift makes ``cut_fuzzy_value`` a lower bound
+        only; the *effective* fuzzy can become much larger silently.
+        Calling ``ShapeFix_ShapeTolerance.LimitTolerance`` after each cut
+        keeps the configured fuzzy honest.
+
+        ``LimitTolerance(shape, tmin, tmax, style)`` with tmin=0 and a
+        bounded tmax clamps any tolerance above ``tmax`` down to ``tmax``.
+        """
+        from OCP.ShapeFix import ShapeFix_ShapeTolerance
+        from OCP.TopAbs import TopAbs_SHAPE
+
+        fixer = ShapeFix_ShapeTolerance()
+        fixer.LimitTolerance(shape, 0.0, max_tol, TopAbs_SHAPE)
+
     def _unwrap_shape(self, shape: TopoDS_Shape, dim: int) -> list[TopoDS_Shape]:
         """Unwrap a compound into its constituent dim-level shapes.
 
@@ -606,6 +625,11 @@ class CAD_OCC:
                         cut_op.SetRunParallel(self.n_threads > 1)
                         cut_op.Build()
                         result = cut_op.Shape()
+                        # Clamp tolerance bloat so the next cut's fuzzy is
+                        # honest. Without this, accumulated vertex tolerances
+                        # make later cuts effectively looser than cut_fuzzy.
+                        if result is not None and not result.IsNull():
+                            self._clamp_shape_tolerance(result, self.cut_fuzzy_value)
                     except Exception as e:  # pragma: no cover -- defensive
                         print(
                             f"Warning: BRepAlgoAPI_Cut failed for entity "

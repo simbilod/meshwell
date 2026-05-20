@@ -165,3 +165,53 @@ def test_cad_occ_legacy_args_synthesize_valid_tolerances():
     # and cut_fuzzy must be <= fragment_fuzzy.
     assert cad.tolerances.fragment_fuzzy_value >= cad.tolerances.perturbation
     assert cad.tolerances.cut_fuzzy_value <= cad.tolerances.fragment_fuzzy_value
+
+
+def test_cut_cascade_clamps_tolerance_bloat():
+    """After _clamp_shape_tolerance, vertex tolerances are <= the clamp value.
+
+    Without ShapeFix_ShapeTolerance.LimitTolerance, OCC's BOP can grow
+    vertex tolerances above the configured fuzzy, making subsequent cuts
+    effectively looser than requested.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshwell.cad_occ import CAD_OCC
+    from meshwell.tolerances import Tolerances
+
+    tol = Tolerances.from_characteristic_length(1.0)
+    cad = CAD_OCC(tolerances=tol)
+
+    # Build a box; artificially grow one vertex tolerance, then clamp.
+    box = BRepPrimAPI_MakeBox(1.0, 1.0, 1.0).Solid()
+
+    # Use ShapeFix to set a deliberately large vertex tolerance.
+    from OCP.ShapeFix import ShapeFix_ShapeTolerance
+
+    inflater = ShapeFix_ShapeTolerance()
+    inflater.SetTolerance(box, 0.01)  # 10x the cut_fuzzy
+
+    # Verify it's inflated.
+    exp = TopExp_Explorer(box, TopAbs_VERTEX)
+    max_tol_before = 0.0
+    while exp.More():
+        v = TopoDS.Vertex_s(exp.Current())
+        max_tol_before = max(max_tol_before, BRep_Tool.Tolerance_s(v))
+        exp.Next()
+    assert max_tol_before >= 0.01 - 1e-12
+
+    # Clamp.
+    cad._clamp_shape_tolerance(box, tol.cut_fuzzy_value)
+
+    # Verify clamped.
+    exp = TopExp_Explorer(box, TopAbs_VERTEX)
+    max_tol_after = 0.0
+    while exp.More():
+        v = TopoDS.Vertex_s(exp.Current())
+        max_tol_after = max(max_tol_after, BRep_Tool.Tolerance_s(v))
+        exp.Next()
+    assert max_tol_after <= tol.cut_fuzzy_value * 1.001  # small slack
