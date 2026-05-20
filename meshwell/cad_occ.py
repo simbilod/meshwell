@@ -152,6 +152,82 @@ def cut_one_entity(
     return cut_op.Shape()
 
 
+def compute_cutters(
+    entities_list: list[Any],
+    processor: "CAD_OCC",
+) -> dict[int, list[int]]:
+    """For each entity, return the indices of lower-precedence overlapping entities.
+
+    Precedence is ``(mesh_order, insertion_index)`` ascending -- same as the
+    sequential cascade. Overlap is determined by the same gates the cascade
+    uses (``_polyprism_fast_overlap`` fast-path when both sides have exact
+    metadata, then AABB intersection, then ``_shapes_actually_overlap``
+    distance check).
+
+    Inputs are entity objects, NOT instantiated OCC shapes. To populate
+    overlap metadata and check AABBs we instantiate each entity once here
+    (single-threaded); the parallel pipeline re-instantiates inside each
+    worker because TopoDS_Shape hand-offs across the process boundary
+    require BREP round-tripping.
+
+    Returns ``{ent_idx: [cutter_idx, ...]}`` for every ``ent_idx`` in
+    ``range(len(entities_list))``. Cutter lists are sorted by
+    ``(mesh_order, idx)``.
+    """
+    n = len(entities_list)
+    if n == 0:
+        return {}
+
+    labeled: list[OCCLabeledEntity] = [
+        processor._instantiate_entity_occ(i, ent) for i, ent in enumerate(entities_list)
+    ]
+    bboxes = [
+        [b for s in le.shapes if (b := processor._shape_bbox(s)) is not None]
+        for le in labeled
+    ]
+    cutters: dict[int, list[int]] = {i: [] for i in range(n)}
+
+    def precedes(j: int, i: int) -> bool:
+        a = labeled[j].mesh_order if labeled[j].mesh_order is not None else float("inf")
+        b = labeled[i].mesh_order if labeled[i].mesh_order is not None else float("inf")
+        return (a, j) < (b, i)
+
+    for i in range(n):
+        for j in range(n):
+            if i == j or not precedes(j, i):
+                continue
+            if labeled[j].dim != labeled[i].dim:
+                continue
+            fast = processor._polyprism_fast_overlap(labeled[i], labeled[j])
+            if fast is False:
+                continue
+            if fast is None:
+                if not any(
+                    processor._bboxes_overlap(bi, bj)
+                    for bi in bboxes[i]
+                    for bj in bboxes[j]
+                ):
+                    continue
+                if not any(
+                    processor._shapes_actually_overlap(s, t)
+                    for s in labeled[i].shapes
+                    for t in labeled[j].shapes
+                ):
+                    continue
+            cutters[i].append(j)
+
+    for i in cutters:
+        cutters[i].sort(
+            key=lambda j: (
+                labeled[j].mesh_order
+                if labeled[j].mesh_order is not None
+                else float("inf"),
+                j,
+            )
+        )
+    return cutters
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
