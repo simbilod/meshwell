@@ -228,7 +228,8 @@ def _compute_physical_groups(
                 for sid2, b2 in b2_boxes.items():
                     if _aabbs_close(box1, b2, _AABB_INTERFACE_TOL):
                         common.add(sid1)
-                        entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
+                        if ent2.keep and not ent1.keep:
+                            entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
                         break
 
         if not common:
