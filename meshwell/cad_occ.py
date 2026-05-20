@@ -116,6 +116,42 @@ def _resolve_piece_ownership(
     return owners
 
 
+def cut_one_entity(
+    entity_shape: "TopoDS_Shape",
+    tool_shapes: list["TopoDS_Shape"],
+    cut_fuzzy_value: float,
+    n_threads: int = 1,
+) -> "TopoDS_Shape":
+    """Cut ``entity_shape`` by the prefused union of ``tool_shapes``.
+
+    Pure function: no instance state. Used by both the serial cascade and
+    the parallel per-entity dispatch. Mirrors the prefused-cut block
+    inside ``process_entities_cut_only`` but takes a plain shape list,
+    not the surrounding ``OCCLabeledEntity``.
+
+    When ``tool_shapes`` is empty, returns ``entity_shape`` unchanged.
+    """
+    if not tool_shapes:
+        return entity_shape
+    if len(tool_shapes) == 1:
+        fused_tools = tool_shapes[0]
+    else:
+        fuse_op = BOPAlgo_BOP()
+        fuse_op.SetOperation(BOPAlgo_Operation.BOPAlgo_FUSE)
+        fuse_op.AddArgument(tool_shapes[0])
+        for ts in tool_shapes[1:]:
+            fuse_op.AddTool(ts)
+        fuse_op.SetFuzzyValue(cut_fuzzy_value)
+        fuse_op.SetRunParallel(n_threads > 1)
+        fuse_op.Perform()
+        fused_tools = fuse_op.Shape()
+    cut_op = BRepAlgoAPI_Cut(entity_shape, fused_tools)
+    cut_op.SetFuzzyValue(cut_fuzzy_value)
+    cut_op.SetRunParallel(n_threads > 1)
+    cut_op.Build()
+    return cut_op.Shape()
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
@@ -597,28 +633,12 @@ class CAD_OCC:
                 # when two tools shared a face/edge (tangent). See
                 # docs/superpowers/specs/2026-05-19-cad-occ-prefused-cut-safety-hotfix-design.md
                 # and scripts/bench_cut_strategy_sweep.py.
-                if len(tool_shapes) == 1:
-                    fused_tools = tool_shapes[0]
-                else:
-                    fuse_op = BOPAlgo_BOP()
-                    fuse_op.SetOperation(BOPAlgo_Operation.BOPAlgo_FUSE)
-                    fuse_op.AddArgument(tool_shapes[0])
-                    for ts in tool_shapes[1:]:
-                        fuse_op.AddTool(ts)
-                    fuse_op.SetFuzzyValue(self.cut_fuzzy_value)
-                    fuse_op.SetRunParallel(self.n_threads > 1)
-                    fuse_op.Perform()
-                    fused_tools = fuse_op.Shape()
-
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
-                    result = s
                     try:
-                        cut_op = BRepAlgoAPI_Cut(s, fused_tools)
-                        cut_op.SetFuzzyValue(self.cut_fuzzy_value)
-                        cut_op.SetRunParallel(self.n_threads > 1)
-                        cut_op.Build()
-                        result = cut_op.Shape()
+                        result = cut_one_entity(
+                            s, tool_shapes, self.cut_fuzzy_value, self.n_threads
+                        )
                         if result is not None and not result.IsNull():
                             self._clamp_shape_tolerance(result, self.cut_fuzzy_value)
                     except Exception as e:  # pragma: no cover -- defensive
@@ -626,6 +646,7 @@ class CAD_OCC:
                             f"Warning: BRepAlgoAPI_Cut failed for entity "
                             f"{orig_idx}: {e}"
                         )
+                        result = s
                     if result is not None:
                         new_shapes.extend(self._unwrap_shape(result, labeled.dim))
                 labeled.shapes = new_shapes
