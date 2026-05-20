@@ -136,6 +136,12 @@ class CAD_OCC:
     ):
         """Initialize OCC CAD processor.
 
+        Prefer ``tolerances=Tolerances.from_characteristic_length(L)`` over
+        the legacy scalar args. The legacy args are accepted for back-compat
+        but synthesize a clamped ``Tolerances`` internally. See
+        :mod:`meshwell.tolerances` and
+        ``docs/superpowers/plans/2026-05-19-tolerance-chain-redesign.md``.
+
         Args:
             point_tolerance: Coordinate quantization applied inside entity
                 ``instanciate_occ`` hooks (e.g. PolySurface's

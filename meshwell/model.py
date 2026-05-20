@@ -33,6 +33,12 @@ class ModelManager:
     ):
         """Initialize Model with common settings.
 
+        Prefer ``tolerances=Tolerances.from_characteristic_length(L)`` over
+        the legacy scalar args. The legacy args are accepted for back-compat
+        but synthesize a clamped ``Tolerances`` internally. See
+        :mod:`meshwell.tolerances` and
+        ``docs/superpowers/plans/2026-05-19-tolerance-chain-redesign.md``.
+
         Args:
             n_threads: Number of threads for GMSH operations
             filename: Base filename for the model
