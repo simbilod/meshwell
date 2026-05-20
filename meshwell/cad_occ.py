@@ -1,31 +1,31 @@
-"""OCC CAD processor: fragment + mesh_order ownership via OCP.
+"""OCC CAD processor: parallel fan-out + same-name fuse + global fragment.
 
-Mirrors :mod:`meshwell.cad_gmsh` but drives OCCT directly through OCP
-instead of the gmsh API. The two backends are intentionally kept
-structurally identical so users can compare outputs head-to-head:
+Mirrors :mod:`meshwell.cad_gmsh` but drives OCCT directly through OCP.
+Default pipeline is parallel (``executor="auto"``); the legacy sequential
+cascade is reachable via ``executor="legacy"``.
 
-1. Shared shapely pre-pass (perturbation buffer + InterfaceTag resolve)
-   via :func:`meshwell.cad_common.prepare_entities`.
-2. Call each entity's ``instanciate_occ`` to produce ``TopoDS_Shape``
-   instances.
-3. Sequential per-entity ``BRepAlgoAPI_Cut`` cascade against
-   previously-instantiated same-dim tools (lowest ``mesh_order`` wins).
-4. ``BOPAlgo_Builder`` all-fragment over every cut shape; per-input
-   ``Modified()`` tells us which fragment piece descends from which
-   input, which we invert to build the per-piece candidate list.
-5. Resolve multi-claim pieces by lowest ``mesh_order`` (first-inserted
-   wins on tie).
+Default pipeline (``executor`` in ``auto``/``serial``/``thread``/``process``):
 
-``keep=False`` handling differs from the gmsh backend: here the helper's
-shapes are preserved through fragmentation and the XAO writer
-(:mod:`meshwell.occ_xao_writer`) skips their bodies at serialization
-time while still using the shared TShapes to name
-``neighbour___helper`` interfaces. The gmsh backend calls
-``occ.remove(..., recursive=True)`` at model level for the same
-user-visible result.
+1. Shapely pre-pass via :func:`meshwell.cad_common.prepare_entities`.
+2. Stage 0: :func:`compute_cutters` returns per-entity predecessor lists,
+   deterministic in ``(mesh_order, insertion_idx)``.
+3. Stage 1: per-entity prefused cut via :func:`cut_one_entity` dispatched
+   through the chosen executor. ``thread`` is preferred when the GIL-
+   release probe passes; ``process`` is the fallback. Each entity is cut
+   against the **originals** of its predecessors -- set algebra confirms
+   this is equivalent to the legacy cascade.
+4. Stage 2: :func:`_same_name_fuse` collapses entities sharing
+   ``(physical_name, keep, dim)`` so the mesh does not carry an internal
+   face between two bodies the user already declared to be the same
+   material.
+5. Stage 3: :func:`CAD_OCC._fragment_all` welds coincident TShapes and
+   resolves piece ownership by ``(mesh_order, ent_idx)``.
 
-Ownership semantics match :func:`meshwell.cad_gmsh._resolve_piece_ownership`
-exactly; tests that pin one pin the other.
+Legacy pipeline (``executor="legacy"``):
+
+The pre-refactor cascade -- each entity sequentially cut against every
+previously-instantiated tool. Kept as an escape hatch; default callers
+should use the parallel path.
 """
 from __future__ import annotations
 
