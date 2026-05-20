@@ -647,6 +647,18 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
             )
 
 
+def _interior_buffer_for_radius(slab: "Slab", r: float) -> float:
+    """Compute the arc-vs-neighbour interior buffer for a given radius.
+
+    Replaces the heuristic ``max(arc_tol, 0.05 * r)`` with the cleaner
+    ``arc_chord_height_fraction * r``. This makes the buffer
+    proportional to the local arc radius rather than dominated by a
+    5%-of-radius wildcard or an absolute floor that may not scale with
+    the geometry.
+    """
+    return slab.arc_chord_height_fraction * r
+
+
 def _validate_arc_neighbour_alignment(
     slab: Slab,
     arc_index: _ArcIndex,
@@ -720,7 +732,7 @@ def _validate_arc_neighbour_alignment(
                     # Polygon-arc deviation upper bound: r * (1 - cos(dθ/2)).
                     # For a polygon with min_arc_points covering an arc, dθ
                     # ≤ 2π / min_arc_points; conservatively buffer by 1% of r.
-                    interior_buffer = max(near_arc_tol, 0.05 * r)
+                    interior_buffer = _interior_buffer_for_radius(slab, r)
                     inside_region = slab.footprint.buffer(interior_buffer)
                     for t in ((-b - sd) / (2 * a), (-b + sd) / (2 * a)):
                         if t < -near_arc_tol or t > 1 + near_arc_tol:

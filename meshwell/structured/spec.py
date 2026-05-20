@@ -210,7 +210,8 @@ class Slab:
     mesh_order: float
     identify_arcs: bool = False
     min_arc_points: int = 4
-    arc_tolerance: float = 1e-3
+    arc_tolerance: float = 1e-3  # legacy absolute backstop
+    arc_chord_height_fraction: float = 0.01  # 1% of arc radius
     fragment_fuzzy_value: float | None = None
     # Populated by compute_face_partition (default: one piece = the whole footprint).
     face_partition: list["Polygon"] = field(default_factory=list)
