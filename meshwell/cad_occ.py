@@ -353,6 +353,20 @@ def _probe_gil_release(speedup_threshold: float = 1.5) -> bool:
     return _GIL_PROBE_CACHE
 
 
+def _process_worker(entity, cutters_entities, cut_fuzzy_value) -> bytes:
+    """Worker for the process-pool executor.
+
+    Instantiates the entity and its cutters inside the worker process,
+    runs ``cut_one_entity``, and returns BREP bytes.
+    """
+    from meshwell._brep_io import brep_to_bytes
+
+    shape = entity.instanciate_occ()
+    tools = [c.instanciate_occ() for c in cutters_entities]
+    result = cut_one_entity(shape, tools, cut_fuzzy_value, n_threads=1)
+    return brep_to_bytes(result)
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
@@ -901,6 +915,104 @@ class CAD_OCC:
             cad_occ_callback=cad_occ_callback,
         )
 
+    def process_entities_parallel(
+        self,
+        entities_list: list[Any],
+        progress_bars: bool = False,
+        extra_occ_shapes: list[Any] | None = None,
+        cad_occ_callback: Callable[[Any], None] | None = None,
+        executor: str = "auto",
+    ) -> list[OCCLabeledEntity]:
+        """Fan-out per-entity cut + same-name fuse + global fragment.
+
+        ``executor`` in {``auto``, ``serial``, ``thread``, ``process``}.
+        ``auto`` selects ``serial`` for N<4, else ``thread`` if the GIL-
+        release probe passes, else ``process``.
+        """
+        if not entities_list:
+            return []
+
+        prepare_entities(
+            entities_list,
+            perturbation=self.perturbation,
+            resolve_snap=max(self.perturbation, self.point_tolerance),
+        )
+
+        # Stage 0: per-entity cutter discovery.
+        cutters = compute_cutters(entities_list, self)
+        n = len(entities_list)
+
+        # Choose executor.
+        chosen = executor
+        if chosen == "auto":
+            if n < 4:
+                chosen = "serial"
+            else:
+                chosen = "thread" if _probe_gil_release() else "process"
+
+        if chosen not in ("serial", "thread", "process"):
+            raise ValueError(f"unknown executor: {executor!r}")
+
+        # Stage 1: per-entity cut.
+        labeled = [
+            self._instantiate_entity_occ(i, ent) for i, ent in enumerate(entities_list)
+        ]
+        results: dict[int, Any] = {}
+
+        def _serial_work(i: int):
+            tools = [labeled[j].shapes[0] for j in cutters[i]]
+            return cut_one_entity(
+                labeled[i].shapes[0], tools, self.cut_fuzzy_value, n_threads=1
+            )
+
+        if chosen == "serial":
+            for i in range(n):
+                results[i] = _serial_work(i)
+        elif chosen == "thread":
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=self.n_threads) as pool:
+                futures = {pool.submit(_serial_work, i): i for i in range(n)}
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    results[i] = fut.result()
+        elif chosen == "process":
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+
+            from meshwell._brep_io import brep_from_bytes
+
+            with ProcessPoolExecutor(max_workers=self.n_threads) as pool:
+                futures = {
+                    pool.submit(
+                        _process_worker,
+                        entities_list[i],
+                        [entities_list[j] for j in cutters[i]],
+                        self.cut_fuzzy_value,
+                    ): i
+                    for i in range(n)
+                }
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    results[i] = brep_from_bytes(fut.result())
+
+        # Apply tolerance clamp + unwrap.
+        for i in range(n):
+            shape = results[i]
+            if shape is not None and not shape.IsNull():
+                self._clamp_shape_tolerance(shape, self.cut_fuzzy_value)
+            labeled[i].shapes = self._unwrap_shape(shape, labeled[i].dim)
+
+        # Stage 2: same-name fuse.
+        labeled = _same_name_fuse(labeled, self.tolerances, n_threads=self.n_threads)
+
+        # Stage 3: global fragment.
+        return self._fragment_all(
+            labeled,
+            progress_bars=progress_bars,
+            extra_occ_shapes=extra_occ_shapes,
+            cad_occ_callback=cad_occ_callback,
+        )
+
 
 def cad_occ(
     entities_list: list[Any],
@@ -912,6 +1024,7 @@ def cad_occ(
     perturbation: float | None = None,
     extra_occ_shapes: list[Any] | None = None,
     cad_occ_callback: Callable[[Any], None] | None = None,
+    executor: str = "auto",
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 
@@ -936,6 +1049,10 @@ def cad_occ(
             and before history extraction.  Lets callers walk
             ``Modified()`` / ``Generated()`` for phantom-shape tracking.
             When *None* (default) no callback is made.
+        executor: One of "auto" (default), "serial", "thread", "process",
+            or "legacy". The first four select the parallel pipeline's
+            executor mode. "legacy" runs the pre-parallel sequential
+            cascade.
     """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
@@ -944,9 +1061,17 @@ def cad_occ(
         fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
-    return processor.process_entities(
+    if executor == "legacy":
+        return processor.process_entities(
+            entities_list,
+            progress_bars=progress_bars,
+            extra_occ_shapes=extra_occ_shapes,
+            cad_occ_callback=cad_occ_callback,
+        )
+    return processor.process_entities_parallel(
         entities_list,
         progress_bars=progress_bars,
         extra_occ_shapes=extra_occ_shapes,
         cad_occ_callback=cad_occ_callback,
+        executor=executor,
     )
