@@ -92,3 +92,25 @@ def test_fused_entity_takes_min_mesh_order():
     assert len(out) == 1
     assert out[0].mesh_order == 1
     assert out[0].index == 0  # min input index
+
+
+def test_structured_members_are_not_fused():
+    # Two same-named entities; if either is structured, the group must pass
+    # through with both records preserved. Structured entities carry per-
+    # entity mesh metadata that merging would erase.
+    a = _make_labeled(_square_prism(0, 0, 1, 1, "ox", 1), 0)
+    b = _make_labeled(_square_prism(5, 5, 1, 1, "ox", 1), 1)
+    a.structured = True  # mark one member structured
+    out = _same_name_fuse([a, b], Tolerances.from_characteristic_length(1.0))
+    assert len(out) == 2
+    assert all(o.physical_name == ("ox",) for o in out)
+
+
+def test_two_unstructured_same_named_still_fuse():
+    # Sanity: regression check that the default unstructured path still fuses.
+    a = _make_labeled(_square_prism(0, 0, 1, 1, "ox", 1), 0)
+    b = _make_labeled(_square_prism(5, 5, 1, 1, "ox", 1), 1)
+    assert a.structured is False
+    assert b.structured is False
+    out = _same_name_fuse([a, b], Tolerances.from_characteristic_length(1.0))
+    assert len(out) == 1

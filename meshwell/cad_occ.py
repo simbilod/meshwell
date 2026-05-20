@@ -83,6 +83,7 @@ class OCCLabeledEntity:
     overlap_footprint: Any | None = None
     overlap_zrange: tuple[float, float] | None = None
     overlap_exact: bool = False
+    structured: bool = False
 
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
@@ -271,6 +272,13 @@ def _same_name_fuse(
         members = [entities[i] for i in idxs]
         if len(members) == 1:
             fused.append(members[0])
+            continue
+        # Skip the fuse if any member is structured: structured entities
+        # carry per-entity mesh-grid metadata that the structured pipeline
+        # consumes downstream; merging them into one logical entity would
+        # erase that mapping.
+        if any(m.structured for m in members):
+            fused.extend(members)
             continue
         all_shapes = [s for m in members for s in m.shapes]
         if len(all_shapes) <= 1:
@@ -691,6 +699,7 @@ class CAD_OCC:
             overlap_footprint=footprint,
             overlap_zrange=zrange,
             overlap_exact=exact,
+            structured=bool(getattr(entity_obj, "structured", False)),
         )
 
     def _fragment_all(
