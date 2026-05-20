@@ -3,8 +3,14 @@ from __future__ import annotations
 
 from os import cpu_count
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import gmsh
+
+if TYPE_CHECKING:
+    from meshwell.tolerances import Tolerances
+
+_UNSET = object()  # sentinel for detecting explicit point_tolerance kwarg
 
 
 class ModelManager:
@@ -20,9 +26,10 @@ class ModelManager:
         self,
         n_threads: int = cpu_count(),
         filename: str = "temp",
-        point_tolerance: float | None = 1e-3,
+        point_tolerance: float | None = _UNSET,
         geometry_tolerance: float | None = None,
         tolerance_boolean: float | None = None,
+        tolerances: Tolerances | None = None,
     ):
         """Initialize Model with common settings.
 
@@ -42,21 +49,50 @@ class ModelManager:
                 Defaults to ``point_tolerance``. Decoupled so callers can
                 set a sub-perturbation value for clean InterfaceTag / prism
                 face resolution without raising the vertex-snap threshold.
+            tolerances: Structured ``Tolerances`` object. When provided,
+                all legacy scalar tolerance args must be at their defaults.
 
         """
+        from meshwell.tolerances import Tolerances
+
+        # Resolve _UNSET sentinel: treat as default 1e-3 if not explicitly passed
+        _pt_explicit = point_tolerance is not _UNSET
+        if point_tolerance is _UNSET:
+            point_tolerance = 1e-3
+
+        if tolerances is not None:
+            if geometry_tolerance is not None or tolerance_boolean is not None:
+                raise ValueError(
+                    "cannot pass both `tolerances` and legacy scalar args "
+                    "(geometry_tolerance, tolerance_boolean); use one or the other."
+                )
+            if _pt_explicit:
+                raise ValueError(
+                    "cannot pass both `tolerances` and legacy `point_tolerance`."
+                )
+        elif point_tolerance is not None:
+            pt = point_tolerance
+            pert = min(1e-5, pt / 2)
+            cut_f = min(5e-6, pt / 4)
+            frag_f = min(pt, 1e-5)
+            geom = geometry_tolerance if geometry_tolerance is not None else pt
+            tb = tolerance_boolean if tolerance_boolean is not None else pt
+            tolerances = Tolerances(
+                point_tolerance=pt,
+                perturbation=pert,
+                cut_fuzzy_value=cut_f,
+                fragment_fuzzy_value=frag_f,
+                geometry_tolerance=geom,
+                tolerance_boolean=tb,
+                arc_chord_height_fraction=0.01,
+            )
+
         self.n_threads = n_threads
         self.filename = Path(filename)
-        self.point_tolerance = point_tolerance
-        if geometry_tolerance is not None:
-            self.geometry_tolerance = geometry_tolerance
-        elif point_tolerance is None:
-            self.geometry_tolerance = None
-        else:
-            self.geometry_tolerance = point_tolerance
-        if tolerance_boolean is not None:
-            self.tolerance_boolean = tolerance_boolean
-        else:
-            self.tolerance_boolean = point_tolerance
+        self.tolerances = tolerances
+        self.point_tolerance = tolerances.point_tolerance if tolerances else None
+        self.geometry_tolerance = tolerances.geometry_tolerance if tolerances else None
+        self.tolerance_boolean = tolerances.tolerance_boolean if tolerances else None
 
         # GMSH objects (initialized in _initialize)
         self.model = None

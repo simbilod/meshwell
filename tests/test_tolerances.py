@@ -106,3 +106,34 @@ def test_from_characteristic_length_rejects_sub_confusion():
     """L too small to keep cut_fuzzy above OCCT_CONFUSION must raise."""
     with pytest.raises(ToleranceHierarchyError):
         Tolerances.from_characteristic_length(1e-3)  # cut_fuzzy=1e-9 < 1e-7
+
+
+def test_model_manager_accepts_tolerances():
+    """ModelManager(tolerances=...) overrides legacy scalar args."""
+    from meshwell.model import ModelManager
+
+    tol = Tolerances.from_characteristic_length(1.0)
+    mm = ModelManager(filename="t", tolerances=tol)
+    assert mm.point_tolerance == tol.point_tolerance
+    assert mm.geometry_tolerance == tol.geometry_tolerance
+    assert mm.tolerance_boolean == tol.tolerance_boolean
+    assert mm.tolerances is tol
+
+
+def test_model_manager_legacy_args_still_work():
+    """Existing point_tolerance=... continues to behave as before."""
+    from meshwell.model import ModelManager
+
+    mm = ModelManager(filename="t", point_tolerance=1e-3)
+    assert mm.point_tolerance == 1e-3
+    assert mm.tolerance_boolean == 1e-3
+    # Synthesized Tolerances must validate.
+    assert mm.tolerances.point_tolerance == 1e-3
+
+
+def test_model_manager_legacy_and_tolerances_conflict_raises():
+    from meshwell.model import ModelManager
+
+    tol = Tolerances.from_characteristic_length(1.0)
+    with pytest.raises(ValueError, match="cannot pass both"):
+        ModelManager(filename="t", tolerances=tol, point_tolerance=1e-3)
