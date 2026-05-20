@@ -1,0 +1,230 @@
+Running cut-strategy sweep: 6 N values x 3 substrates x 2 tools x 2 overlap modes x 3 strategies x 3 reps
+
+  [  1/72] substrate=square  tool=square overlap=disjoint N= 1
+  [  2/72] substrate=square  tool=square overlap=disjoint N= 2
+  [  3/72] substrate=square  tool=square overlap=disjoint N= 3
+  [  4/72] substrate=square  tool=square overlap=disjoint N= 5
+  [  5/72] substrate=square  tool=square overlap=disjoint N=10
+  [  6/72] substrate=square  tool=square overlap=disjoint N=20
+  [  7/72] substrate=square  tool=square overlap=tangent  N= 1
+  [  8/72] substrate=square  tool=square overlap=tangent  N= 2
+  [  9/72] substrate=square  tool=square overlap=tangent  N= 3
+  [ 10/72] substrate=square  tool=square overlap=tangent  N= 5
+  [ 11/72] substrate=square  tool=square overlap=tangent  N=10
+  [ 12/72] substrate=square  tool=square overlap=tangent  N=20
+  [ 13/72] substrate=square  tool=disc   overlap=disjoint N= 1
+  [ 14/72] substrate=square  tool=disc   overlap=disjoint N= 2
+  [ 15/72] substrate=square  tool=disc   overlap=disjoint N= 3
+  [ 16/72] substrate=square  tool=disc   overlap=disjoint N= 5
+  [ 17/72] substrate=square  tool=disc   overlap=disjoint N=10
+  [ 18/72] substrate=square  tool=disc   overlap=disjoint N=20
+  [ 19/72] substrate=square  tool=disc   overlap=tangent  N= 1
+  [ 20/72] substrate=square  tool=disc   overlap=tangent  N= 2
+  [ 21/72] substrate=square  tool=disc   overlap=tangent  N= 3
+  [ 22/72] substrate=square  tool=disc   overlap=tangent  N= 5
+  [ 23/72] substrate=square  tool=disc   overlap=tangent  N=10
+  [ 24/72] substrate=square  tool=disc   overlap=tangent  N=20
+  [ 25/72] substrate=disc    tool=square overlap=disjoint N= 1
+  [ 26/72] substrate=disc    tool=square overlap=disjoint N= 2
+  [ 27/72] substrate=disc    tool=square overlap=disjoint N= 3
+  [ 28/72] substrate=disc    tool=square overlap=disjoint N= 5
+  [ 29/72] substrate=disc    tool=square overlap=disjoint N=10
+  [ 30/72] substrate=disc    tool=square overlap=disjoint N=20
+  [ 31/72] substrate=disc    tool=square overlap=tangent  N= 1
+  [ 32/72] substrate=disc    tool=square overlap=tangent  N= 2
+  [ 33/72] substrate=disc    tool=square overlap=tangent  N= 3
+  [ 34/72] substrate=disc    tool=square overlap=tangent  N= 5
+  [ 35/72] substrate=disc    tool=square overlap=tangent  N=10
+  [ 36/72] substrate=disc    tool=square overlap=tangent  N=20
+  [ 37/72] substrate=disc    tool=disc   overlap=disjoint N= 1
+  [ 38/72] substrate=disc    tool=disc   overlap=disjoint N= 2
+  [ 39/72] substrate=disc    tool=disc   overlap=disjoint N= 3
+  [ 40/72] substrate=disc    tool=disc   overlap=disjoint N= 5
+  [ 41/72] substrate=disc    tool=disc   overlap=disjoint N=10
+  [ 42/72] substrate=disc    tool=disc   overlap=disjoint N=20
+  [ 43/72] substrate=disc    tool=disc   overlap=tangent  N= 1
+  [ 44/72] substrate=disc    tool=disc   overlap=tangent  N= 2
+  [ 45/72] substrate=disc    tool=disc   overlap=tangent  N= 3
+  [ 46/72] substrate=disc    tool=disc   overlap=tangent  N= 5
+  [ 47/72] substrate=disc    tool=disc   overlap=tangent  N=10
+  [ 48/72] substrate=disc    tool=disc   overlap=tangent  N=20
+  [ 49/72] substrate=annulus tool=square overlap=disjoint N= 1
+  [ 50/72] substrate=annulus tool=square overlap=disjoint N= 2
+  [ 51/72] substrate=annulus tool=square overlap=disjoint N= 3
+  [ 52/72] substrate=annulus tool=square overlap=disjoint N= 5
+  [ 53/72] substrate=annulus tool=square overlap=disjoint N=10
+  [ 54/72] substrate=annulus tool=square overlap=disjoint N=20
+  [ 55/72] substrate=annulus tool=square overlap=tangent  N= 1
+  [ 56/72] substrate=annulus tool=square overlap=tangent  N= 2
+  [ 57/72] substrate=annulus tool=square overlap=tangent  N= 3
+  [ 58/72] substrate=annulus tool=square overlap=tangent  N= 5
+  [ 59/72] substrate=annulus tool=square overlap=tangent  N=10
+  [ 60/72] substrate=annulus tool=square overlap=tangent  N=20
+  [ 61/72] substrate=annulus tool=disc   overlap=disjoint N= 1
+  [ 62/72] substrate=annulus tool=disc   overlap=disjoint N= 2
+  [ 63/72] substrate=annulus tool=disc   overlap=disjoint N= 3
+  [ 64/72] substrate=annulus tool=disc   overlap=disjoint N= 5
+  [ 65/72] substrate=annulus tool=disc   overlap=disjoint N=10
+  [ 66/72] substrate=annulus tool=disc   overlap=disjoint N=20
+  [ 67/72] substrate=annulus tool=disc   overlap=tangent  N= 1
+  [ 68/72] substrate=annulus tool=disc   overlap=tangent  N= 2
+  [ 69/72] substrate=annulus tool=disc   overlap=tangent  N= 3
+  [ 70/72] substrate=annulus tool=disc   overlap=tangent  N= 5
+  [ 71/72] substrate=annulus tool=disc   overlap=tangent  N=10
+  [ 72/72] substrate=annulus tool=disc   overlap=tangent  N=20
+
+Sweep complete in 311.3s.
+
+=== substrate=square tool=square overlap=disjoint ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      10.11ms*                      10.90ms                       10.29ms
+  2                      23.09ms                       17.04ms*                      20.89ms
+  3                      34.78ms                       23.14ms*                      25.87ms
+  5                      62.97ms                       38.97ms*                      41.59ms
+ 10                     162.75ms                       71.49ms*                      84.16ms
+ 20                     456.20ms                      138.49ms*                     151.00ms
+
+=== substrate=square tool=square overlap=tangent ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      10.31ms                       10.87ms                       10.01ms*
+  2                      25.04ms*     22.58ms  WRONG(s=2,v=400.0)                      28.00ms
+  3                      39.46ms                       27.40ms*                      34.71ms
+  5                      76.45ms                       51.58ms*                      53.91ms
+ 10                     177.17ms     218.59ms  WRONG(s=1,v=0.0)                     113.76ms*
+ 20                     469.74ms     742.51ms  WRONG(s=1,v=0.0)                     231.62ms*
+
+=== substrate=square tool=disc overlap=disjoint ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      52.56ms*                      54.65ms                       54.31ms
+  2                     118.94ms                      105.81ms*                     122.44ms
+  3                     195.62ms                      149.64ms*                     163.05ms
+  5                     382.79ms                      261.02ms*                     281.61ms
+ 10                    1084.48ms                      533.83ms*                     560.16ms
+ 20                    3616.88ms                     1147.05ms*                    1207.42ms
+
+=== substrate=square tool=disc overlap=tangent ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      54.79ms                       53.30ms*                      54.30ms
+  2                     122.59ms*    170.71ms  WRONG(s=2,v=400.0)                     142.14ms
+  3                     199.33ms     258.05ms  WRONG(s=3,v=400.0)                     186.90ms*
+  5                     411.01ms    1039.91ms  WRONG(s=4,v=400.0)                     316.02ms*
+ 10                    1108.01ms    4265.44ms  WRONG(s=6,v=400.0)                     666.58ms*
+ 20                    3385.90ms   13124.93ms  WRONG(s=11,v=400.0)                    1442.48ms*
+
+=== substrate=disc tool=square overlap=disjoint ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      20.92ms*                      20.97ms                       20.99ms
+  2                      43.30ms                       29.20ms*                      32.74ms
+  3                      70.12ms                       35.20ms*                      37.52ms
+  5                     122.11ms                       49.58ms*                      53.09ms
+ 10                     279.43ms                       83.99ms*                      94.36ms
+ 20                     683.79ms                      157.64ms*                     173.70ms
+
+=== substrate=disc tool=square overlap=tangent ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      21.02ms*                      21.39ms                       21.84ms
+  2                      47.79ms      67.23ms  WRONG(s=2,v=312.2)                      39.86ms*
+  3                      75.88ms                       74.49ms                       45.86ms*
+  5                     131.41ms                      110.81ms                       65.40ms*
+ 10                     307.81ms     344.52ms  WRONG(s=1,v=0.0)                     126.24ms*
+ 20                     705.08ms     987.52ms  WRONG(s=1,v=0.0)                     234.04ms*
+
+=== substrate=disc tool=disc overlap=disjoint ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      64.09ms                       65.47ms                       63.97ms*
+  2                     141.57ms                      119.51ms*                     145.02ms
+  3                     241.46ms                      171.99ms*                     184.67ms
+  5                     453.90ms                      279.40ms*                     310.98ms
+ 10                    1242.92ms                      569.03ms*                     598.72ms
+ 20                    3970.09ms                     1157.89ms*                    1248.60ms
+
+=== substrate=disc tool=disc overlap=tangent ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      64.58ms                       63.63ms*                      64.03ms
+  2                     145.53ms*    285.58ms  WRONG(s=2,v=312.2)                     155.68ms
+  3                     239.86ms     373.40ms  WRONG(s=3,v=312.2)                     200.38ms*
+  5                     464.28ms    1325.94ms  WRONG(s=4,v=312.2)                     346.19ms*
+ 10                    1235.94ms    4854.49ms  WRONG(s=6,v=312.2)                     725.03ms*
+ 20                    3777.00ms   14783.20ms  WRONG(s=11,v=312.2)                    1552.27ms*
+
+=== substrate=annulus tool=square overlap=disjoint ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      35.68ms                       34.05ms*                      34.75ms
+  2                      69.07ms                       36.53ms*                      40.01ms
+  3                     105.10ms                       37.11ms*                      39.34ms
+  5                     178.89ms                       38.50ms*                      40.18ms
+ 10                     347.28ms                       40.56ms*                      51.35ms
+ 20                     749.56ms                       87.60ms*                     105.00ms
+
+=== substrate=annulus tool=square overlap=tangent ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      34.00ms*                      36.30ms                       34.82ms
+  2                      66.10ms                       36.15ms*                      48.44ms
+  3                     102.29ms                       37.20ms*                      49.42ms
+  5                     176.62ms                       40.00ms*                      64.00ms
+ 10                     352.87ms                       44.27ms*                     108.25ms
+ 20                     692.48ms                       54.85ms*                     198.01ms
+
+=== substrate=annulus tool=disc overlap=disjoint ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      39.16ms*                      40.06ms                       40.10ms
+  2                      78.70ms                       42.54ms*                      60.78ms
+  3                     111.80ms                       51.29ms*                      64.09ms
+  5                     195.29ms                       59.47ms*                      81.69ms
+ 10                     390.61ms                       86.27ms*                     135.14ms
+ 20                     911.81ms                      223.31ms*                     318.85ms
+
+=== substrate=annulus tool=disc overlap=tangent ===
+  N                    sequential                      compound                      prefused
+---------------------------------------------------------------------------------------------
+  1                      37.77ms*                      39.90ms                       38.73ms
+  2                      79.35ms                       43.77ms*                      88.02ms
+  3                     117.61ms                       53.30ms*                      84.03ms
+  5                     190.42ms                       60.61ms*                     123.77ms
+ 10                     411.34ms                       90.04ms*                     233.30ms
+ 20                     809.40ms                      152.96ms*                     450.42ms
+
+======================================================================
+Summary: wins per regime (cell value = strategy with min time in row)
+======================================================================
+
+regime                             sequential     compound     prefused
+----------------------------------------------------------------------
+substrate-light (square sub)                4           13            7
+substrate-mid (disc sub)                    3           11           10
+substrate-heavy (annulus sub)               3           21            0
+tools-disjoint                              4           31            1
+tools-tangent                               6           14           16
+small-N (1, 2, 3)                          10           20            6
+medium-N (5)                                0            9            3
+large-N (10, 20)                            0           16            8
+
+======================================================================
+Crossover N (smallest N where compound beats sequential, per cell)
+======================================================================
+
+(substrate, tool, overlap)                   crossover N
+------------------------------------------------------------
+(square, square, disjoint)                             2
+(square, square, tangent)                              3
+(square, disc, disjoint)                               2
+(square, disc, tangent)                                1
+(disc, square, disjoint)                               2
+(disc, square, tangent)                                3
+(disc, disc, disjoint)                                 2
+(disc, disc, tangent)                                  1
+(annulus, square, disjoint)                            1
+(annulus, square, tangent)                             2
+(annulus, disc, disjoint)                              2
+(annulus, disc, tangent)                               2
