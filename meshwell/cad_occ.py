@@ -36,8 +36,7 @@ from os import cpu_count
 from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
-from OCP.BOPAlgo import BOPAlgo_Builder
-from OCP.BRep import BRep_Builder
+from OCP.BOPAlgo import BOPAlgo_BOP, BOPAlgo_Builder, BOPAlgo_Operation
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -49,7 +48,6 @@ from OCP.TopAbs import (
     TopAbs_VERTEX,
 )
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
@@ -597,43 +595,34 @@ class CAD_OCC:
                     tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
-                # Batched compound cut. Bundles all surviving tools into
-                # a single TopoDS_Compound and does one BRepAlgoAPI_Cut
-                # per substrate piece. Empirically ~3-4x faster than the
-                # per-tool sequential cascade on dense scenes (cut step
-                # dominates ~90% of the full CAD pipeline cost there).
-                #
-                # The _shapes_actually_overlap pre-filter above is
-                # LOAD-BEARING for the batched form: without it,
-                # AABB-overlapping but volume-disjoint tools would enter
-                # the compound and OCC would silently split the substrate
-                # into multiple SOLIDs with duplicate TShapes (see the
-                # detailed warning on _shapes_actually_overlap). An
-                # earlier implementation using AABB-only pre-filtering
-                # hit this bug and adopted sequential cuts as a workaround
-                # (see commits aa77f21 + 146b05a, Apr 2026). Reverting to
-                # the batched form is safe now that the geometric-overlap
-                # gate is in place; the regression test
-                # ``tests/test_cad_occ_batched_compound_cut.py`` locks
-                # this in.
-                tool_compound = TopoDS_Compound()
-                cb = BRep_Builder()
-                cb.MakeCompound(tool_compound)
-                for ts in tool_shapes:
-                    cb.Add(tool_compound, ts)
+                # Prefused cut. Fuses all tools into one clean shape, then
+                # cuts the substrate against the fused result. Replaces the
+                # earlier batched-compound form, which corrupted substrates
+                # when two tools shared a face/edge (tangent). See
+                # docs/superpowers/specs/2026-05-19-cad-occ-prefused-cut-safety-hotfix-design.md
+                # and scripts/bench_cut_strategy_sweep.py.
+                if len(tool_shapes) == 1:
+                    fused_tools = tool_shapes[0]
+                else:
+                    fuse_op = BOPAlgo_BOP()
+                    fuse_op.SetOperation(BOPAlgo_Operation.BOPAlgo_FUSE)
+                    fuse_op.AddArgument(tool_shapes[0])
+                    for ts in tool_shapes[1:]:
+                        fuse_op.AddTool(ts)
+                    fuse_op.SetFuzzyValue(self.cut_fuzzy_value)
+                    fuse_op.SetRunParallel(self.n_threads > 1)
+                    fuse_op.Perform()
+                    fused_tools = fuse_op.Shape()
 
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     result = s
                     try:
-                        cut_op = BRepAlgoAPI_Cut(s, tool_compound)
+                        cut_op = BRepAlgoAPI_Cut(s, fused_tools)
                         cut_op.SetFuzzyValue(self.cut_fuzzy_value)
                         cut_op.SetRunParallel(self.n_threads > 1)
                         cut_op.Build()
                         result = cut_op.Shape()
-                        # Clamp tolerance bloat so the next cut's fuzzy is
-                        # honest. Without this, accumulated vertex tolerances
-                        # make later cuts effectively looser than cut_fuzzy.
                         if result is not None and not result.IsNull():
                             self._clamp_shape_tolerance(result, self.cut_fuzzy_value)
                     except Exception as e:  # pragma: no cover -- defensive
@@ -642,8 +631,6 @@ class CAD_OCC:
                             f"{orig_idx}: {e}"
                         )
                     if result is not None:
-                        # Flatten compound wrapper so BOPAlgo_Builder.Modified()
-                        # in the final fragment pass tracks sub-shape provenance.
                         new_shapes.extend(self._unwrap_shape(result, labeled.dim))
                 labeled.shapes = new_shapes
 
