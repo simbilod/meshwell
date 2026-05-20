@@ -306,6 +306,53 @@ def _same_name_fuse(
     return fused
 
 
+_GIL_PROBE_CACHE: bool | None = None
+
+
+def _probe_gil_release(speedup_threshold: float = 1.5) -> bool:
+    """Return True iff OCP's BRepAlgoAPI_Cut releases the GIL under threads.
+
+    Runs a small two-thread cut benchmark and measures wall-clock vs
+    serial. GIL-released BOPs give >threshold speedup; GIL-held BOPs
+    give <1.1x. Cached after first call (process-lifetime).
+    """
+    global _GIL_PROBE_CACHE
+    if _GIL_PROBE_CACHE is not None:
+        return _GIL_PROBE_CACHE
+
+    from concurrent.futures import ThreadPoolExecutor
+    from time import perf_counter
+
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeSphere
+
+    def _work():
+        # Cut a box by an overlapping sphere; non-trivial enough to amortize
+        # the BOP setup cost.
+        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        sphere = BRepPrimAPI_MakeSphere(7.0).Shape()
+        op = BRepAlgoAPI_Cut(box, sphere)
+        op.SetRunParallel(False)
+        op.Build()
+        return op.Shape()
+
+    # Warmup so first-call costs (allocator init etc.) don't skew the measure.
+    _work()
+
+    t0 = perf_counter()
+    _work()
+    _work()
+    t_serial = perf_counter() - t0
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        t0 = perf_counter()
+        list(ex.map(lambda _: _work(), range(2)))
+        t_parallel = perf_counter() - t0
+
+    speedup = t_serial / max(t_parallel, 1e-6)
+    _GIL_PROBE_CACHE = speedup >= speedup_threshold
+    return _GIL_PROBE_CACHE
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
