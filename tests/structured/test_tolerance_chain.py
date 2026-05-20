@@ -48,3 +48,36 @@ def test_interior_buffer_radius_relative_large_radius():
         arc_chord_height_fraction=0.01,
     )
     assert _interior_buffer_for_radius(slab, r=100.0) == pytest.approx(1.0)
+
+
+def test_aggregate_slab_fuzzy_warns_on_heterogeneous(caplog):
+    """Mesh stage warns when slabs disagree on fragment_fuzzy_value."""
+    import logging
+
+    from meshwell.structured.builder import _aggregate_slab_fuzzy
+
+    caplog.set_level(logging.WARNING, logger="meshwell.structured.builder")
+    result = _aggregate_slab_fuzzy([1e-6, 1e-4, None], default=1e-6)
+    assert result == 1e-4
+    assert any(
+        "heterogeneous fragment_fuzzy_value" in rec.message.lower()
+        for rec in caplog.records
+    )
+
+
+def test_aggregate_slab_fuzzy_no_warn_when_uniform(caplog):
+    """No warning when all non-None values agree."""
+    import logging
+
+    from meshwell.structured.builder import _aggregate_slab_fuzzy
+
+    caplog.set_level(logging.WARNING, logger="meshwell.structured.builder")
+    result = _aggregate_slab_fuzzy([1e-5, 1e-5, None], default=1e-6)
+    assert result == 1e-5
+    assert not any("heterogeneous" in rec.message.lower() for rec in caplog.records)
+
+
+def test_aggregate_slab_fuzzy_all_none_uses_default():
+    from meshwell.structured.builder import _aggregate_slab_fuzzy
+
+    assert _aggregate_slab_fuzzy([None, None], default=1e-7) == 1e-7

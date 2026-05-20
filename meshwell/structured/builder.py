@@ -381,6 +381,34 @@ def _find_volume_containing_faces(
     return None
 
 
+def _aggregate_slab_fuzzy(
+    slab_fuzzy_values: list[float | None],
+    default: float,
+) -> float:
+    """Aggregate per-slab fragment_fuzzy_value into a single dedup tolerance.
+
+    Returns ``max(non-None values)`` or ``default`` if all are None.
+    Logs a WARNING when the non-None values are heterogeneous, because
+    ``removeDuplicateNodes`` uses a single tolerance for the entire
+    mesh; the loosest slab silently couples to the tightest.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    non_none = [v for v in slab_fuzzy_values if v is not None]
+    if not non_none:
+        return default
+    if len(set(non_none)) > 1:
+        logger.warning(
+            "heterogeneous fragment_fuzzy_value across slabs: %s; "
+            "removeDuplicateNodes will use max=%s, which may silently "
+            "merge nodes in tighter slabs.",
+            sorted(set(non_none)),
+            max(non_none),
+        )
+    return max(non_none)
+
+
 @phase_timed("mesh_apply")
 def apply_structured_mesh(
     plan: StructuredPlan,
@@ -555,12 +583,10 @@ def apply_structured_mesh(
                 vol_tags.append(vol_tag)
 
     # Global cleanup: merge ~coincident nodes.
-    fuzzy_values = [
-        slab.fragment_fuzzy_value
-        for slab in plan.slabs
-        if slab.fragment_fuzzy_value is not None
-    ]
-    fuzzy = max(fuzzy_values) if fuzzy_values else fuzzy_tol
+    fuzzy = _aggregate_slab_fuzzy(
+        [slab.fragment_fuzzy_value for slab in plan.slabs],
+        default=fuzzy_tol,
+    )
     try:
         with phase_timer("removeDuplicateNodes"):
             gmsh.model.mesh.removeDuplicateNodes(tag=[], tol=2 * fuzzy)
