@@ -81,3 +81,24 @@ def test_aggregate_slab_fuzzy_all_none_uses_default():
     from meshwell.structured.builder import _aggregate_slab_fuzzy
 
     assert _aggregate_slab_fuzzy([None, None], default=1e-7) == 1e-7
+
+
+def test_factory_chain_satisfies_audit_safety_margins():
+    """Pin the audit's recommended safety margins on the factory chain.
+
+    These are stronger than what the validator enforces — the validator
+    accepts equality at the boundary, but the factory should provide
+    strict margins so a small perturbation in any one value does not
+    push the chain into an invalid state.
+    """
+    from meshwell.tolerances import OCCT_CONFUSION, Tolerances
+
+    t = Tolerances.from_characteristic_length(1.0)
+    # 1. cut_fuzzy >= 10 * OCCT_CONFUSION (well above the floor)
+    assert t.cut_fuzzy_value >= 10 * OCCT_CONFUSION
+    # 2. fragment_fuzzy >= 2 * perturbation (welds drift, audited default)
+    assert t.fragment_fuzzy_value >= 2 * t.perturbation
+    # 3. perturbation >= 10 * cut_fuzzy (audit-recommended ≥10x separation)
+    assert t.perturbation >= 10 * t.cut_fuzzy_value
+    # 4. arc_chord_height_fraction in a sane range (1%, not 100%)
+    assert 0.0 < t.arc_chord_height_fraction <= 0.1
