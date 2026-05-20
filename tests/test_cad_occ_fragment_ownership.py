@@ -60,11 +60,11 @@ def test_resolve_piece_ownership_lowest_wins():
     assert owners == {"pA": 1, "pB": 0, "pC": 1}
 
 
-def test_resolve_piece_ownership_tie_first_wins():
-    """On mesh_order tie, the first candidate (insertion order) wins."""
+def test_resolve_piece_ownership_tie_lowest_ent_idx_wins():
+    """On mesh_order tie, lowest ent_idx wins (deterministic under parallel)."""
     piece_candidates = {"p": [(3, 1.0), (5, 1.0), (2, 1.0)]}
     owners = _resolve_piece_ownership(piece_candidates)
-    assert owners == {"p": 3}
+    assert owners == {"p": 2}
 
 
 def test_resolve_piece_ownership_inf_mesh_order():

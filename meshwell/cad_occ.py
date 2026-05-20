@@ -105,17 +105,13 @@ def _resolve_piece_ownership(
 ) -> dict[Any, int]:
     """Pick the owning entity index for each fragment piece.
 
-    Rule: lowest ``mesh_order`` wins; first candidate in insertion order
-    wins on tie. Matches :func:`meshwell.cad_gmsh._resolve_piece_ownership`.
+    Rule: lowest ``(mesh_order, ent_idx)`` wins. Sorting by both makes the
+    tie-break independent of ``BOPAlgo_Builder.Modified()`` iteration
+    order, which is non-deterministic under ``SetRunParallel(True)``.
     """
     owners: dict[Any, int] = {}
     for piece, candidates in piece_candidates.items():
-        best_idx = candidates[0][0]
-        best_mo = candidates[0][1]
-        for idx, mo in candidates[1:]:
-            if mo < best_mo:
-                best_idx = idx
-                best_mo = mo
+        best_idx, _ = min(candidates, key=lambda c: (c[1], c[0]))
         owners[piece] = best_idx
     return owners
 
