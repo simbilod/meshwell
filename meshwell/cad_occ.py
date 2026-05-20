@@ -357,13 +357,22 @@ def _process_worker(entity, cutters_entities, cut_fuzzy_value) -> bytes:
     """Worker for the process-pool executor.
 
     Instantiates the entity and its cutters inside the worker process,
-    runs ``cut_one_entity``, and returns BREP bytes.
+    runs ``cut_one_entity``, and returns BREP bytes. On cut failure,
+    falls back to the uncut entity shape (same semantics as the legacy
+    sequential cascade).
     """
     from meshwell._brep_io import brep_to_bytes
 
     shape = entity.instanciate_occ()
     tools = [c.instanciate_occ() for c in cutters_entities]
-    result = cut_one_entity(shape, tools, cut_fuzzy_value, n_threads=1)
+    try:
+        result = cut_one_entity(shape, tools, cut_fuzzy_value, n_threads=1)
+    except Exception as e:  # pragma: no cover -- defensive
+        print(
+            f"Warning: BRepAlgoAPI_Cut failed in worker: {e}",
+            flush=True,
+        )
+        result = shape
     return brep_to_bytes(result)
 
 
@@ -961,9 +970,16 @@ class CAD_OCC:
 
         def _serial_work(i: int):
             tools = [labeled[j].shapes[0] for j in cutters[i]]
-            return cut_one_entity(
-                labeled[i].shapes[0], tools, self.cut_fuzzy_value, n_threads=1
-            )
+            try:
+                return cut_one_entity(
+                    labeled[i].shapes[0], tools, self.cut_fuzzy_value, n_threads=1
+                )
+            except Exception as e:  # pragma: no cover -- defensive
+                print(
+                    f"Warning: BRepAlgoAPI_Cut failed for entity {i}: {e}",
+                    flush=True,
+                )
+                return labeled[i].shapes[0]
 
         if chosen == "serial":
             for i in range(n):
