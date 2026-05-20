@@ -78,3 +78,31 @@ def test_perturbation_must_exceed_cut_fuzzy_by_safety_factor():
     kw["perturbation"] = 1.5e-6  # only 1.5x cut_fuzzy=1e-6
     with pytest.raises(ToleranceHierarchyError, match=r"perturbation.*cut_fuzzy"):
         Tolerances(**kw)
+
+
+def test_from_characteristic_length_unit_scale():
+    """At L=1, defaults match the recommended chain."""
+    t = Tolerances.from_characteristic_length(1.0)
+    assert t.point_tolerance == 1e-4
+    assert t.perturbation == 1e-5
+    assert t.cut_fuzzy_value == 1e-6
+    assert t.fragment_fuzzy_value == 1e-5
+    assert t.geometry_tolerance == 1e-6
+    assert t.tolerance_boolean == 1e-5
+    assert t.arc_chord_height_fraction == 0.01
+
+
+def test_from_characteristic_length_scales_linearly():
+    """All absolute tolerances scale with L; arc fraction does not."""
+    t1 = Tolerances.from_characteristic_length(1.0)
+    t100 = Tolerances.from_characteristic_length(100.0)
+    assert t100.point_tolerance == 100 * t1.point_tolerance
+    assert t100.perturbation == 100 * t1.perturbation
+    assert t100.cut_fuzzy_value == 100 * t1.cut_fuzzy_value
+    assert t100.arc_chord_height_fraction == t1.arc_chord_height_fraction
+
+
+def test_from_characteristic_length_rejects_sub_confusion():
+    """L too small to keep cut_fuzzy above OCCT_CONFUSION must raise."""
+    with pytest.raises(ToleranceHierarchyError):
+        Tolerances.from_characteristic_length(1e-3)  # cut_fuzzy=1e-9 < 1e-7

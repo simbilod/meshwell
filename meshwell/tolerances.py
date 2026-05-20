@@ -77,3 +77,30 @@ class Tolerances:
     def __post_init__(self) -> None:
         """Validate the tolerance hierarchy after initialization."""
         _validate(self)
+
+    @classmethod
+    def from_characteristic_length(cls, L: float) -> "Tolerances":
+        """Derive a coherent tolerance chain from one length scale.
+
+        ``L`` is the characteristic geometric size of the scene (e.g.
+        1.0 for unit-scale, 1e-3 if the user works in metres on
+        mm-scale geometry, 1e-6 for micron-scale photonics in metres).
+
+        Defaults at L=1:
+            point_tolerance      1e-4 L  (shapely dedup; loose)
+            perturbation         1e-5 L  (polygon outward buffer)
+            cut_fuzzy_value      1e-6 L  (BRepAlgoAPI_Cut fuzzy; tight)
+            fragment_fuzzy_value 1e-5 L  (BOPAlgo_Builder fuzzy)
+            geometry_tolerance   1e-6 L  (gmsh vertex snap)
+            tolerance_boolean    1e-5 L  (gmsh Geometry.ToleranceBoolean)
+            arc_chord_height_fraction 0.01  (dimensionless)
+        """
+        return cls(
+            point_tolerance=1e-4 * L,
+            perturbation=1e-5 * L,
+            cut_fuzzy_value=1e-6 * L,
+            fragment_fuzzy_value=1e-5 * L,
+            geometry_tolerance=1e-6 * L,
+            tolerance_boolean=1e-5 * L,
+            arc_chord_height_fraction=0.01,
+        )
