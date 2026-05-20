@@ -228,6 +228,84 @@ def compute_cutters(
     return cutters
 
 
+def _collapse_members(
+    members: list[OCCLabeledEntity],
+    shapes: list["TopoDS_Shape"] | None = None,
+) -> OCCLabeledEntity:
+    """Build one OCCLabeledEntity from a fused group of same-named members."""
+    if shapes is None:
+        shapes = [s for m in members for s in m.shapes]
+    mesh_orders = [m.mesh_order for m in members if m.mesh_order is not None]
+    return OCCLabeledEntity(
+        shapes=shapes,
+        physical_name=members[0].physical_name,
+        index=min(m.index for m in members),
+        keep=members[0].keep,
+        dim=members[0].dim,
+        mesh_order=min(mesh_orders) if mesh_orders else None,
+    )
+
+
+def _same_name_fuse(
+    entities: list[OCCLabeledEntity],
+    tolerances: "Tolerances",
+    n_threads: int = 1,
+) -> list[OCCLabeledEntity]:
+    """Fuse same-(physical_name, keep, dim) entities into one logical entity.
+
+    Removes the spurious internal seam between two bodies the user already
+    declared to be the same material -- would otherwise survive into the
+    mesh as a zero-thickness internal face.
+
+    Groups with one member pass through unchanged. Groups with multiple
+    members whose total shape count is >1 run through ``BOPAlgo_BOP(Fuse)``
+    with ``fragment_fuzzy_value`` -- the same value the downstream global
+    fragment uses, so coincident faces actually fuse.
+    """
+    groups: dict[tuple[tuple[str, ...], bool, int], list[int]] = defaultdict(list)
+    for idx, ent in enumerate(entities):
+        groups[(ent.physical_name, ent.keep, ent.dim)].append(idx)
+
+    fused: list[OCCLabeledEntity] = []
+    for idxs in groups.values():
+        members = [entities[i] for i in idxs]
+        if len(members) == 1:
+            fused.append(members[0])
+            continue
+        all_shapes = [s for m in members for s in m.shapes]
+        if len(all_shapes) <= 1:
+            fused.append(_collapse_members(members))
+            continue
+        fuse_op = BOPAlgo_BOP()
+        fuse_op.SetOperation(BOPAlgo_Operation.BOPAlgo_FUSE)
+        fuse_op.AddArgument(all_shapes[0])
+        for s in all_shapes[1:]:
+            fuse_op.AddTool(s)
+        fuse_op.SetFuzzyValue(tolerances.fragment_fuzzy_value)
+        fuse_op.SetRunParallel(n_threads > 1)
+        fuse_op.Perform()
+        result = fuse_op.Shape()
+        # Unwrap if result is a compound (multiple disjoint solids).
+        out_shapes: list = []
+        if result.ShapeType() == TopAbs_ShapeEnum.TopAbs_COMPOUND:
+            kind_map = {
+                3: TopAbs_SOLID,
+                2: TopAbs_FACE,
+                1: TopAbs_EDGE,
+                0: TopAbs_VERTEX,
+            }
+            kind = kind_map.get(members[0].dim)
+            if kind is not None:
+                exp = TopExp_Explorer(result, kind)
+                while exp.More():
+                    out_shapes.append(exp.Current())
+                    exp.Next()
+        if not out_shapes:
+            out_shapes = [result]
+        fused.append(_collapse_members(members, shapes=out_shapes))
+    return fused
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
@@ -766,6 +844,9 @@ class CAD_OCC:
         )
         if not labeled_entities:
             return []
+        labeled_entities = _same_name_fuse(
+            labeled_entities, self.tolerances, n_threads=self.n_threads
+        )
         return self._fragment_all(
             labeled_entities,
             progress_bars=progress_bars,
