@@ -58,6 +58,8 @@ from meshwell.cad_common import prepare_entities
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
 
+    from meshwell.tolerances import Tolerances
+
 
 @dataclass
 class OCCLabeledEntity:
@@ -130,6 +132,7 @@ class CAD_OCC:
         cut_fuzzy_value: float | None = None,
         fragment_fuzzy_value: float | None = None,
         perturbation: float | None = None,
+        tolerances: "Tolerances | None" = None,
     ):
         """Initialize OCC CAD processor.
 
@@ -145,27 +148,52 @@ class CAD_OCC:
                 ``tolerance_boolean = perturbation / 2``). Tight by design --
                 a loose cut fuzzy merges the buffered overlap into the lower
                 entity and erases the carved face.
+                Ignored when ``tolerances`` is provided.
             fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
-                all-fragment pass. Defaults to ``point_tolerance``,
-                intentionally LOOSER than the cut fuzzy: cad_occ tags
-                interfaces via raw ``TShape`` identity on per-entity leaves;
-                tightening this below the perturbation gap (~2e-5) leaves
-                coincident faces with distinct TShapes and drops ``A___B``
-                interfaces.
+                all-fragment pass. When synthesized from legacy scalars, clamped
+                to ``min(point_tolerance, perturbation)`` so the resulting
+                ``Tolerances`` passes hierarchy validation (the old default of
+                ``point_tolerance`` exceeded ``perturbation`` and welded the
+                carved gap). Ignored when ``tolerances`` is provided.
             perturbation: Outward shapely buffer applied to polygon entities
                 before the sequential cut cascade. Mirrors cad_gmsh default
                 (1e-5). Used for the shared shapely pre-pass (polygon buffer
-                + InterfaceTag snap distance).
+                + InterfaceTag snap distance). Ignored when ``tolerances``
+                is provided.
+            tolerances: Pre-built :class:`meshwell.tolerances.Tolerances`
+                instance. When provided, ``point_tolerance``,
+                ``cut_fuzzy_value``, ``fragment_fuzzy_value``, and
+                ``perturbation`` are silently ignored and all values are
+                taken from this object. When absent, a ``Tolerances`` is
+                synthesized from the legacy scalar kwargs with clamping to
+                satisfy the hierarchy invariants.
         """
-        self.point_tolerance = point_tolerance
+        from meshwell.tolerances import Tolerances
+
+        if tolerances is None:
+            pert = perturbation if perturbation is not None else 1e-5
+            cut_f = cut_fuzzy_value if cut_fuzzy_value is not None else pert / 2
+            frag_f = (
+                fragment_fuzzy_value
+                if fragment_fuzzy_value is not None
+                else min(point_tolerance, pert)
+            )
+            tolerances = Tolerances(
+                point_tolerance=point_tolerance,
+                perturbation=pert,
+                cut_fuzzy_value=cut_f,
+                fragment_fuzzy_value=frag_f,
+                geometry_tolerance=point_tolerance,
+                tolerance_boolean=frag_f,
+                arc_chord_height_fraction=0.01,
+            )
+
+        self.tolerances = tolerances
+        self.point_tolerance = tolerances.point_tolerance
         self.n_threads = n_threads
-        self.perturbation = perturbation if perturbation is not None else 1e-5
-        self.cut_fuzzy_value = (
-            self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
-        )
-        self.fragment_fuzzy_value = (
-            point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
-        )
+        self.perturbation = tolerances.perturbation
+        self.cut_fuzzy_value = tolerances.cut_fuzzy_value
+        self.fragment_fuzzy_value = tolerances.fragment_fuzzy_value
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from the first non-empty TopAbs class."""

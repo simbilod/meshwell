@@ -137,3 +137,23 @@ def test_model_manager_legacy_and_tolerances_conflict_raises():
     tol = Tolerances.from_characteristic_length(1.0)
     with pytest.raises(ValueError, match="cannot pass both"):
         ModelManager(filename="t", tolerances=tol, point_tolerance=1e-3)
+
+
+def test_cad_occ_accepts_tolerances():
+    from meshwell.cad_occ import CAD_OCC
+
+    tol = Tolerances.from_characteristic_length(1.0)
+    cad = CAD_OCC(tolerances=tol)
+    assert cad.point_tolerance == tol.point_tolerance
+    assert cad.perturbation == tol.perturbation
+    assert cad.cut_fuzzy_value == tol.cut_fuzzy_value
+    assert cad.fragment_fuzzy_value == tol.fragment_fuzzy_value
+
+
+def test_cad_occ_legacy_args_synthesize_valid_tolerances():
+    from meshwell.cad_occ import CAD_OCC
+
+    cad = CAD_OCC(point_tolerance=1e-3)
+    # Synthesis must produce a valid Tolerances (was the audit bug).
+    assert cad.tolerances.fragment_fuzzy_value <= cad.tolerances.perturbation
+    assert cad.tolerances.cut_fuzzy_value <= cad.tolerances.fragment_fuzzy_value
