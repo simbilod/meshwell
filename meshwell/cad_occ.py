@@ -376,6 +376,32 @@ def _process_worker(entity, cutters_entities, cut_fuzzy_value) -> bytes:
     return brep_to_bytes(result)
 
 
+def _assert_picklable(entities_list: list[Any]) -> None:
+    """Raise ValueError if any entity isn't picklable.
+
+    Used as a pre-flight before ProcessPoolExecutor dispatch so the
+    error names the first offending entity, instead of surfacing as a
+    generic worker exception deep in the pool.
+    """
+    import pickle
+
+    try:
+        pickle.dumps(entities_list)
+        return
+    except Exception:  # noqa: S110 -- fall through to per-entity identification
+        pass
+    for i, ent in enumerate(entities_list):
+        try:
+            pickle.dumps(ent)
+        except Exception as e:
+            raise ValueError(
+                f"entity index {i} ({type(ent).__name__}, "
+                f"physical_name={getattr(ent, 'physical_name', '<unknown>')!r}) "
+                f"is not picklable: {e}"
+            ) from e
+    raise ValueError("entities_list is not picklable for process executor")
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
@@ -941,14 +967,6 @@ class CAD_OCC:
         if not entities_list:
             return []
 
-        prepare_entities(
-            entities_list,
-            perturbation=self.perturbation,
-            resolve_snap=max(self.perturbation, self.point_tolerance),
-        )
-
-        # Stage 0: per-entity cutter discovery.
-        cutters = compute_cutters(entities_list, self)
         n = len(entities_list)
 
         # Choose executor.
@@ -961,6 +979,18 @@ class CAD_OCC:
 
         if chosen not in ("serial", "thread", "process"):
             raise ValueError(f"unknown executor: {executor!r}")
+
+        if chosen == "process":
+            _assert_picklable(entities_list)
+
+        prepare_entities(
+            entities_list,
+            perturbation=self.perturbation,
+            resolve_snap=max(self.perturbation, self.point_tolerance),
+        )
+
+        # Stage 0: per-entity cutter discovery.
+        cutters = compute_cutters(entities_list, self)
 
         # Stage 1: per-entity cut.
         labeled = [
