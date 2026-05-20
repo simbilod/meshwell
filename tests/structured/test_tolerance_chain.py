@@ -102,3 +102,72 @@ def test_factory_chain_satisfies_audit_safety_margins():
     assert t.perturbation >= 10 * t.cut_fuzzy_value
     # 4. arc_chord_height_fraction in a sane range (1%, not 100%)
     assert 0.0 < t.arc_chord_height_fraction <= 0.1
+
+
+@pytest.mark.parametrize("L", [1e-1, 1.0, 10.0, 100.0, 1e4])
+def test_factory_chain_scales_safely_across_L(L):
+    """Across 5 orders of magnitude (L >= 0.1), the chain stays valid."""
+    from meshwell.tolerances import Tolerances
+
+    t = Tolerances.from_characteristic_length(L)
+    # All factor relationships are preserved at every L.
+    assert t.fragment_fuzzy_value >= 2 * t.perturbation
+    assert t.perturbation >= 10 * t.cut_fuzzy_value
+
+
+@pytest.mark.parametrize("L", [1e-2, 1e-3, 1e-4])
+def test_factory_rejects_too_small_L(L):
+    """L below 0.1 drives cut_fuzzy below OCCT_CONFUSION; must raise."""
+    from meshwell.tolerances import ToleranceHierarchyError, Tolerances
+
+    with pytest.raises(ToleranceHierarchyError):
+        Tolerances.from_characteristic_length(L)
+
+
+@pytest.mark.parametrize("r", [1e-4, 1e-2, 1.0, 100.0, 1e4])
+def test_interior_buffer_proportional_to_radius_across_scales(r):
+    """interior_buffer = chord_fraction * r at every scale (no abs floor)."""
+    from shapely.geometry import Point
+
+    from meshwell.structured.plan import _interior_buffer_for_radius
+    from meshwell.structured.spec import Slab
+
+    fraction = 0.01
+    slab = Slab(
+        footprint=Point(0, 0).buffer(max(r, 1e-6)),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("x",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=0,
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_chord_height_fraction=fraction,
+    )
+    assert _interior_buffer_for_radius(slab, r=r) == pytest.approx(fraction * r)
+
+
+def test_interior_buffer_strictly_radius_relative_not_absolute():
+    """At tiny radius (1e-6), buffer is 1e-8 — NOT the old 0.05*r=5e-8 or arc_tol floor."""
+    from shapely.geometry import Point
+
+    from meshwell.structured.plan import _interior_buffer_for_radius
+    from meshwell.structured.spec import Slab
+
+    slab = Slab(
+        footprint=Point(0, 0).buffer(1e-6),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("x",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=0,
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,  # legacy field — must NOT influence the new helper
+        arc_chord_height_fraction=0.01,
+    )
+    # Old heuristic would return max(arc_tol=1e-3, 0.05*r=5e-8) = 1e-3.
+    # New helper returns chord_fraction * r = 1e-8. Verify the new value.
+    assert _interior_buffer_for_radius(slab, r=1e-6) == pytest.approx(1e-8)
