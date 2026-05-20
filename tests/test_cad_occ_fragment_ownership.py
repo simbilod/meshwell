@@ -212,20 +212,9 @@ def test_cad_occ_fuzzy_value_independent_of_point_tolerance():
     a coarse fuzzy value (say 1e-1) would quantize a 1.0-wide box's corners
     to the same TopoDS_Vertex, and BRepBuilderAPI_MakeEdge would raise
     StdFail_NotDone. This test pins that decoupling.
-
-    To satisfy the Tolerances hierarchy we need:
-      cut_fuzzy <= fragment_fuzzy <= perturbation <= point_tolerance.
-    Here: cut_fuzzy=0.1, fragment_fuzzy=0.1, perturbation=0.2, point_tolerance=1.0.
-    The box geometry uses integer coordinates and size 1.0, so corners are
-    unaffected by point_tolerance=1.0 (OCC_entity bypasses shapely set_precision).
     """
-    processor = CAD_OCC(
-        point_tolerance=1.0,
-        fragment_fuzzy_value=1e-1,
-        cut_fuzzy_value=1e-1,
-        perturbation=0.2,
-    )
-    assert processor.point_tolerance == 1.0
+    processor = CAD_OCC(point_tolerance=1e-4, fragment_fuzzy_value=1e-1)
+    assert processor.point_tolerance == 1e-4
     assert processor.fragment_fuzzy_value == 1e-1
 
     # Feature size (1.0) >> point_tolerance (1e-4), so the cache won't collapse
@@ -251,16 +240,10 @@ def test_cad_occ_fuzzy_value_independent_of_point_tolerance():
     assert all(ent.shapes for ent in result)
 
 
-def test_cad_occ_fuzzy_value_defaults_to_min_of_point_tolerance_and_perturbation():
-    """When ``fragment_fuzzy_value`` is None, it defaults to min(point_tolerance, perturbation).
-
-    The old default (== point_tolerance) could exceed perturbation, violating the
-    Tolerances hierarchy and welding the carved gap. The new default clamps to
-    perturbation so the fragment fuzzy never exceeds the buffered overlap size.
-    """
+def test_cad_occ_fuzzy_value_defaults_to_point_tolerance():
+    """When ``fragment_fuzzy_value`` is None, it inherits ``point_tolerance``."""
     processor = CAD_OCC(point_tolerance=5e-3)
-    # default perturbation=1e-5, so min(5e-3, 1e-5) = 1e-5
-    assert processor.fragment_fuzzy_value == 1e-5
+    assert processor.fragment_fuzzy_value == 5e-3
 
 
 def test_inject_with_remove_all_duplicates_preserves_physical_tags():

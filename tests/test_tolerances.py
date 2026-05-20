@@ -42,9 +42,15 @@ def test_cut_fuzzy_must_not_exceed_fragment_fuzzy():
         Tolerances(**kw)
 
 
-def test_fragment_fuzzy_must_not_exceed_perturbation():
+def test_fragment_fuzzy_must_not_be_below_perturbation():
+    """Fragment fuzzy must be >= perturbation so coincident TShape faces weld.
+
+    Per cad_occ.py docstring, tightening fragment_fuzzy below the
+    perturbation gap leaves coincident faces with distinct TShapes and
+    drops ``A___B`` interface tagging.
+    """
     kw = _ok_kwargs()
-    kw["fragment_fuzzy_value"] = 2e-5  # > perturbation=1e-5
+    kw["fragment_fuzzy_value"] = 5e-6  # < perturbation=1e-5
     with pytest.raises(ToleranceHierarchyError, match="fragment_fuzzy_value"):
         Tolerances(**kw)
 
@@ -86,9 +92,9 @@ def test_from_characteristic_length_unit_scale():
     assert t.point_tolerance == 1e-4
     assert t.perturbation == 1e-5
     assert t.cut_fuzzy_value == 1e-6
-    assert t.fragment_fuzzy_value == 1e-5
+    assert t.fragment_fuzzy_value == 2e-5
     assert t.geometry_tolerance == 1e-6
-    assert t.tolerance_boolean == 1e-5
+    assert t.tolerance_boolean == 2e-5
     assert t.arc_chord_height_fraction == 0.01
 
 
@@ -154,6 +160,8 @@ def test_cad_occ_legacy_args_synthesize_valid_tolerances():
     from meshwell.cad_occ import CAD_OCC
 
     cad = CAD_OCC(point_tolerance=1e-3)
-    # Synthesis must produce a valid Tolerances (was the audit bug).
-    assert cad.tolerances.fragment_fuzzy_value <= cad.tolerances.perturbation
+    # Synthesis must produce a valid Tolerances (was the audit bug):
+    # fragment_fuzzy must be >= perturbation (TShape welding requirement)
+    # and cut_fuzzy must be <= fragment_fuzzy.
+    assert cad.tolerances.fragment_fuzzy_value >= cad.tolerances.perturbation
     assert cad.tolerances.cut_fuzzy_value <= cad.tolerances.fragment_fuzzy_value

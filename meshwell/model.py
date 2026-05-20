@@ -74,7 +74,12 @@ class ModelManager:
             pt = point_tolerance
             pert = min(1e-5, pt / 2)
             cut_f = min(5e-6, pt / 4)
-            frag_f = min(pt, 1e-5)
+            # Legacy default: fragment_fuzzy = point_tolerance. Preserves
+            # the old (loose) welding behaviour for callers using legacy
+            # scalar args. New callers should use ``tolerances=`` with
+            # ``Tolerances.from_characteristic_length(L)`` to get the
+            # audited 2x-perturbation default instead.
+            frag_f = pt
             geom = geometry_tolerance if geometry_tolerance is not None else pt
             tb = tolerance_boolean if tolerance_boolean is not None else pt
             tolerances = Tolerances(

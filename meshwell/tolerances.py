@@ -36,11 +36,13 @@ def _validate(t: "Tolerances") -> None:
             f"fragment_fuzzy_value={t.fragment_fuzzy_value}; "
             "fragment pass must be at least as loose as per-cut pass."
         )
-    if t.fragment_fuzzy_value > t.perturbation:
+    if t.fragment_fuzzy_value < t.perturbation:
         raise ToleranceHierarchyError(
-            f"fragment_fuzzy_value={t.fragment_fuzzy_value} > "
-            f"perturbation={t.perturbation}; fragment fuzzy must not exceed "
-            "the buffered overlap or it would weld the carved face."
+            f"fragment_fuzzy_value={t.fragment_fuzzy_value} < "
+            f"perturbation={t.perturbation}; fragment fuzzy must be at least "
+            "the buffered overlap so coincident TShape faces produced by "
+            "separate cuts get welded (see cad_occ.py docstring on "
+            "TShape-identity tagging)."
         )
     if t.perturbation < _PERTURBATION_SAFETY_FACTOR * t.cut_fuzzy_value:
         raise ToleranceHierarchyError(
@@ -90,17 +92,21 @@ class Tolerances:
             point_tolerance      1e-4 L  (shapely dedup; loose)
             perturbation         1e-5 L  (polygon outward buffer)
             cut_fuzzy_value      1e-6 L  (BRepAlgoAPI_Cut fuzzy; tight)
-            fragment_fuzzy_value 1e-5 L  (BOPAlgo_Builder fuzzy)
+            fragment_fuzzy_value 2e-5 L  (BOPAlgo_Builder fuzzy; 2x perturbation)
             geometry_tolerance   1e-6 L  (gmsh vertex snap)
-            tolerance_boolean    1e-5 L  (gmsh Geometry.ToleranceBoolean)
+            tolerance_boolean    2e-5 L  (gmsh Geometry.ToleranceBoolean)
             arc_chord_height_fraction 0.01  (dimensionless)
+
+        Note: ``fragment_fuzzy_value`` is set above ``perturbation`` so
+        that coincident faces produced by separate cuts (whose TShapes
+        drift by ~perturbation) get welded by the final fragment pass.
         """
         return cls(
             point_tolerance=1e-4 * L,
             perturbation=1e-5 * L,
             cut_fuzzy_value=1e-6 * L,
-            fragment_fuzzy_value=1e-5 * L,
+            fragment_fuzzy_value=2e-5 * L,
             geometry_tolerance=1e-6 * L,
-            tolerance_boolean=1e-5 * L,
+            tolerance_boolean=2e-5 * L,
             arc_chord_height_fraction=0.01,
         )

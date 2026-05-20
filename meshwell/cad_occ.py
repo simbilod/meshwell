@@ -150,11 +150,13 @@ class CAD_OCC:
                 entity and erases the carved face.
                 Ignored when ``tolerances`` is provided.
             fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
-                all-fragment pass. When synthesized from legacy scalars, clamped
-                to ``min(point_tolerance, perturbation)`` so the resulting
-                ``Tolerances`` passes hierarchy validation (the old default of
-                ``point_tolerance`` exceeded ``perturbation`` and welded the
-                carved gap). Ignored when ``tolerances`` is provided.
+                all-fragment pass. Defaults to ``point_tolerance`` when
+                synthesized from legacy scalars (preserves the historical
+                loose-welding behaviour that merges coincident TShape faces
+                produced by separate cuts). New callers should use
+                ``tolerances=Tolerances.from_characteristic_length(L)`` to
+                get the audited 2x-perturbation default instead. Ignored
+                when ``tolerances`` is provided.
             perturbation: Outward shapely buffer applied to polygon entities
                 before the sequential cut cascade. Mirrors cad_gmsh default
                 (1e-5). Used for the shared shapely pre-pass (polygon buffer
@@ -173,10 +175,16 @@ class CAD_OCC:
         if tolerances is None:
             pert = perturbation if perturbation is not None else 1e-5
             cut_f = cut_fuzzy_value if cut_fuzzy_value is not None else pert / 2
+            # Legacy default: fragment_fuzzy = point_tolerance. This is the
+            # historical behaviour; preserves welding of coincident faces
+            # whose TShape positions drift by ~perturbation during the
+            # cut cascade. New callers should use ``tolerances=`` with
+            # ``Tolerances.from_characteristic_length(L)`` for the audited
+            # 2x-perturbation default.
             frag_f = (
                 fragment_fuzzy_value
                 if fragment_fuzzy_value is not None
-                else min(point_tolerance, pert)
+                else point_tolerance
             )
             tolerances = Tolerances(
                 point_tolerance=point_tolerance,
