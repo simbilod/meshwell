@@ -725,3 +725,57 @@ def test_partition_raises_if_not_converged(monkeypatch):
 
     with pytest.raises(StructuredPartitionConvergenceError, match="did not converge"):
         build_plan([bot, mid_l, mid_r, top])
+
+
+def test_partition_misaligned_seams_each_slab_partitioned_by_union():
+    """4-layer misaligned: each slab's piece count matches the union of seams.
+
+    Each slab's piece count matches the union of seams that intersect its
+    footprint.
+
+    Slab Lk_A has footprint [0, seam_k] x [0, 2]; cuts intersecting that range
+    are the seams from any other layer m with 0 < seam_m < seam_k.
+    Same for Lk_B with [seam_k, 4] and seam_m > seam_k.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+
+    def _box(x0, y0, x1, y1):
+        return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+
+    seams = [1.0, 1.7, 2.5, 3.2]
+    ents = []
+    for i, sx in enumerate(seams):
+        zlo, zhi = float(i), float(i + 1)
+        for _j, (x0, x1, side) in enumerate([(0.0, sx, "A"), (sx, 4.0, "B")]):
+            ents.append(
+                PolyPrism(
+                    polygons=_box(x0, 0, x1, 2),
+                    buffers={zlo: 0.0, zhi: 0.0},
+                    structured=True,
+                    resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+                    physical_name=f"L{i+1}_{side}",
+                )
+            )
+    plan = build_plan(ents)
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
+
+    # For each layer k, side A spans [0, seam_k]. Count seams strictly
+    # between 0 and seam_k (from any other layer) → expected pieces = count + 1.
+    for k, sx_k in enumerate(seams, start=1):
+        cuts_A = [s for s in seams if 0 < s < sx_k]
+        cuts_B = [s for s in seams if sx_k < s < 4.0]
+        # The k-th layer's own seam is at sx_k; it's the slab boundary, not an interior cut.
+        # Filter out sx_k itself (== boundary), so use strict inequality.
+        n_pieces_A = len(cuts_A) + 1
+        n_pieces_B = len(cuts_B) + 1
+        assert len(by_name[f"L{k}_A"].face_partition) == n_pieces_A, (
+            f"L{k}_A: expected {n_pieces_A} pieces from cuts {cuts_A}; "
+            f"got {len(by_name[f'L{k}_A'].face_partition)}"
+        )
+        assert len(by_name[f"L{k}_B"].face_partition) == n_pieces_B, (
+            f"L{k}_B: expected {n_pieces_B} pieces from cuts {cuts_B}; "
+            f"got {len(by_name[f'L{k}_B'].face_partition)}"
+        )
