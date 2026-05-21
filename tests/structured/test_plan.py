@@ -471,3 +471,103 @@ def test_collect_cut_sources_uses_slab_pieces_not_footprints():
     assert combined.intersects(
         Polygon([(1.4, -0.1), (1.6, -0.1), (1.6, 2.1), (1.4, 2.1)]).boundary
     )
+
+
+def test_collect_inherited_arcs_pulls_from_neighbour_provenance():
+    """Inherited arcs come from z-touching structured slabs with arc provenance."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _collect_inherited_arcs
+    from meshwell.structured.spec import (
+        PieceArcEdge,
+        PieceLineEdge,
+        PieceProvenance,
+        Slab,
+    )
+
+    s_self = Slab(
+        footprint=Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
+        zlo=1.0,
+        zhi=2.0,
+        physical_name=("SELF",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+        identify_arcs=True,
+    )
+    s_neigh = Slab(
+        footprint=Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("NEIGH",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+        identify_arcs=True,
+    )
+    arc_pts = ((0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.0, 0.0))
+    s_neigh.face_partition = [Polygon([(0, 0), (2, 0), (2, 4), (0, 4)])]
+    s_neigh.face_partition_provenance = [
+        PieceProvenance(
+            exterior_edges=[
+                PieceArcEdge(points=arc_pts, center=(1.0, 0.0, 0.0), radius=1.0),
+                PieceLineEdge(points=((2.0, 0.0, 0.0), (2.0, 4.0, 0.0))),
+            ],
+            interior_edges=[],
+        )
+    ]
+    inherited = _collect_inherited_arcs(
+        slab=s_self, slabs=[s_self, s_neigh], skip_slab_ids={id(s_self)}
+    )
+    assert len(inherited) == 1
+    assert inherited[0].radius == 1.0
+
+
+def test_collect_inherited_arcs_skips_when_identify_arcs_false():
+    """Receiving slab with identify_arcs=False inherits nothing."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _collect_inherited_arcs
+    from meshwell.structured.spec import (
+        PieceArcEdge,
+        PieceProvenance,
+        Slab,
+    )
+
+    s_self = Slab(
+        footprint=Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
+        zlo=1.0,
+        zhi=2.0,
+        physical_name=("SELF",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+        identify_arcs=False,
+    )
+    s_neigh = Slab(
+        footprint=Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("NEIGH",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+        identify_arcs=True,
+    )
+    s_neigh.face_partition = [Polygon([(0, 0), (2, 0), (2, 4), (0, 4)])]
+    s_neigh.face_partition_provenance = [
+        PieceProvenance(
+            exterior_edges=[
+                PieceArcEdge(
+                    points=((0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.0, 0.0)),
+                    center=(1.0, 0.0, 0.0),
+                    radius=1.0,
+                ),
+            ],
+            interior_edges=[],
+        )
+    ]
+    inherited = _collect_inherited_arcs(
+        slab=s_self, slabs=[s_self, s_neigh], skip_slab_ids={id(s_self)}
+    )
+    assert inherited == []

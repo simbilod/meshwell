@@ -312,6 +312,42 @@ def _collect_cut_sources(
     return sources
 
 
+def _collect_inherited_arcs(
+    slab: "Slab",
+    slabs: list["Slab"],
+    skip_slab_ids: set[int],
+) -> list[PieceArcEdge]:
+    """Return PieceArcEdge entries inherited from z-touching arc neighbours.
+
+    Returns ``[]`` when the receiving slab has ``identify_arcs=False``
+    (no point classifying inherited arcs on a slab that doesn't track them).
+    Otherwise walks z-touching structured slabs, reads their
+    ``face_partition_provenance``, and extracts every ``PieceArcEdge`` from
+    each piece's exterior and interior edges.
+    """
+    if not slab.identify_arcs:
+        return []
+
+    inherited: list[PieceArcEdge] = []
+    for z in (slab.zlo, slab.zhi):
+        for n_slab in _structured_slabs_touching_z(z, slabs, skip_slab_ids):
+            if not n_slab.identify_arcs:
+                continue
+            if n_slab.face_partition_provenance is None:
+                continue
+            for prov in n_slab.face_partition_provenance:
+                inherited.extend(
+                    edge
+                    for edge in prov.exterior_edges
+                    if isinstance(edge, PieceArcEdge)
+                )
+                for ring_edges in prov.interior_edges:
+                    inherited.extend(
+                        edge for edge in ring_edges if isinstance(edge, PieceArcEdge)
+                    )
+    return inherited
+
+
 def _validate_no_mid_height_cuts(
     slabs: list[Slab],
     entities: list[Any],
