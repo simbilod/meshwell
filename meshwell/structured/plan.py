@@ -35,6 +35,10 @@ _Z_TOL = 1e-9  # exact-match tolerance for z-extent comparison
 # loud rather than loop forever.
 _PARTITION_FIXED_POINT_CAP: int = 16
 
+# Updated by compute_face_partition; read by tests to assert convergence
+# bounds. Module-level (single-threaded planner) is acceptable.
+_LAST_PARTITION_ITERATIONS: int = 0
+
 
 def gather_structured_entities(
     entities: list[Any],
@@ -850,6 +854,9 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
             f"face_partition did not converge after "
             f"{_PARTITION_FIXED_POINT_CAP} passes; unstable slabs: {unstable}"
         )
+
+    global _LAST_PARTITION_ITERATIONS
+    _LAST_PARTITION_ITERATIONS = _pass + 1
 
     # Final provenance attachment on converged partitions (idempotent for
     # arc slabs that already computed it during the loop).

@@ -1,6 +1,7 @@
 """Tests for meshwell.structured.plan."""
 from __future__ import annotations
 
+import pytest
 from shapely.geometry import Polygon
 
 
@@ -637,3 +638,90 @@ def test_partition_propagates_cut_two_steps():
     assert (
         len(by_name["TOP"].face_partition) >= 2
     ), f"TOP was not split; got {len(by_name['TOP'].face_partition)} pieces"
+
+
+def test_partition_converges_within_K_plus_two_passes():
+    """4-layer stack converges in <= K + 2 = 6 passes."""
+    from shapely.geometry import Polygon
+
+    import meshwell.structured.plan as plan_mod
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+
+    def _box(x0, y0, x1, y1):
+        return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+
+    # 4 stacked layers, misaligned seams (the xfail scenario, plan-only).
+    seams = [1.0, 1.7, 2.5, 3.2]
+    ents = []
+    for i, sx in enumerate(seams):
+        zlo, zhi = float(i), float(i + 1)
+        for j, (x0, x1) in enumerate([(0.0, sx), (sx, 4.0)]):
+            ents.append(
+                PolyPrism(
+                    polygons=_box(x0, 0, x1, 2),
+                    buffers={zlo: 0.0, zhi: 0.0},
+                    structured=True,
+                    resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+                    physical_name=f"L{i+1}_{'A' if j == 0 else 'B'}",
+                )
+            )
+    build_plan(ents)
+    # K = 4 z-intervals; cap was min(K + 2, _PARTITION_FIXED_POINT_CAP) so
+    # convergence should occur within K + 2 = 6 passes.
+    assert plan_mod._LAST_PARTITION_ITERATIONS <= 6, (
+        f"converged in {plan_mod._LAST_PARTITION_ITERATIONS} passes; "
+        f"expected <= 6 for K=4 stack"
+    )
+
+
+def test_partition_raises_if_not_converged(monkeypatch):
+    """Tripping the cap surfaces StructuredPartitionConvergenceError."""
+    from shapely.geometry import Polygon
+
+    import meshwell.structured.plan as plan_mod
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import (
+        StructuredExtrusionResolutionSpec,
+        StructuredPartitionConvergenceError,
+        build_plan,
+    )
+
+    def _box(x0, y0, x1, y1):
+        return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+
+    # Force the cap to 1 — a 3-layer stack with transitive seams needs at
+    # least 2 passes to converge, so we should hit the cap.
+    monkeypatch.setattr(plan_mod, "_PARTITION_FIXED_POINT_CAP", 1)
+
+    bot = PolyPrism(
+        polygons=_box(0, 0, 4, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="BOT",
+    )
+    mid_l = PolyPrism(
+        polygons=_box(0, 0, 2.5, 2),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="MID_L",
+    )
+    mid_r = PolyPrism(
+        polygons=_box(2.5, 0, 4, 2),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="MID_R",
+    )
+    top = PolyPrism(
+        polygons=_box(0, 0, 4, 2),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="TOP",
+    )
+
+    with pytest.raises(StructuredPartitionConvergenceError, match="did not converge"):
+        build_plan([bot, mid_l, mid_r, top])
