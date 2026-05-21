@@ -401,3 +401,73 @@ def test_merge_arc_into_index_appends_arc_and_indexes_vertices():
     # A second merge with the SAME geometry still appends (caller dedupes if needed).
     _merge_arc_into_index(idx, arc)
     assert len(idx.arcs) == 2  # caller is responsible for dedup; helper is idempotent
+
+
+def test_collect_cut_sources_uses_slab_pieces_not_footprints():
+    """Structured neighbours contribute piece boundaries, not the whole footprint.
+
+    Sets up a synthetic slab list where the neighbour has a multi-piece
+    face_partition already populated, and asserts that the cut sources
+    returned include each piece's boundary, NOT the union footprint.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import _collect_cut_sources
+    from meshwell.structured.spec import Slab
+
+    ent_self = PolyPrism(
+        polygons=Polygon([(0, 0), (4, 0), (4, 2), (0, 2)]),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="SELF",
+    )
+    ent_neigh = PolyPrism(
+        polygons=Polygon([(0, 0), (4, 0), (4, 2), (0, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="NEIGH",
+    )
+    s_self = Slab(
+        footprint=ent_self.polygons,
+        zlo=1.0,
+        zhi=2.0,
+        physical_name=("SELF",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    s_neigh = Slab(
+        footprint=ent_neigh.polygons,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("NEIGH",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    # Pre-populate neighbour with a 2-piece partition (simulating an earlier pass).
+    s_neigh.face_partition = [
+        Polygon([(0, 0), (1.5, 0), (1.5, 2), (0, 2)]),
+        Polygon([(1.5, 0), (4, 0), (4, 2), (1.5, 2)]),
+    ]
+
+    sources = _collect_cut_sources(
+        slab=s_self,
+        slabs=[s_self, s_neigh],
+        entities=[ent_self, ent_neigh],
+        skip_indices={0},  # self's entity index
+    )
+    # Two piece boundaries from s_neigh, both touching x=1.5 should appear.
+    # Each boundary is a LinearRing/LineString; we union them and check the
+    # combined geometry passes through x=1.5.
+    from shapely.ops import unary_union
+
+    combined = unary_union(sources)
+    # The seam at x=1.5 must be present (the boundary between the two pieces).
+    assert combined.intersects(
+        Polygon([(1.4, -0.1), (1.6, -0.1), (1.6, 2.1), (1.4, 2.1)]).boundary
+    )

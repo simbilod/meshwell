@@ -262,6 +262,56 @@ def _structured_slabs_touching_z(
     return out
 
 
+def _collect_cut_sources(
+    slab: "Slab",
+    slabs: list["Slab"],
+    entities: list[Any],
+    skip_indices: set[int],
+) -> list[Any]:
+    """Return shapely boundary geometries that should cut ``slab``'s footprint.
+
+    Two arms:
+
+    - Unstructured z-touching entities contribute their **footprint
+      boundary**. (Structured entities are filtered out here; their
+      cuts come from the slab arm below, which uses piece boundaries.)
+    - Structured z-touching slabs contribute **each piece's boundary**
+      from their current ``face_partition``. On iteration 1, every
+      slab's face_partition is ``[footprint]`` so this matches today's
+      behavior; later iterations refine.
+    """
+    sources: list[Any] = []
+
+    # Unstructured-entity arm.
+    for i, ent in enumerate(entities):
+        if i in skip_indices:
+            continue
+        if getattr(ent, "structured", False):
+            continue  # structured slabs handled below
+        rng = _entity_z_range(ent)
+        if rng is None:
+            continue
+        zmin, zmax = rng
+        if (
+            abs(zmin - slab.zlo) < 1e-9
+            or abs(zmax - slab.zlo) < 1e-9
+            or abs(zmin - slab.zhi) < 1e-9
+            or abs(zmax - slab.zhi) < 1e-9
+        ):
+            fp = _entity_footprint(ent)
+            if fp is not None:
+                sources.append(fp.boundary)
+
+    # Structured-slab arm.
+    skip_slab_ids = {id(slab)}
+    for n_slab in _structured_slabs_touching_z(slab.zlo, slabs, skip_slab_ids):
+        sources.extend(piece.boundary for piece in n_slab.face_partition)
+    for n_slab in _structured_slabs_touching_z(slab.zhi, slabs, skip_slab_ids):
+        sources.extend(piece.boundary for piece in n_slab.face_partition)
+
+    return sources
+
+
 def _validate_no_mid_height_cuts(
     slabs: list[Slab],
     entities: list[Any],
