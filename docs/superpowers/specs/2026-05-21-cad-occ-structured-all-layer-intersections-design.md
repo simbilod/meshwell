@@ -21,7 +21,8 @@ Make the planner compute face_partitions that are stable under all-stack BOP fra
 
 Out of scope for this design (deferred to future specs):
 - Lateral-cut propagation between structured slabs in the **same** z-interval (e.g., L1L and L1R abutting at x = 2 within z = [0, 1]) where their shared edge is *interior* to a neighbour. Today's planner already handles the common case where same-z-interval slabs only contribute exterior boundary edges.
-- Arc provenance under transitive propagation (the xfail uses straight-edge slabs only).
+
+**Arc provenance under transitive propagation IS in scope** (folded in after brainstorming review) — see the "Arc-index merging" section below. Without it, a fix that works for straight seams would silently degrade arc identity in transitive scenarios (every inherited cut would be labelled `PieceLineEdge` even when the source neighbour piece's boundary was an arc), causing OCC BOP to see non-shared-TShape arc edges and break conformality.
 
 ## Approach
 
@@ -73,6 +74,36 @@ else:
 attach_face_partition_provenance(slabs, entities)    # once, on converged partitions
 ```
 
+### Arc-index merging (preserves arc identity through propagation)
+
+Arc identity lives in **metadata**, not in the shapely cut-source geometry. The shapely boundary of an arc-bounded piece is already a polyline approximation; what makes it an "arc edge" is the matching against an **arc index** built from the original footprint's vertex sequence (`_build_arc_index_from_footprint` → `decompose_vertices`, geometry_entity.py:358). After `polygonize`, `_classify_piece_boundary` walks output piece boundaries and checks each vertex against the index to label edges as `PieceArcEdge` vs `PieceLineEdge`.
+
+To preserve arc identity through the iteration, the arc index for slab S must grow to include arcs inherited from neighbour pieces (not just S's own footprint arcs):
+
+```
+for slab in slabs:
+    arc_index[slab] = _build_arc_index_from_footprint(slab.footprint, ...)  if slab.identify_arcs else None
+
+# during each fixed-point pass, BEFORE polygonize for slab S:
+if slab.identify_arcs:
+    for n_slab in z_touching_structured_slabs(slab):
+        if not n_slab.identify_arcs or n_slab.face_partition_provenance is None:
+            continue
+        for piece, prov in zip(n_slab.face_partition, n_slab.face_partition_provenance):
+            for edge in prov.exterior_edges + flatten(prov.interior_edges):
+                if isinstance(edge, PieceArcEdge):
+                    # add this arc's vertex sequence + (center, radius) to slab's
+                    # arc index, projected to slab's z if needed
+                    arc_index[slab].merge(edge)
+```
+
+The cut-source geometry passed to `polygonize` is unchanged (still the polyline boundary). The classifier becomes neighbour-aware via the merged index. Vertex comparison uses the receiving slab's `point_tolerance` (same as today's classifier) so sampling differences between the neighbour's polyline and the receiving slab's polygonize output are absorbed.
+
+Edge cases:
+- **Two neighbours contribute the same arc:** `merge` is idempotent on (center, radius, vertex-set) and reuses the same `PieceArcEdge`.
+- **Concentric arcs from different neighbours:** distinguished by vertex-set comparison; the index keeps them separate.
+- **A neighbour with `identify_arcs=False`:** its provenance is `None`; no arcs are inherited from it (correct: it contributed only straight edges).
+
 ### Why iteration 1 reproduces today's behavior
 
 On the first pass, every slab's `face_partition` is `[footprint]`, so each neighbour slab contributes exactly one piece whose boundary equals its footprint boundary. The union of structured-neighbour piece boundaries plus unstructured-neighbour footprint boundaries is therefore identical to today's `unary_union([poly.boundary for poly in all_neighbour_polys])`. Existing tests that pass today continue to pass after iteration 1 produces the same partition; iteration 2+ only fires if a slab gained new cuts from its neighbours during pass 1.
@@ -95,14 +126,21 @@ If `max_iter` is exhausted without convergence, raise `StructuredPartitionConver
 
 Refactor `compute_face_partition` (lines 570–647) into:
 
-- `compute_face_partition(slabs, entities)` — orchestrator: initialize, loop, attach provenance once at the end.
-- `_partition_pieces_for_slab(slab, slabs, entities, skip_indices) -> list[Polygon]` — single-slab inner kernel (today's per-slab logic).
+- `compute_face_partition(slabs, entities)` — orchestrator: initialize per-slab arc indices, run the fixed-point loop, attach provenance once at the end.
+- `_partition_pieces_for_slab(slab, slabs, entities, skip_indices, arc_index) -> list[Polygon]` — single-slab inner kernel.
 - `_collect_cut_sources(slab, slabs, entities, skip_indices) -> list[BaseGeometry]` — walks z-touching unstructured entities (footprint boundary) and z-touching structured slabs (piece boundaries from current `face_partition`).
+- `_collect_inherited_arcs(slab, slabs, skip_slab_ids) -> list[PieceArcEdge]` — walks z-touching structured slabs and extracts `PieceArcEdge` entries from their current `face_partition_provenance`. Returns `[]` if `slab.identify_arcs` is False or no neighbour has arcs.
 - `_structured_slabs_touching_z(z, slabs, skip_slab_ids, tol) -> list[Slab]` — mirror of the existing `_neighbours_touching_z` but over the slab list.
 
 Existing `_neighbours_touching_z` stays as-is and is used by `_collect_cut_sources` for the unstructured-entity arm. Add a small filter so that entities backed by a slab are *not* counted twice (i.e., unstructured-only).
 
-The provenance block currently embedded around lines 624–632 is moved into a new helper `_attach_face_partition_provenance(slabs, entities)` that runs once after the fixed-point loop converges.
+The arc index becomes a mutable structure that accumulates across iterations. Either:
+- (a) extend the existing `_build_arc_index_from_footprint` return type to support a `.merge(arc_edge)` method, or
+- (b) keep the index as a dict-like and add a module-level `_merge_arc_into_index(index, arc_edge, point_tolerance)` helper.
+
+Option (b) is preferred — smaller change, doesn't touch the existing footprint-only path.
+
+The provenance block currently embedded around lines 624–632 is moved into a new helper `_attach_face_partition_provenance(slabs, entities, arc_indices)` that runs once after the fixed-point loop converges, using the **final** per-slab arc index (which includes inherited arcs). Note: provenance must also be computed inside the loop on a "shadow" basis for any slab whose pieces are arc-bounded, because neighbour iterations consume `n_slab.face_partition_provenance` to extract `PieceArcEdge` entries. Concretely: at the end of each pass, for any slab whose face_partition changed AND whose `identify_arcs` is True, compute provenance immediately so the next pass can read it. Slabs with `identify_arcs=False` skip this and only get a (no-op) final attachment.
 
 ### `meshwell/structured/spec.py`
 
@@ -134,6 +172,12 @@ Add `StructuredPartitionConvergenceError` to the import list and `__all__`.
 - `test_partition_converges_within_K_passes`: expose an iteration counter (e.g., via a module-level debug variable or return value extension) and assert convergence ≤ stack_depth + 2 for a 4-layer scene.
 - `test_partition_raises_if_not_converged`: synthetic scene that artificially trips the cap. Implementation note: the cap will be a module-level constant in `plan.py` (e.g., `_PARTITION_FIXED_POINT_CAP = 16`) so it can be monkeypatched in the test to a small value (e.g., 1) on a 3-layer scene to force the cap path. Assert `StructuredPartitionConvergenceError`.
 
+### New arc-propagation tests in `tests/structured/test_structured_arc_polyprism.py`
+
+- `test_arc_provenance_propagates_to_neighbour_below`: a structured disc with `identify_arcs=True` at z=[1,2] split into 2 pieces by a structured strip at z=[2,3] that crosses through the disc's center. Below the disc, a structured slab at z=[0,1] whose footprint contains the disc's projected XY extent. Assert that the lower slab's face_partition has pieces whose provenance includes `PieceArcEdge` entries inherited from the disc above — these are the half-disc arc segments at the z=1 interface.
+- `test_arc_provenance_two_neighbours_same_arc`: two stacked structured discs (same XY, both `identify_arcs=True`) with a structured strip cap on top that cuts only the upper disc. The middle slab should inherit the arc from the upper disc's pieces. Assert the inherited arc has matching center/radius and is recorded once (not duplicated).
+- `test_no_arc_inheritance_when_neighbour_identify_arcs_false`: stacked structured disc (identify_arcs=False) + lower slab. Assert no `PieceArcEdge` entries appear in the lower slab's provenance (correct: arcs aren't identified anywhere in the scene).
+
 ### Existing-test fallout audit
 
 After the refactor, run the full `tests/structured/` suite. Any `len(face_partition) == N` assertions that flip get updated only if the new count is correct (more pieces from genuine propagation). Specific watchpoints:
@@ -152,9 +196,10 @@ If a test's assertion was previously masking under-partition, update the expecte
 | Convergence cap hit on a legitimate scene | Cap is `min(K + 2, 16)`; K rarely exceeds 5 in real designs. If it triggers in the wild, the error message identifies unstable slabs for follow-up. |
 | Performance regression on large scenes | Each pass is O(N · avg_neighbour_pieces); for N≈1000, K≈5, worst case ≈ 5000 polygonize calls, sub-second. No optimization needed in this spec; revisit if production scenes exceed it. |
 | Existing tests assert exact piece counts | Audit step in the test plan covers this. Most are unaffected because iteration 1 reproduces today's behavior. |
+| Arc-index merge misaligns inherited arc vertices with polygonize output (different polyline sampling between neighbour and receiving slab) | Vertex comparison uses the receiving slab's `point_tolerance` — same tolerance the existing classifier uses to match footprint arcs to polygonize output. If a neighbour sampled the arc at finer resolution than the receiving slab, the classifier may fall back to `PieceLineEdge` for a sub-segment; this is degraded but not incorrect (OCC still gets a polyline that geometrically matches both sides). |
+| Computing provenance inside the loop is expensive | Provenance computation is per-slab, scales with piece-boundary vertex count, and only fires for slabs with `identify_arcs=True`. Most scenes have few arc slabs. Within-loop provenance is gated on `slab.identify_arcs` AND `slab.face_partition changed this pass`. |
 
 ## Out of scope (future specs)
 
 - **Same-z-interval lateral cut propagation** (brainstorm scope b): if two structured slabs in the same z-interval abut at an XY position that lies *interior* to a vertical neighbour's footprint, the abutting edge should propagate to the neighbour's face_partition. Today's planner doesn't handle this; this spec doesn't either.
 - **Void-pattern multi-layer columns** (brainstorm scope c): when layer N has a void filled by layer N+1's material, the column's cross-layer interface logic could need more than vertical cut propagation. Not in scope here.
-- **Arc edge provenance under propagation**: provenance is computed once after convergence; arc handling under transitively-introduced piece boundaries is not validated by the xfail scene and is deferred to a separate spec if needed.
