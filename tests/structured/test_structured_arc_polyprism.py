@@ -164,3 +164,148 @@ def test_split_disc_meshes_with_provenance(tmp_path):
     ), f"Expected wedge cells; got {cell_types}"
     assert "disc" in m.field_data
     assert "cap" in m.field_data
+
+
+def test_arc_provenance_propagates_to_neighbour_below():
+    """A structured arc slab's PieceArcEdge propagates to a below-neighbour's provenance.
+
+    Layer mid (z=[1,2]): a disc (identify_arcs=True) cut into 2 half-pieces
+    by a structured strip cap above.
+    Layer bottom (z=[0,1]): a slab (identify_arcs=True) whose footprint
+    contains the disc's projected XY extent.
+
+    After planning, the bottom slab's face_partition_provenance should include
+    at least one PieceArcEdge inherited from the disc's two half-piece arcs.
+    """
+    import math
+
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+    from meshwell.structured.spec import PieceArcEdge
+
+    # 32-vertex disc, radius 1, centered at (0, 0)
+    n = 32
+    disc = Polygon(
+        [
+            (math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n))
+            for i in range(n)
+        ]
+    )
+
+    disc_slab = PolyPrism(
+        polygons=disc,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        point_tolerance=1e-9,
+        physical_name="DISC",
+    )
+    # Cap covers the upper half of the disc footprint at z=[2,3].
+    cap = PolyPrism(
+        polygons=Polygon([(-2, 0), (2, 0), (2, 2), (-2, 2)]),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="CAP",
+    )
+    bot = PolyPrism(
+        polygons=Polygon([(-2, -2), (2, -2), (2, 2), (-2, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        point_tolerance=1e-9,
+        physical_name="BOT",
+    )
+
+    plan = build_plan([bot, disc_slab, cap])
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
+
+    bot_slab = by_name["BOT"]
+    assert len(bot_slab.face_partition) >= 2, (
+        f"BOT should be cut by the disc's piece boundary at y=0; got "
+        f"{len(bot_slab.face_partition)} pieces"
+    )
+    assert bot_slab.face_partition_provenance is not None
+    arc_edges = []
+    for prov in bot_slab.face_partition_provenance:
+        arc_edges.extend(
+            edge for edge in prov.exterior_edges if isinstance(edge, PieceArcEdge)
+        )
+        for ring in prov.interior_edges:
+            arc_edges.extend(edge for edge in ring if isinstance(edge, PieceArcEdge))
+    assert arc_edges, (
+        "BOT face_partition_provenance contains no PieceArcEdge entries; "
+        "arc inheritance from the disc above did not propagate"
+    )
+    # Inherited arcs should have radius ~1 (the disc radius).
+    radii = [round(e.radius, 2) for e in arc_edges]
+    assert any(
+        abs(r - 1.0) < 0.05 for r in radii
+    ), f"no inherited arc has radius ~1; got radii: {radii}"
+
+
+def test_no_arc_inheritance_when_neighbour_identify_arcs_false():
+    """When the arc-bearing neighbour has identify_arcs=False, no arc inherits."""
+    import math
+
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+    from meshwell.structured.spec import PieceArcEdge
+
+    n = 32
+    disc = Polygon(
+        [
+            (math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n))
+            for i in range(n)
+        ]
+    )
+    disc_slab = PolyPrism(
+        polygons=disc,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=False,  # KEY: arcs disabled on the neighbour
+        physical_name="DISC",
+    )
+    cap = PolyPrism(
+        polygons=Polygon([(-2, 0), (2, 0), (2, 2), (-2, 2)]),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="CAP",
+    )
+    bot = PolyPrism(
+        polygons=Polygon([(-2, -2), (2, -2), (2, 2), (-2, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="BOT",
+    )
+    plan = build_plan([bot, disc_slab, cap])
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
+    bot_slab = by_name["BOT"]
+
+    # No arcs anywhere (BOT's own footprint is a square; the neighbour is non-arc).
+    if bot_slab.face_partition_provenance is None:
+        return  # acceptable: provenance not even computed
+    for prov in bot_slab.face_partition_provenance:
+        for edge in prov.exterior_edges:
+            assert not isinstance(
+                edge, PieceArcEdge
+            ), "BOT should not inherit arc edges when DISC has identify_arcs=False"
+        for ring in prov.interior_edges:
+            for edge in ring:
+                assert not isinstance(edge, PieceArcEdge)
