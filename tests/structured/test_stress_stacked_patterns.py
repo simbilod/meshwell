@@ -303,20 +303,6 @@ def test_three_stacked_layers_with_void_keep_patterns_mesh_clean(tmp_path):
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Misaligned per-layer seams break the structured planner: OCC "
-        "fragmentation imprints both above- and below-neighbour seams onto "
-        "interface faces, producing 5-corner faces that the structured "
-        "pipeline still tries to mesh as transfinite (gmsh: 'Surface N is "
-        "transfinite but has 5 corners'). The current face_partition logic "
-        "considers each interface face independently; a clean fix requires "
-        "computing the UNION of cut lines across ALL stacked layers and "
-        "splitting each slab into pieces accordingly."
-    ),
-    strict=True,
-    raises=Exception,
-)
 def test_four_stacked_layers_misaligned_seams_mesh_clean(tmp_path):
     """Hardest case: 4 stacked z-intervals with misaligned XY seams per layer.
 
