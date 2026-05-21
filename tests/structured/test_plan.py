@@ -371,3 +371,33 @@ def test_structured_slabs_touching_z_returns_zlo_zhi_matches():
     )
     names2 = {s.physical_name[0] for s in result2}
     assert names2 == {"B"}
+
+
+def test_merge_arc_into_index_appends_arc_and_indexes_vertices():
+    """An inherited PieceArcEdge gets a fresh arc_id, points indexed for lookup."""
+    from meshwell.structured.plan import _ArcIndex, _merge_arc_into_index
+    from meshwell.structured.spec import PieceArcEdge
+
+    idx = _ArcIndex(ndigits=3)
+    arc = PieceArcEdge(
+        points=((0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.0, 0.0)),
+        center=(1.0, 0.0, 0.0),
+        radius=1.0,
+    )
+    _merge_arc_into_index(idx, arc)
+
+    assert len(idx.arcs) == 1
+    assert idx.arcs[0].center == (1.0, 0.0, 0.0)
+    assert idx.arcs[0].radius == 1.0
+    # All 3 points indexed.
+    assert (0.0, 0.0) in idx.vertex_to_arcs
+    assert (1.0, 1.0) in idx.vertex_to_arcs
+    assert (2.0, 0.0) in idx.vertex_to_arcs
+    # The (arc_id, position) pairs map back consistently.
+    arc_id_0 = idx.vertex_to_arcs[(0.0, 0.0)][0][0]
+    arc_id_2 = idx.vertex_to_arcs[(2.0, 0.0)][0][0]
+    assert arc_id_0 == arc_id_2  # same arc
+
+    # A second merge with the SAME geometry still appends (caller dedupes if needed).
+    _merge_arc_into_index(idx, arc)
+    assert len(idx.arcs) == 2  # caller is responsible for dedup; helper is idempotent

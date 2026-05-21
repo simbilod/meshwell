@@ -476,6 +476,30 @@ def _build_arc_index_from_footprint(
     return index
 
 
+def _merge_arc_into_index(index: _ArcIndex, arc_edge: PieceArcEdge) -> None:
+    """Append a neighbour-inherited PieceArcEdge to an existing arc index.
+
+    Assigns a fresh ``arc_id`` (continuing the per-index counter) and
+    indexes each vertex of the arc so :func:`_classify_piece_boundary`
+    can recognize inherited arc edges on the receiving slab's pieces.
+
+    The caller is responsible for any cross-iteration deduplication
+    (e.g., skipping arcs that were already merged in a prior pass);
+    this helper itself is idempotent on inputs but does not deduplicate.
+    """
+    arc_id = len(index.arcs)
+    indexed = _IndexedArc(
+        arc_id=arc_id,
+        center=arc_edge.center,
+        radius=arc_edge.radius,
+        points=tuple(arc_edge.points),
+    )
+    index.arcs.append(indexed)
+    for pos, (x, y, _z) in enumerate(indexed.points):
+        key = (round(x, index.ndigits), round(y, index.ndigits))
+        index.vertex_to_arcs.setdefault(key, []).append((arc_id, pos))
+
+
 def _classify_piece_boundary(
     piece: Polygon,
     arc_index: _ArcIndex,
