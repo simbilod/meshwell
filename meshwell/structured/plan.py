@@ -23,6 +23,7 @@ from meshwell.structured.spec import (
     Slab,
     StructuredExtrusionResolutionSpec,
     StructuredOverlapError,
+    StructuredPartitionConvergenceError,
     StructuredPlan,
 )
 
@@ -704,81 +705,175 @@ def _classify_piece_boundary(
     return PieceProvenance(exterior_edges=exterior_edges, interior_edges=interior_edges)
 
 
+def _partition_pieces_for_slab(
+    slab: "Slab",
+    cut_sources: list[Any],
+) -> list[Polygon]:
+    """Polygonize the slab footprint with the given cut sources.
+
+    Pure function: deterministic given (slab.footprint, cut_sources).
+    Returns the new face_partition list (>=1 element).
+    """
+    if not cut_sources:
+        return [slab.footprint]
+    all_boundaries = unary_union(cut_sources)
+    boundary = slab.footprint.boundary
+    combined = unary_union([boundary, all_boundaries.intersection(slab.footprint)])
+    raw = list(polygonize(combined))
+    pieces = [
+        piece for piece in raw if slab.footprint.contains(piece.representative_point())
+    ]
+    return pieces if pieces else [slab.footprint]
+
+
+def _attach_face_partition_provenance(
+    slabs: list["Slab"],
+    arc_indices: dict[int, "_ArcIndex"],
+) -> None:
+    """Compute provenance for arc slabs with multi-piece partitions.
+
+    Called after the fixed-point loop converges. Uses the final (possibly
+    merged) per-slab arc index so inherited arc segments are recognized.
+    """
+    for slab in slabs:
+        if not slab.identify_arcs:
+            continue
+        if len(slab.face_partition) <= 1:
+            slab.face_partition_provenance = None
+            continue
+        idx = arc_indices.get(id(slab))
+        if idx is None:
+            continue
+        slab.face_partition_provenance = [
+            _classify_piece_boundary(piece, idx) for piece in slab.face_partition
+        ]
+
+
 def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
     """Compute slab.face_partition (and face_partition_provenance) in place.
 
-    For each slab, decompose its footprint into pairwise-disjoint pieces
-    based on the union of any neighbouring entity footprints touching
-    z=zlo or z=zhi. No-neighbour case: one piece = the whole footprint.
+    Uses a fixed-point iteration: each pass collects cut sources from
+    z-touching neighbours' *current* face_partition pieces (not just
+    their footprint), so cuts introduced one z-step away propagate
+    transitively across the stack. Iteration 1 reproduces the single-pass
+    behavior because every slab's initial face_partition is its footprint.
 
-    When ``slab.identify_arcs=True``, also computes
-    ``slab.face_partition_provenance``: a parallel list of
-    :class:`PieceProvenance` objects that label each piece's boundary
-    segments as arc-inherited or straight-cut. The arc index is built once
-    from the original footprint (where the heuristic is reliable), avoiding
-    mis-classification of seam-cut vertices.
+    For arc slabs, the per-slab arc index accumulates inherited
+    PieceArcEdge entries from neighbour provenance so the classifier
+    labels inherited arc segments correctly.
     """
     own_indices_by_slab = {id(s): {s.source_index} for s in slabs}
 
+    # Initialize each slab's face_partition to [footprint] so iteration 1
+    # sees the same cut sources today's single-pass code does.
     for slab in slabs:
-        skip = own_indices_by_slab[id(slab)]
-        neighbours_lo = _neighbours_touching_z(slab.zlo, entities, skip)
-        neighbours_hi = _neighbours_touching_z(slab.zhi, entities, skip)
-        all_neighbour_polys = neighbours_lo + neighbours_hi
-        if not all_neighbour_polys:
-            slab.face_partition = [slab.footprint]
-            # Single piece = no split: the heuristic path in phantom.py
-            # (_make_arc_wire_from_coords) produces OCC geometry that
-            # exactly matches PolyPrism.instanciate_occ. No provenance needed.
-            continue
-        # Phase 5(d): use individual neighbour boundaries (common refinement) so
-        # overlapping neighbours' internal seams appear in the partition. Otherwise
-        # BOP cuts the slab face at boundaries the planner didn't anticipate,
-        # producing multi-output-face per piece.
-        all_boundaries = unary_union([poly.boundary for poly in all_neighbour_polys])
-        boundary = slab.footprint.boundary
-        combined = unary_union([boundary, all_boundaries.intersection(slab.footprint)])
-        raw = list(polygonize(combined))
-        pieces = [
-            piece
-            for piece in raw
-            if slab.footprint.contains(piece.representative_point())
-        ]
-        slab.face_partition = pieces if pieces else [slab.footprint]
-        # Provenance is only needed when there are multiple pieces (split case).
-        # When there is only one piece, the heuristic path in phantom.py produces
-        # the correct OCC geometry without provenance. This avoids TShape mismatches
-        # that arise from differences in seam rotation between the provenance arc
-        # classifier and the canonical-seam-aware heuristic decomposer.
-        arc_index_for_slab = None
+        slab.face_partition = [slab.footprint]
+        slab.face_partition_provenance = None
+
+    # Per-slab arc index, built once from the footprint. Mutates over
+    # iterations as inherited arcs are merged in.
+    arc_indices: dict[int, _ArcIndex] = {}
+    for slab in slabs:
         if slab.identify_arcs:
-            arc_index_for_slab = _build_arc_index_from_footprint(
+            arc_indices[id(slab)] = _build_arc_index_from_footprint(
                 slab.footprint,
                 identify_arcs=True,
                 min_arc_points=slab.min_arc_points,
                 arc_tolerance=slab.arc_tolerance,
             )
-        if (
-            slab.identify_arcs
-            and arc_index_for_slab is not None
-            and len(slab.face_partition) > 1
-        ):
-            slab.face_partition_provenance = [
-                _classify_piece_boundary(piece, arc_index_for_slab)
-                for piece in slab.face_partition
-            ]
-        # Validate neighbour boundaries against true arc geometry — must run
-        # whenever the slab has arcs AND has any neighbour, regardless of
-        # whether polygonize captured the cuts (it can silently miss off-
-        # vertex cuts, leaving the bad case to surface as a BOP failure).
-        if (
-            slab.identify_arcs
-            and arc_index_for_slab is not None
-            and all_neighbour_polys
-        ):
+
+    # Track inherited arcs already merged for each slab, to avoid re-merging
+    # the same neighbour PieceArcEdge across iterations.
+    merged_arc_keys: dict[int, set[tuple]] = {id(s): set() for s in slabs}
+
+    # Cache cut-source WKB sets to detect convergence per slab.
+    cached_wkb: dict[int, frozenset] = {id(s): frozenset() for s in slabs}
+
+    for _pass in range(_PARTITION_FIXED_POINT_CAP):
+        changed = False
+        for slab in slabs:
+            cut_sources = _collect_cut_sources(
+                slab=slab,
+                slabs=slabs,
+                entities=entities,
+                skip_indices=own_indices_by_slab[id(slab)],
+            )
+            new_wkb = frozenset(geom.wkb for geom in cut_sources)
+            if new_wkb == cached_wkb[id(slab)]:
+                continue  # stable for this pass
+            cached_wkb[id(slab)] = new_wkb
+
+            # Merge inherited arcs into this slab's arc index, deduped by
+            # (center, radius, sorted vertex tuple).
+            if slab.identify_arcs:
+                idx = arc_indices[id(slab)]
+                seen = merged_arc_keys[id(slab)]
+                for arc_edge in _collect_inherited_arcs(
+                    slab=slab,
+                    slabs=slabs,
+                    skip_slab_ids={id(slab)},
+                ):
+                    key = (
+                        arc_edge.center,
+                        arc_edge.radius,
+                        tuple(sorted(arc_edge.points)),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    _merge_arc_into_index(idx, arc_edge)
+
+            slab.face_partition = _partition_pieces_for_slab(slab, cut_sources)
+            changed = True
+
+            # If this slab has arcs and >1 piece, compute provenance now so
+            # the NEXT pass can read it via _collect_inherited_arcs (other
+            # slabs in this pass have not yet seen this change either, so
+            # within-pass ordering doesn't matter).
+            if slab.identify_arcs and len(slab.face_partition) > 1:
+                idx = arc_indices[id(slab)]
+                slab.face_partition_provenance = [
+                    _classify_piece_boundary(piece, idx)
+                    for piece in slab.face_partition
+                ]
+
+        if not changed:
+            break
+    else:
+        unstable = [
+            (s.physical_name, s.zlo, s.zhi)
+            for s in slabs
+            # any slab whose final-pass wkb didn't match the prior round
+            if cached_wkb[id(s)]
+        ]
+        raise StructuredPartitionConvergenceError(
+            f"face_partition did not converge after "
+            f"{_PARTITION_FIXED_POINT_CAP} passes; unstable slabs: {unstable}"
+        )
+
+    # Final provenance attachment on converged partitions (idempotent for
+    # arc slabs that already computed it during the loop).
+    _attach_face_partition_provenance(slabs, arc_indices)
+
+    # Validate arc-vs-neighbour alignment AFTER convergence so all
+    # transitively-introduced cuts are visible.
+    for slab in slabs:
+        if not slab.identify_arcs:
+            continue
+        idx = arc_indices.get(id(slab))
+        if idx is None:
+            continue
+        neighbours_lo = _neighbours_touching_z(
+            slab.zlo, entities, own_indices_by_slab[id(slab)]
+        )
+        neighbours_hi = _neighbours_touching_z(
+            slab.zhi, entities, own_indices_by_slab[id(slab)]
+        )
+        all_neighbour_polys = neighbours_lo + neighbours_hi
+        if all_neighbour_polys:
             _validate_arc_neighbour_alignment(
                 slab,
-                arc_index_for_slab,
+                idx,
                 all_neighbour_polys,
                 tol=slab.arc_tolerance,
             )

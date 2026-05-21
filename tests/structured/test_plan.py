@@ -571,3 +571,69 @@ def test_collect_inherited_arcs_skips_when_identify_arcs_false():
         slab=s_self, slabs=[s_self, s_neigh], skip_slab_ids={id(s_self)}
     )
     assert inherited == []
+
+
+def test_partition_propagates_cut_two_steps():
+    """3-layer stack; middle layer's internal seam propagates to top and bottom.
+
+    Layer 1 (z=[0,1]): single slab, no internal seam, footprint [0,4]x[0,2].
+    Layer 2 (z=[1,2]): two slabs meeting at x=2.5 (internal seam).
+    Layer 3 (z=[2,3]): single slab, no internal seam, footprint [0,4]x[0,2].
+
+    After planning, layer 1's slab must be partitioned by x=2.5 (propagated
+    down from layer 2's piece boundary), and layer 3's slab must be too
+    (propagated up).
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+
+    def _box(x0, y0, x1, y1):
+        return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+
+    bot = PolyPrism(
+        polygons=_box(0, 0, 4, 2),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="BOT",
+    )
+    mid_l = PolyPrism(
+        polygons=_box(0, 0, 2.5, 2),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="MID_L",
+    )
+    mid_r = PolyPrism(
+        polygons=_box(2.5, 0, 4, 2),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="MID_R",
+    )
+    top = PolyPrism(
+        polygons=_box(0, 0, 4, 2),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="TOP",
+    )
+    plan = build_plan([bot, mid_l, mid_r, top])
+
+    by_name = {}
+    for s in plan.slabs:
+        by_name[s.physical_name[0]] = s
+
+    # BOT and TOP must each be split at x=2.5 by the propagated piece boundary
+    # from mid_l/mid_r. (Today, only the direct neighbour FOOTPRINTS contribute,
+    # but mid_l/mid_r footprints together cover [0,4] so no cut would appear
+    # in BOT/TOP under the old logic. Under the new logic, mid_l's piece
+    # boundary at x=2.5 is a cut source for both BOT and TOP.)
+    assert (
+        len(by_name["BOT"].face_partition) >= 2
+    ), f"BOT was not split; got {len(by_name['BOT'].face_partition)} pieces"
+    assert (
+        len(by_name["TOP"].face_partition) >= 2
+    ), f"TOP was not split; got {len(by_name['TOP'].face_partition)} pieces"
