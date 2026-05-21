@@ -36,3 +36,12 @@ def test_spec_equality_on_identical_fields():
     a = StructuredExtrusionResolutionSpec(n_layers=[2])
     b = StructuredExtrusionResolutionSpec(n_layers=[2])
     assert a == b
+
+
+def test_structured_partition_convergence_error_is_runtime_error():
+    """The new convergence error must be a RuntimeError subclass and exportable."""
+    from meshwell.structured import StructuredPartitionConvergenceError
+
+    assert issubclass(StructuredPartitionConvergenceError, RuntimeError)
+    err = StructuredPartitionConvergenceError("did not converge")
+    assert "did not converge" in str(err)

@@ -25,6 +25,7 @@ from meshwell.structured.spec import (
     StructuredMeshPlan,
     StructuredMidHeightCutError,
     StructuredOverlapError,
+    StructuredPartitionConvergenceError,
 )
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "StructuredMeshPlan",
     "StructuredMidHeightCutError",
     "StructuredOverlapError",
+    "StructuredPartitionConvergenceError",
     "apply_structured_mesh",
     "build_phantom_shapes",
     "build_plan",

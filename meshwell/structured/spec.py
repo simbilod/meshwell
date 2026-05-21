@@ -118,6 +118,10 @@ class StructuredLateralUnstructuredNeighbourError(ValueError):
     """
 
 
+class StructuredPartitionConvergenceError(RuntimeError):
+    """face_partition fixed-point iteration did not converge within the iteration cap."""
+
+
 class StructuredArcSplitError(ValueError):
     """Raised when a structured arc slab is split at a non-polygon-vertex position.
 
