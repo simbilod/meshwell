@@ -793,8 +793,13 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
     # Cache cut-source WKB sets to detect convergence per slab.
     cached_wkb: dict[int, frozenset] = {id(s): frozenset() for s in slabs}
 
+    # Track which slabs were still changing in the most recent pass so we
+    # can report them in the convergence error.
+    changed_last_pass: set[int] = set()
+
     for _pass in range(_PARTITION_FIXED_POINT_CAP):
         changed = False
+        changed_last_pass = set()
         for slab in slabs:
             cut_sources = _collect_cut_sources(
                 slab=slab,
@@ -806,6 +811,7 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
             if new_wkb == cached_wkb[id(slab)]:
                 continue  # stable for this pass
             cached_wkb[id(slab)] = new_wkb
+            changed_last_pass.add(id(slab))
 
             # Merge inherited arcs into this slab's arc index, deduped by
             # (center, radius, sorted vertex tuple).
@@ -847,8 +853,8 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
         unstable = [
             (s.physical_name, s.zlo, s.zhi)
             for s in slabs
-            # any slab whose final-pass wkb didn't match the prior round
-            if cached_wkb[id(s)]
+            # Slabs whose cut-source set was still changing in the final pass.
+            if id(s) in changed_last_pass
         ]
         raise StructuredPartitionConvergenceError(
             f"face_partition did not converge after "
