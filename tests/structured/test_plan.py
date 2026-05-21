@@ -314,3 +314,12 @@ def test_face_partition_overlapping_neighbours_common_refinement():
     compute_face_partition(slabs, entities=[s, a, b])
     # 3 pieces: x in [0,1] (A only), x in [1,3] (AB), x in [3,4] (B only)
     assert len(slabs[0].face_partition) == 3
+
+
+def test_partition_fixed_point_cap_is_module_constant():
+    """The cap must be a module-level int so tests can monkeypatch it."""
+    import meshwell.structured.plan as plan_mod
+
+    assert hasattr(plan_mod, "_PARTITION_FIXED_POINT_CAP")
+    assert isinstance(plan_mod._PARTITION_FIXED_POINT_CAP, int)
+    assert plan_mod._PARTITION_FIXED_POINT_CAP >= 4

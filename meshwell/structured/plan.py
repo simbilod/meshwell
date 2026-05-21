@@ -28,6 +28,12 @@ from meshwell.structured.spec import (
 
 _Z_TOL = 1e-9  # exact-match tolerance for z-extent comparison
 
+# Hard ceiling for the face_partition fixed-point iteration. Convergence is
+# typically bounded by the longest face-touching z-chain K; we use
+# min(K + 2, _PARTITION_FIXED_POINT_CAP) so pathological scenes still fail
+# loud rather than loop forever.
+_PARTITION_FIXED_POINT_CAP: int = 16
+
 
 def gather_structured_entities(
     entities: list[Any],
