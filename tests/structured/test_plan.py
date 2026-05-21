@@ -323,3 +323,51 @@ def test_partition_fixed_point_cap_is_module_constant():
     assert hasattr(plan_mod, "_PARTITION_FIXED_POINT_CAP")
     assert isinstance(plan_mod._PARTITION_FIXED_POINT_CAP, int)
     assert plan_mod._PARTITION_FIXED_POINT_CAP >= 4
+
+
+def test_structured_slabs_touching_z_returns_zlo_zhi_matches():
+    """A slab is z-touching if its zlo or zhi equals the query z (within tol)."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _structured_slabs_touching_z
+    from meshwell.structured.spec import Slab
+
+    s_lo = Slab(
+        footprint=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("A",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    s_hi = Slab(
+        footprint=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        zlo=1.0,
+        zhi=2.0,
+        physical_name=("B",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    s_far = Slab(
+        footprint=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        zlo=5.0,
+        zhi=6.0,
+        physical_name=("C",),
+        source_index=2,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+
+    # z=1.0 should match s_lo.zhi and s_hi.zlo, not s_far.
+    result = _structured_slabs_touching_z(1.0, [s_lo, s_hi, s_far], skip_slab_ids=set())
+    names = {s.physical_name[0] for s in result}
+    assert names == {"A", "B"}
+
+    # skip_slab_ids filters out by id().
+    result2 = _structured_slabs_touching_z(
+        1.0, [s_lo, s_hi, s_far], skip_slab_ids={id(s_lo)}
+    )
+    names2 = {s.physical_name[0] for s in result2}
+    assert names2 == {"B"}

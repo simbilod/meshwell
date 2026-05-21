@@ -241,6 +241,27 @@ def _neighbours_touching_z(
     return out
 
 
+def _structured_slabs_touching_z(
+    z: float,
+    slabs: list["Slab"],
+    skip_slab_ids: set[int],
+    tol: float = 1e-9,
+) -> list["Slab"]:
+    """Structured slabs whose zlo or zhi equals z within tol.
+
+    Mirrors :func:`_neighbours_touching_z` but walks the slab list (so the
+    caller can read each slab's *current* face_partition rather than just
+    the entity footprint).
+    """
+    out: list[Slab] = []
+    for s in slabs:
+        if id(s) in skip_slab_ids:
+            continue
+        if abs(s.zlo - z) < tol or abs(s.zhi - z) < tol:
+            out.append(s)
+    return out
+
+
 def _validate_no_mid_height_cuts(
     slabs: list[Slab],
     entities: list[Any],
