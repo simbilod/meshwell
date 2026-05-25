@@ -18,7 +18,11 @@ from meshwell.structured.builder import apply_structured_mesh, resolve_mesh_plan
 from meshwell.structured.phantom import build_phantom_shapes, extract_phantom_map
 from meshwell.structured.plan import build_plan
 from meshwell.structured.spec import (
+    ArrangementEdge,
+    ArrangementFace,
+    CanonicalCircle,
     PhantomMap,
+    StackArrangement,
     StructuredArcSplitError,
     StructuredExtrusionResolutionSpec,
     StructuredLateralUnstructuredNeighbourError,
@@ -29,7 +33,11 @@ from meshwell.structured.spec import (
 )
 
 __all__ = [
+    "ArrangementEdge",
+    "ArrangementFace",
+    "CanonicalCircle",
     "PhantomMap",
+    "StackArrangement",
     "StructuredArcSplitError",
     "StructuredExtrusionResolutionSpec",
     "StructuredLateralUnstructuredNeighbourError",

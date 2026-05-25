@@ -153,6 +153,58 @@ class StructuredArcSplitError(ValueError):
 
 
 @dataclass(frozen=True)
+class CanonicalCircle:
+    """Identity of a circular curve shared across arrangement edges.
+
+    Two arrangement edges with CanonicalCircle instances matching on
+    (center, radius) within arc_tolerance are sub-arcs of the same
+    physical circle. The phantom builder uses (center, radius) plus arc
+    endpoints to construct OCC arc geometry; consumers of the same
+    circle produce bit-identical TShapes.
+    """
+
+    center: tuple[float, float]
+    radius: float
+
+
+@dataclass(frozen=True)
+class ArrangementEdge:
+    """One non-crossing curve segment in the planar arrangement.
+
+    vertices: ordered XY sample points; >=2 elements. Endpoints are
+        vertices[0] and vertices[-1].
+    circle: None means a straight line. Not None means a sub-arc of
+        the named circle; endpoints lie on it.
+    """
+
+    edge_id: int
+    vertices: tuple[tuple[float, float], ...]
+    circle: "CanonicalCircle | None"
+
+
+@dataclass
+class ArrangementFace:
+    """One face of the planar arrangement (a Polygon with no interior holes).
+
+    boundary: ordered list of (edge_id, reversed) tuples describing the
+        traversal of the face's outer ring. ``reversed=True`` means the
+        edge's vertex sequence is walked in reverse.
+    """
+
+    face_id: int
+    polygon: "Polygon"
+    boundary: list[tuple[int, bool]]
+
+
+@dataclass
+class StackArrangement:
+    """Per-z-touching-component planar arrangement; consumed by face-partition assignment."""
+
+    edges: list[ArrangementEdge]
+    faces: list[ArrangementFace]
+
+
+@dataclass(frozen=True)
 class PieceArcEdge:
     """One arc segment on a piece boundary.
 
@@ -224,6 +276,14 @@ class Slab:
     # face_partition[i]. None means "treat every edge as a straight line"
     # (matching the existing polyline-only behaviour).
     face_partition_provenance: "list[PieceProvenance] | None" = None
+    # Populated by Step 0 (sub-level mesh-order resolution) of the new
+    # planar-arrangement pipeline. Equal to footprint when no carving
+    # applies. None until Step 0 runs.
+    resolved_footprint: "Polygon | MultiPolygon | None" = None
+    # Populated by Step F (assign-faces-to-slabs). Parallel to face_partition;
+    # face_partition_edges[i] is the boundary of face_partition[i] expressed
+    # as (edge_id, reversed) tuples into the slab's stack arrangement.
+    face_partition_edges: "list[list[tuple[int, bool]]] | None" = None
 
 
 @dataclass(frozen=True)
