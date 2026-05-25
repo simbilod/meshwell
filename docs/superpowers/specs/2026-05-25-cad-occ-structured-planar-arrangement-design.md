@@ -124,14 +124,28 @@ assign_face_partition_from_arrangement(kept_slabs, arrangements)
 
 ### Algorithm
 
+**Step 0 — sub-level mesh-order resolution.** Replaces today's "drop the loser" overlap policy. For each z-interval, gather the structured slabs in it plus any `mesh_bool=False` entities touching the same z-range. Sort kept slabs by `(mesh_order, source_index)` ascending (lower wins). Walk in order; for each slab, set its **resolved footprint** to:
+
+```
+slab.resolved_footprint = original_footprint
+                        - union(higher_priority_winner_footprints)
+                        - union(mesh_bool_False_footprints touching this z-interval)
+```
+
+The winner keeps its full footprint; the next slab in priority order keeps only what doesn't overlap a winner; and so on. `mesh_bool=False` entities carve out from every overlapping kept slab without themselves becoming meshable volumes — they survive into the arrangement *only* as boundary cuts in step C and as physical-name annotations on the resulting boundary surfaces (for downstream surface tagging).
+
+A slab whose `resolved_footprint` is empty (fully dominated) is dropped from the pipeline. An `OverlapPair` record is emitted for diagnostics, same as today.
+
+Policy B's z-extent and n_layers validation rules stay enforced. The only semantic change is that volumetric overlap with matching z-extent + n_layers now produces carving instead of full-drop. This is a deliberate behavior change driven by the new architecture's ability to handle mixed-region same-z scenes natively.
+
 **Step A — connected components by z-touch.** Build a graph where nodes are slabs and an edge connects `a, b` iff `abs(a.zhi - b.zlo) < _Z_TOL or abs(a.zlo - b.zhi) < _Z_TOL`. Run Union-Find or DFS to extract connected components. Each component is one stack. A slab with no z-neighbours is a singleton component (its arrangement is just its own footprint, one face, no internal cuts).
 
 **Step B — collect boundaries per stack.** For each component, the boundary set is:
 
-- Every member slab's `footprint.boundary` (the polygon ring with point_tolerance-snapped vertices that PolyPrism already stores).
+- Every member slab's `resolved_footprint.boundary` (post-Step-0 resolution; pairwise-disjoint within each sub-level).
 - Every unstructured entity whose z-range touches any of the component's z-planes. Its `footprint.boundary` is added; unstructured entities never have `identify_arcs=True`, so their contributions are line-only.
 
-The dedup happens implicitly via `unary_union` in step C.
+The dedup happens implicitly via `unary_union` in step C. Because Step 0 already made same-z structured footprints disjoint, the union is much simpler — within a sub-level only the *outer* boundary of each resolved footprint contributes, with carved interfaces sitting on inherited boundary curves shared between the carving winner and the carved loser.
 
 **Step C — planar arrangement.** Compute `merged = unary_union(boundaries)` — a `MultiLineString` with shapely-injected intersection vertices wherever boundaries cross. Then `arrangement_polygons = list(polygonize(merged))` — these are the arrangement faces.
 
@@ -282,9 +296,13 @@ No changes. Mesh-stage logic operates on the OCC output produced by phantom.py, 
 
 This test is the spec's load-bearing regression target. If it passes end-to-end, the planar-arrangement architecture has demonstrated correctness on a scene that combines every failure mode the existing iteration model couldn't handle.
 
-### Mesh-order sub-level pre-processing (optional optimization, see "Out of scope")
+### Sub-level mesh-order resolution test
 
-The user's note on "pre-processing to the sublevel to perform the boolean cuts according to mesh order to simplify first" is captured as a follow-up optimization. The arrangement approach already handles overlapping same-z polyprisms correctly (their boundaries union into the arrangement, and assignment-to-slab via mesh_order at containment-test time produces the right partition). A pre-processing pass could simplify the input by resolving same-z mesh_order conflicts *before* building the arrangement — but the same end-state is achievable post-arrangement by attaching `mesh_order` to faces during step F. Deferred unless profiling shows it's needed.
+`test_sublevel_mesh_order_carves_loser_by_winner`. Two structured slabs at the same z-interval [0,1] with overlapping footprints and different `mesh_order` values. After Step 0, assert: the winner's `resolved_footprint` equals its original footprint; the loser's `resolved_footprint` equals its original footprint minus the winner's. An `OverlapPair` record is emitted.
+
+`test_sublevel_mesh_bool_false_carves_kept_neighbours`. A kept structured slab plus a `mesh_bool=False` entity that overlaps it at the same z. After Step 0, the kept slab's `resolved_footprint` has the void carved out. The `mesh_bool=False` entity does not produce any volume in the final mesh, but its boundary still appears in the arrangement (so downstream surface-tagging can label the carved interface).
+
+`test_existing_drop_loser_test_migrates_to_carve_semantics`. The existing `test_valid_overlap_drops_loser_records_pair` in `tests/structured/test_plan.py` is updated: the assertion that the loser is removed from `plan.slabs` becomes "loser is kept with a carved resolved_footprint", and the `OverlapPair` record is still emitted. This is the breaking-change migration for the policy update.
 
 ### Existing-test audit
 
