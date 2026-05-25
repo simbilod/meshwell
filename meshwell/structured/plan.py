@@ -274,6 +274,47 @@ def _resolve_sublevel_mesh_order(slabs: list[Slab], entities: list[Any]) -> None
             accumulated_winners.append(slab.footprint)
 
 
+def _connected_z_components(slabs: list[Slab]) -> list[list[Slab]]:
+    """Group slabs into connected components.
+
+    Two slabs are in the same component iff either:
+      - they share a z-face (abs(a.zhi - b.zlo) < _Z_TOL or symmetric), or
+      - they share the same z-interval (a.zlo == b.zlo AND a.zhi == b.zhi).
+
+    The two-clause rule ensures that same-z-interval lateral neighbours
+    (e.g., two structured slabs at z=[0,1] abutting at x=1) are grouped
+    together. Without that, their cuts wouldn't propagate to the
+    arrangement at all.
+
+    Implementation: Union-Find on slab indices.
+    """
+    parent = list(range(len(slabs)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    for i, a in enumerate(slabs):
+        for j in range(i + 1, len(slabs)):
+            b = slabs[j]
+            face_touching = abs(a.zhi - b.zlo) < _Z_TOL or abs(a.zlo - b.zhi) < _Z_TOL
+            same_interval = abs(a.zlo - b.zlo) < _Z_TOL and abs(a.zhi - b.zhi) < _Z_TOL
+            if face_touching or same_interval:
+                union(i, j)
+
+    components_by_root: dict[int, list[Slab]] = {}
+    for i, s in enumerate(slabs):
+        components_by_root.setdefault(find(i), []).append(s)
+    return list(components_by_root.values())
+
+
 def _neighbours_touching_z(
     z: float, entities: list[Any], skip_indices: set[int], tol: float = 1e-9
 ) -> list[Polygon | MultiPolygon]:

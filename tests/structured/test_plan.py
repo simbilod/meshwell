@@ -899,3 +899,106 @@ def test_resolve_sublevel_disjoint_footprints_unchanged():
     assert by_name["A"].resolved_footprint.equals(a.polygons)
     assert by_name["B"].resolved_footprint.equals(b_diff_z.polygons)
     assert by_name["C"].resolved_footprint.equals(c_diff_xy.polygons)
+
+
+def test_connected_z_components_face_touching_chain():
+    """Face-touching slabs (a.zhi == b.zlo) end up in the same component."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _connected_z_components
+    from meshwell.structured.spec import Slab
+
+    fp = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    a = Slab(
+        footprint=fp,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("A",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    b = Slab(
+        footprint=fp,
+        zlo=1.0,
+        zhi=2.0,
+        physical_name=("B",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    c = Slab(
+        footprint=fp,
+        zlo=2.0,
+        zhi=3.0,
+        physical_name=("C",),
+        source_index=2,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+
+    components = _connected_z_components([a, b, c])
+    assert len(components) == 1
+    assert {id(s) for s in components[0]} == {id(a), id(b), id(c)}
+
+
+def test_connected_z_components_disjoint_stacks():
+    """Stacks separated by gaps are separate components."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _connected_z_components
+    from meshwell.structured.spec import Slab
+
+    fp = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    a = Slab(
+        footprint=fp,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("A",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    b = Slab(
+        footprint=fp,
+        zlo=10.0,
+        zhi=11.0,
+        physical_name=("B",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+
+    components = _connected_z_components([a, b])
+    assert len(components) == 2
+    names = sorted({s.physical_name[0] for c in components for s in c})
+    assert names == ["A", "B"]
+
+
+def test_connected_z_components_same_z_interval_grouped():
+    """Slabs sharing the same z-interval are also in the same component (lateral connection)."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _connected_z_components
+    from meshwell.structured.spec import Slab
+
+    a = Slab(
+        footprint=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("A",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    b = Slab(
+        footprint=Polygon([(1, 0), (2, 0), (2, 1), (1, 1)]),
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("B",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    components = _connected_z_components([a, b])
+    assert len(components) == 1
