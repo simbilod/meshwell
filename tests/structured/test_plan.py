@@ -1068,3 +1068,37 @@ def test_planar_arrangement_two_overlapping_squares_three_faces():
     assert len(faces) == 3
     total_area = sum(f.polygon.area for f in faces)
     assert abs(total_area - 1.5) < 1e-9  # union area: 1 + 1 - 0.5 overlap = 1.5
+
+
+def test_fit_arc_to_edge_line_no_arc():
+    """Two-point straight line edge does not fit any circle (returns None)."""
+    from meshwell.structured.plan import _fit_arc_to_edge
+
+    vertices = ((0.0, 0.0), (1.0, 0.0))
+    result = _fit_arc_to_edge(vertices, arc_tolerance=1e-3)
+    assert result is None
+
+
+def test_fit_arc_to_edge_circle_fits():
+    """Four points on a unit circle (within tolerance) fit as an arc."""
+    import math
+
+    from meshwell.structured.plan import _fit_arc_to_edge
+
+    # 4 vertices on R=1 at angles 0, pi/4, pi/2, 3pi/4
+    vertices = tuple(
+        (math.cos(math.pi * i / 4), math.sin(math.pi * i / 4)) for i in range(4)
+    )
+    result = _fit_arc_to_edge(vertices, arc_tolerance=1e-3)
+    assert result is not None
+    assert abs(result.radius - 1.0) < 1e-3
+    assert abs(result.center[0]) < 1e-3
+    assert abs(result.center[1]) < 1e-3
+
+
+def test_fit_arc_to_edge_too_few_points():
+    """Fewer than 3 points cannot define a circle — returns None."""
+    from meshwell.structured.plan import _fit_arc_to_edge
+
+    assert _fit_arc_to_edge(((0.0, 0.0),), arc_tolerance=1e-3) is None
+    assert _fit_arc_to_edge(((0.0, 0.0), (1.0, 0.0)), arc_tolerance=1e-3) is None

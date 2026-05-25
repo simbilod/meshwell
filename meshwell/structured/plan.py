@@ -18,6 +18,7 @@ from meshwell.structured.logging import phase_timed
 from meshwell.structured.spec import (
     ArrangementEdge,
     ArrangementFace,
+    CanonicalCircle,
     OverlapPair,
     PieceArcEdge,
     PieceLineEdge,
@@ -1380,4 +1381,36 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
         slabs=tuple(kept_slabs),
         z_planes=tuple(z_planes),
         overlaps=tuple(overlaps),
+    )
+
+
+def _fit_arc_to_edge(
+    vertices: tuple[tuple[float, float], ...],
+    arc_tolerance: float,
+) -> "CanonicalCircle | None":
+    """Try to fit a circle through the edge's vertices.
+
+    Returns CanonicalCircle if all vertices lie on a common circle
+    within ``arc_tolerance``; else None. Requires >=3 vertices (since
+    2 points underdetermine a circle).
+
+    Uses the same circle-fitting routine that GeometryEntity uses for
+    arc identification today, so the result is consistent with existing
+    arc detection.
+    """
+    if len(vertices) < 3:
+        return None
+
+    import numpy as np
+
+    from meshwell.geometry_entity import fit_circle_2d
+
+    pts = np.array(vertices)
+    center, radius, residual = fit_circle_2d(pts)
+    if residual > arc_tolerance:
+        return None
+    if radius > 1e6:  # degenerate — colinear points "fit" infinite radius
+        return None
+    return CanonicalCircle(
+        center=(float(center[0]), float(center[1])), radius=float(radius)
     )
