@@ -1237,6 +1237,52 @@ def _validate_arc_partition_aligned(
                         )
 
 
+def _collect_stack_boundaries(stack: list[Slab], entities: list[Any]) -> list[Any]:
+    """Boundaries to feed the arrangement for this connected component.
+
+    Returns a list of shapely LineString/MultiLineString geometries:
+    - Each stack member slab's resolved_footprint.boundary (falling back
+      to slab.footprint.boundary when resolved_footprint is None).
+    - Each unstructured entity whose z-range touches any z-plane of the
+      stack — its boundary contributes line cuts only (no arcs).
+    """
+    boundaries: list[Any] = []
+    seen_source_indices = {s.source_index for s in stack}
+
+    # Stack member resolved footprints.
+    for slab in stack:
+        fp = (
+            slab.resolved_footprint
+            if slab.resolved_footprint is not None
+            else slab.footprint
+        )
+        if not fp.is_empty:
+            boundaries.append(fp.boundary)
+
+    # Stack's z-planes.
+    z_planes = set()
+    for slab in stack:
+        z_planes.add(slab.zlo)
+        z_planes.add(slab.zhi)
+
+    # Unstructured z-touching entities.
+    for i, ent in enumerate(entities):
+        if i in seen_source_indices:
+            continue
+        if getattr(ent, "structured", False):
+            continue
+        rng = _entity_z_range(ent)
+        if rng is None:
+            continue
+        zmin, zmax = rng
+        if any(abs(zmin - z) < _Z_TOL or abs(zmax - z) < _Z_TOL for z in z_planes):
+            fp = _entity_footprint(ent)
+            if fp is not None:
+                boundaries.append(fp.boundary)
+
+    return boundaries
+
+
 @phase_timed("plan")
 def build_plan(entities: list[Any]) -> StructuredPlan:
     """Top-level planner: entities -> validated, partitioned StructuredPlan.

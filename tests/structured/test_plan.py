@@ -1002,3 +1002,40 @@ def test_connected_z_components_same_z_interval_grouped():
     )
     components = _connected_z_components([a, b])
     assert len(components) == 1
+
+
+def test_collect_stack_boundaries_includes_resolved_and_unstructured():
+    """Returns resolved footprints of stack members + unstructured z-touching footprints."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import _collect_stack_boundaries
+    from meshwell.structured.spec import Slab
+
+    structured_ent = PolyPrism(
+        polygons=Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="S",
+    )
+    unstructured_ent = PolyPrism(
+        polygons=Polygon([(0, 0), (3, 0), (3, 3), (0, 3)]),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="U",
+    )
+    s_slab = Slab(
+        footprint=structured_ent.polygons,
+        resolved_footprint=structured_ent.polygons,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("S",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    stack = [s_slab]
+    boundaries = _collect_stack_boundaries(stack, [structured_ent, unstructured_ent])
+    # Should include 2 LineStrings: s_slab's resolved boundary + unstructured ent's boundary (z-touching at z=1).
+    assert len(boundaries) == 2
