@@ -1307,3 +1307,47 @@ def test_build_stack_arrangements_disjoint_two_stacks():
     assert len(arrangements) == 2
     for arr in arrangements.values():
         assert len(arr.faces) == 1
+
+
+def test_assign_face_partition_from_arrangement_full_pipeline():
+    """End-to-end through Steps 0 + A-G on a 2-slab same-z scene."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import (
+        _resolve_sublevel_mesh_order,
+        assign_face_partition_from_arrangement,
+        build_stack_arrangements,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    a = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+        mesh_order=1,
+    )
+    b = PolyPrism(
+        polygons=Polygon([(0.5, 0), (1.5, 0), (1.5, 1), (0.5, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+        mesh_order=2,
+    )
+    entities = [a, b]
+    slabs = expand_to_slabs(gather_structured_entities(entities))
+    _resolve_sublevel_mesh_order(slabs, entities)
+    arrangements = build_stack_arrangements(slabs, entities)
+    assign_face_partition_from_arrangement(slabs, arrangements)
+
+    by_name = {s.physical_name[0]: s for s in slabs}
+    # A wins the overlap; A's resolved_footprint is the full [0,1]x[0,1].
+    # B's resolved_footprint is the carved [1,1.5]x[0,1].
+    # Each slab has exactly 1 face after carving.
+    assert len(by_name["A"].face_partition) == 1
+    assert len(by_name["B"].face_partition) == 1

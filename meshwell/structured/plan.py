@@ -1677,3 +1677,38 @@ def _build_provenance_shim(
                 PieceProvenance(exterior_edges=ext_edges, interior_edges=[])
             )
         slab.face_partition_provenance = provenances
+
+
+def assign_face_partition_from_arrangement(
+    slabs: list[Slab],
+    arrangements: dict[int, StackArrangement],
+) -> None:
+    """Distribute arrangement faces to slabs and build provenance.
+
+    Maps each slab to its containing component (via the same connected-
+    components grouping used by build_stack_arrangements), then runs
+    Step F (face assignment) and Step G (provenance shim) per stack.
+    """
+    components = _connected_z_components(slabs)
+    for comp_idx, stack in enumerate(components):
+        arrangement = arrangements.get(comp_idx)
+        if arrangement is None:
+            continue
+        # Reset face_partition / face_partition_edges (in case slabs were
+        # populated by a previous run).
+        for slab in stack:
+            slab.face_partition = []
+            slab.face_partition_edges = []
+        _assign_faces_to_slabs(arrangement.faces, stack)
+        _build_provenance_shim(stack, arrangement)
+        # Slabs whose face_partition is empty (fully dominated by mesh_bool=False
+        # carving or by mesh_order overlap) get a one-piece fallback so phantom
+        # build doesn't crash. They'll produce no actual mesh content.
+        for slab in stack:
+            if not slab.face_partition:
+                slab.face_partition = [
+                    slab.resolved_footprint
+                    if slab.resolved_footprint is not None
+                    else slab.footprint
+                ]
+                slab.face_partition_edges = [[]]
