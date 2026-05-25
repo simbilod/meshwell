@@ -16,6 +16,8 @@ from shapely.ops import polygonize, unary_union
 
 from meshwell.structured.logging import phase_timed
 from meshwell.structured.spec import (
+    ArrangementEdge,
+    ArrangementFace,
     OverlapPair,
     PieceArcEdge,
     PieceLineEdge,
@@ -1281,6 +1283,68 @@ def _collect_stack_boundaries(stack: list[Slab], entities: list[Any]) -> list[An
                 boundaries.append(fp.boundary)
 
     return boundaries
+
+
+def _planar_arrangement(
+    boundaries: list[Any],
+) -> tuple[list[ArrangementEdge], list[ArrangementFace]]:
+    """Build the planar arrangement from a list of boundary geometries.
+
+    Algorithm:
+      1. ``merged = unary_union(boundaries)`` — shapely inserts vertices
+         at every curve crossing.
+      2. ``polygonize(merged)`` — gives the arrangement faces.
+      3. Extract edges: walk each face's exterior ring; consecutive vertex
+         pairs are candidate edges. Dedup by canonical (sorted-by-first-
+         point, then-by-second-point) coordinate tuples, since each
+         internal edge appears on the boundary of exactly two faces.
+
+    Returns (edges, faces) where each face's boundary list references the
+    edge_ids in the returned edges list.
+    """
+    merged = unary_union(boundaries)
+    raw_polygons = list(polygonize(merged))
+
+    def _key(p1, p2, ndigits=9):
+        a = (round(p1[0], ndigits), round(p1[1], ndigits))
+        b = (round(p2[0], ndigits), round(p2[1], ndigits))
+        return (a, b) if a <= b else (b, a)
+
+    edge_by_key: dict[tuple, int] = {}
+    edges: list[ArrangementEdge] = []
+    faces: list[ArrangementFace] = []
+
+    for face_id, poly in enumerate(raw_polygons):
+        coords = list(poly.exterior.coords)
+        boundary_list: list[tuple[int, bool]] = []
+        for i in range(len(coords) - 1):
+            p1, p2 = coords[i], coords[i + 1]
+            key = _key(p1, p2)
+            if key not in edge_by_key:
+                a, b = key
+                edge = ArrangementEdge(
+                    edge_id=len(edges),
+                    vertices=(a, b),
+                    circle=None,
+                )
+                edge_by_key[key] = edge.edge_id
+                edges.append(edge)
+            edge_id = edge_by_key[key]
+            # Determine traversal direction: the edge canonical orientation
+            # is its vertices[0] -> vertices[-1]. If face walks p1 -> p2 and
+            # that equals the canonical direction, reversed=False; else True.
+            p1_round = (round(p1[0], 9), round(p1[1], 9))
+            reversed_flag = p1_round != edges[edge_id].vertices[0]
+            boundary_list.append((edge_id, reversed_flag))
+        faces.append(
+            ArrangementFace(
+                face_id=face_id,
+                polygon=poly,
+                boundary=boundary_list,
+            )
+        )
+
+    return edges, faces
 
 
 @phase_timed("plan")

@@ -1039,3 +1039,32 @@ def test_collect_stack_boundaries_includes_resolved_and_unstructured():
     boundaries = _collect_stack_boundaries(stack, [structured_ent, unstructured_ent])
     # Should include 2 LineStrings: s_slab's resolved boundary + unstructured ent's boundary (z-touching at z=1).
     assert len(boundaries) == 2
+
+
+def test_planar_arrangement_single_square_one_face():
+    """Single square -> 1 face, 4 edges."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _planar_arrangement
+
+    sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    edges, faces = _planar_arrangement([sq.boundary])
+    assert len(faces) == 1
+    assert abs(faces[0].polygon.area - 1.0) < 1e-9
+    # Each edge appears once in the face boundary.
+    assert len(faces[0].boundary) == len(edges)
+
+
+def test_planar_arrangement_two_overlapping_squares_three_faces():
+    """Two unit squares overlapping in [0.5,1]x[0,1] -> 3 arrangement faces."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _planar_arrangement
+
+    a = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]).boundary
+    b = Polygon([(0.5, 0), (1.5, 0), (1.5, 1), (0.5, 1)]).boundary
+    _edges, faces = _planar_arrangement([a, b])
+    # Expect 3 faces: A-only [0,0.5]x[0,1], A∩B [0.5,1]x[0,1], B-only [1,1.5]x[0,1].
+    assert len(faces) == 3
+    total_area = sum(f.polygon.area for f in faces)
+    assert abs(total_area - 1.5) < 1e-9  # union area: 1 + 1 - 0.5 overlap = 1.5
