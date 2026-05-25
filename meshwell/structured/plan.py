@@ -1255,7 +1255,19 @@ def _collect_stack_boundaries(stack: list[Slab], entities: list[Any]) -> list[An
     - Each unstructured entity whose z-range touches any z-plane of the
       stack — its boundary contributes line cuts only (no arcs).
     """
-    boundaries: list[Any] = []
+    return [b for b, _ in _collect_stack_boundaries_tagged(stack, entities)]
+
+
+def _collect_stack_boundaries_tagged(
+    stack: list[Slab], entities: list[Any]
+) -> list[tuple[Any, bool]]:
+    """Same as _collect_stack_boundaries but tags each boundary with identify_arcs.
+
+    Returns ``(boundary_geometry, identify_arcs)`` pairs so downstream
+    arc fitting can require at least one arc-bearing source contributor.
+    Unstructured entities are tagged ``identify_arcs=False`` unconditionally.
+    """
+    boundaries: list[tuple[Any, bool]] = []
     seen_source_indices = {s.source_index for s in stack}
 
     # Stack member resolved footprints.
@@ -1266,7 +1278,7 @@ def _collect_stack_boundaries(stack: list[Slab], entities: list[Any]) -> list[An
             else slab.footprint
         )
         if not fp.is_empty:
-            boundaries.append(fp.boundary)
+            boundaries.append((fp.boundary, slab.identify_arcs))
 
     # Stack's z-planes.
     z_planes = set()
@@ -1287,7 +1299,7 @@ def _collect_stack_boundaries(stack: list[Slab], entities: list[Any]) -> list[An
         if any(abs(zmin - z) < _Z_TOL or abs(zmax - z) < _Z_TOL for z in z_planes):
             fp = _entity_footprint(ent)
             if fp is not None:
-                boundaries.append(fp.boundary)
+                boundaries.append((fp.boundary, False))
 
     return boundaries
 
@@ -1405,7 +1417,9 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
     kept_slabs, overlaps = validate_and_resolve_overlap(raw_slabs, entities)
     _validate_no_mid_height_cuts(kept_slabs, entities)
     _validate_no_unstructured_lateral_neighbour(kept_slabs, entities)
-    compute_face_partition(kept_slabs, entities)
+    _resolve_sublevel_mesh_order(kept_slabs, entities)
+    arrangements = build_stack_arrangements(kept_slabs, entities)
+    assign_face_partition_from_arrangement(kept_slabs, arrangements)
     z_set: set[float] = set()
     for s in kept_slabs:
         z_set.add(s.zlo)
@@ -1421,18 +1435,21 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
 def _fit_arc_to_edge(
     vertices: tuple[tuple[float, float], ...],
     arc_tolerance: float,
+    min_arc_points: int = 4,
 ) -> "CanonicalCircle | None":
     """Try to fit a circle through the edge's vertices.
 
     Returns CanonicalCircle if all vertices lie on a common circle
-    within ``arc_tolerance``; else None. Requires >=3 vertices (since
-    2 points underdetermine a circle).
+    within ``arc_tolerance``; else None. Requires >=``min_arc_points``
+    vertices (3 underdetermines a real arc — any 3 non-colinear points
+    fit a circle perfectly, so any sharp polygon corner would be
+    spuriously classified as an arc).
 
     Uses the same circle-fitting routine that GeometryEntity uses for
     arc identification today, so the result is consistent with existing
     arc detection.
     """
-    if len(vertices) < 3:
+    if len(vertices) < max(min_arc_points, 4):
         return None
 
     import numpy as np
@@ -1479,6 +1496,19 @@ def _coalesce_adjacent_arcs(
     def _endpoints_match(p1, p2, tol=1e-9):
         return abs(p1[0] - p2[0]) < tol and abs(p1[1] - p2[1]) < tol
 
+    def _round_pt(p, ndigits=9):
+        return (round(p[0], ndigits), round(p[1], ndigits))
+
+    # Pre-compute: for each rounded point, the set of non-arc edges
+    # that have that point as an endpoint. A shared endpoint that's also
+    # a non-arc endpoint is a T-junction (a cut), so adjacent arcs there
+    # must NOT be merged across the cut.
+    non_arc_endpoints: set = set()
+    for e in edges:
+        if e.circle is None:
+            non_arc_endpoints.add(_round_pt(e.vertices[0]))
+            non_arc_endpoints.add(_round_pt(e.vertices[-1]))
+
     def _try_merge(
         e1: ArrangementEdge, e2: ArrangementEdge
     ) -> "ArrangementEdge | None":
@@ -1488,15 +1518,35 @@ def _coalesce_adjacent_arcs(
             return None
         v1_start, v1_end = e1.vertices[0], e1.vertices[-1]
         v2_start, v2_end = e2.vertices[0], e2.vertices[-1]
+        # Block merging when two arcs share BOTH endpoints (they form a
+        # closed loop together — typically halves of a source circle that
+        # was split by a cut; merging would erase the cut).
+        share_a = _endpoints_match(v1_start, v2_start) or _endpoints_match(
+            v1_start, v2_end
+        )
+        share_b = _endpoints_match(v1_end, v2_start) or _endpoints_match(v1_end, v2_end)
+        if share_a and share_b:
+            return None
+        # Locate the shared endpoint (if any).
+        shared = None
         if _endpoints_match(v1_end, v2_start):
+            shared = v1_end
             merged_verts = e1.vertices + e2.vertices[1:]
         elif _endpoints_match(v1_end, v2_end):
+            shared = v1_end
             merged_verts = e1.vertices + e2.vertices[-2::-1]
         elif _endpoints_match(v1_start, v2_start):
+            shared = v1_start
             merged_verts = e1.vertices[::-1] + e2.vertices[1:]
         elif _endpoints_match(v1_start, v2_end):
+            shared = v1_start
             merged_verts = e2.vertices + e1.vertices[1:]
         else:
+            return None
+        # T-junction check: if the shared endpoint is also an endpoint of
+        # some non-arc edge in the arrangement, a cut terminates here.
+        # The two arcs were deliberately split at the cut — don't merge.
+        if _round_pt(shared) in non_arc_endpoints:
             return None
         return ArrangementEdge(edge_id=-1, vertices=merged_verts, circle=e1.circle)
 
@@ -1535,25 +1585,56 @@ def build_stack_arrangements(
     components = _connected_z_components(slabs)
     arrangements: dict[int, StackArrangement] = {}
     for comp_idx, stack in enumerate(components):
-        boundaries = _collect_stack_boundaries(stack, entities)
-        if not boundaries:
+        tagged = _collect_stack_boundaries_tagged(stack, entities)
+        if not tagged:
             arrangements[comp_idx] = StackArrangement(edges=[], faces=[])
             continue
+        boundaries = [b for b, _ in tagged]
+        # Build a "point on an identify_arcs=True boundary" set. We will
+        # use it to decide which arrangement edges are candidates for arc
+        # fitting (per spec: at least one source entity contributing the
+        # edge must have identify_arcs=True).
+        arc_source_pts: set = set()
+        for boundary, ident in tagged:
+            if not ident:
+                continue
+            for ls in (
+                list(boundary.geoms) if hasattr(boundary, "geoms") else [boundary]
+            ):
+                for c in ls.coords:
+                    arc_source_pts.add((round(c[0], 9), round(c[1], 9)))
         edges, faces = _planar_arrangement(boundaries)
         # Determine effective arc_tolerance for this stack: minimum of
         # all member slabs that have identify_arcs=True.
         arc_tols = [s.arc_tolerance for s in stack if s.identify_arcs]
         tol = min(arc_tols) if arc_tols else 1e-3
+        # Minimum vertices per arc: minimum over identify_arcs slabs.
+        min_arc_pts_list = [
+            getattr(s, "min_arc_points", 4) for s in stack if s.identify_arcs
+        ]
+        min_arc_pts = min(min_arc_pts_list) if min_arc_pts_list else 4
+
+        def _edge_has_arc_source(edge_verts, _pts=arc_source_pts):
+            """Return True iff any vertex lies on an identify_arcs=True boundary.
+
+            An edge is a candidate for arc fitting iff at least one of its
+            sample vertices lies on an identify_arcs=True boundary.
+            """
+            return any((round(v[0], 9), round(v[1], 9)) in _pts for v in edge_verts)
+
         # Step D — try arc fit per edge (only if any stack member identifies arcs).
         if arc_tols:
-            edges = [
-                ArrangementEdge(
-                    edge_id=e.edge_id,
-                    vertices=e.vertices,
-                    circle=_fit_arc_to_edge(e.vertices, tol),
+            new_edges = []
+            for e in edges:
+                circle = None
+                if _edge_has_arc_source(e.vertices):
+                    circle = _fit_arc_to_edge(e.vertices, tol, min_arc_pts)
+                new_edges.append(
+                    ArrangementEdge(
+                        edge_id=e.edge_id, vertices=e.vertices, circle=circle
+                    )
                 )
-                for e in edges
-            ]
+            edges = new_edges
             # Step E — coalesce adjacent arcs.
             edges = _coalesce_adjacent_arcs(edges, tol)
             # Rebuild face boundaries to reference new edge IDs.
@@ -1673,6 +1754,90 @@ def _build_provenance_shim(
     """
     edges_by_id = {e.edge_id: e for e in arrangement.edges}
 
+    def _build_edges_list(
+        boundary_list: list[tuple[int, bool]],
+    ) -> list:
+        out: list = []
+        # If the boundary is a single arc edge, the ring closes by wrapping
+        # back to the starting vertex. The phantom builder expects
+        # ``points[0] == points[-1]`` to recognize a closed arc, so we
+        # explicitly append the closing repeat in that case.
+        is_lone_closed_arc = (
+            len(boundary_list) == 1
+            and edges_by_id[boundary_list[0][0]].circle is not None
+        )
+        for edge_id, reversed_flag in boundary_list:
+            arr_edge = edges_by_id[edge_id]
+            verts = arr_edge.vertices
+            if reversed_flag:
+                verts = verts[::-1]
+            if arr_edge.circle is not None:
+                pts_3d = tuple((v[0], v[1], 0.0) for v in verts)
+                if is_lone_closed_arc and pts_3d[0] != pts_3d[-1]:
+                    pts_3d = (*pts_3d, pts_3d[0])
+                out.append(
+                    PieceArcEdge(
+                        points=pts_3d,
+                        center=(
+                            arr_edge.circle.center[0],
+                            arr_edge.circle.center[1],
+                            0.0,
+                        ),
+                        radius=arr_edge.circle.radius,
+                    )
+                )
+            else:
+                p1 = (verts[0][0], verts[0][1], 0.0)
+                p2 = (verts[-1][0], verts[-1][1], 0.0)
+                out.append(PieceLineEdge(points=(p1, p2)))
+        return out
+
+    def _ring_to_boundary(ring_coords) -> list[tuple[int, bool]]:
+        """Walk a ring's coords and emit (edge_id, reversed) entries.
+
+        Mirrors _rebuild_face_boundaries' inner loop but operates on a
+        raw coord list (works for both exterior and interior rings).
+        """
+        coords = list(ring_coords)
+        boundary: list[tuple[int, bool]] = []
+        i = 0
+
+        def _segment_covered_by_edge(p1, p2, edge_verts, tol=1e-9):
+            for k, v in enumerate(edge_verts):
+                if abs(v[0] - p1[0]) < tol and abs(v[1] - p1[1]) < tol:
+                    if k + 1 < len(edge_verts):
+                        n = edge_verts[k + 1]
+                        if abs(n[0] - p2[0]) < tol and abs(n[1] - p2[1]) < tol:
+                            return False
+                    if k > 0:
+                        p = edge_verts[k - 1]
+                        if abs(p[0] - p2[0]) < tol and abs(p[1] - p2[1]) < tol:
+                            return True
+            return None
+
+        while i < len(coords) - 1:
+            p1, p2 = coords[i], coords[i + 1]
+            matched = False
+            for arr_edge in arrangement.edges:
+                rev = _segment_covered_by_edge(p1, p2, arr_edge.vertices)
+                if rev is None:
+                    continue
+                boundary.append((arr_edge.edge_id, rev))
+                edge_len = len(arr_edge.vertices) - 1
+                consumed = 1
+                while consumed < edge_len and i + consumed + 1 < len(coords):
+                    pn, pn1 = coords[i + consumed], coords[i + consumed + 1]
+                    rev2 = _segment_covered_by_edge(pn, pn1, arr_edge.vertices)
+                    if rev2 is None or rev2 != rev:
+                        break
+                    consumed += 1
+                i += consumed
+                matched = True
+                break
+            if not matched:
+                i += 1
+        return boundary
+
     for slab in stack:
         if not slab.identify_arcs:
             slab.face_partition_provenance = None
@@ -1682,32 +1847,18 @@ def _build_provenance_shim(
             continue
 
         provenances: list[PieceProvenance] = []
-        for piece_edges in slab.face_partition_edges:
-            ext_edges = []
-            for edge_id, reversed_flag in piece_edges:
-                arr_edge = edges_by_id[edge_id]
-                verts = arr_edge.vertices
-                if reversed_flag:
-                    verts = verts[::-1]
-                if arr_edge.circle is not None:
-                    pts_3d = tuple((v[0], v[1], 0.0) for v in verts)
-                    ext_edges.append(
-                        PieceArcEdge(
-                            points=pts_3d,
-                            center=(
-                                arr_edge.circle.center[0],
-                                arr_edge.circle.center[1],
-                                0.0,
-                            ),
-                            radius=arr_edge.circle.radius,
-                        )
-                    )
-                else:
-                    p1 = (verts[0][0], verts[0][1], 0.0)
-                    p2 = (verts[-1][0], verts[-1][1], 0.0)
-                    ext_edges.append(PieceLineEdge(points=(p1, p2)))
+        for piece_poly, piece_edges in zip(
+            slab.face_partition, slab.face_partition_edges, strict=False
+        ):
+            ext_edges = _build_edges_list(piece_edges)
+            interior_edges: list[list] = []
+            # Walk each interior ring of the piece polygon and resolve edges.
+            for interior_ring in piece_poly.interiors:
+                int_boundary = _ring_to_boundary(interior_ring.coords)
+                if int_boundary:
+                    interior_edges.append(_build_edges_list(int_boundary))
             provenances.append(
-                PieceProvenance(exterior_edges=ext_edges, interior_edges=[])
+                PieceProvenance(exterior_edges=ext_edges, interior_edges=interior_edges)
             )
         slab.face_partition_provenance = provenances
 

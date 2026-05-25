@@ -23,6 +23,14 @@ def _square(x, y, w, h):
     return Polygon([(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
 
 
+@pytest.mark.skip(
+    reason=(
+        "The arc-neighbour-alignment validator was removed by the planar-"
+        "arrangement refactor (spec line 192: 'There is nothing to validate'). "
+        "Canonical-edge sharing makes chord-vs-arc divergence impossible. "
+        "Test will be deleted in Task 15 along with the validator."
+    )
+)
 def test_arc_split_at_non_polygon_vertex_raises():
     """Two overlapping non-aligned contacts that would split an arc disc raise."""
     from meshwell.polyprism import PolyPrism

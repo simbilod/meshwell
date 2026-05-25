@@ -682,6 +682,13 @@ def test_partition_converges_within_K_plus_two_passes():
     )
 
 
+@pytest.mark.skip(
+    reason=(
+        "Convergence machinery removed by the planar-arrangement refactor. "
+        "Test will be deleted in Task 15 along with "
+        "StructuredPartitionConvergenceError and _PARTITION_FIXED_POINT_CAP."
+    )
+)
 def test_partition_raises_if_not_converged(monkeypatch):
     """Tripping the cap surfaces StructuredPartitionConvergenceError."""
     from shapely.geometry import Polygon
