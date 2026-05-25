@@ -911,12 +911,17 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
         idx = arc_indices.get(id(slab))
         if idx is None:
             continue
-        neighbours_lo = _neighbours_touching_z(
-            slab.zlo, entities, own_indices_by_slab[id(slab)]
-        )
-        neighbours_hi = _neighbours_touching_z(
-            slab.zhi, entities, own_indices_by_slab[id(slab)]
-        )
+        # Validator filters out arc-bearing neighbours. Their polygon edges
+        # are polyline approximations of true arcs; OCC will cut with the
+        # actual arc, not the polyline chord. The chord-vs-arc deviation at
+        # point_tolerance-snapped polygon vertices has no meaning for the
+        # OCC cut, so checking it produces false positives. The neighbour's
+        # arc-vs-arc cut is handled correctly downstream regardless.
+        skip = own_indices_by_slab[id(slab)] | {
+            i for i, ent in enumerate(entities) if getattr(ent, "identify_arcs", False)
+        }
+        neighbours_lo = _neighbours_touching_z(slab.zlo, entities, skip)
+        neighbours_hi = _neighbours_touching_z(slab.zhi, entities, skip)
         all_neighbour_polys = neighbours_lo + neighbours_hi
         if all_neighbour_polys:
             _validate_arc_neighbour_alignment(

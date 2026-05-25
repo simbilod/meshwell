@@ -563,3 +563,204 @@ def test_stacked_concentric_arc_discs_mesh_clean(tmp_path):
     assert (
         orphans == 0
     ), f"{orphans} non-conformal boundary triangles in concentric-disc stack"
+
+
+def _ring_segment(
+    cx: float,
+    cy: float,
+    r_inner: float,
+    r_outer: float,
+    theta_start: float,
+    theta_end: float,
+    n_circle: int = 24,
+) -> Polygon:
+    """Thick-ring segment polygon with vertices on a global angular grid.
+
+    Boundary (single loop): outer arc CCW from ``theta_start`` to ``theta_end``
+    along radius ``r_outer``, radial line at ``theta_end`` down to ``r_inner``,
+    inner arc CW back from ``theta_end`` to ``theta_start`` along radius
+    ``r_inner``, radial line at ``theta_start`` back up to ``r_outer``.
+
+    Topologically a disk — no interior holes.
+
+    Vertices on each arc fall on a **global angular grid** (multiples of
+    ``2*pi/n_circle``). When two ring segments share an angular range
+    (e.g., L1 spans 0..pi and L2 spans pi/2..3*pi/2 share pi/2..pi), their
+    polygon vertices on the shared portion coincide exactly — no polyline-
+    approximation mismatch, no spurious sliver pieces in polygonize output.
+    The caller should pick ``theta_start`` / ``theta_end`` that themselves
+    fall on the grid (i.e., multiples of ``2*pi/n_circle``).
+    """
+    import math
+
+    step = 2 * math.pi / n_circle
+    eps = 1e-9
+    interior_angles = [
+        k * step
+        for k in range(math.ceil(theta_start / step), math.floor(theta_end / step) + 1)
+        if theta_start + eps < k * step < theta_end - eps
+    ]
+    angles = [theta_start, *interior_angles, theta_end]
+
+    outer = [(cx + r_outer * math.cos(a), cy + r_outer * math.sin(a)) for a in angles]
+    inner = [
+        (cx + r_inner * math.cos(a), cy + r_inner * math.sin(a))
+        for a in reversed(angles)
+    ]
+    return Polygon(outer + inner)
+
+
+def test_plan_stacked_overlapping_ring_segments_propagates_radial_cuts():
+    """Plan-only: three stacked half-rings rotated by 90 degrees per layer.
+
+    Each layer is a half-annulus (180-degree thick ring segment), R_inner=0.5,
+    R_outer=1.0, rotated 90 degrees per layer so consecutive layers overlap
+    in a quarter-ring:
+
+      L1 (z=[0,1]): theta in [0, pi]    (upper half-annulus)
+      L2 (z=[1,2]): theta in [pi/2, 3*pi/2]  (left half-annulus)
+      L3 (z=[2,3]): theta in [pi, 2*pi]  (lower half-annulus)
+
+    Overlaps:
+      L1 cap L2 = quarter-ring theta in [pi/2, pi]
+      L2 cap L3 = quarter-ring theta in [pi, 3*pi/2]
+      L1 cap L3 = empty (touch at theta=pi only, zero area)
+
+    At z=1: L1's top face is cut by L2's radial-at-pi/2 boundary (lies inside
+    L1's footprint). Similarly L2's bottom face is cut by L1's radial-at-pi.
+    Each slab's face_partition should reach >= 2 pieces from radial cuts that
+    cross its interior. All sub-pieces are single-loop ring-segment polygons —
+    transfinite-compatible without the annular-split spec.
+    """
+    import math
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+
+    l1 = PolyPrism(
+        polygons=_ring_segment(0, 0, 0.5, 1.0, 0.0, math.pi),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="L1",
+    )
+    l2 = PolyPrism(
+        polygons=_ring_segment(0, 0, 0.5, 1.0, math.pi / 2, 3 * math.pi / 2),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="L2",
+    )
+    l3 = PolyPrism(
+        polygons=_ring_segment(0, 0, 0.5, 1.0, math.pi, 2 * math.pi),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="L3",
+    )
+
+    plan = build_plan([l1, l2, l3])
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
+
+    # L1 must be split by L2's radial-at-pi/2 cut (inside L1's 0..pi range).
+    assert len(by_name["L1"].face_partition) >= 2, (
+        f"L1: expected >=2 pieces from L2 radial-at-pi/2 top cut; "
+        f"got {len(by_name['L1'].face_partition)}"
+    )
+    # L2 sees cuts from both sides: L1's radial-at-pi from below, L3's
+    # radial-at-pi from above (same line! so net 1 internal cut). Plus L2's
+    # own footprint spans pi/2..3pi/2, so the cuts at pi do split it.
+    assert len(by_name["L2"].face_partition) >= 2, (
+        f"L2: expected >=2 pieces from interface cuts; "
+        f"got {len(by_name['L2'].face_partition)}"
+    )
+    # L3 must be split by L2's radial-at-3pi/2 cut (inside L3's pi..2pi range).
+    assert len(by_name["L3"].face_partition) >= 2, (
+        f"L3: expected >=2 pieces from L2 radial-at-3pi/2 bottom cut; "
+        f"got {len(by_name['L3'].face_partition)}"
+    )
+
+    # No piece should have interior rings — ring-segment topology is a disk,
+    # and rotated overlaps produce only single-loop sub-pieces.
+    for name, slab in by_name.items():
+        for i, piece in enumerate(slab.face_partition):
+            assert len(piece.interiors) == 0, (
+                f"{name}.face_partition[{i}] has {len(piece.interiors)} interior "
+                "ring(s); expected single-loop (no holes) for ring-segment overlap"
+            )
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Ring-segment z-interface conformality: planner correctly produces "
+        "single-loop ring-segment pieces (verified by the plan-only sibling "
+        "test) and transfinite meshing succeeds, but the resulting boundary "
+        "mesh has ~28 orphan triangles where the two slabs sharing an arc-"
+        "bounded interface piece mesh that piece with mismatched vertex "
+        "topology. The mesh-stage builder needs to enforce arc-aware "
+        "transfinite parameter agreement across z-touching neighbours for "
+        "ring-segment shared regions. Plan-only path is correct; this is a "
+        "mesh-stage gap separate from the planner-side annular-split spec."
+    ),
+    strict=True,
+    raises=AssertionError,
+)
+def test_stacked_overlapping_ring_segments_mesh_clean(tmp_path):
+    """End-to-end mesh: three rotated half-rings produce a clean wedge mesh.
+
+    Same scene as the plan-only test. Verifies:
+      - Wedges are produced (transfinite succeeds on every ring-segment piece).
+      - Zero orphan boundary triangles.
+      - All three physicals (L1, L2, L3) appear in the mesh.
+    """
+    pytest.importorskip("meshio")
+    pytest.importorskip("gmsh")
+    import math
+
+    import meshio
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+
+    def _ring_slab(theta_start, theta_end, zlo, zhi, name):
+        return PolyPrism(
+            polygons=_ring_segment(0, 0, 0.5, 1.0, theta_start, theta_end),
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            identify_arcs=True,
+            min_arc_points=4,
+            arc_tolerance=1e-3,
+            physical_name=name,
+        )
+
+    entities = [
+        _ring_slab(0.0, math.pi, 0.0, 1.0, "L1"),
+        _ring_slab(math.pi / 2, 3 * math.pi / 2, 1.0, 2.0, "L2"),
+        _ring_slab(math.pi, 2 * math.pi, 2.0, 3.0, "L3"),
+    ]
+
+    out = tmp_path / "stacked_ring_segments.msh"
+    generate_mesh(entities, dim=3, output_mesh=out, default_characteristic_length=0.3)
+
+    m = meshio.read(out)
+    cell_types = {cb.type for cb in m.cells}
+    assert any(
+        ct in cell_types for ct in ("wedge", "wedge6", "wedge15")
+    ), f"expected wedge cells, got {cell_types}"
+    for name in ("L1", "L2", "L3"):
+        assert name in m.field_data, f"missing physical {name}"
+
+    orphans = _count_orphan_triangles(m)
+    assert (
+        orphans == 0
+    ), f"{orphans} non-conformal boundary triangles in ring-segment stack"
