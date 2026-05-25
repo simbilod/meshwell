@@ -1102,3 +1102,62 @@ def test_fit_arc_to_edge_too_few_points():
 
     assert _fit_arc_to_edge(((0.0, 0.0),), arc_tolerance=1e-3) is None
     assert _fit_arc_to_edge(((0.0, 0.0), (1.0, 0.0)), arc_tolerance=1e-3) is None
+
+
+def test_coalesce_adjacent_arcs_merges_shared_circle():
+    """Two arc edges on the same circle sharing an endpoint -> one edge."""
+    import math
+
+    from meshwell.structured import ArrangementEdge, CanonicalCircle
+    from meshwell.structured.plan import _coalesce_adjacent_arcs
+
+    circle = CanonicalCircle(center=(0.0, 0.0), radius=1.0)
+    e1 = ArrangementEdge(
+        edge_id=0,
+        vertices=tuple(
+            (math.cos(math.pi * i / 8), math.sin(math.pi * i / 8)) for i in range(5)
+        ),  # 0..pi/2
+        circle=circle,
+    )
+    e2 = ArrangementEdge(
+        edge_id=1,
+        vertices=tuple(
+            (math.cos(math.pi * (4 + i) / 8), math.sin(math.pi * (4 + i) / 8))
+            for i in range(5)
+        ),  # pi/2..pi
+        circle=circle,
+    )
+    coalesced = _coalesce_adjacent_arcs([e1, e2], arc_tolerance=1e-3)
+    assert len(coalesced) == 1
+    # Merged vertex count = 5 + 5 - 1 (shared midpoint at pi/2) = 9
+    assert len(coalesced[0].vertices) == 9
+
+
+def test_coalesce_keeps_non_matching_circles_separate():
+    """Two arcs with different radii are not merged."""
+    from meshwell.structured import ArrangementEdge, CanonicalCircle
+    from meshwell.structured.plan import _coalesce_adjacent_arcs
+
+    e1 = ArrangementEdge(
+        edge_id=0,
+        vertices=((1.0, 0.0), (0.707, 0.707), (0.0, 1.0)),
+        circle=CanonicalCircle(center=(0.0, 0.0), radius=1.0),
+    )
+    e2 = ArrangementEdge(
+        edge_id=1,
+        vertices=((0.0, 1.0), (-0.354, 0.354), (-0.5, 0.0)),  # quarter of R=0.5 circle
+        circle=CanonicalCircle(center=(0.0, 0.0), radius=0.5),
+    )
+    coalesced = _coalesce_adjacent_arcs([e1, e2], arc_tolerance=1e-3)
+    assert len(coalesced) == 2
+
+
+def test_coalesce_lines_passthrough():
+    """Line edges (circle=None) are returned unchanged."""
+    from meshwell.structured import ArrangementEdge
+    from meshwell.structured.plan import _coalesce_adjacent_arcs
+
+    e1 = ArrangementEdge(edge_id=0, vertices=((0.0, 0.0), (1.0, 0.0)), circle=None)
+    e2 = ArrangementEdge(edge_id=1, vertices=((1.0, 0.0), (2.0, 0.0)), circle=None)
+    coalesced = _coalesce_adjacent_arcs([e1, e2], arc_tolerance=1e-3)
+    assert len(coalesced) == 2

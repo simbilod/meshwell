@@ -1414,3 +1414,74 @@ def _fit_arc_to_edge(
     return CanonicalCircle(
         center=(float(center[0]), float(center[1])), radius=float(radius)
     )
+
+
+def _coalesce_adjacent_arcs(
+    edges: list[ArrangementEdge],
+    arc_tolerance: float,
+) -> list[ArrangementEdge]:
+    """Merge adjacent ArrangementEdges sharing an endpoint and circle.
+
+    Two edges merge iff:
+      - both have non-None circles matching within arc_tolerance on
+        (center, radius)
+      - they share an endpoint (last vertex of one == first vertex of
+        another, or any other endpoint pairing)
+
+    Merging is greedy: scan all pairs, merge the first matching pair,
+    repeat until no more merges possible. Line edges (circle=None) are
+    not merged here.
+
+    Output edge_ids are re-assigned to be contiguous from 0.
+    """
+
+    def _circles_match(c1: "CanonicalCircle", c2: "CanonicalCircle") -> bool:
+        return (
+            abs(c1.center[0] - c2.center[0]) < arc_tolerance
+            and abs(c1.center[1] - c2.center[1]) < arc_tolerance
+            and abs(c1.radius - c2.radius) < arc_tolerance
+        )
+
+    def _endpoints_match(p1, p2, tol=1e-9):
+        return abs(p1[0] - p2[0]) < tol and abs(p1[1] - p2[1]) < tol
+
+    def _try_merge(
+        e1: ArrangementEdge, e2: ArrangementEdge
+    ) -> "ArrangementEdge | None":
+        if e1.circle is None or e2.circle is None:
+            return None
+        if not _circles_match(e1.circle, e2.circle):
+            return None
+        v1_start, v1_end = e1.vertices[0], e1.vertices[-1]
+        v2_start, v2_end = e2.vertices[0], e2.vertices[-1]
+        if _endpoints_match(v1_end, v2_start):
+            merged_verts = e1.vertices + e2.vertices[1:]
+        elif _endpoints_match(v1_end, v2_end):
+            merged_verts = e1.vertices + e2.vertices[-2::-1]
+        elif _endpoints_match(v1_start, v2_start):
+            merged_verts = e1.vertices[::-1] + e2.vertices[1:]
+        elif _endpoints_match(v1_start, v2_end):
+            merged_verts = e2.vertices + e1.vertices[1:]
+        else:
+            return None
+        return ArrangementEdge(edge_id=-1, vertices=merged_verts, circle=e1.circle)
+
+    work = list(edges)
+    while True:
+        merged_any = False
+        for i in range(len(work)):
+            if merged_any:
+                break
+            for j in range(i + 1, len(work)):
+                m = _try_merge(work[i], work[j])
+                if m is not None:
+                    work = [*work[:i], m, *work[i + 1 : j], *work[j + 1 :]]
+                    merged_any = True
+                    break
+        if not merged_any:
+            break
+
+    return [
+        ArrangementEdge(edge_id=i, vertices=e.vertices, circle=e.circle)
+        for i, e in enumerate(work)
+    ]
