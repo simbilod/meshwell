@@ -1485,3 +1485,39 @@ def _coalesce_adjacent_arcs(
         ArrangementEdge(edge_id=i, vertices=e.vertices, circle=e.circle)
         for i, e in enumerate(work)
     ]
+
+
+def _assign_faces_to_slabs(
+    faces: list[ArrangementFace],
+    stack: list[Slab],
+) -> None:
+    """Set ``face_partition`` and ``face_partition_edges`` in place per containment.
+
+    For each face, find every slab whose resolved_footprint contains
+    face.polygon.representative_point(), and append the face's polygon
+    to that slab's face_partition (creating the list if necessary).
+    Mirrors the assignment to face_partition_edges (the face's boundary
+    list of (edge_id, reversed) tuples).
+
+    A face may be contained in zero slabs (e.g., a hole between
+    resolved_footprints created by mesh_bool=False carving). Such faces
+    are silently dropped.
+    """
+    # Initialize slab containers if not already.
+    for slab in stack:
+        if not slab.face_partition:
+            slab.face_partition = []
+        if slab.face_partition_edges is None:
+            slab.face_partition_edges = []
+
+    for face in faces:
+        rep = face.polygon.representative_point()
+        for slab in stack:
+            fp = (
+                slab.resolved_footprint
+                if slab.resolved_footprint is not None
+                else slab.footprint
+            )
+            if fp.contains(rep):
+                slab.face_partition.append(face.polygon)
+                slab.face_partition_edges.append(face.boundary)

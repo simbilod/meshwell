@@ -1161,3 +1161,54 @@ def test_coalesce_lines_passthrough():
     e2 = ArrangementEdge(edge_id=1, vertices=((1.0, 0.0), (2.0, 0.0)), circle=None)
     coalesced = _coalesce_adjacent_arcs([e1, e2], arc_tolerance=1e-3)
     assert len(coalesced) == 2
+
+
+def test_assign_faces_to_slabs_containment():
+    """Each face assigns to the slab whose resolved_footprint contains it."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured import ArrangementFace
+    from meshwell.structured.plan import _assign_faces_to_slabs
+    from meshwell.structured.spec import Slab
+
+    fp_a = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    fp_b = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
+    slab_a = Slab(
+        footprint=fp_a,
+        resolved_footprint=fp_a,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("A",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    slab_b = Slab(
+        footprint=fp_b,
+        resolved_footprint=fp_b,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("B",),
+        source_index=1,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+
+    face_in_a = ArrangementFace(
+        face_id=0,
+        polygon=Polygon([(0.1, 0.1), (0.5, 0.1), (0.5, 0.5), (0.1, 0.5)]),
+        boundary=[],
+    )
+    face_in_b = ArrangementFace(
+        face_id=1,
+        polygon=Polygon([(1.1, 0.1), (1.5, 0.1), (1.5, 0.5), (1.1, 0.5)]),
+        boundary=[],
+    )
+
+    _assign_faces_to_slabs([face_in_a, face_in_b], [slab_a, slab_b])
+    assert len(slab_a.face_partition) == 1
+    assert slab_a.face_partition[0] is face_in_a.polygon
+    assert len(slab_b.face_partition) == 1
+    assert slab_b.face_partition[0] is face_in_b.polygon
+    assert slab_a.face_partition_edges == [[]]
+    assert slab_b.face_partition_edges == [[]]
