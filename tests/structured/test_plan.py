@@ -138,15 +138,21 @@ def test_no_overlap_keeps_all_slabs():
     assert overlaps == []
 
 
-def test_valid_overlap_drops_loser_records_pair():
-    """Same z-extent, same n_layers, footprints overlap: lower mesh_order wins."""
+def test_valid_overlap_records_pair_carve_semantics():
+    """Same z-extent, same n_layers, footprints overlap: both slabs kept, OverlapPair recorded.
+
+    Updated 2026-05-25: old "drop the loser" behavior replaced by "carve the
+    loser by the winner" in Step 0. Plan still records the OverlapPair for
+    diagnostics. Carving is applied via _resolve_sublevel_mesh_order at
+    build_plan time.
+    """
     from meshwell.structured.plan import (
         expand_to_slabs,
         gather_structured_entities,
         validate_and_resolve_overlap,
     )
 
-    # Lower mesh_order (1.0) wins; higher (2.0) is dropped.
+    # Lower mesh_order (1.0) wins; higher (2.0) is carved (not dropped).
     s_lo = _structured(
         _square(0, 0, 4, 4), {0.0: 0.0, 1.0: 0.0}, [3], "lo", mesh_order=2.0
     )
@@ -155,9 +161,10 @@ def test_valid_overlap_drops_loser_records_pair():
     )
     slabs = expand_to_slabs(gather_structured_entities([s_lo, s_hi]))
     kept, overlaps = validate_and_resolve_overlap(slabs, entities=[s_lo, s_hi])
-    # Only the winner (hi) survives.
-    assert len(kept) == 1
-    assert kept[0].physical_name == ("hi",)
+    # Both slabs are kept now (loser carved by winner in Step 0).
+    assert len(kept) == 2
+    names = {s.physical_name[0] for s in kept}
+    assert names == {"lo", "hi"}
     # The loser pair was recorded.
     assert len(overlaps) == 1
     op = overlaps[0]

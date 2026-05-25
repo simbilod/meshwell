@@ -138,10 +138,15 @@ def validate_and_resolve_overlap(
     slabs: list[Slab],
     entities: list[Any],
 ) -> tuple[list[Slab], list[OverlapPair]]:
-    """Apply Policy B: drop volumetric overlap losers, fail on mismatch.
+    """Apply Policy B: record volumetric overlap pairs, fail on mismatch.
 
-    Returns (kept_slabs, overlap_pairs). Lower mesh_order wins; tie-break
+    Returns (all_slabs, overlap_pairs). Lower mesh_order wins; tie-break
     by source_index then z_interval_index for determinism.
+
+    Updated 2026-05-25: no longer drops the loser slab. All slabs are kept
+    and the loser's footprint is carved by the winner in Step 0
+    (_resolve_sublevel_mesh_order). The OverlapPair is still recorded for
+    diagnostics.
     """
     # Sort by (mesh_order, source_index, z_interval_index): winners first.
     order = sorted(
@@ -157,7 +162,6 @@ def validate_and_resolve_overlap(
     overlaps: list[OverlapPair] = []
     for idx in order:
         slab = slabs[idx]
-        dominated = False
         for k_idx in kept_indices:
             kept = slabs[k_idx]
             # Slabs from the same source entity occupy different z-intervals
@@ -197,10 +201,11 @@ def validate_and_resolve_overlap(
                     z_extent=(slab.zlo, slab.zhi),
                 )
             )
-            dominated = True
             break
-        if not dominated:
-            kept_indices.append(idx)
+        # OverlapPair recording (above) is unchanged.
+        # New behavior: keep all slabs in the returned list. The loser's
+        # footprint is carved by the winner in Step 0 (_resolve_sublevel_mesh_order).
+        kept_indices.append(idx)
 
     kept_slabs = [slabs[i] for i in kept_indices]
     return kept_slabs, overlaps
