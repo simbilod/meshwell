@@ -321,14 +321,23 @@ def _collect_inherited_arcs(
     slab: "Slab",
     slabs: list["Slab"],
     skip_slab_ids: set[int],
+    arc_indices: "dict[int, _ArcIndex] | None" = None,
 ) -> list[PieceArcEdge]:
     """Return PieceArcEdge entries inherited from z-touching arc neighbours.
 
     Returns ``[]`` when the receiving slab has ``identify_arcs=False``
     (no point classifying inherited arcs on a slab that doesn't track them).
-    Otherwise walks z-touching structured slabs, reads their
-    ``face_partition_provenance``, and extracts every ``PieceArcEdge`` from
-    each piece's exterior and interior edges.
+    Otherwise walks z-touching structured slabs and collects arcs from two
+    sources:
+
+    1. ``face_partition_provenance``: arcs on neighbours that already split
+       into multiple pieces and carry per-piece provenance.
+    2. ``arc_indices[id(n_slab)]``: the neighbour's footprint-derived arc
+       index. This covers single-piece arc slabs (which don't get provenance
+       attached but still have arcs on their footprint boundary that need to
+       propagate). Only the neighbour's *own* footprint arcs are pulled here
+       (``inherited=False``); already-inherited arcs in the neighbour are
+       handled in the next propagation step from their original source.
     """
     if not slab.identify_arcs:
         return []
@@ -338,18 +347,35 @@ def _collect_inherited_arcs(
         for n_slab in _structured_slabs_touching_z(z, slabs, skip_slab_ids):
             if not n_slab.identify_arcs:
                 continue
-            if n_slab.face_partition_provenance is None:
-                continue
-            for prov in n_slab.face_partition_provenance:
-                inherited.extend(
-                    edge
-                    for edge in prov.exterior_edges
-                    if isinstance(edge, PieceArcEdge)
-                )
-                for ring_edges in prov.interior_edges:
+            # Source 1: neighbour's provenance (multi-piece slabs).
+            if n_slab.face_partition_provenance is not None:
+                for prov in n_slab.face_partition_provenance:
                     inherited.extend(
-                        edge for edge in ring_edges if isinstance(edge, PieceArcEdge)
+                        edge
+                        for edge in prov.exterior_edges
+                        if isinstance(edge, PieceArcEdge)
                     )
+                    for ring_edges in prov.interior_edges:
+                        inherited.extend(
+                            edge
+                            for edge in ring_edges
+                            if isinstance(edge, PieceArcEdge)
+                        )
+            # Source 2: neighbour's arc index (single-piece arc slabs, where
+            # provenance is None but the footprint arcs still need to propagate).
+            if arc_indices is not None:
+                n_idx = arc_indices.get(id(n_slab))
+                if n_idx is not None:
+                    for arc in n_idx.arcs:
+                        if arc.inherited:
+                            continue  # original source handles propagation
+                        inherited.append(
+                            PieceArcEdge(
+                                points=arc.points,
+                                center=arc.center,
+                                radius=arc.radius,
+                            )
+                        )
     return inherited
 
 
@@ -830,6 +856,7 @@ def compute_face_partition(slabs: list[Slab], entities: list[Any]) -> None:
                     slab=slab,
                     slabs=slabs,
                     skip_slab_ids={id(slab)},
+                    arc_indices=arc_indices,
                 ):
                     key = (
                         arc_edge.center,

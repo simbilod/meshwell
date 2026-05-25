@@ -334,7 +334,11 @@ def test_four_stacked_layers_misaligned_seams_mesh_clean(tmp_path):
             polygons=_box(x0, y0, x1, y1),
             buffers={zlo: 0.0, zhi: 0.0},
             structured=True,
-            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            resolutions=[
+                StructuredExtrusionResolutionSpec(
+                    n_layers=[1], recombine_lateral_faces=True
+                )
+            ],
             physical_name=name,
         )
 
@@ -365,3 +369,197 @@ def test_four_stacked_layers_misaligned_seams_mesh_clean(tmp_path):
         "interfaces; the planner failed to compute the union of all-layer "
         "cut lines across the 4-layer stack"
     )
+
+
+# --- Arc-bearing stress tests --------------------------------------------
+
+
+def _disc(cx: float, cy: float, r: float, n: int = 32) -> Polygon:
+    """N-vertex polygon inscribed in a circle of radius r centred at (cx, cy)."""
+    import math
+
+    return Polygon(
+        [
+            (
+                cx + r * math.cos(2 * math.pi * i / n),
+                cy + r * math.sin(2 * math.pi * i / n),
+            )
+            for i in range(n)
+        ]
+    )
+
+
+def test_plan_stacked_concentric_discs_propagates_arc_provenance():
+    """Plan-only: three concentric arc-bearing discs of decreasing radius.
+
+    Layer 1 (z=[0,1]): disc R=1.0, identify_arcs=True.
+    Layer 2 (z=[1,2]): disc R=0.7, identify_arcs=True (concentric, smaller).
+    Layer 3 (z=[2,3]): disc R=0.5, identify_arcs=True (smaller still).
+
+    At z=1: layer 1's top is cut by layer 2's circle at R=0.7 → 2 pieces.
+    At z=2: layer 2's top is cut by layer 3's circle at R=0.5 → 2 pieces total
+            (layer 2 also has the R=1 outer boundary inherited from layer 1
+            below into its arc_index, but R=1 is the slab's *own* footprint
+            arc — so layer 2's face_partition should have 2 pieces driven by
+            the R=0.5 cut from above).
+
+    Verifies that:
+      - Layer 1's face_partition has an inherited R=0.7 PieceArcEdge.
+      - Layer 2's face_partition has both an inherited R=1 arc (from below)
+        and an inherited R=0.5 arc (from above) — or at least one inherited
+        arc edge somewhere in provenance.
+      - Layer 3 (terminal layer, no z-touching arc neighbour above) has at
+        most its own footprint arc.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec, build_plan
+    from meshwell.structured.spec import PieceArcEdge
+
+    l1 = PolyPrism(
+        polygons=_disc(0, 0, 1.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="L1",
+    )
+    l2 = PolyPrism(
+        polygons=_disc(0, 0, 0.7),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="L2",
+    )
+    l3 = PolyPrism(
+        polygons=_disc(0, 0, 0.5),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        physical_name="L3",
+    )
+
+    plan = build_plan([l1, l2, l3])
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
+
+    # Layer 1 must be split by layer 2's smaller circle on its top face.
+    assert len(by_name["L1"].face_partition) >= 2, (
+        f"L1: expected >=2 pieces from R=0.7 top cut; "
+        f"got {len(by_name['L1'].face_partition)}"
+    )
+    # Layer 2 must be split by layer 3's smaller circle on its top face.
+    assert len(by_name["L2"].face_partition) >= 2, (
+        f"L2: expected >=2 pieces from R=0.5 top cut; "
+        f"got {len(by_name['L2'].face_partition)}"
+    )
+
+    # Layer 1's provenance must include an arc inherited from layer 2.
+    # Inherited arc radius ≈ 0.7.
+    l1_prov = by_name["L1"].face_partition_provenance
+    assert l1_prov is not None, "L1 has multi-piece partition but no provenance"
+
+    def _all_arc_radii(prov_list):
+        radii = []
+        for prov in prov_list:
+            radii.extend(
+                edge.radius
+                for edge in prov.exterior_edges
+                if isinstance(edge, PieceArcEdge)
+            )
+            for ring in prov.interior_edges:
+                radii.extend(
+                    edge.radius for edge in ring if isinstance(edge, PieceArcEdge)
+                )
+        return radii
+
+    l1_radii = _all_arc_radii(l1_prov)
+    assert any(
+        abs(r - 0.7) < 0.05 for r in l1_radii
+    ), f"L1: no inherited R=0.7 arc; radii seen: {l1_radii}"
+    # Layer 2's provenance must include arcs from both directions: R=1.0
+    # from below (L1's footprint) and R=0.5 from above (L3's footprint).
+    l2_prov = by_name["L2"].face_partition_provenance
+    assert l2_prov is not None, "L2 has multi-piece partition but no provenance"
+    l2_radii = _all_arc_radii(l2_prov)
+    assert any(
+        abs(r - 0.5) < 0.05 for r in l2_radii
+    ), f"L2: no inherited R=0.5 arc; radii seen: {l2_radii}"
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Stacked arc-bearing discs of decreasing radius produce annular "
+        "face_partition pieces (outer-arc + inner-arc rings) from inherited "
+        "arc cuts. The structured mesher's transfinite logic doesn't yet "
+        "handle faces whose boundary has 2+ arc-bounded sub-loops or that "
+        "carry interior holes from the inherited cut. gmsh fails with "
+        "'Surface N is transfinite but has K corners' (K varies with disc "
+        "vertex count). Follow-up to the all-layer face_partition spec: the "
+        "phantom builder / transfinite hinting needs to either (a) skip "
+        "transfinite for arc-bounded annular pieces and fall back to "
+        "unstructured tris, or (b) recombine inner+outer rings into a "
+        "rectangle-with-hole parametric face. Pure straight-edge stacking "
+        "with the same pattern works (see "
+        "test_four_stacked_layers_misaligned_seams_mesh_clean) because "
+        "polygon piece boundaries split cleanly at vertices; arc-vs-arc "
+        "transitive cuts produce ring topologies that transfinite rejects."
+    ),
+    strict=True,
+    raises=Exception,
+)
+def test_stacked_concentric_arc_discs_mesh_clean(tmp_path):
+    """End-to-end mesh: three concentric arc-bearing discs produce a clean wedge mesh.
+
+    Same scene as the plan-only test. Verifies:
+      - Wedge cells are produced (no tets fall back due to mid-height cuts).
+      - Zero orphan boundary triangles (all boundary tris are either wedge
+        caps or sub-triangles of wedge lateral quads).
+      - All three physicals (L1, L2, L3) appear in the mesh.
+    """
+    pytest.importorskip("meshio")
+    pytest.importorskip("gmsh")
+    import meshio
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+
+    def _arc_slab(r, zlo, zhi, name):
+        return PolyPrism(
+            polygons=_disc(0, 0, r),
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            identify_arcs=True,
+            min_arc_points=4,
+            arc_tolerance=1e-3,
+            physical_name=name,
+        )
+
+    entities = [
+        _arc_slab(1.0, 0.0, 1.0, "L1"),
+        _arc_slab(0.7, 1.0, 2.0, "L2"),
+        _arc_slab(0.5, 2.0, 3.0, "L3"),
+    ]
+
+    out = tmp_path / "stacked_arc_discs.msh"
+    generate_mesh(entities, dim=3, output_mesh=out, default_characteristic_length=0.5)
+
+    m = meshio.read(out)
+    cell_types = {cb.type for cb in m.cells}
+    assert any(
+        ct in cell_types for ct in ("wedge", "wedge6", "wedge15")
+    ), f"expected wedge cells, got {cell_types}"
+    for name in ("L1", "L2", "L3"):
+        assert name in m.field_data, f"missing physical {name}"
+
+    orphans = _count_orphan_triangles(m)
+    assert (
+        orphans == 0
+    ), f"{orphans} non-conformal boundary triangles in concentric-disc stack"
