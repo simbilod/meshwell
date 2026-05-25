@@ -480,15 +480,22 @@ def _validate_no_unstructured_lateral_neighbour(
 
 @dataclass(frozen=True)
 class _IndexedArc:
-    """An arc identified on the original footprint.
+    """An arc identified on the original footprint, or inherited from a neighbour.
 
-    Full vertex sequence preserved in boundary order.
+    Full vertex sequence preserved in boundary order. ``inherited=True``
+    marks arcs merged from a z-touching neighbour's face_partition_provenance
+    (rather than fit from this slab's own footprint). Inherited arcs are
+    skipped by :func:`_validate_arc_neighbour_alignment` because the receiving
+    slab's polygon vertex grid doesn't correspond to the inherited arc — the
+    intersection check would always fail on polygon-vs-arc chord deviation
+    that has no meaning for OCC's true-arc cut from the source neighbour.
     """
 
     arc_id: int
     center: tuple[float, float, float]
     radius: float
     points: tuple[tuple[float, float, float], ...]  # length >= min_arc_points
+    inherited: bool = False
 
 
 @dataclass
@@ -584,6 +591,7 @@ def _merge_arc_into_index(index: _ArcIndex, arc_edge: PieceArcEdge) -> None:
         center=arc_edge.center,
         radius=arc_edge.radius,
         points=tuple(arc_edge.points),
+        inherited=True,
     )
     index.arcs.append(indexed)
     for pos, (x, y, _z) in enumerate(indexed.points):
@@ -944,6 +952,15 @@ def _validate_arc_neighbour_alignment(
                 p2 = ring_coords[i + 1]
 
                 for arc in arc_index.arcs:
+                    # Inherited arcs come from a neighbour's provenance — the
+                    # receiving slab's polygon vertex grid doesn't correspond
+                    # to the inherited arc's vertices, so the polygon-vertex
+                    # check below would always fail on chord-vs-circle
+                    # deviation that has no meaning for OCC's true-arc cut
+                    # from the source neighbour. The source slab already
+                    # validated its own footprint arcs against its neighbours.
+                    if arc.inherited:
+                        continue
                     cx, cy = arc.center[0], arc.center[1]
                     r = arc.radius
 

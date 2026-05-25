@@ -202,7 +202,6 @@ def test_arc_provenance_propagates_to_neighbour_below():
         identify_arcs=True,
         min_arc_points=4,
         arc_tolerance=1e-3,
-        point_tolerance=1e-9,
         physical_name="DISC",
     )
     # Cap covers the upper half of the disc footprint at z=[2,3].
@@ -221,7 +220,6 @@ def test_arc_provenance_propagates_to_neighbour_below():
         identify_arcs=True,
         min_arc_points=4,
         arc_tolerance=1e-3,
-        point_tolerance=1e-9,
         physical_name="BOT",
     )
 
