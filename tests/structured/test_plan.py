@@ -1212,3 +1212,63 @@ def test_assign_faces_to_slabs_containment():
     assert slab_b.face_partition[0] is face_in_b.polygon
     assert slab_a.face_partition_edges == [[]]
     assert slab_b.face_partition_edges == [[]]
+
+
+def test_build_provenance_shim_arc_and_line_edges():
+    """Shim produces PieceArcEdge for arc edges and PieceLineEdge for lines."""
+    import math
+
+    from shapely.geometry import Polygon
+
+    from meshwell.structured import (
+        ArrangementEdge,
+        ArrangementFace,
+        CanonicalCircle,
+        StackArrangement,
+    )
+    from meshwell.structured.plan import _build_provenance_shim
+    from meshwell.structured.spec import PieceArcEdge, PieceLineEdge, Slab
+
+    arc_verts = tuple(
+        (math.cos(math.pi * i / 4), math.sin(math.pi * i / 4)) for i in range(5)
+    )  # 0..pi
+    edges = [
+        ArrangementEdge(
+            edge_id=0,
+            vertices=arc_verts,
+            circle=CanonicalCircle(center=(0.0, 0.0), radius=1.0),
+        ),
+        ArrangementEdge(
+            edge_id=1, vertices=((-1.0, 0.0), (1.0, 0.0)), circle=None
+        ),  # diameter line
+    ]
+    face = ArrangementFace(
+        face_id=0,
+        polygon=Polygon(
+            [(1, 0), (math.cos(math.pi / 4), math.sin(math.pi / 4)), (-1, 0), (1, 0)]
+        ),
+        boundary=[(0, False), (1, False)],  # arc then line
+    )
+    arrangement = StackArrangement(edges=edges, faces=[face])
+
+    slab = Slab(
+        footprint=face.polygon,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("X",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+        identify_arcs=True,
+    )
+    slab.face_partition = [face.polygon, face.polygon]  # len > 1 to pass guard
+    slab.face_partition_edges = [[(0, False), (1, False)]]
+
+    _build_provenance_shim([slab], arrangement)
+    assert slab.face_partition_provenance is not None
+    assert len(slab.face_partition_provenance) == 1
+    ext = slab.face_partition_provenance[0].exterior_edges
+    assert len(ext) == 2
+    assert isinstance(ext[0], PieceArcEdge)
+    assert ext[0].radius == 1.0
+    assert isinstance(ext[1], PieceLineEdge)

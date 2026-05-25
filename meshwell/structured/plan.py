@@ -24,6 +24,7 @@ from meshwell.structured.spec import (
     PieceLineEdge,
     PieceProvenance,
     Slab,
+    StackArrangement,
     StructuredExtrusionResolutionSpec,
     StructuredOverlapError,
     StructuredPartitionConvergenceError,
@@ -1521,3 +1522,58 @@ def _assign_faces_to_slabs(
             if fp.contains(rep):
                 slab.face_partition.append(face.polygon)
                 slab.face_partition_edges.append(face.boundary)
+
+
+def _build_provenance_shim(
+    stack: list[Slab],
+    arrangement: StackArrangement,
+) -> None:
+    """Derive face_partition_provenance from face_partition_edges + arrangement.
+
+    Walked once per slab after assignment. The phantom builder consumes
+    face_partition_provenance today (PieceArcEdge / PieceLineEdge); this
+    shim builds it from the new ArrangementEdge data so phantom.py needs
+    no changes.
+
+    Only runs for slabs with identify_arcs=True; others get
+    face_partition_provenance=None (matches existing behavior).
+    """
+    edges_by_id = {e.edge_id: e for e in arrangement.edges}
+
+    for slab in stack:
+        if not slab.identify_arcs:
+            slab.face_partition_provenance = None
+            continue
+        if not slab.face_partition_edges or len(slab.face_partition) <= 1:
+            slab.face_partition_provenance = None
+            continue
+
+        provenances: list[PieceProvenance] = []
+        for piece_edges in slab.face_partition_edges:
+            ext_edges = []
+            for edge_id, reversed_flag in piece_edges:
+                arr_edge = edges_by_id[edge_id]
+                verts = arr_edge.vertices
+                if reversed_flag:
+                    verts = verts[::-1]
+                if arr_edge.circle is not None:
+                    pts_3d = tuple((v[0], v[1], 0.0) for v in verts)
+                    ext_edges.append(
+                        PieceArcEdge(
+                            points=pts_3d,
+                            center=(
+                                arr_edge.circle.center[0],
+                                arr_edge.circle.center[1],
+                                0.0,
+                            ),
+                            radius=arr_edge.circle.radius,
+                        )
+                    )
+                else:
+                    p1 = (verts[0][0], verts[0][1], 0.0)
+                    p2 = (verts[-1][0], verts[-1][1], 0.0)
+                    ext_edges.append(PieceLineEdge(points=(p1, p2)))
+            provenances.append(
+                PieceProvenance(exterior_edges=ext_edges, interior_edges=[])
+            )
+        slab.face_partition_provenance = provenances
