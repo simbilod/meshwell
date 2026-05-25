@@ -1298,51 +1298,79 @@ def _planar_arrangement(
     """Build the planar arrangement from a list of boundary geometries.
 
     Algorithm:
-      1. ``merged = unary_union(boundaries)`` — shapely inserts vertices
-         at every curve crossing.
-      2. ``polygonize(merged)`` — gives the arrangement faces.
-      3. Extract edges: walk each face's exterior ring; consecutive vertex
-         pairs are candidate edges. Dedup by canonical (sorted-by-first-
-         point, then-by-second-point) coordinate tuples, since each
-         internal edge appears on the boundary of exactly two faces.
-
-    Returns (edges, faces) where each face's boundary list references the
-    edge_ids in the returned edges list.
+      1. ``merged = unary_union(boundaries)`` — splits curves at every
+         intersection. Result is a LineString or MultiLineString whose
+         components are maximal non-crossing curves (the arrangement edges).
+      2. Each component LineString becomes one ArrangementEdge carrying
+         ALL its vertices (so downstream arc fitting has enough points).
+      3. ``polygonize(merged)`` gives the arrangement faces.
+      4. Map each face's boundary to ArrangementEdge ids by walking
+         the face exterior coords and matching each segment to its
+         containing edge. Consecutive segments on the same edge collapse
+         to one boundary entry.
     """
     merged = unary_union(boundaries)
     raw_polygons = list(polygonize(merged))
 
-    def _key(p1, p2, ndigits=9):
-        a = (round(p1[0], ndigits), round(p1[1], ndigits))
-        b = (round(p2[0], ndigits), round(p2[1], ndigits))
+    # Step 2: extract maximal-run edges.
+    line_strings = list(merged.geoms) if hasattr(merged, "geoms") else [merged]
+
+    edges: list[ArrangementEdge] = []
+    # vertex_pair_key -> (edge_id, position_in_edge, forward_direction)
+    # We index every consecutive pair in every edge so face-segment lookups are O(1).
+    pair_to_edge: dict[tuple, tuple[int, int, bool]] = {}
+
+    def _round(p, ndigits=9):
+        return (round(p[0], ndigits), round(p[1], ndigits))
+
+    def _pair_key(p1, p2):
+        a, b = _round(p1), _round(p2)
         return (a, b) if a <= b else (b, a)
 
-    edge_by_key: dict[tuple, int] = {}
-    edges: list[ArrangementEdge] = []
-    faces: list[ArrangementFace] = []
+    for ls in line_strings:
+        verts = tuple((c[0], c[1]) for c in ls.coords)
+        # Drop the closing repeat if present (LinearRing closures).
+        if len(verts) >= 2 and _round(verts[0]) == _round(verts[-1]):
+            verts = verts[:-1]
+            if len(verts) < 2:
+                continue
+        edge = ArrangementEdge(edge_id=len(edges), vertices=verts, circle=None)
+        edges.append(edge)
+        for k in range(len(verts) - 1):
+            p1, p2 = verts[k], verts[k + 1]
+            key = _pair_key(p1, p2)
+            # Forward = True iff (p1, p2) traversal == canonical edge direction.
+            pair_to_edge[key] = (edge.edge_id, k, _round(p1) == _round(verts[k]))
 
+    # Step 4: walk each face's exterior and map segments to edges.
+    faces: list[ArrangementFace] = []
     for face_id, poly in enumerate(raw_polygons):
         coords = list(poly.exterior.coords)
         boundary_list: list[tuple[int, bool]] = []
+        prev_edge_id = None
         for i in range(len(coords) - 1):
             p1, p2 = coords[i], coords[i + 1]
-            key = _key(p1, p2)
-            if key not in edge_by_key:
-                a, b = key
-                edge = ArrangementEdge(
-                    edge_id=len(edges),
-                    vertices=(a, b),
-                    circle=None,
-                )
-                edge_by_key[key] = edge.edge_id
-                edges.append(edge)
-            edge_id = edge_by_key[key]
-            # Determine traversal direction: the edge canonical orientation
-            # is its vertices[0] -> vertices[-1]. If face walks p1 -> p2 and
-            # that equals the canonical direction, reversed=False; else True.
-            p1_round = (round(p1[0], 9), round(p1[1], 9))
-            reversed_flag = p1_round != edges[edge_id].vertices[0]
-            boundary_list.append((edge_id, reversed_flag))
+            key = _pair_key(p1, p2)
+            lookup = pair_to_edge.get(key)
+            if lookup is None:
+                # Segment doesn't match any edge — shouldn't happen if
+                # boundaries are well-formed. Skip with no boundary entry.
+                continue
+            edge_id, pos, _canonical_forward = lookup
+            # Determine reversed_flag: does face direction p1 -> p2 match
+            # the edge's canonical direction edge.vertices[pos] -> edge.vertices[pos+1]?
+            edge_verts = edges[edge_id].vertices
+            edge_p1 = edge_verts[pos]
+            edge_p2 = edge_verts[pos + 1]
+            if _round(p1) == _round(edge_p1) and _round(p2) == _round(edge_p2):
+                reversed_flag = False
+            else:
+                reversed_flag = True
+            if edge_id != prev_edge_id:
+                boundary_list.append((edge_id, reversed_flag))
+                prev_edge_id = edge_id
+            # else: same edge as previous segment, just walking further
+            #       along it — no new boundary entry.
         faces.append(
             ArrangementFace(
                 face_id=face_id,
