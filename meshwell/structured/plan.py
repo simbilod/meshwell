@@ -227,6 +227,53 @@ def _entity_footprint(ent: Any) -> Polygon | MultiPolygon | None:
     return polys
 
 
+def _resolve_sublevel_mesh_order(slabs: list[Slab], entities: list[Any]) -> None:
+    """Set ``slab.resolved_footprint`` in place per sub-level mesh-order carving.
+
+    For each z-interval (grouped by (zlo, zhi) keys), sort kept slabs by
+    (mesh_order, source_index) ascending. The first (winner) keeps its
+    full footprint. Each subsequent slab's resolved_footprint is its
+    original footprint minus the union of every prior winner's
+    resolved_footprint at the same z-interval.
+
+    mesh_bool=False entities whose z-range covers the sub-level
+    additionally carve out of every kept slab's resolved_footprint.
+    They do not themselves carry a resolved_footprint (they're not in
+    the slab list — only their boundaries propagate to step C).
+    """
+    # Group slabs by (zlo, zhi).
+    by_interval: dict[tuple[float, float], list[Slab]] = {}
+    for s in slabs:
+        by_interval.setdefault((s.zlo, s.zhi), []).append(s)
+
+    for (zlo, zhi), group in by_interval.items():
+        # Collect mesh_bool=False entities whose z-range covers this interval.
+        void_footprints: list[Any] = []
+        for ent in entities:
+            if getattr(ent, "mesh_bool", True):
+                continue
+            rng = _entity_z_range(ent)
+            if rng is None:
+                continue
+            ent_zmin, ent_zmax = rng
+            if ent_zmin <= zlo + _Z_TOL and ent_zmax >= zhi - _Z_TOL:
+                fp = _entity_footprint(ent)
+                if fp is not None:
+                    void_footprints.append(fp)
+
+        # Sort by (mesh_order, source_index): winners first.
+        ordered = sorted(group, key=lambda s: (s.mesh_order, s.source_index))
+        accumulated_winners: list[Any] = []
+        for slab in ordered:
+            resolved = slab.footprint
+            if accumulated_winners:
+                resolved = resolved.difference(unary_union(accumulated_winners))
+            if void_footprints:
+                resolved = resolved.difference(unary_union(void_footprints))
+            slab.resolved_footprint = resolved
+            accumulated_winners.append(slab.footprint)
+
+
 def _neighbours_touching_z(
     z: float, entities: list[Any], skip_indices: set[int], tol: float = 1e-9
 ) -> list[Polygon | MultiPolygon]:

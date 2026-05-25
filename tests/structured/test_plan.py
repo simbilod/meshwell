@@ -779,3 +779,123 @@ def test_partition_misaligned_seams_each_slab_partitioned_by_union():
             f"L{k}_B: expected {n_pieces_B} pieces from cuts {cuts_B}; "
             f"got {len(by_name[f'L{k}_B'].face_partition)}"
         )
+
+
+def test_resolve_sublevel_carves_loser_by_winner():
+    """Same-z overlap: lower mesh_order wins; loser's resolved_footprint is carved."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import (
+        _resolve_sublevel_mesh_order,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    a = PolyPrism(
+        polygons=Polygon([(0, 0), (4, 0), (4, 2), (0, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+        mesh_order=1,
+    )
+    b = PolyPrism(
+        polygons=Polygon([(2, 0), (6, 0), (6, 2), (2, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+        mesh_order=2,
+    )
+    entities = [a, b]
+    slabs = expand_to_slabs(gather_structured_entities(entities))
+    _resolve_sublevel_mesh_order(slabs, entities)
+
+    by_name = {s.physical_name[0]: s for s in slabs}
+    # A keeps its full footprint (winner).
+    assert by_name["A"].resolved_footprint.area == 8.0  # 4 * 2
+    # B keeps only [4,6] x [0,2] (carved by A).
+    assert by_name["B"].resolved_footprint.area == 4.0  # 2 * 2
+
+
+def test_resolve_sublevel_mesh_bool_false_carves_kept_neighbour():
+    """A mesh_bool=False entity carves out of overlapping kept slabs."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import (
+        _resolve_sublevel_mesh_order,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    kept = PolyPrism(
+        polygons=Polygon([(0, 0), (4, 0), (4, 2), (0, 2)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="kept",
+        mesh_order=1,
+    )
+    void = PolyPrism(
+        polygons=Polygon([(1, 0.5), (2, 0.5), (2, 1.5), (1, 1.5)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        mesh_bool=False,
+        physical_name="void_tag",
+    )
+    entities = [kept, void]
+    slabs = expand_to_slabs(gather_structured_entities(entities))
+    _resolve_sublevel_mesh_order(slabs, entities)
+
+    by_name = {s.physical_name[0]: s for s in slabs}
+    # Kept has the 1x1 void carved out.
+    assert abs(by_name["kept"].resolved_footprint.area - (8.0 - 1.0)) < 1e-9
+
+
+def test_resolve_sublevel_disjoint_footprints_unchanged():
+    """Slabs at different z-intervals or non-overlapping XY are unaffected."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import (
+        _resolve_sublevel_mesh_order,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    a = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+        mesh_order=1,
+    )
+    b_diff_z = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={2.0: 0.0, 3.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+        mesh_order=2,
+    )
+    c_diff_xy = PolyPrism(
+        polygons=Polygon([(10, 0), (11, 0), (11, 1), (10, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="C",
+        mesh_order=2,
+    )
+    entities = [a, b_diff_z, c_diff_xy]
+    slabs = expand_to_slabs(gather_structured_entities(entities))
+    _resolve_sublevel_mesh_order(slabs, entities)
+
+    by_name = {s.physical_name[0]: s for s in slabs}
+    assert by_name["A"].resolved_footprint.equals(a.polygons)
+    assert by_name["B"].resolved_footprint.equals(b_diff_z.polygons)
+    assert by_name["C"].resolved_footprint.equals(c_diff_xy.polygons)
