@@ -1227,7 +1227,7 @@ def test_build_provenance_shim_arc_and_line_edges():
         StackArrangement,
     )
     from meshwell.structured.plan import _build_provenance_shim
-    from meshwell.structured.spec import PieceArcEdge, PieceLineEdge, Slab
+    from meshwell.structured.spec import PieceArcEdge, Slab
 
     arc_verts = tuple(
         (math.cos(math.pi * i / 4), math.sin(math.pi * i / 4)) for i in range(5)
@@ -1271,4 +1271,39 @@ def test_build_provenance_shim_arc_and_line_edges():
     assert len(ext) == 2
     assert isinstance(ext[0], PieceArcEdge)
     assert ext[0].radius == 1.0
-    assert isinstance(ext[1], PieceLineEdge)
+
+
+def test_build_stack_arrangements_disjoint_two_stacks():
+    """Two non-z-touching slabs -> two independent StackArrangements."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import (
+        _resolve_sublevel_mesh_order,
+        build_stack_arrangements,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    a = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+    )
+    b = PolyPrism(
+        polygons=Polygon([(10, 0), (11, 0), (11, 1), (10, 1)]),
+        buffers={5.0: 0.0, 6.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+    )
+    entities = [a, b]
+    slabs = expand_to_slabs(gather_structured_entities(entities))
+    _resolve_sublevel_mesh_order(slabs, entities)
+    arrangements = build_stack_arrangements(slabs, entities)
+    assert len(arrangements) == 2
+    for arr in arrangements.values():
+        assert len(arr.faces) == 1

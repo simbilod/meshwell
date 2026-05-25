@@ -1488,6 +1488,106 @@ def _coalesce_adjacent_arcs(
     ]
 
 
+def build_stack_arrangements(
+    slabs: list[Slab],
+    entities: list[Any],
+) -> dict[int, StackArrangement]:
+    """Build one StackArrangement per connected z-touching component.
+
+    Assumes ``_resolve_sublevel_mesh_order`` has already populated each
+    slab's ``resolved_footprint``.
+
+    Returns dict mapping component_index -> StackArrangement.
+    """
+    components = _connected_z_components(slabs)
+    arrangements: dict[int, StackArrangement] = {}
+    for comp_idx, stack in enumerate(components):
+        boundaries = _collect_stack_boundaries(stack, entities)
+        if not boundaries:
+            arrangements[comp_idx] = StackArrangement(edges=[], faces=[])
+            continue
+        edges, faces = _planar_arrangement(boundaries)
+        # Determine effective arc_tolerance for this stack: minimum of
+        # all member slabs that have identify_arcs=True.
+        arc_tols = [s.arc_tolerance for s in stack if s.identify_arcs]
+        tol = min(arc_tols) if arc_tols else 1e-3
+        # Step D — try arc fit per edge (only if any stack member identifies arcs).
+        if arc_tols:
+            edges = [
+                ArrangementEdge(
+                    edge_id=e.edge_id,
+                    vertices=e.vertices,
+                    circle=_fit_arc_to_edge(e.vertices, tol),
+                )
+                for e in edges
+            ]
+            # Step E — coalesce adjacent arcs.
+            edges = _coalesce_adjacent_arcs(edges, tol)
+            # Rebuild face boundaries to reference new edge IDs.
+            edges, faces = _rebuild_face_boundaries(edges, faces)
+        arrangements[comp_idx] = StackArrangement(edges=edges, faces=faces)
+    return arrangements
+
+
+def _rebuild_face_boundaries(
+    new_edges: list[ArrangementEdge],
+    faces: list[ArrangementFace],
+) -> tuple[list[ArrangementEdge], list[ArrangementFace]]:
+    """After coalesce, faces may reference old edge_ids — re-resolve them.
+
+    For each face, walk its polygon's exterior; for each polygon-edge segment,
+    find the new ArrangementEdge whose vertices contain that segment and assign
+    the (edge_id, reversed_flag) accordingly.
+    """
+
+    def _segment_covered_by_edge(p1, p2, edge_verts, tol=1e-9):
+        """Returns reversed flag if p1->p2 traversal lies on edge_verts (canonical) or reversed."""
+        for k, v in enumerate(edge_verts):
+            if abs(v[0] - p1[0]) < tol and abs(v[1] - p1[1]) < tol:
+                if k + 1 < len(edge_verts):
+                    n = edge_verts[k + 1]
+                    if abs(n[0] - p2[0]) < tol and abs(n[1] - p2[1]) < tol:
+                        return False
+                if k > 0:
+                    p = edge_verts[k - 1]
+                    if abs(p[0] - p2[0]) < tol and abs(p[1] - p2[1]) < tol:
+                        return True
+        return None
+
+    new_faces: list[ArrangementFace] = []
+    for face in faces:
+        coords = list(face.polygon.exterior.coords)
+        new_boundary: list[tuple[int, bool]] = []
+        i = 0
+        while i < len(coords) - 1:
+            p1, p2 = coords[i], coords[i + 1]
+            matched = False
+            for edge in new_edges:
+                rev = _segment_covered_by_edge(p1, p2, edge.vertices)
+                if rev is None:
+                    continue
+                new_boundary.append((edge.edge_id, rev))
+                edge_len = len(edge.vertices) - 1
+                consumed = 1
+                while consumed < edge_len and i + consumed + 1 < len(coords):
+                    pn, pn1 = coords[i + consumed], coords[i + consumed + 1]
+                    rev2 = _segment_covered_by_edge(pn, pn1, edge.vertices)
+                    if rev2 is None or rev2 != rev:
+                        break
+                    consumed += 1
+                i += consumed
+                matched = True
+                break
+            if not matched:
+                i += 1
+        new_faces.append(
+            ArrangementFace(
+                face_id=face.face_id, polygon=face.polygon, boundary=new_boundary
+            )
+        )
+    return new_edges, new_faces
+
+
 def _assign_faces_to_slabs(
     faces: list[ArrangementFace],
     stack: list[Slab],
