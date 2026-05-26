@@ -739,6 +739,35 @@ def apply_structured_transfinite_hints(
                 bnd = gmsh.model.getBoundary(
                     [(2, face_tag)], oriented=False, recursive=False
                 )
+                # Skip faces that gmsh's transfinite mesher will reject:
+                #   - degenerate (< 3 boundary edges): BOP can leave
+                #     0-area "seam" faces when phantom solids of multiple
+                #     pieces share a near-coincident interface.
+                #   - multi-wire (face with hole): BOP can produce a
+                #     shared lateral face that absorbs an inner ring
+                #     from an adjacent piece's footprint, turning a clean
+                #     rectangular lateral into a 5+ corner face with hole.
+                # In both cases gmsh would reject the transfinite hint
+                # later with "Surface N is transfinite but has K corners";
+                # skipping the hint here lets gmsh fall back to its
+                # default mesher without crashing the 2D pass.
+                edge_tags_set = {tag for d, tag in bnd if d == 1}
+                if len(edge_tags_set) < 3:
+                    continue
+                # Multi-wire detection: walk the face wires explicitly
+                # via the gmsh face's underlying topology. A single-wire
+                # face's edges form ONE traversal loop; multi-wire faces
+                # produce N disjoint loops. Easier proxy: check whether
+                # the boundary call with recursive=True returns more
+                # vertices than the edge set suggests for a simple loop
+                # (simple loop has #vertices == #edges).
+                v_recursive = gmsh.model.getBoundary(
+                    [(2, face_tag)], oriented=False, recursive=True
+                )
+                n_vertices = len({tag for d, tag in v_recursive if d == 0})
+                if n_vertices != len(edge_tags_set):
+                    # Wire count mismatch: face is non-simply-connected.
+                    continue
                 for dim_e, edge_tag in bnd:
                     if dim_e != 1:
                         continue

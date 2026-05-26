@@ -730,26 +730,6 @@ def test_stacked_overlapping_ring_segments_mesh_clean(tmp_path):
     ), f"{orphans} non-conformal boundary triangles in ring-segment stack"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Reinforced ring+plane scene: planner emits clean single-loop "
-        "face_partition pieces (verified by inspection — rings get 2 "
-        "single-loop pieces each, planes get 5 single-loop pieces each "
-        "with the ring footprints carved out), but the downstream gmsh "
-        "transfinite hint application fails with 'Surface N is "
-        "transfinite but has 1 corner' on one of the plane sub-pieces. "
-        "Likely cause: an OCC-side simplification of an irregular thin "
-        "plane sub-piece (the carve creates a long thin region between "
-        "two rings at adjacent z-layers) into a degenerate 1-corner "
-        "face. The core source-of-truth invariant (IsSame sharing) is "
-        "validated by test_stacked_overlapping_ring_segments_mesh_clean "
-        "+ test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene; "
-        "this scene exposes a separate downstream issue with structured "
-        "transfinite hinting on plane sub-pieces with concave-arc holes."
-    ),
-    strict=True,
-    raises=Exception,
-)
 def test_stacked_overlapping_ring_segments_with_lower_priority_planes_mesh_clean(
     tmp_path,
 ):
