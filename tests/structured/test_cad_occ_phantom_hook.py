@@ -80,3 +80,38 @@ def test_cad_occ_extra_shapes_participate_in_fragmentation():
         # doesn't raise and the input was tracked.
         modified = captured[0].Modified(s)
         assert modified is not None
+
+
+def test_instantiate_entity_occ_uses_shape_override_when_provided():
+    """When shape_override is given, _instantiate_entity_occ skips instanciate_occ()."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    from meshwell.cad_occ import CAD_OCC
+    from meshwell.polyprism import PolyPrism
+
+    p = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="p",
+    )
+    tiny = PolyPrism(
+        polygons=Polygon([(0, 0), (0.1, 0), (0.1, 0.1), (0, 0.1)]),
+        buffers={0.0: 0.0, 0.1: 0.0},
+        physical_name="tiny",
+    )
+    override_solid = tiny.instanciate_occ()
+
+    proc = CAD_OCC()
+    labeled = proc._instantiate_entity_occ(
+        index=0,
+        entity_obj=p,
+        shape_override=[override_solid],
+    )
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(labeled.shapes[0], g)
+    assert (
+        abs(g.Mass() - 0.001) < 1e-9
+    ), f"Expected override volume 0.001 (0.1^3), got {g.Mass()}"
+    assert labeled.physical_name == ("p",)
+    assert labeled.dim == 3

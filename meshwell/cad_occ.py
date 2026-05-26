@@ -672,12 +672,31 @@ class CAD_OCC:
         self,
         index: int,
         entity_obj: Any,
+        shape_override: list[Any] | None = None,
     ) -> OCCLabeledEntity:
-        """Instantiate a single entity into an OCC shape."""
-        shape = entity_obj.instanciate_occ()
-        dim = getattr(entity_obj, "dimension", None)
-        if dim is None:
-            dim = self._get_shape_dimension(shape)
+        """Instantiate a single entity into an OCC shape.
+
+        When ``shape_override`` is provided, it replaces the result of
+        ``entity_obj.instanciate_occ()``. This is the single-source-of-truth
+        path for structured entities: the orchestrator passes the phantom
+        solids that the planner already constructed so that BOP fragments
+        only one OCC representation of each volume, avoiding sliver
+        artifacts at imperfect re-construction boundaries. All identity
+        metadata (physical_name, mesh_order, overlap_metadata) still flows
+        from ``entity_obj``.
+        """
+        if shape_override is not None:
+            shapes = list(shape_override)
+            if shapes:
+                dim = self._get_shape_dimension(shapes[0])
+            else:
+                dim = getattr(entity_obj, "dimension", 0)
+        else:
+            shape = entity_obj.instanciate_occ()
+            shapes = [shape]
+            dim = getattr(entity_obj, "dimension", None)
+            if dim is None:
+                dim = self._get_shape_dimension(shape)
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
@@ -690,7 +709,7 @@ class CAD_OCC:
         else:
             footprint, zrange, exact = md
         return OCCLabeledEntity(
-            shapes=[shape],
+            shapes=shapes,
             physical_name=physical_name,
             index=index,
             keep=getattr(entity_obj, "mesh_bool", True),
