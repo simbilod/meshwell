@@ -1248,6 +1248,18 @@ def _validate_arc_partition_aligned(
 
 _DEFAULT_SNAP_TOL = 1e-9
 
+_MAX_ANNULAR_SPLIT_PASSES = 4
+
+
+class StructuredArrangementError(RuntimeError):
+    """Raised when the planar arrangement cannot resolve annular faces.
+
+    The iteration cap (``_MAX_ANNULAR_SPLIT_PASSES``) fired without
+    converging to a fully single-loop face_partition. Typically means
+    the face has a topology the helper cannot handle (e.g. multiple
+    interior rings that the deterministic ±x radial cuts cannot reach).
+    """
+
 
 def _snap_boundary_coords(geom: Any, tol: float) -> Any:
     """Snap every vertex of ``geom`` to a tolerance grid (pointwise).
