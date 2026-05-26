@@ -1246,6 +1246,20 @@ def _validate_arc_partition_aligned(
                         )
 
 
+_DEFAULT_SNAP_TOL = 1e-9
+
+
+def _snap_boundary_coords(geom: Any, tol: float) -> Any:
+    """Snap every vertex of ``geom`` to a tolerance grid (pointwise).
+
+    Inputs whose vertices differ by < ``tol`` collapse to bit-identical
+    coordinates so ``shapely.unary_union`` recognises shared endpoints
+    that floating-point construction (e.g. ``cos(0)`` vs ``cos(2*pi)``)
+    would otherwise leave subtly different.
+    """
+    return shapely.set_precision(geom, grid_size=tol, mode="pointwise")
+
+
 def _collect_stack_boundaries(stack: list[Slab], entities: list[Any]) -> list[Any]:
     """Boundaries to feed the arrangement for this connected component.
 
@@ -1301,7 +1315,59 @@ def _collect_stack_boundaries_tagged(
             if fp is not None:
                 boundaries.append((fp.boundary, False))
 
-    return boundaries
+    # Snap every contributing boundary's vertices to the tightest positive
+    # ``point_tolerance`` among the stack's entities (or ``_DEFAULT_SNAP_TOL``
+    # if none report one). Collapses floating-point near-duplicates (e.g.
+    # cos(0) vs cos(2*pi)) so the downstream ``unary_union`` recognises them
+    # as the same point.
+    tol = _stack_snap_tolerance(stack, entities)
+    return [(_snap_boundary_coords(b, tol), ident) for b, ident in boundaries]
+
+
+def _stack_snap_tolerance(stack: list[Slab], entities: list[Any]) -> float:
+    """Tightest positive ``point_tolerance`` of the stack's source entities.
+
+    Falls back to ``_DEFAULT_SNAP_TOL`` (1e-9) when no entity reports a
+    positive ``point_tolerance``.
+    """
+    candidate_tols = [
+        pt
+        for slab in stack
+        if (pt := getattr(entities[slab.source_index], "point_tolerance", None))
+        is not None
+        and pt > 0
+    ]
+    return min(candidate_tols) if candidate_tols else _DEFAULT_SNAP_TOL
+
+
+def _generate_radial_cuts_for_annular_face(poly: Polygon) -> list[Any]:
+    """For one annular face, produce two diametrically-opposed radial cuts.
+
+    Cut origin = centroid of the first interior ring (the hole).
+    Cuts are oriented along +x and -x, extending past the face's bounding
+    box, clipped to the face's geometry so only the in-face portion is
+    added. Filters out empty intersections and any non-LineString /
+    MultiLineString results (e.g. a single Point contact).
+    """
+    from shapely.geometry import LineString, MultiLineString
+
+    if not poly.interiors:
+        return []
+    cx, cy = next(iter(poly.interiors[0].centroid.coords))
+    minx, miny, maxx, maxy = poly.bounds
+    half_extent = max(maxx - cx, cx - minx, maxy - cy, cy - miny) * 2 + 1
+    raw_cuts = [
+        LineString([(cx, cy), (cx + half_extent, cy)]),
+        LineString([(cx, cy), (cx - half_extent, cy)]),
+    ]
+    clipped: list[Any] = []
+    for cut in raw_cuts:
+        c = cut.intersection(poly)
+        if c.is_empty:
+            continue
+        if isinstance(c, (LineString, MultiLineString)):
+            clipped.append(c)
+    return clipped
 
 
 def _planar_arrangement(

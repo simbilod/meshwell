@@ -1365,3 +1365,130 @@ def test_assign_face_partition_from_arrangement_full_pipeline():
     # Each slab has exactly 1 face after carving.
     assert len(by_name["A"].face_partition) == 1
     assert len(by_name["B"].face_partition) == 1
+
+
+def test_snap_boundary_coords_merges_near_coincident_endpoints():
+    """Snap collapses endpoints that differ by < tol so unary_union sees them as equal."""
+    from shapely.geometry import LineString
+
+    from meshwell.structured.plan import _snap_boundary_coords
+
+    # Three-vertex LineString whose first and last vertices should be coincident
+    # in user intent but differ by 1e-12 due to floating-point construction.
+    ls = LineString([(1.0, 0.0), (0.5, 0.5), (1.0 + 1e-12, 0.0)])
+    snapped = _snap_boundary_coords(ls, tol=1e-9)
+    coords = list(snapped.coords)
+    assert (
+        coords[0] == coords[-1]
+    ), f"endpoints not snapped together: {coords[0]} vs {coords[-1]}"
+
+
+def test_collect_stack_boundaries_snaps_to_entity_point_tolerance():
+    """_collect_stack_boundaries snaps each boundary's coords to the stack's tightest point_tolerance."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import _collect_stack_boundaries
+    from meshwell.structured.spec import Slab
+
+    # Polygon whose closing vertex differs from the opening vertex by 1e-12
+    # (mimicking the cos(0) vs cos(2*pi) floating-point divergence).
+    eps = 1e-12
+    poly = Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (eps, eps)])
+    structured_ent = PolyPrism(
+        polygons=poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="S",
+        point_tolerance=1e-3,
+    )
+    slab = Slab(
+        footprint=structured_ent.polygons,
+        resolved_footprint=structured_ent.polygons,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("S",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    boundaries = _collect_stack_boundaries([slab], [structured_ent])
+    assert len(boundaries) == 1
+    coords = list(boundaries[0].coords)
+    # Every coordinate must lie on a multiple of 1e-3 (the entity's point_tolerance).
+    for x, y in coords:
+        assert (
+            abs(round(x / 1e-3) * 1e-3 - x) < 1e-12
+        ), f"x={x} not snapped to 1e-3 grid"
+        assert (
+            abs(round(y / 1e-3) * 1e-3 - y) < 1e-12
+        ), f"y={y} not snapped to 1e-3 grid"
+
+
+def test_collect_stack_boundaries_defaults_tol_when_no_point_tolerance():
+    """Stack with no point_tolerance-bearing entity falls back to 1e-9 default snap."""
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import _collect_stack_boundaries
+    from meshwell.structured.spec import Slab
+
+    # Polygon with a 1e-12 perturbation that should disappear under the 1e-9 default.
+    poly = Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (1e-12, 1.0)])
+    ent = PolyPrism(
+        polygons=poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="S",
+        point_tolerance=0.0,  # disables entity-level snap; planner default 1e-9 still applies
+    )
+    slab = Slab(
+        footprint=ent.polygons,
+        resolved_footprint=ent.polygons,
+        zlo=0.0,
+        zhi=1.0,
+        physical_name=("S",),
+        source_index=0,
+        z_interval_index=0,
+        mesh_order=1.0,
+    )
+    boundaries = _collect_stack_boundaries([slab], [ent])
+    assert len(boundaries) == 1
+    coords = list(boundaries[0].coords)
+    # 1e-12 perturbation should be snapped away to 0.
+    has_zero_x = any(x == 0.0 for x, _ in coords)
+    assert has_zero_x, f"1e-12 not snapped to 0 under default tol; coords: {coords}"
+
+
+def test_generate_radial_cuts_for_annular_face_returns_two_clipped_lines():
+    """A concentric annulus yields two radial line cuts clipped to the annular region."""
+    from shapely.geometry import LineString, Point, Polygon
+
+    from meshwell.structured.plan import _generate_radial_cuts_for_annular_face
+
+    outer = list(Point(0, 0).buffer(1.0, quad_segs=16).exterior.coords)
+    inner = list(Point(0, 0).buffer(0.5, quad_segs=16).exterior.coords)
+    annulus = Polygon(outer, [inner])
+
+    cuts = _generate_radial_cuts_for_annular_face(annulus)
+    assert len(cuts) == 2, f"expected 2 radial cuts, got {len(cuts)}"
+    for c in cuts:
+        assert isinstance(c, LineString), f"expected LineString, got {type(c)}"
+        xs = sorted({round(x, 6) for x, _ in c.coords})
+        assert (
+            min(xs) < 0.0 or min(xs) > 0.0
+        ), "cut should be along +x or -x axis, not crossing zero"
+
+
+def test_generate_radial_cuts_returns_empty_for_simple_face():
+    """A polygon without interior rings yields no cuts."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.plan import _generate_radial_cuts_for_annular_face
+
+    sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    assert _generate_radial_cuts_for_annular_face(sq) == []
