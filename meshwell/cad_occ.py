@@ -996,6 +996,7 @@ class CAD_OCC:
         extra_occ_shapes: list[Any] | None = None,
         cad_occ_callback: Callable[[Any], None] | None = None,
         executor: str = "auto",
+        entity_shape_overrides: dict[int, list[Any]] | None = None,
     ) -> list[OCCLabeledEntity]:
         """Fan-out per-entity cut + same-name fuse + global fragment.
 
@@ -1033,7 +1034,16 @@ class CAD_OCC:
 
         # Stage 1: per-entity cut.
         labeled = [
-            self._instantiate_entity_occ(i, ent) for i, ent in enumerate(entities_list)
+            self._instantiate_entity_occ(
+                i,
+                ent,
+                shape_override=(
+                    entity_shape_overrides.get(i)
+                    if entity_shape_overrides is not None
+                    else None
+                ),
+            )
+            for i, ent in enumerate(entities_list)
         ]
         results: dict[int, Any] = {}
 

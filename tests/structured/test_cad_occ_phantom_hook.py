@@ -193,3 +193,36 @@ def test_process_entities_legacy_uses_overrides():
     assert (
         g.Mass() < 0.01
     ), f"override should win (~0.001), not instanciate_occ (~1.0); got {g.Mass()}"
+
+
+def test_process_entities_parallel_uses_overrides_serial_executor():
+    """Parallel path with executor='serial' respects entity_shape_overrides."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    from meshwell.cad_occ import CAD_OCC
+    from meshwell.polyprism import PolyPrism
+
+    p = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="p",
+    )
+    tiny = PolyPrism(
+        polygons=Polygon([(0, 0), (0.1, 0), (0.1, 0.1), (0, 0.1)]),
+        buffers={0.0: 0.0, 0.1: 0.0},
+        physical_name="tiny",
+    )
+    override = tiny.instanciate_occ()
+
+    proc = CAD_OCC()
+    result = proc.process_entities_parallel(
+        [p],
+        entity_shape_overrides={0: [override]},
+        executor="serial",
+    )
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(result[0].shapes[0], g)
+    assert (
+        g.Mass() < 0.01
+    ), f"override should win (~0.001), not instanciate_occ (~1.0); got {g.Mass()}"
