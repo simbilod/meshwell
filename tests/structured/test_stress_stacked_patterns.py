@@ -493,27 +493,6 @@ def test_plan_stacked_concentric_discs_propagates_arc_provenance():
     ), f"L2: no inherited R=0.5 arc; radii seen: {l2_radii}"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Stacked arc-bearing discs of decreasing radius produce annular "
-        "face_partition pieces (outer-arc + inner-arc rings) from inherited "
-        "arc cuts. The structured mesher's transfinite logic doesn't yet "
-        "handle faces whose boundary has 2+ arc-bounded sub-loops or that "
-        "carry interior holes from the inherited cut. gmsh fails with "
-        "'Surface N is transfinite but has K corners' (K varies with disc "
-        "vertex count). Follow-up to the all-layer face_partition spec: the "
-        "phantom builder / transfinite hinting needs to either (a) skip "
-        "transfinite for arc-bounded annular pieces and fall back to "
-        "unstructured tris, or (b) recombine inner+outer rings into a "
-        "rectangle-with-hole parametric face. Pure straight-edge stacking "
-        "with the same pattern works (see "
-        "test_four_stacked_layers_misaligned_seams_mesh_clean) because "
-        "polygon piece boundaries split cleanly at vertices; arc-vs-arc "
-        "transitive cuts produce ring topologies that transfinite rejects."
-    ),
-    strict=True,
-    raises=Exception,
-)
 def test_stacked_concentric_arc_discs_mesh_clean(tmp_path):
     """End-to-end mesh: three concentric arc-bearing discs produce a clean wedge mesh.
 

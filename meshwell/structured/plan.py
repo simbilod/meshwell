@@ -1352,34 +1352,43 @@ def _stack_snap_tolerance(stack: list[Slab], entities: list[Any]) -> float:
     return min(candidate_tols) if candidate_tols else _DEFAULT_SNAP_TOL
 
 
-def _generate_radial_cuts_for_annular_face(poly: Polygon) -> list[Any]:
-    """For one annular face, produce two diametrically-opposed radial cuts.
+_RADIAL_CUT_Y_OFFSET = 1e-3
 
-    Cut origin = centroid of the first interior ring (the hole).
-    Cuts are oriented along +x and -x, extending past the face's bounding
-    box, clipped to the face's geometry so only the in-face portion is
-    added. Filters out empty intersections and any non-LineString /
-    MultiLineString results (e.g. a single Point contact).
+
+def _generate_radial_cuts_for_annular_face(poly: Polygon) -> list[Any]:
+    """For one annular face, produce a single horizontal cut crossing through.
+
+    The cut is a single ``LineString`` extending past the face bbox on
+    both sides, placed at ``y = hole_centroid_y + _RADIAL_CUT_Y_OFFSET``
+    — a small offset off the centroid's y so the cut crosses each ring
+    between vertices of the polygon approximation rather than at them.
+
+    Why a single long line instead of two diametrically-opposed clipped
+    radials (as the original spec sketched):
+
+    * Clipped radials terminate ON ring vertices; ``shapely.unary_union``
+      does NOT split a closed ``LinearRing`` at an existing vertex when
+      another curve merely touches it there. polygonize then keeps the
+      ring as one loop and the annulus survives undivided.
+    * A non-clipped, slightly off-axis line crosses each ring at a NEW
+      transverse intersection (between existing vertices), which
+      ``unary_union`` nodes correctly. polygonize then decomposes every
+      face the line crosses into single-loop sub-pieces.
+
+    The line may also split non-annular faces (e.g. an inner disc) into
+    halves; that's fine — all sub-pieces remain single-loop and
+    transfinite-compatible.
     """
-    from shapely.geometry import LineString, MultiLineString
+    from shapely.geometry import LineString
 
     if not poly.interiors:
         return []
     cx, cy = next(iter(poly.interiors[0].centroid.coords))
-    minx, miny, maxx, maxy = poly.bounds
-    half_extent = max(maxx - cx, cx - minx, maxy - cy, cy - miny) * 2 + 1
-    raw_cuts = [
-        LineString([(cx, cy), (cx + half_extent, cy)]),
-        LineString([(cx, cy), (cx - half_extent, cy)]),
-    ]
-    clipped: list[Any] = []
-    for cut in raw_cuts:
-        c = cut.intersection(poly)
-        if c.is_empty:
-            continue
-        if isinstance(c, (LineString, MultiLineString)):
-            clipped.append(c)
-    return clipped
+    minx, _miny, maxx, _maxy = poly.bounds
+    span = max(maxx - minx, 1.0)
+    half_extent = span * 2 + 1
+    y = cy + _RADIAL_CUT_Y_OFFSET
+    return [LineString([(cx - half_extent, y), (cx + half_extent, y)])]
 
 
 def _planar_arrangement(
@@ -1682,16 +1691,21 @@ def build_stack_arrangements(
                 for c in ls.coords:
                     arc_source_pts.add((round(c[0], 9), round(c[1], 9)))
         # Iterate: any face with non-empty interiors (annular) gets split
-        # by two ±x radial cuts; re-run the arrangement on the augmented
-        # boundary set. gmsh's transfinite mesher rejects multi-loop face
-        # boundaries, so every produced face must be single-loop.
+        # by two ±x radial cuts. We process ONE annular face per pass —
+        # if two annular faces share a ring (concentric nested annuli)
+        # their ±x cuts are collinear and ``unary_union`` would merge
+        # them into a single longer line, losing the intermediate node
+        # at the shared ring and leaving the inner annulus undivided.
+        # Splitting one annulus per pass forces each cut to node cleanly
+        # against the rings BEFORE the next pass adds a collinear cut.
         for _ in range(_MAX_ANNULAR_SPLIT_PASSES):
             edges, faces = _planar_arrangement(boundaries)
             annular = [f for f in faces if f.polygon.interiors]
             if not annular:
                 break
-            for face in annular:
-                boundaries.extend(_generate_radial_cuts_for_annular_face(face.polygon))
+            boundaries.extend(
+                _generate_radial_cuts_for_annular_face(annular[0].polygon)
+            )
         else:
             raise StructuredArrangementError(
                 f"Annular face split did not converge after "
