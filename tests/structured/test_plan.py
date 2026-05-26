@@ -1492,3 +1492,54 @@ def test_generate_radial_cuts_returns_empty_for_simple_face():
 
     sq = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
     assert _generate_radial_cuts_for_annular_face(sq) == []
+
+
+def test_build_stack_arrangements_splits_annular_face_into_single_loop_pieces():
+    """Concentric arc-bearing slabs no longer emit annular face_partition pieces."""
+    import math
+
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.plan import (
+        _resolve_sublevel_mesh_order,
+        build_stack_arrangements,
+        expand_to_slabs,
+        gather_structured_entities,
+    )
+
+    def _disc(r, n=32):
+        return Polygon(
+            [
+                (r * math.cos(2 * math.pi * i / n), r * math.sin(2 * math.pi * i / n))
+                for i in range(n)
+            ]
+        )
+
+    outer = PolyPrism(
+        polygons=_disc(1.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        physical_name="outer",
+    )
+    inner = PolyPrism(
+        polygons=_disc(0.7),
+        buffers={1.0: 0.0, 2.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        identify_arcs=True,
+        physical_name="inner",
+    )
+    entities = [outer, inner]
+    slabs = expand_to_slabs(gather_structured_entities(entities))
+    _resolve_sublevel_mesh_order(slabs, entities)
+    arrangements = build_stack_arrangements(slabs, entities)
+    for comp_idx, arr in arrangements.items():
+        for f in arr.faces:
+            assert len(f.polygon.interiors) == 0, (
+                f"arrangement[{comp_idx}].faces produced a face with "
+                f"{len(f.polygon.interiors)} interior ring(s); annular split failed"
+            )

@@ -1681,7 +1681,24 @@ def build_stack_arrangements(
             ):
                 for c in ls.coords:
                     arc_source_pts.add((round(c[0], 9), round(c[1], 9)))
-        edges, faces = _planar_arrangement(boundaries)
+        # Iterate: any face with non-empty interiors (annular) gets split
+        # by two ±x radial cuts; re-run the arrangement on the augmented
+        # boundary set. gmsh's transfinite mesher rejects multi-loop face
+        # boundaries, so every produced face must be single-loop.
+        for _ in range(_MAX_ANNULAR_SPLIT_PASSES):
+            edges, faces = _planar_arrangement(boundaries)
+            annular = [f for f in faces if f.polygon.interiors]
+            if not annular:
+                break
+            for face in annular:
+                boundaries.extend(_generate_radial_cuts_for_annular_face(face.polygon))
+        else:
+            raise StructuredArrangementError(
+                f"Annular face split did not converge after "
+                f"{_MAX_ANNULAR_SPLIT_PASSES} passes for stack component "
+                f"{comp_idx}; arrangement still contains face(s) with "
+                f"interior ring(s)."
+            )
         # Determine effective arc_tolerance for this stack: minimum of
         # all member slabs that have identify_arcs=True.
         arc_tols = [s.arc_tolerance for s in stack if s.identify_arcs]
