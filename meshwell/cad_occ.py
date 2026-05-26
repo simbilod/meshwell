@@ -950,6 +950,7 @@ class CAD_OCC:
         progress_bars: bool = False,
         extra_occ_shapes: list[Any] | None = None,
         cad_occ_callback: Callable[[Any], None] | None = None,
+        entity_shape_overrides: dict[int, list[Any]] | None = None,
     ) -> list[OCCLabeledEntity]:
         """Instantiate, sequentially cut, then fragment all entities.
 
@@ -972,7 +973,9 @@ class CAD_OCC:
         from the emitted BREP.
         """
         labeled_entities = self.process_entities_cut_only(
-            entities_list, progress_bars=progress_bars
+            entities_list,
+            progress_bars=progress_bars,
+            entity_shape_overrides=entity_shape_overrides,
         )
         if not labeled_entities:
             return []
