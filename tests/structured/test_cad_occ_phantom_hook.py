@@ -355,6 +355,97 @@ def test_no_sliver_solids_for_ring_quarter_cut():
             )
 
 
+def test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene():
+    """All PhantomMap output_laterals must IsSame match in the XAO compound.
+
+    Uses the three-layer rotated half-annulus scene. After cad_occ +
+    extract_phantom_map + _build_xao_compound, every lateral face the
+    PhantomMap references must be findable by IsSame in the compound's
+    face map. This is the invariant whose violation raised "PhantomMap
+    lateral ... has no IsSame() match" before the fix.
+    """
+    import math
+
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    from meshwell.cad_occ import cad_occ
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.builder import _build_xao_compound
+    from meshwell.structured.phantom import (
+        _group_phantom_solids_by_entity,
+        build_phantom_shapes,
+        extract_phantom_map,
+    )
+    from meshwell.structured.plan import build_plan
+
+    def _ring_segment(cx, cy, ri, ro, t0, t1, n=24):
+        step = 2 * math.pi / n
+        eps = 1e-9
+        interior = [
+            k * step
+            for k in range(math.ceil(t0 / step), math.floor(t1 / step) + 1)
+            if t0 + eps < k * step < t1 - eps
+        ]
+        angles = [t0, *interior, t1]
+        outer = [(cx + ro * math.cos(a), cy + ro * math.sin(a)) for a in angles]
+        inner = [
+            (cx + ri * math.cos(a), cy + ri * math.sin(a)) for a in reversed(angles)
+        ]
+        return Polygon(outer + inner)
+
+    def _ring(poly, zlo, zhi, name):
+        return PolyPrism(
+            polygons=poly,
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            identify_arcs=True,
+            min_arc_points=4,
+            arc_tolerance=1e-3,
+            physical_name=name,
+        )
+
+    L1 = _ring(_ring_segment(0, 0, 0.5, 1.0, 0.0, math.pi), 0.0, 1.0, "L1")
+    L2 = _ring(
+        _ring_segment(0, 0, 0.5, 1.0, math.pi / 2, 3 * math.pi / 2),
+        1.0,
+        2.0,
+        "L2",
+    )
+    L3 = _ring(_ring_segment(0, 0, 0.5, 1.0, math.pi, 2 * math.pi), 2.0, 3.0, "L3")
+    entities = [L1, L2, L3]
+    plan = build_plan(entities)
+    phantom_result = build_phantom_shapes(plan)
+    overrides = _group_phantom_solids_by_entity(plan, phantom_result)
+
+    captured: list = []
+    occ_entities = cad_occ(
+        entities,
+        entity_shape_overrides=overrides,
+        cad_occ_callback=lambda b: captured.append(b),
+    )
+    assert len(captured) == 1
+    pmap = extract_phantom_map(phantom_result, captured[0])
+
+    compound = _build_xao_compound(occ_entities)
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(compound, TopAbs_FACE, fmap)
+
+    missing = []
+    for lat_key, faces in pmap.output_laterals.items():
+        for i, f in enumerate(faces):
+            if fmap.FindIndex(f) == 0:
+                missing.append((lat_key, i))
+
+    assert not missing, (
+        f"{len(missing)} PhantomMap lateral face(s) have no IsSame match "
+        f"in the XAO compound: {missing[:5]}..."
+    )
+
+
 def test_process_entities_parallel_uses_overrides_serial_executor():
     """Parallel path with executor='serial' respects entity_shape_overrides."""
     from OCP.BRepGProp import BRepGProp
