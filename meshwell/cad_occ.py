@@ -1120,6 +1120,7 @@ def cad_occ(
     extra_occ_shapes: list[Any] | None = None,
     cad_occ_callback: Callable[[Any], None] | None = None,
     executor: str = "auto",
+    entity_shape_overrides: dict[int, list[Any]] | None = None,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 
@@ -1148,6 +1149,13 @@ def cad_occ(
             or "legacy". The first four select the parallel pipeline's
             executor mode. "legacy" runs the pre-parallel sequential
             cascade.
+        entity_shape_overrides: Optional mapping from entity input-list index
+            to a list of pre-built OCP solids that replace
+            ``entity_obj.instanciate_occ()``. Identity metadata
+            (``physical_name``, ``mesh_order``, etc.) still flows from
+            ``entity_obj``. Used by the structured pipeline to pass phantom
+            solids built from the planner's ``face_partition`` directly,
+            eliminating the parallel-construction sliver bug.
     """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
@@ -1162,6 +1170,7 @@ def cad_occ(
             progress_bars=progress_bars,
             extra_occ_shapes=extra_occ_shapes,
             cad_occ_callback=cad_occ_callback,
+            entity_shape_overrides=entity_shape_overrides,
         )
     return processor.process_entities_parallel(
         entities_list,
@@ -1169,4 +1178,5 @@ def cad_occ(
         extra_occ_shapes=extra_occ_shapes,
         cad_occ_callback=cad_occ_callback,
         executor=executor,
+        entity_shape_overrides=entity_shape_overrides,
     )
