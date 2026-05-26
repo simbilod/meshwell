@@ -808,6 +808,7 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        entity_shape_overrides: dict[int, list[Any]] | None = None,
     ) -> list[OCCLabeledEntity]:
         """Run the OCP-side prepare + sort + instantiate + sequential-cut phase.
 
@@ -847,7 +848,14 @@ class CAD_OCC:
             disable=not progress_bars,
             leave=False,
         ):
-            labeled = self._instantiate_entity_occ(orig_idx, ent)
+            override = (
+                entity_shape_overrides.get(orig_idx)
+                if entity_shape_overrides is not None
+                else None
+            )
+            labeled = self._instantiate_entity_occ(
+                orig_idx, ent, shape_override=override
+            )
 
             # Build a compound of all previously-instantiated same-dim
             # tool shapes whose bounding boxes VOLUMETRICALLY overlap

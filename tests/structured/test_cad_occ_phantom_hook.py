@@ -115,3 +115,49 @@ def test_instantiate_entity_occ_uses_shape_override_when_provided():
     ), f"Expected override volume 0.001 (0.1^3), got {g.Mass()}"
     assert labeled.physical_name == ("p",)
     assert labeled.dim == 3
+
+
+def test_process_entities_cut_only_uses_overrides_when_supplied():
+    """process_entities_cut_only respects entity_shape_overrides per source_index."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    from meshwell.cad_occ import CAD_OCC
+    from meshwell.polyprism import PolyPrism
+
+    p0 = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="p0",
+    )
+    p1 = PolyPrism(
+        polygons=Polygon([(2, 0), (3, 0), (3, 1), (2, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="p1",
+    )
+    tiny = PolyPrism(
+        polygons=Polygon([(2, 0), (2.1, 0), (2.1, 0.1), (2, 0.1)]),
+        buffers={0.0: 0.0, 0.1: 0.0},
+        physical_name="tiny",
+    )
+    override = tiny.instanciate_occ()
+
+    proc = CAD_OCC()
+    result = proc.process_entities_cut_only(
+        [p0, p1],
+        entity_shape_overrides={1: [override]},
+    )
+
+    by_name = {le.physical_name[0]: le for le in result}
+    g = GProp_GProps()
+    # process_entities_cut_only applies a perturbation buffer; assert order
+    # of magnitude rather than bit-precision.
+    BRepGProp.VolumeProperties_s(by_name["p0"].shapes[0], g)
+    assert (
+        0.99 < g.Mass() < 1.01
+    ), f"p0 should be ~1.0-vol from instanciate_occ; got {g.Mass()}"
+    BRepGProp.VolumeProperties_s(by_name["p1"].shapes[0], g)
+    assert g.Mass() < 0.01, (
+        f"p1 should be ~0.001-vol from override (not ~1.0 from instanciate_occ); "
+        f"got {g.Mass()}"
+    )
