@@ -1045,10 +1045,39 @@ class CAD_OCC:
             )
             for i, ent in enumerate(entities_list)
         ]
+        # Indices of entities whose shapes come from entity_shape_overrides:
+        # for these we skip the per-entity sequential cut (the planner has
+        # already carved the phantom solids to be the entity's final pieces)
+        # and let the final BOP fragment handle them. Skipping is also
+        # necessary because the per-entity cut path below assumes exactly
+        # one shape per entity (shapes[0]) and would silently drop the rest.
+        overridden_indices: set[int] = (
+            set(entity_shape_overrides.keys())
+            if entity_shape_overrides is not None
+            else set()
+        )
+
+        # When an overridden entity is used as a CUTTER for another (non-
+        # overridden) entity's per-entity cut, `labeled[j].shapes[0]` is one
+        # phantom piece — not the entity's full volume. Cutting cap against
+        # a single phantom piece yields a topologically different result
+        # than cutting against the full entity shape (which the legacy flow
+        # used), and downstream BOP fragmentation produces malformed solids.
+        # Cache the entity's full `instanciate_occ()` result lazily for use
+        # in cutter-tool lookups, matching the legacy behaviour.
+        full_shape_cache: dict[int, Any] = {}
+
+        def _cutter_shape(j: int) -> Any:
+            if j in overridden_indices:
+                if j not in full_shape_cache:
+                    full_shape_cache[j] = entities_list[j].instanciate_occ()
+                return full_shape_cache[j]
+            return labeled[j].shapes[0]
+
         results: dict[int, Any] = {}
 
         def _serial_work(i: int):
-            tools = [labeled[j].shapes[0] for j in cutters[i]]
+            tools = [_cutter_shape(j) for j in cutters[i]]
             try:
                 return cut_one_entity(
                     labeled[i].shapes[0], tools, self.cut_fuzzy_value, n_threads=1
@@ -1062,12 +1091,18 @@ class CAD_OCC:
 
         if chosen == "serial":
             for i in range(n):
+                if i in overridden_indices:
+                    continue
                 results[i] = _serial_work(i)
         elif chosen == "thread":
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             with ThreadPoolExecutor(max_workers=self.n_threads) as pool:
-                futures = {pool.submit(_serial_work, i): i for i in range(n)}
+                futures = {
+                    pool.submit(_serial_work, i): i
+                    for i in range(n)
+                    if i not in overridden_indices
+                }
                 for fut in as_completed(futures):
                     i = futures[fut]
                     results[i] = fut.result()
@@ -1085,13 +1120,17 @@ class CAD_OCC:
                         self.cut_fuzzy_value,
                     ): i
                     for i in range(n)
+                    if i not in overridden_indices
                 }
                 for fut in as_completed(futures):
                     i = futures[fut]
                     results[i] = brep_from_bytes(fut.result())
 
-        # Apply tolerance clamp + unwrap.
+        # Apply tolerance clamp + unwrap, except for overridden entities
+        # whose multi-shape labeled.shapes must pass through untouched.
         for i in range(n):
+            if i in overridden_indices:
+                continue
             shape = results[i]
             if shape is not None and not shape.IsNull():
                 self._clamp_shape_tolerance(shape, self.cut_fuzzy_value)

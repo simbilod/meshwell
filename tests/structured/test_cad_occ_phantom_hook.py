@@ -223,6 +223,56 @@ def test_cad_occ_top_level_accepts_entity_shape_overrides():
     ), f"override should win (~0.001), not instanciate_occ (~1.0); got {g.Mass()}"
 
 
+def test_structured_entity_shapes_are_phantom_solids_after_cad_occ():
+    """After cad_occ with entity_shape_overrides, each entity's shapes IsSame the phantom solids.
+
+    For disjoint structured PolyPrisms, BOP fragmentation doesn't modify
+    any input shape, so the entity's post-cad_occ shapes must be IsSame
+    with the phantom solids that were passed in as overrides.
+    """
+    from meshwell.cad_occ import cad_occ
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.phantom import (
+        _group_phantom_solids_by_entity,
+        build_phantom_shapes,
+    )
+    from meshwell.structured.plan import build_plan
+
+    a = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+        mesh_order=1.0,
+    )
+    b = PolyPrism(
+        polygons=Polygon([(2, 0), (3, 0), (3, 1), (2, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+        mesh_order=2.0,
+    )
+    entities = [a, b]
+    plan = build_plan(entities)
+    phantom_result = build_phantom_shapes(plan)
+    overrides = _group_phantom_solids_by_entity(plan, phantom_result)
+
+    occ_entities = cad_occ(entities, entity_shape_overrides=overrides)
+
+    by_name = {le.physical_name[0]: le for le in occ_entities}
+    expected_a_solids = overrides[0]
+    expected_b_solids = overrides[1]
+    assert len(by_name["A"].shapes) == len(expected_a_solids)
+    for s, exp in zip(by_name["A"].shapes, expected_a_solids):
+        assert s.IsSame(exp), "A's entity solid must IsSame the phantom solid"
+    assert len(by_name["B"].shapes) == len(expected_b_solids)
+    for s, exp in zip(by_name["B"].shapes, expected_b_solids):
+        assert s.IsSame(exp), "B's entity solid must IsSame the phantom solid"
+
+
 def test_process_entities_parallel_uses_overrides_serial_executor():
     """Parallel path with executor='serial' respects entity_shape_overrides."""
     from OCP.BRepGProp import BRepGProp

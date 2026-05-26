@@ -93,14 +93,15 @@ def generate_mesh(
             apply_structured_transfinite_hints,
             resolve_mesh_plan,
         )
+        from meshwell.structured.phantom import _group_phantom_solids_by_entity
 
         plan = build_plan(entities)
         phantom_result = build_phantom_shapes(plan)
-        extra = [s.solid for s in phantom_result.shapes]
+        overrides = _group_phantom_solids_by_entity(plan, phantom_result)
         captured_builder: list = []
         occ_entities = cad_occ(
             entities,
-            extra_occ_shapes=extra,
+            entity_shape_overrides=overrides,
             cad_occ_callback=lambda b: captured_builder.append(b),
             **cad_kwargs,
         )
