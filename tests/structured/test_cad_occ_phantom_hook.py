@@ -273,6 +273,88 @@ def test_structured_entity_shapes_are_phantom_solids_after_cad_occ():
         assert s.IsSame(exp), "B's entity solid must IsSame the phantom solid"
 
 
+def test_no_sliver_solids_for_ring_quarter_cut():
+    """Ring-segment quarter-cut scene must produce no sliver sub-solids per entity.
+
+    Mirrors the failing stress-pattern scene: three half-annuli rotated 90
+    degrees per layer that cut each other into quarter-rings. With
+    entity_shape_overrides routing phantom solids as entity shapes, BOP
+    cannot create slivers from parallel-construction mismatch (there is no
+    parallel construction).
+    """
+    import math
+
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    from meshwell.cad_occ import cad_occ
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.phantom import (
+        _group_phantom_solids_by_entity,
+        build_phantom_shapes,
+    )
+    from meshwell.structured.plan import build_plan
+
+    def _ring_segment(cx, cy, ri, ro, t0, t1, n=24):
+        step = 2 * math.pi / n
+        eps = 1e-9
+        interior = [
+            k * step
+            for k in range(math.ceil(t0 / step), math.floor(t1 / step) + 1)
+            if t0 + eps < k * step < t1 - eps
+        ]
+        angles = [t0, *interior, t1]
+        outer = [(cx + ro * math.cos(a), cy + ro * math.sin(a)) for a in angles]
+        inner = [
+            (cx + ri * math.cos(a), cy + ri * math.sin(a)) for a in reversed(angles)
+        ]
+        return Polygon(outer + inner)
+
+    def _ring(poly, zlo, zhi, name):
+        return PolyPrism(
+            polygons=poly,
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            identify_arcs=True,
+            min_arc_points=4,
+            arc_tolerance=1e-3,
+            physical_name=name,
+        )
+
+    L1 = _ring(_ring_segment(0, 0, 0.5, 1.0, 0.0, math.pi), 0.0, 1.0, "L1")
+    L2 = _ring(
+        _ring_segment(0, 0, 0.5, 1.0, math.pi / 2, 3 * math.pi / 2),
+        1.0,
+        2.0,
+        "L2",
+    )
+    L3 = _ring(_ring_segment(0, 0, 0.5, 1.0, math.pi, 2 * math.pi), 2.0, 3.0, "L3")
+    entities = [L1, L2, L3]
+    plan = build_plan(entities)
+    phantom_result = build_phantom_shapes(plan)
+    overrides = _group_phantom_solids_by_entity(plan, phantom_result)
+    occ_entities = cad_occ(entities, entity_shape_overrides=overrides)
+
+    by_name = {le.physical_name[0]: le for le in occ_entities}
+    g = GProp_GProps()
+    quarter_ring_vol = (math.pi / 4) * (1.0**2 - 0.5**2) * 1.0
+    min_vol = quarter_ring_vol * 0.01
+    for name in ("L1", "L2", "L3"):
+        ent = by_name[name]
+        assert len(ent.shapes) == 2, (
+            f"{name} has {len(ent.shapes)} shapes; expected 2 (one per "
+            f"face_partition piece). Slivers from parallel-construction bug."
+        )
+        for i, s in enumerate(ent.shapes):
+            BRepGProp.VolumeProperties_s(s, g)
+            assert g.Mass() > min_vol, (
+                f"{name}.shapes[{i}] vol={g.Mass():.4e} < {min_vol:.4e}; "
+                f"likely a sliver artifact"
+            )
+
+
 def test_process_entities_parallel_uses_overrides_serial_executor():
     """Parallel path with executor='serial' respects entity_shape_overrides."""
     from OCP.BRepGProp import BRepGProp
