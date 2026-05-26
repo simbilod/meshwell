@@ -1356,30 +1356,31 @@ _RADIAL_CUT_Y_OFFSET = 1e-3
 
 
 def _generate_radial_cuts_for_annular_face(poly: Polygon) -> list[Any]:
-    """For one annular face, produce a single horizontal cut crossing through.
+    """For one annular face, produce horizontal cut(s) local to that face.
 
-    The cut is a single ``LineString`` extending past the face bbox on
-    both sides, placed at ``y = hole_centroid_y + _RADIAL_CUT_Y_OFFSET``
-    — a small offset off the centroid's y so the cut crosses each ring
-    between vertices of the polygon approximation rather than at them.
+    Cut is a horizontal line at ``y = hole_centroid_y + _RADIAL_CUT_Y_OFFSET``
+    (small offset off the centroid's y so the cut crosses each ring
+    between vertices of the polygon arc approximation rather than at
+    them) clipped to ``poly``. Only the in-face portion is returned.
 
-    Why a single long line instead of two diametrically-opposed clipped
-    radials (as the original spec sketched):
+    Why off-axis + clipped (instead of either extreme):
 
-    * Clipped radials terminate ON ring vertices; ``shapely.unary_union``
-      does NOT split a closed ``LinearRing`` at an existing vertex when
-      another curve merely touches it there. polygonize then keeps the
-      ring as one loop and the annulus survives undivided.
-    * A non-clipped, slightly off-axis line crosses each ring at a NEW
-      transverse intersection (between existing vertices), which
-      ``unary_union`` nodes correctly. polygonize then decomposes every
-      face the line crosses into single-loop sub-pieces.
-
-    The line may also split non-annular faces (e.g. an inner disc) into
-    halves; that's fine — all sub-pieces remain single-loop and
-    transfinite-compatible.
+    * Axis-aligned cut (y = hole_centroid_y): cut endpoints often land
+      on existing polygon vertices (e.g. n-gon arc vertices on the
+      angular grid). ``shapely.unary_union`` does NOT split a closed
+      ``LinearRing`` at an existing vertex when another curve merely
+      touches it there. polygonize then keeps the ring as one loop and
+      the annulus survives undivided.
+    * Off-axis cut that's NOT clipped: it crosses every face in the
+      arrangement (including non-annular ring footprints elsewhere),
+      creating sliver pieces at near-tangent crossings.
+    * Off-axis + clipped: the cut crosses each ring of the annular face
+      at a NEW transverse point (between vertices, since the cut is
+      off-axis), unary_union nodes the crossings correctly, polygonize
+      fragments the annular face into single-loop sub-pieces — and the
+      cut doesn't reach into other faces because it's clipped to ``poly``.
     """
-    from shapely.geometry import LineString
+    from shapely.geometry import LineString, MultiLineString
 
     if not poly.interiors:
         return []
@@ -1388,7 +1389,46 @@ def _generate_radial_cuts_for_annular_face(poly: Polygon) -> list[Any]:
     span = max(maxx - minx, 1.0)
     half_extent = span * 2 + 1
     y = cy + _RADIAL_CUT_Y_OFFSET
-    return [LineString([(cx - half_extent, y), (cx + half_extent, y)])]
+    long_cut = LineString([(cx - half_extent, y), (cx + half_extent, y)])
+    clipped = long_cut.intersection(poly)
+    if clipped.is_empty:
+        return []
+    segments: list = []
+    if isinstance(clipped, LineString):
+        segments = [clipped]
+    elif isinstance(clipped, MultiLineString):
+        segments = [
+            g for g in clipped.geoms if isinstance(g, LineString) and not g.is_empty
+        ]
+
+    # Extend each segment by a tiny overshoot past each clipped endpoint.
+    # polygonize won't fragment a closed ring at a touching endpoint — it
+    # needs the cut to CROSS through the ring transversely. The overshoot
+    # turns each terminating endpoint into a transverse crossing without
+    # extending far enough to graze unrelated geometry elsewhere in the
+    # arrangement (e.g. ring footprints whose boundaries we shouldn't
+    # split with this annular-split cut).
+    overshoot = 1e-9 * half_extent
+    out: list[Any] = []
+    for seg in segments:
+        coords = list(seg.coords)
+        if len(coords) < 2:
+            continue
+        (x0, y0), (x1, y1) = coords[0], coords[-1]
+        dx, dy = x1 - x0, y1 - y0
+        length = (dx * dx + dy * dy) ** 0.5
+        if length == 0:
+            continue
+        ux, uy = dx / length, dy / length
+        out.append(
+            LineString(
+                [
+                    (x0 - ux * overshoot, y0 - uy * overshoot),
+                    (x1 + ux * overshoot, y1 + uy * overshoot),
+                ]
+            )
+        )
+    return out
 
 
 def _planar_arrangement(

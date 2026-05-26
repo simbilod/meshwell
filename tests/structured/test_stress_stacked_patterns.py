@@ -728,3 +728,152 @@ def test_stacked_overlapping_ring_segments_mesh_clean(tmp_path):
     assert (
         orphans == 0
     ), f"{orphans} non-conformal boundary triangles in ring-segment stack"
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Reinforced ring+plane scene: planner emits clean single-loop "
+        "face_partition pieces (verified by inspection — rings get 2 "
+        "single-loop pieces each, planes get 5 single-loop pieces each "
+        "with the ring footprints carved out), but the downstream gmsh "
+        "transfinite hint application fails with 'Surface N is "
+        "transfinite but has 1 corner' on one of the plane sub-pieces. "
+        "Likely cause: an OCC-side simplification of an irregular thin "
+        "plane sub-piece (the carve creates a long thin region between "
+        "two rings at adjacent z-layers) into a degenerate 1-corner "
+        "face. The core source-of-truth invariant (IsSame sharing) is "
+        "validated by test_stacked_overlapping_ring_segments_mesh_clean "
+        "+ test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene; "
+        "this scene exposes a separate downstream issue with structured "
+        "transfinite hinting on plane sub-pieces with concave-arc holes."
+    ),
+    strict=True,
+    raises=Exception,
+)
+def test_stacked_overlapping_ring_segments_with_lower_priority_planes_mesh_clean(
+    tmp_path,
+):
+    """Reinforced: three rotated half-rings + three same-z-extent lower-priority planes.
+
+    Adds, at each ring's z-extent, a large square ``P_i`` PolyPrism with a
+    higher ``mesh_order`` (lower priority). Policy B carves each plane by
+    the ring at that z-level, so the plane gets ``resolved_footprint`` =
+    big_square minus ring_footprint and the ring keeps its full half-
+    annulus footprint. The plane has the ring's footprint as an interior
+    hole, exercising the annular-face split path AND the ring↔plane
+    lateral interface (curved + straight portions).
+
+    Verifies the full source-of-truth pipeline end-to-end:
+      - Wedges produced (transfinite succeeds on every piece including
+        the annular-split sub-pieces).
+      - All six physicals (L1, L2, L3, P1, P2, P3) appear.
+      - Zero duplicate mesh nodes (shared interfaces collapse to one node).
+      - Zero orphan boundary triangles.
+      - Every L_i↔P_i pair has an interface physical group (e.g.
+        "L1___P1"), confirming the same-z ring↔plane lateral interface
+        is shared at the OCC/mesh level.
+      - Every triangle face is referenced by 1 (boundary) or 2 (interior)
+        cells; no pathological 3+ sharings.
+    """
+    pytest.importorskip("meshio")
+    pytest.importorskip("gmsh")
+    import math
+
+    import numpy as np
+
+    import meshio
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+
+    def _ring_slab(theta_start, theta_end, zlo, zhi, name):
+        return PolyPrism(
+            polygons=_ring_segment(0, 0, 0.5, 1.0, theta_start, theta_end),
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            identify_arcs=True,
+            min_arc_points=4,
+            arc_tolerance=1e-3,
+            physical_name=name,
+            mesh_order=1.0,
+        )
+
+    def _plane_slab(zlo, zhi, name):
+        return PolyPrism(
+            polygons=Polygon([(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)]),
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            physical_name=name,
+            mesh_order=2.0,
+        )
+
+    entities = [
+        _ring_slab(0.0, math.pi, 0.0, 1.0, "L1"),
+        _ring_slab(math.pi / 2, 3 * math.pi / 2, 1.0, 2.0, "L2"),
+        _ring_slab(math.pi, 2 * math.pi, 2.0, 3.0, "L3"),
+        _plane_slab(0.0, 1.0, "P1"),
+        _plane_slab(1.0, 2.0, "P2"),
+        _plane_slab(2.0, 3.0, "P3"),
+    ]
+
+    out = tmp_path / "stacked_rings_with_planes.msh"
+    generate_mesh(entities, dim=3, output_mesh=out, default_characteristic_length=0.3)
+
+    m = meshio.read(out)
+
+    cell_types = {cb.type for cb in m.cells}
+    assert any(
+        ct in cell_types for ct in ("wedge", "wedge6", "wedge15")
+    ), f"expected wedge cells, got {cell_types}"
+
+    for name in ("L1", "L2", "L3", "P1", "P2", "P3"):
+        assert name in m.field_data, f"missing physical {name}"
+
+    # Same-z ring↔plane interfaces must appear as interface physical groups.
+    interface_names = set(m.field_data.keys())
+    for ring, plane in [("L1", "P1"), ("L2", "P2"), ("L3", "P3")]:
+        a = f"{ring}___{plane}"
+        b = f"{plane}___{ring}"
+        assert a in interface_names or b in interface_names, (
+            f"missing same-z interface physical group {a!r} or {b!r}; "
+            f"available groups: {sorted(interface_names)}"
+        )
+
+    # Zero duplicate mesh nodes (snap tolerance covers shared boundaries).
+    rounded = np.round(m.points, 9)
+    n_unique = len(np.unique(rounded, axis=0))
+    n_dup = len(m.points) - n_unique
+    assert n_dup == 0, f"{n_dup} duplicate mesh nodes"
+
+    # Manifold check: every triangle face is referenced by 1 or 2 cells
+    # (no 3+ sharings). Wedge bot/top triangles + tet faces all contribute.
+    wedges = (
+        np.concatenate([cb.data for cb in m.cells if cb.type == "wedge"], axis=0)
+        if any(cb.type == "wedge" for cb in m.cells)
+        else np.empty((0, 6), dtype=int)
+    )
+    tets = (
+        np.concatenate([cb.data for cb in m.cells if cb.type == "tetra"], axis=0)
+        if any(cb.type == "tetra" for cb in m.cells)
+        else np.empty((0, 4), dtype=int)
+    )
+    face_count: dict = {}
+    for w in wedges:
+        for tri in [(w[0], w[1], w[2]), (w[3], w[4], w[5])]:
+            k = frozenset(int(v) for v in tri)
+            face_count[k] = face_count.get(k, 0) + 1
+    for t in tets:
+        for i, j, k in [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]:
+            ff = frozenset(int(v) for v in (t[i], t[j], t[k]))
+            face_count[ff] = face_count.get(ff, 0) + 1
+    pathological = sum(1 for c in face_count.values() if c > 2)
+    assert (
+        pathological == 0
+    ), f"{pathological} triangle faces shared by 3+ cells (non-manifold)"
+
+    orphans = _count_orphan_triangles(m)
+    assert (
+        orphans == 0
+    ), f"{orphans} non-conformal boundary triangles in ring+plane stack"

@@ -1464,8 +1464,13 @@ def test_collect_stack_boundaries_defaults_tol_when_no_point_tolerance():
     assert has_zero_x, f"1e-12 not snapped to 0 under default tol; coords: {coords}"
 
 
-def test_generate_radial_cuts_for_annular_face_returns_one_off_axis_line():
-    """A concentric annulus yields one horizontal cut slightly off the centroid axis."""
+def test_generate_radial_cuts_for_annular_face_returns_off_axis_clipped_lines():
+    """A concentric annulus yields two cut segments (left + right wings of the annulus).
+
+    Each segment runs along ``y = centroid_y + small_offset`` and is
+    clipped to the annular face, with a small overshoot past each
+    clipped endpoint to ensure transverse ring crossings.
+    """
     from shapely.geometry import LineString, Point, Polygon
 
     from meshwell.structured.plan import _generate_radial_cuts_for_annular_face
@@ -1475,18 +1480,20 @@ def test_generate_radial_cuts_for_annular_face_returns_one_off_axis_line():
     annulus = Polygon(outer, [inner])
 
     cuts = _generate_radial_cuts_for_annular_face(annulus)
-    assert len(cuts) == 1, f"expected 1 cut, got {len(cuts)}"
-    cut = cuts[0]
-    assert isinstance(cut, LineString)
-    xs = sorted({round(x, 4) for x, _ in cut.coords})
-    ys = sorted({round(y, 6) for _, y in cut.coords})
-    # Cut spans across the annulus and beyond on both sides of x.
-    assert xs[0] < -1.0, f"cut should extend past x=-1.0; min x = {xs[0]}"
-    assert xs[-1] > 1.0, f"cut should extend past x=1.0; max x = {xs[-1]}"
-    # Cut is slightly off the y=centroid axis (so it crosses rings transversely
-    # between vertices rather than at them).
-    assert ys == [ys[0]], f"cut should be a single horizontal line; got y values {ys}"
-    assert 0 < ys[0] < 0.01, f"cut should be slightly above y=0; got y = {ys[0]}"
+    # Clipped to the annular face: the horizontal line at y=small_offset
+    # crosses the annulus in two disjoint segments (left wing + right wing).
+    assert len(cuts) == 2, f"expected 2 cut segments, got {len(cuts)}"
+    for cut in cuts:
+        assert isinstance(cut, LineString)
+        ys = sorted({round(y, 6) for _, y in cut.coords})
+        assert ys == [ys[0]], f"cut should be a single horizontal line; got ys {ys}"
+        assert 0 < ys[0] < 0.01, f"cut should be slightly above y=0; got y = {ys[0]}"
+        xs = sorted(x for x, _ in cut.coords)
+        # Each segment is contained within ~[-1, 1] (annulus bbox).
+        assert xs[0] > -1.01, f"cut left endpoint outside annulus bbox; xs[0] = {xs[0]}"
+        assert (
+            xs[-1] < 1.01
+        ), f"cut right endpoint outside annulus bbox; xs[-1] = {xs[-1]}"
 
 
 def test_generate_radial_cuts_returns_empty_for_simple_face():
