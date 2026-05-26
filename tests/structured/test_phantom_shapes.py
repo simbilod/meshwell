@@ -210,3 +210,49 @@ def test_build_phantom_shapes_is_deterministic_ordering():
     result = build_phantom_shapes(plan)
     indices = [(sh.slab_index, sh.piece_index) for sh in result.shapes]
     assert indices == sorted(indices)
+
+
+def test_group_phantom_solids_by_entity_inverts_slab_source_index():
+    """Phantom solids are grouped under their entity's source_index in input order."""
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.phantom import (
+        _group_phantom_solids_by_entity,
+        build_phantom_shapes,
+    )
+    from meshwell.structured.plan import build_plan
+
+    a = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+    )
+    b = PolyPrism(
+        polygons=Polygon([(10, 0), (11, 0), (11, 1), (10, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+    )
+    entities = [a, b]
+    plan = build_plan(entities)
+    phantom_result = build_phantom_shapes(plan)
+
+    overrides = _group_phantom_solids_by_entity(plan, phantom_result)
+    assert set(overrides.keys()) == {0, 1}
+    assert len(overrides[0]) == 1
+    assert len(overrides[1]) == 1
+    a_solid = next(
+        s.solid
+        for s in phantom_result.shapes
+        if plan.slabs[s.slab_index].source_index == 0
+    )
+    b_solid = next(
+        s.solid
+        for s in phantom_result.shapes
+        if plan.slabs[s.slab_index].source_index == 1
+    )
+    assert overrides[0][0] is a_solid
+    assert overrides[1][0] is b_solid

@@ -676,6 +676,25 @@ def _build_sub_prism(
     )
 
 
+def _group_phantom_solids_by_entity(
+    plan: StructuredPlan,
+    phantom_result: PhantomBuildResult,
+) -> dict[int, list[Any]]:
+    """Group phantom solids by their source entity's input-list position.
+
+    Each ``PhantomShape`` carries ``slab_index``; ``plan.slabs[slab_index]``
+    carries ``source_index`` (position in the input ``entities`` list passed
+    to ``build_plan``). The returned dict maps ``source_index -> [solids]``
+    in ``(slab_index, piece_index)`` ascending order — the same order
+    ``build_phantom_shapes`` populates ``phantom_result.shapes``.
+    """
+    out: dict[int, list[Any]] = {}
+    for shape in phantom_result.shapes:
+        src = plan.slabs[shape.slab_index].source_index
+        out.setdefault(src, []).append(shape.solid)
+    return out
+
+
 @phase_timed("phantom_build")
 def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     """For each slab, build one OCP sub-prism per partition piece.
