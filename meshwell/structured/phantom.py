@@ -553,6 +553,7 @@ def _build_sub_prism(
     arc_tolerance: float = 1e-3,
     provenance: PieceProvenance | None = None,
     face_cache: dict | None = None,
+    bottom_face_override: Any | None = None,
 ) -> PhantomShape:
     """Build one OCP sub-prism for a single partition piece.
 
@@ -586,7 +587,12 @@ def _build_sub_prism(
     # this slab's zlo for each consumer. On stacked scenes with many
     # slabs sharing the same XY pieces, this avoids rebuilding the wire
     # + arc primitives from scratch per slab.
-    if face_cache is not None:
+    # When pre-shared by the caller (e.g., vertically-stacked cohort),
+    # reuse the provided face directly. Per spec
+    # 2026-05-27-cad-occ-cohort-preshared-faces-design.md.
+    if bottom_face_override is not None:
+        bottom_face = bottom_face_override
+    elif face_cache is not None:
         if provenance is not None:
             key = _provenance_face_cache_key(provenance)
             blueprint = face_cache.get(key)
