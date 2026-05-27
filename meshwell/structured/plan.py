@@ -2034,14 +2034,26 @@ def assign_face_partition_from_arrangement(
             slab.face_partition_edges = []
         _assign_faces_to_slabs(arrangement.faces, stack)
         _build_provenance_shim(stack, arrangement)
-        # Slabs whose face_partition is empty (fully dominated by mesh_bool=False
-        # carving or by mesh_order overlap) get a one-piece fallback so phantom
-        # build doesn't crash. They'll produce no actual mesh content.
+        # Slabs whose face_partition is empty after arrangement assignment
+        # split into two cases:
+        #   (a) Empty resolved_footprint — the slab was fully carved out by
+        #       a higher-priority overlapping entity (Policy B / mesh_order).
+        #       Leave face_partition=[] so build_phantom_shapes skips it
+        #       entirely; the slab contributes no mesh content.
+        #   (b) Non-empty resolved_footprint but no arrangement face was
+        #       assigned (e.g. the slab sat alone in its own connected
+        #       z-component with no z-touching neighbours). Use the
+        #       resolved_footprint as a one-piece fallback so phantom
+        #       build sees something to work with.
         for slab in stack:
-            if not slab.face_partition:
-                slab.face_partition = [
-                    slab.resolved_footprint
-                    if slab.resolved_footprint is not None
-                    else slab.footprint
-                ]
-                slab.face_partition_edges = [[]]
+            if slab.face_partition:
+                continue
+            fp = (
+                slab.resolved_footprint
+                if slab.resolved_footprint is not None
+                else slab.footprint
+            )
+            if fp is None or fp.is_empty:
+                continue
+            slab.face_partition = [fp]
+            slab.face_partition_edges = [[]]

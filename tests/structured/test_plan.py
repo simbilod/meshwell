@@ -1555,3 +1555,53 @@ def test_build_stack_arrangements_splits_annular_face_into_single_loop_pieces():
                 f"arrangement[{comp_idx}].faces produced a face with "
                 f"{len(f.polygon.interiors)} interior ring(s); annular split failed"
             )
+
+
+def test_fully_carved_slab_leaves_face_partition_empty_and_phantom_skips_it():
+    """Slab fully contained inside a higher-priority slab → empty face_partition.
+
+    Build A (small inner square, mesh_order=2) inside B (large outer square,
+    mesh_order=1) at the same z. Policy B carves A entirely (A's
+    resolved_footprint becomes empty). assign_face_partition_from_arrangement
+    must leave A's face_partition as [] so build_phantom_shapes skips it,
+    rather than falling back to the empty resolved_footprint and crashing
+    in _make_face_from_polygon.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.phantom import build_phantom_shapes
+    from meshwell.structured.plan import build_plan
+
+    A = PolyPrism(
+        polygons=Polygon([(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+        mesh_order=2.0,
+    )
+    B = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+        mesh_order=1.0,
+    )
+    plan = build_plan([A, B])
+
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
+    assert by_name["A"].resolved_footprint is not None
+    assert by_name["A"].resolved_footprint.is_empty, "A should be fully carved by B"
+    assert by_name["A"].face_partition == [], (
+        f"fully-carved A should have empty face_partition; "
+        f"got {by_name['A'].face_partition}"
+    )
+
+    # build_phantom_shapes must not crash and must produce only B's phantom.
+    phantom_result = build_phantom_shapes(plan)
+    src_indices = {plan.slabs[s.slab_index].source_index for s in phantom_result.shapes}
+    assert src_indices == {1}, (
+        f"expected only B (source_index=1) to produce phantoms; "
+        f"got source_indices={src_indices}"
+    )
