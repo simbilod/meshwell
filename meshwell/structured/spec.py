@@ -284,6 +284,12 @@ class Slab:
     # face_partition_edges[i] is the boundary of face_partition[i] expressed
     # as (edge_id, reversed) tuples into the slab's stack arrangement.
     face_partition_edges: "list[list[tuple[int, bool]]] | None" = None
+    # Populated by build_plan via _assign_component_indices. Slabs in the
+    # same connected-z-component (same StackArrangement) share an index.
+    # Used by the phantom builder to pre-share TopoDS_Face between
+    # vertically-stacked sub-prisms (see spec
+    # 2026-05-27-cad-occ-cohort-preshared-faces-design.md).
+    component_index: int = 0
 
 
 @dataclass(frozen=True)

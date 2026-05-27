@@ -324,6 +324,18 @@ def _connected_z_components(slabs: list[Slab]) -> list[list[Slab]]:
     return list(components_by_root.values())
 
 
+def _assign_component_indices(slabs: list[Slab]) -> None:
+    """Write Slab.component_index for each slab from _connected_z_components.
+
+    Mutates slabs in place. Components are numbered 0..N-1 in the order
+    _connected_z_components returns them.
+    """
+    components = _connected_z_components(slabs)
+    for comp_idx, stack in enumerate(components):
+        for s in stack:
+            s.component_index = comp_idx
+
+
 def _neighbours_touching_z(
     z: float, entities: list[Any], skip_indices: set[int], tol: float = 1e-9
 ) -> list[Polygon | MultiPolygon]:
@@ -1545,6 +1557,7 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
     _validate_no_mid_height_cuts(kept_slabs, entities)
     _validate_no_unstructured_lateral_neighbour(kept_slabs, entities)
     _resolve_sublevel_mesh_order(kept_slabs, entities)
+    _assign_component_indices(kept_slabs)
     arrangements = build_stack_arrangements(kept_slabs, entities)
     assign_face_partition_from_arrangement(kept_slabs, arrangements)
     z_set: set[float] = set()
