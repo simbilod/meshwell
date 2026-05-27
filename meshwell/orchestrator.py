@@ -69,6 +69,8 @@ def generate_mesh(
         cad_kwargs["n_threads"] = mesh_kwargs["n_threads"]
     if "point_tolerance" in mesh_kwargs:
         cad_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
+    if "perturbation" in mesh_kwargs:
+        cad_kwargs["perturbation"] = mesh_kwargs["perturbation"]
     if "cut_fuzzy_value" in mesh_kwargs:
         cad_kwargs["cut_fuzzy_value"] = mesh_kwargs.pop("cut_fuzzy_value")
     if "fragment_fuzzy_value" in mesh_kwargs:
@@ -83,6 +85,7 @@ def generate_mesh(
     structured_state: tuple | None = None
 
     if has_structured:
+        from meshwell.cad_common import prepare_entities
         from meshwell.structured import (
             build_phantom_shapes,
             build_plan,
@@ -94,6 +97,33 @@ def generate_mesh(
             resolve_mesh_plan,
         )
         from meshwell.structured.phantom import _group_phantom_solids_by_entity
+
+        # Apply the shapely perturbation buffer BEFORE structured planning
+        # WHEN it actually matters — i.e. when non-structured entities are
+        # mixed in. cad_occ's per-entity cut for non-structured entities
+        # uses their perturbed `instanciate_occ()` shape; if structured
+        # phantom solids were planned on UNPERTURBED coords, their shared
+        # boundary with a perturbed neighbour drifts by ~perturbation.
+        # Running prepare_entities here aligns the planner + phantoms to
+        # the perturbed grid; the cad_occ-internal call becomes a no-op
+        # via prepare_entities' `_meshwell_prepared` idempotency flag.
+        #
+        # For PURE-structured scenes, every entity is overridden so
+        # `instanciate_occ()` is never called in the BOP substrate path;
+        # the perturbation has no purpose and would only churn polygon
+        # seam choice (shapely's buffer + intersection re-roots the
+        # polygon's start vertex), causing the arc-decomposition pass to
+        # produce a different provenance and break downstream OCC topology
+        # on arc-heavy scenes (concentric-disc transfinite mesh, etc.).
+        has_unstructured = any(not getattr(e, "structured", False) for e in entities)
+        if has_unstructured:
+            _perturbation = cad_kwargs.get("perturbation", 1e-5)
+            _point_tolerance = cad_kwargs.get("point_tolerance", 1e-3)
+            prepare_entities(
+                entities,
+                perturbation=_perturbation,
+                resolve_snap=max(_perturbation, _point_tolerance),
+            )
 
         plan = build_plan(entities)
         phantom_result = build_phantom_shapes(plan)
