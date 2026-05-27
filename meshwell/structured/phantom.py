@@ -15,6 +15,7 @@ tests here use OCP directly with handcrafted scenes.
 """
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 from shapely.geometry import Polygon
@@ -31,6 +32,7 @@ from meshwell.structured.spec import (
     PieceArcEdge,
     PieceLineEdge,
     PieceProvenance,
+    Slab,
     StructuredPlan,
     VertexKey,
 )
@@ -456,6 +458,69 @@ def _provenance_face_cache_key(prov: "PieceProvenance") -> tuple:
     ext = tuple(_edge_key(e) for e in prov.exterior_edges)
     interiors = tuple(tuple(_edge_key(e) for e in ring) for ring in prov.interior_edges)
     return ("prov", ext, interiors)
+
+
+# Tolerance for "vertically touching" — two slabs are in the same vertical
+# stack iff abs(upper.zlo - lower.zhi) < _Z_TOL_VERT.
+_Z_TOL_VERT = 1e-9
+
+
+def _group_slabs_into_vertical_stacks(
+    plan: StructuredPlan,
+) -> list[list[tuple[Slab, int]]]:
+    """Group sub-prism pieces into vertical stacks for pre-shared-face construction.
+
+    A "stack" is a sequence of (slab, piece_index) pairs such that:
+      - All pairs share the same component_index (cohort).
+      - All pairs have polygon-face-cache-key equality for their piece.
+      - Pairs are sorted ascending by slab.zlo.
+      - Adjacent pairs satisfy abs(upper.zlo - lower.zhi) < _Z_TOL_VERT.
+
+    Singleton stacks (pieces with no z-touching neighbor) are returned as
+    length-1 lists. Each (slab, piece_index) pair appears in exactly one
+    stack.
+
+    See spec docs/superpowers/specs/2026-05-27-cad-occ-cohort-preshared-faces-design.md.
+    """
+    triples: list[tuple[Slab, int, tuple]] = []
+    for slab in plan.slabs:
+        if not slab.face_partition:
+            continue
+        provenance_list = slab.face_partition_provenance
+        for piece_index, piece in enumerate(slab.face_partition):
+            piece_provenance: PieceProvenance | None = None
+            if provenance_list is not None and piece_index < len(provenance_list):
+                piece_provenance = provenance_list[piece_index]
+            if piece_provenance is not None:
+                key = _provenance_face_cache_key(piece_provenance)
+            else:
+                key = _polygon_face_cache_key(
+                    orient(piece, sign=1.0),
+                    slab.identify_arcs,
+                    slab.min_arc_points,
+                    slab.arc_tolerance,
+                )
+            triples.append((slab, piece_index, key))
+
+    buckets: dict[tuple[int, tuple], list[tuple[Slab, int]]] = {}
+    for slab, piece_index, key in triples:
+        buckets.setdefault((slab.component_index, key), []).append((slab, piece_index))
+
+    stacks: list[list[tuple[Slab, int]]] = []
+    for bucket in buckets.values():
+        bucket.sort(key=lambda pair: pair[0].zlo)
+        current: list[tuple[Slab, int]] = [bucket[0]]
+        for prev, curr in itertools.pairwise(bucket):
+            prev_slab, _prev_pi = prev
+            curr_slab, _curr_pi = curr
+            if abs(curr_slab.zlo - prev_slab.zhi) < _Z_TOL_VERT:
+                current.append(curr)
+            else:
+                stacks.append(current)
+                current = [curr]
+        stacks.append(current)
+
+    return stacks
 
 
 def _face_at_z(blueprint: Any, z: float) -> Any:
