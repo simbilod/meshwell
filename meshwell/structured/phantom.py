@@ -37,6 +37,12 @@ from meshwell.structured.spec import (
     VertexKey,
 )
 
+# Kill-switch for the vertical-stack face pre-sharing optimization.
+# When False, build_phantom_shapes builds every sub-prism independently
+# (legacy behavior). Used by parity tests to compare against baseline.
+# Default True.
+_PRESHARE_VERTICAL_FACES = True
+
 # Default point_tolerance matches GeometryEntity.__init__ default (1e-3).
 _POINT_TOLERANCE = 1e-3
 
@@ -890,42 +896,67 @@ def _group_phantom_solids_by_entity(
 def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     """For each slab, build one OCP sub-prism per partition piece.
 
-    Returns a :class:`PhantomBuildResult` with shapes in
-    (slab_index, piece_index) ascending order for deterministic
-    downstream processing.
+    With _PRESHARE_VERTICAL_FACES=True (the default), vertically-stacked
+    pieces in the same cohort share their interface TopoDS_Face: each
+    upper sub-prism reuses the prism below's LastShape() as its bottom
+    face. This produces shared TShape identity at the interface so
+    BOPAlgo's pave-filler can skip the heavy intersection there.
+
+    Returns a PhantomBuildResult with shapes in (slab_index, piece_index)
+    ascending order for deterministic downstream processing.
     """
-    # Per-call cache of bottom-face blueprints (built at z=0) keyed by
-    # canonical XY signature + arc settings. Each consumer gets a fresh
-    # TopoDS_Face via translate-copy (BRepBuilderAPI_Transform(Copy=True))
-    # so per-slab edge tracking still has distinct TShapes.
     face_cache: dict = {}
-    shapes: list[PhantomShape] = []
-    for slab_index, slab in enumerate(plan.slabs):
-        if not slab.face_partition:
-            continue
 
-        provenance_list = (
-            slab.face_partition_provenance
-        )  # None or list[PieceProvenance]
+    # Map from (slab_index, piece_index) -> PhantomShape; collected here
+    # then emitted in sorted order so output order is deterministic
+    # regardless of stack traversal order.
+    out: dict[tuple[int, int], PhantomShape] = {}
 
-        for piece_index, piece in enumerate(slab.face_partition):
+    # Slab -> index lookup so we don't pay O(N) for plan.slabs.index() per call.
+    slab_to_index: dict[int, int] = {id(s): i for i, s in enumerate(plan.slabs)}
+
+    if _PRESHARE_VERTICAL_FACES:
+        stacks = _group_slabs_into_vertical_stacks(plan)
+    else:
+        # Legacy: every piece is its own length-1 "stack" in slab order.
+        stacks = []
+        for slab in plan.slabs:
+            if not slab.face_partition:
+                continue
+            for piece_index in range(len(slab.face_partition)):
+                stacks.append([(slab, piece_index)])
+
+    for stack in stacks:
+        prev_top_face: Any | None = None
+        for slab, piece_index in stack:
+            slab_index = slab_to_index[id(slab)]
+            piece = slab.face_partition[piece_index]
+            provenance_list = slab.face_partition_provenance
             piece_provenance: PieceProvenance | None = None
             if provenance_list is not None and piece_index < len(provenance_list):
                 piece_provenance = provenance_list[piece_index]
-            shapes.append(
-                _build_sub_prism(
-                    piece=piece,
-                    zlo=slab.zlo,
-                    zhi=slab.zhi,
-                    slab_index=slab_index,
-                    piece_index=piece_index,
-                    identify_arcs=slab.identify_arcs,
-                    min_arc_points=slab.min_arc_points,
-                    arc_tolerance=slab.arc_tolerance,
-                    provenance=piece_provenance,
-                    face_cache=face_cache,
-                )
+
+            ps = _build_sub_prism(
+                piece=piece,
+                zlo=slab.zlo,
+                zhi=slab.zhi,
+                slab_index=slab_index,
+                piece_index=piece_index,
+                identify_arcs=slab.identify_arcs,
+                min_arc_points=slab.min_arc_points,
+                arc_tolerance=slab.arc_tolerance,
+                provenance=piece_provenance,
+                face_cache=face_cache,
+                bottom_face_override=prev_top_face,
             )
+            out[(slab_index, piece_index)] = ps
+
+            top_key = FaceKey(
+                slab_index=slab_index, side="top", piece_index=piece_index
+            )
+            prev_top_face = ps.input_faces_by_key[top_key]
+
+    shapes = [out[k] for k in sorted(out.keys())]
     return PhantomBuildResult(shapes=tuple(shapes))
 
 
