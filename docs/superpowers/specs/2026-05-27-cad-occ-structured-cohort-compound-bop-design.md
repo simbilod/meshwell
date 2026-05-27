@@ -1,8 +1,17 @@
 # Structured-cohort compound BOP for cad_occ
 
-**Status:** design
+**Status:** SUPERSEDED 2026-05-27 by `2026-05-27-cad-occ-cohort-preshared-faces-design.md`
 **Date:** 2026-05-27
 **Owner:** simbilod
+
+> **Superseded note:** The smoke test in this spec ([Section 4](#validation-gate--smoke-test))
+> revealed that `BOPAlgo_Builder.Modified(child)` returns empty for sub-shapes of a compound
+> argument — i.e., per-piece history is not queryable when the argument is a compound. The
+> sewing+compound mechanism described here cannot be made to work. The design pivoted to
+> pre-sharing `TopoDS_Face` objects at construction time in the phantom builder (via
+> `prism.LastShape()` reuse between vertically-stacked sub-prisms). See the replacement spec.
+> Smoke-test code in `tests/test_cad_occ_cohort_sewing.py` was rewritten in place to validate
+> the new design before this header was added.
 
 ## Problem
 

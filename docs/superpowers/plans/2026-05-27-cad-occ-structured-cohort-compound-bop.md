@@ -1,5 +1,11 @@
 # cad_occ Structured-Cohort Compound BOP Implementation Plan
 
+> **STATUS: SUPERSEDED** 2026-05-27 by `2026-05-27-cad-occ-cohort-preshared-faces-plan.md`.
+> Task 0 of this plan revealed the design's core assumption was wrong — `BOPAlgo_Builder.Modified()`
+> returns empty for sub-shapes of a compound argument. The replacement plan implements the same
+> goal (skip pairwise BOP work on planner-conformed interfaces) via pre-shared TopoDS_Face
+> objects between vertically-stacked sub-prisms.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Skip pairwise `BOPAlgo_Builder` work between sub-prisms that the structured planner already conformed, by sewing each cohort into a `TopoDS_Compound` and passing it as a single BOP argument.
