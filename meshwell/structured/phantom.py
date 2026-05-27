@@ -414,6 +414,69 @@ def _make_face_from_provenance(
     return face_builder.Face()
 
 
+def _polygon_face_cache_key(
+    poly: Polygon,
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+) -> tuple:
+    """Hashable key for caching a face built from polygon coords + arc settings."""
+    ext = tuple((round(x, 9), round(y, 9)) for x, y in tuple(poly.exterior.coords)[:-1])
+    interiors = tuple(
+        tuple((round(x, 9), round(y, 9)) for x, y in tuple(ring.coords)[:-1])
+        for ring in poly.interiors
+    )
+    return (
+        "poly",
+        ext,
+        interiors,
+        identify_arcs,
+        min_arc_points,
+        arc_tolerance,
+    )
+
+
+def _provenance_face_cache_key(prov: "PieceProvenance") -> tuple:
+    """Hashable key for caching a face built from provenance — XY-only, z ignored.
+
+    The cached face is built at z=0; consumers translate to the slab's
+    zlo via ``_face_at_z``.
+    """
+
+    def _edge_key(e: "PieceArcEdge | PieceLineEdge") -> tuple:
+        if isinstance(e, PieceArcEdge):
+            return (
+                "arc",
+                tuple((p[0], p[1]) for p in e.points),
+                (e.center[0], e.center[1]),
+                e.radius,
+            )
+        return ("line", tuple((p[0], p[1]) for p in e.points))
+
+    ext = tuple(_edge_key(e) for e in prov.exterior_edges)
+    interiors = tuple(tuple(_edge_key(e) for e in ring) for ring in prov.interior_edges)
+    return ("prov", ext, interiors)
+
+
+def _face_at_z(blueprint: Any, z: float) -> Any:
+    """Return a deep-copied translation of ``blueprint`` (built at z=0) up to ``z``.
+
+    Uses ``BRepBuilderAPI_Transform(Copy=True)`` so each consumer gets a
+    fresh TShape — distinct edges/vertices for downstream per-slab keying.
+    The geometry-level work (arc primitives, wire construction, face
+    builder) is reused from the cached blueprint, so this is much
+    cheaper than rebuilding from coords.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf, gp_Vec
+    from OCP.TopoDS import TopoDS
+
+    trsf = gp_Trsf()
+    trsf.SetTranslation(gp_Vec(0.0, 0.0, z))
+    builder = BRepBuilderAPI_Transform(blueprint, trsf, True)
+    return TopoDS.Face_s(builder.Shape())
+
+
 def _build_sub_prism(
     piece: Polygon,
     zlo: float,
@@ -424,6 +487,7 @@ def _build_sub_prism(
     min_arc_points: int = 4,
     arc_tolerance: float = 1e-3,
     provenance: PieceProvenance | None = None,
+    face_cache: dict | None = None,
 ) -> PhantomShape:
     """Build one OCP sub-prism for a single partition piece.
 
@@ -452,7 +516,34 @@ def _build_sub_prism(
 
     height = zhi - zlo
     poly = orient(piece, sign=1.0)
-    if provenance is not None:
+    # Face construction: when a cache is provided, build the blueprint at
+    # z=0 once per unique (XY, arc settings) key, then translate-copy to
+    # this slab's zlo for each consumer. On stacked scenes with many
+    # slabs sharing the same XY pieces, this avoids rebuilding the wire
+    # + arc primitives from scratch per slab.
+    if face_cache is not None:
+        if provenance is not None:
+            key = _provenance_face_cache_key(provenance)
+            blueprint = face_cache.get(key)
+            if blueprint is None:
+                blueprint = _make_face_from_provenance(provenance, z=0.0)
+                face_cache[key] = blueprint
+        else:
+            key = _polygon_face_cache_key(
+                poly, identify_arcs, min_arc_points, arc_tolerance
+            )
+            blueprint = face_cache.get(key)
+            if blueprint is None:
+                blueprint = _make_face_from_polygon_with_arcs(
+                    poly,
+                    z=0.0,
+                    identify_arcs=identify_arcs,
+                    min_arc_points=min_arc_points,
+                    arc_tolerance=arc_tolerance,
+                )
+                face_cache[key] = blueprint
+        bottom_face = _face_at_z(blueprint, zlo)
+    elif provenance is not None:
         # Provenance path: use labeled edges directly — no heuristic re-detection.
         bottom_face = _make_face_from_provenance(provenance, z=zlo)
     else:
@@ -720,6 +811,11 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     (slab_index, piece_index) ascending order for deterministic
     downstream processing.
     """
+    # Per-call cache of bottom-face blueprints (built at z=0) keyed by
+    # canonical XY signature + arc settings. Each consumer gets a fresh
+    # TopoDS_Face via translate-copy (BRepBuilderAPI_Transform(Copy=True))
+    # so per-slab edge tracking still has distinct TShapes.
+    face_cache: dict = {}
     shapes: list[PhantomShape] = []
     for slab_index, slab in enumerate(plan.slabs):
         if not slab.face_partition:
@@ -744,6 +840,7 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
                     min_arc_points=slab.min_arc_points,
                     arc_tolerance=slab.arc_tolerance,
                     provenance=piece_provenance,
+                    face_cache=face_cache,
                 )
             )
     return PhantomBuildResult(shapes=tuple(shapes))
