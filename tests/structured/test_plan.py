@@ -1605,3 +1605,52 @@ def test_fully_carved_slab_leaves_face_partition_empty_and_phantom_skips_it():
         f"expected only B (source_index=1) to produce phantoms; "
         f"got source_indices={src_indices}"
     )
+
+
+def test_fully_carved_entity_gets_empty_override_to_skip_cad_occ_cut_loop():
+    """Fully-carved structured entity gets explicit `[]` in entity_shape_overrides.
+
+    Without this, cad_occ's per-entity sequential cut loop would fall
+    through to `entity_obj.instanciate_occ()` for the carved entity,
+    rebuilding its full pre-carve volume and feeding it into BOP — where
+    it would claim ownership of pieces the planner already assigned
+    elsewhere.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured import StructuredExtrusionResolutionSpec
+    from meshwell.structured.phantom import (
+        _group_phantom_solids_by_entity,
+        build_phantom_shapes,
+    )
+    from meshwell.structured.plan import build_plan
+
+    A = PolyPrism(
+        polygons=Polygon([(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+        mesh_order=2.0,
+    )
+    B = PolyPrism(
+        polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+        mesh_order=1.0,
+    )
+    plan = build_plan([A, B])
+    phantom_result = build_phantom_shapes(plan)
+    overrides = _group_phantom_solids_by_entity(plan, phantom_result)
+
+    assert set(overrides.keys()) == {
+        0,
+        1,
+    }, f"both A and B must appear in overrides; got keys={set(overrides.keys())}"
+    assert (
+        overrides[0] == []
+    ), f"A (fully carved) must have empty override list; got {overrides[0]}"
+    assert (
+        len(overrides[1]) == 1
+    ), f"B must have 1 phantom solid; got {len(overrides[1])}"

@@ -795,11 +795,23 @@ def _group_phantom_solids_by_entity(
     to ``build_plan``). The returned dict maps ``source_index -> [solids]``
     in ``(slab_index, piece_index)`` ascending order — the same order
     ``build_phantom_shapes`` populates ``phantom_result.shapes``.
+
+    Structured entities whose every slab is fully carved out by Policy B
+    (empty resolved_footprint → ``build_phantom_shapes`` skipped them)
+    still get an empty entry ``source_index -> []`` so cad_occ's
+    ``overridden_indices`` includes them and the per-entity sequential
+    cut loop skips them entirely. Without this, cad_occ would fall back
+    to ``entity_obj.instanciate_occ()`` for the carved entity, building
+    its FULL pre-carve volume and dragging it into BOP fragmentation —
+    where it would claim ownership of pieces that the planner already
+    assigned to the carving (higher-priority) entity.
     """
     out: dict[int, list[Any]] = {}
     for shape in phantom_result.shapes:
         src = plan.slabs[shape.slab_index].source_index
         out.setdefault(src, []).append(shape.solid)
+    for slab in plan.slabs:
+        out.setdefault(slab.source_index, [])
     return out
 
 

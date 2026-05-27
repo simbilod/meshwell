@@ -856,6 +856,15 @@ class CAD_OCC:
             labeled = self._instantiate_entity_occ(
                 orig_idx, ent, shape_override=override
             )
+            # Fully-carved entity (Policy B in the planner emptied its
+            # resolved_footprint → no phantom solids → override is an
+            # empty list). Skip the per-entity sequential cut entirely:
+            # there's nothing to cut and nothing useful to do with it,
+            # but a placeholder labeled entity stays in ``instantiated``
+            # so source indices remain aligned.
+            if override is not None and not override:
+                instantiated[orig_idx] = labeled
+                continue
 
             # Build a compound of all previously-instantiated same-dim
             # tool shapes whose bounding boxes VOLUMETRICALLY overlap
