@@ -527,15 +527,25 @@ def _build_sub_prism(
     # guarantees that Generated() gives the correct lateral face, and the
     # top edge of that face is topologically unique for each bot edge.
 
+    # Build a TopTools_IndexedMapOfShape over top_outer_edges once so each
+    # lateral->top-edge lookup is O(lateral_edge_count) hashed map lookups,
+    # not O(top_edge_count * lateral_edge_count) IsSame loops. On a complex
+    # scene this phase was 47% of build_phantom_shapes' time.
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    _top_edge_map = TopTools_IndexedMapOfShape()
+    for _e in top_outer_edges:
+        _top_edge_map.Add(_e)
+
     def _top_edge_from_lateral(lateral: Any) -> Any:
         """Return the edge of a lateral face that lies at the top z."""
-        for cand in top_outer_edges:
-            lat_edge_exp = _TExp(lateral, TopAbs_EDGE)
-            while lat_edge_exp.More():
-                lat_edge = lat_edge_exp.Current()
-                if lat_edge.IsSame(cand):
-                    return cand
-                lat_edge_exp.Next()
+        lat_edge_exp = _TExp(lateral, TopAbs_EDGE)
+        while lat_edge_exp.More():
+            lat_edge = lat_edge_exp.Current()
+            idx = _top_edge_map.FindIndex(lat_edge)
+            if idx > 0:
+                return top_outer_edges[idx - 1]
+            lat_edge_exp.Next()
         return None
 
     input_edges: dict[EdgeKey, Any] = {}
@@ -581,18 +591,24 @@ def _build_sub_prism(
 
     n_outer = len(bot_outer_edges)
 
-    # Walk all wires of the bottom face; skip the first (outer ring = already done).
-    bot_all_wires: list[Any] = []
-    wire_exp2 = _TExp(bottom_face, TopAbs_WIRE)
-    while wire_exp2.More():
-        bot_all_wires.append(wire_exp2.Current())
-        wire_exp2.Next()
+    # Fast path: a polygon with no interior rings (the common case after
+    # the annular-split fix) has a single wire on each of bottom/top face.
+    # Skip the wire walks entirely.
+    if not piece.interiors:
+        bot_all_wires = [outer_wire]
+        top_all_wires = [top_outer_wire]
+    else:
+        bot_all_wires = []
+        wire_exp2 = _TExp(bottom_face, TopAbs_WIRE)
+        while wire_exp2.More():
+            bot_all_wires.append(wire_exp2.Current())
+            wire_exp2.Next()
 
-    top_all_wires: list[Any] = []
-    wire_exp2 = _TExp(top_face, TopAbs_WIRE)
-    while wire_exp2.More():
-        top_all_wires.append(wire_exp2.Current())
-        wire_exp2.Next()
+        top_all_wires = []
+        wire_exp2 = _TExp(top_face, TopAbs_WIRE)
+        while wire_exp2.More():
+            top_all_wires.append(wire_exp2.Current())
+            wire_exp2.Next()
 
     def _top_edge_from_lateral_ring(lateral: Any, candidates: list[Any]) -> Any | None:
         """Find the top ring edge that lies on ``lateral``."""
@@ -645,13 +661,14 @@ def _build_sub_prism(
 
     def _collect_outer_wire_vertices(wire: Any) -> list[Any]:
         """Return deduplicated vertices in wire traversal order."""
+        seen_map = TopTools_IndexedMapOfShape()
         verts: list[Any] = []
-        seen_verts: list[Any] = []
         vert_exp = _TExp(wire, TopAbs_VERTEX)
         while vert_exp.More():
             v = TopoDS.Vertex_s(vert_exp.Current())
-            if not any(v.IsSame(s) for s in seen_verts):
-                seen_verts.append(v)
+            prev_size = seen_map.Extent()
+            seen_map.Add(v)
+            if seen_map.Extent() > prev_size:
                 verts.append(v)
             vert_exp.Next()
         return verts
