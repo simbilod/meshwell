@@ -115,14 +115,59 @@ def generate_mesh(
         # polygon's start vertex), causing the arc-decomposition pass to
         # produce a different provenance and break downstream OCC topology
         # on arc-heavy scenes (concentric-disc transfinite mesh, etc.).
-        has_unstructured = any(not getattr(e, "structured", False) for e in entities)
-        if has_unstructured:
-            _perturbation = cad_kwargs.get("perturbation", 1e-5)
-            _point_tolerance = cad_kwargs.get("point_tolerance", 1e-3)
-            prepare_entities(
-                entities,
-                perturbation=_perturbation,
-                resolve_snap=max(_perturbation, _point_tolerance),
+        _perturbation = cad_kwargs.get("perturbation", 1e-5)
+        _point_tolerance = cad_kwargs.get("point_tolerance", 1e-3)
+        prepare_entities(
+            entities,
+            perturbation=_perturbation,
+            resolve_snap=max(_perturbation, _point_tolerance),
+        )
+        # prepare_entities' shapely buffer+intersection re-roots the
+        # polygon's vertex order (start vertex moves). The planner's
+        # unary_union+polygonize propagates that into arrangement-edge
+        # break points → different arc provenance ordering and downstream
+        # OCC topology changes. Re-snap to point_tolerance and re-orient
+        # CCW after buffer so the downstream planner sees a canonical
+        # vertex ordering. The snap also undoes any sub-tolerance vertex
+        # drift; the perturbation halo remains useful for cad_occ later
+        # (it set the `_meshwell_prepared` flag, so cad_occ's internal
+        # prepare_entities call is a no-op).
+        import shapely
+        from shapely.geometry import Polygon as _Poly
+        from shapely.geometry.polygon import orient as _orient
+
+        def _rotate_ring_to_lex_min(ring_coords):
+            """Rotate a closed-ring coord list to start at its lex-min vertex."""
+            coords = list(ring_coords)
+            if len(coords) < 2:
+                return coords
+            # Drop closing duplicate if present.
+            closed = coords[0] == coords[-1]
+            verts = coords[:-1] if closed else coords[:]
+            min_i = min(range(len(verts)), key=lambda i: verts[i])
+            rotated = verts[min_i:] + verts[:min_i]
+            if closed:
+                rotated.append(rotated[0])
+            return rotated
+
+        def _normalize_polygon(p):
+            snapped = shapely.set_precision(
+                p, grid_size=_point_tolerance, mode="pointwise"
+            )
+            oriented = _orient(snapped, sign=1.0)
+            ext = _rotate_ring_to_lex_min(list(oriented.exterior.coords))
+            interiors = [
+                _rotate_ring_to_lex_min(list(r.coords)) for r in oriented.interiors
+            ]
+            return _Poly(ext, interiors)
+
+        for ent in entities:
+            if not hasattr(ent, "polygons"):
+                continue
+            polys = ent.polygons if isinstance(ent.polygons, list) else [ent.polygons]
+            normalized = [_normalize_polygon(p) for p in polys]
+            ent.polygons = (
+                normalized if isinstance(ent.polygons, list) else normalized[0]
             )
 
         plan = build_plan(entities)
