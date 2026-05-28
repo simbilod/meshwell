@@ -175,3 +175,31 @@ Phase 3 is a separate spec; it does no algorithmic change, only retires obsolete
 - Sharing across cohorts (cohorts are by definition disjoint — pieces in different cohorts have no shared TShapes).
 - Changes to non-structured entity handling.
 - Backporting cohort metadata to non-structured paths.
+
+## Measured Results (Task 13)
+
+Scene: 4 lateral stacks × 10 vertical layers each = 40 structured PolyPrism entities, 4 disjoint cohorts.
+
+`build_phantom_shapes` wall time (min of 3 runs after 2 warmup runs):
+
+- Full legacy (`_USE_COHORT_TOPOLOGY=False, _PRESHARE_VERTICAL_FACES=False`): 0.0183s (1.00x)
+- Phase 1 vertical-only (`_USE_COHORT_TOPOLOGY=False, _PRESHARE_VERTICAL_FACES=True`): 0.0198s (0.92x)
+- Phase 2 vertical + lateral (`_USE_COHORT_TOPOLOGY=True`): 0.0494s (0.37x)
+
+Notes:
+- Measurement is `build_phantom_shapes` wall time. The original Phase 1
+  success criterion was `_fragment_all` BOP wall time inside cad_occ —
+  that requires the full orchestrator run and is left to follow-up.
+- The cohort topology builder's construction cost grows with cohort size
+  (vertices × z-planes, edges × z-planes). On scenes dominated by many
+  small cohorts, this overhead may exceed the BOP-skip savings; on scenes
+  with few large cohorts (the production target), savings should
+  dominate.
+- On this benchmark scene (40 entities, 4 disjoint cohorts of 10 slabs
+  each), Phase 2 shows a 2.7× overhead vs legacy within `build_phantom_shapes`.
+  This is expected: the scene has no lateral adjacency between cohorts, so
+  Phase 2 pays construction cost for shared topology but gets no BOP-skip
+  savings in this stage. The savings materialise downstream in `_fragment_all`.
+- Default `_USE_COHORT_TOPOLOGY=False` during stabilization. Flip to True
+  in Phase 3 cleanup after the concentric-arc snap fix and the
+  hanging-scene root-cause are resolved.
