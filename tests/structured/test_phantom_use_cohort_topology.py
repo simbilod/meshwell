@@ -1,7 +1,13 @@
-"""build_phantom_shapes with _USE_COHORT_TOPOLOGY=True uses the cohort builder."""
+"""build_phantom_shapes with _USE_COHORT_TOPOLOGY uses the cohort builder.
+
+The kill-switch defaults to False during stabilization (see comment in
+phantom.py). Tests that exercise the cohort topology path flip it on
+within a try/finally.
+"""
 
 from __future__ import annotations
 
+import pytest
 import shapely
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopExp import TopExp_Explorer
@@ -37,11 +43,25 @@ def _faces(shape):
     return out
 
 
-def test_kill_switch_default_is_on():
-    assert phantom_mod._USE_COHORT_TOPOLOGY is True
+@pytest.fixture
+def cohort_topology_on():
+    """Flip _USE_COHORT_TOPOLOGY ON for the duration of the test."""
+    prior = phantom_mod._USE_COHORT_TOPOLOGY
+    phantom_mod._USE_COHORT_TOPOLOGY = True
+    try:
+        yield
+    finally:
+        phantom_mod._USE_COHORT_TOPOLOGY = prior
 
 
-def test_cohort_topology_path_produces_shared_lateral_face():
+def test_kill_switch_default_is_off_during_stabilization():
+    """Stabilization default: False. Phase 3 will flip back to True."""
+    assert phantom_mod._USE_COHORT_TOPOLOGY is False
+
+
+def test_cohort_topology_path_produces_shared_lateral_face(
+    cohort_topology_on,  # noqa: ARG001  pytest fixture
+):
     """Two laterally-adjacent structured slabs -> shared lateral TShape."""
     A = _polyprism("A", 0, 1, 1, x0=0, y0=0, x1=1, y1=1)
     B = _polyprism("B", 0, 1, 2, x0=1, y0=0, x1=2, y1=1)
@@ -59,17 +79,13 @@ def test_cohort_topology_path_produces_shared_lateral_face():
 
 
 def test_legacy_path_when_kill_switch_off():
-    """With _USE_COHORT_TOPOLOGY=False we fall back to the existing path."""
-    phantom_mod._USE_COHORT_TOPOLOGY = False
-    try:
-        plan = build_plan([_polyprism("A", 0, 1, 1)])
-        result = build_phantom_shapes(plan)
-        assert len(result.shapes) == 1
-    finally:
-        phantom_mod._USE_COHORT_TOPOLOGY = True
+    """Default is False; legacy path produces a single PhantomShape."""
+    plan = build_plan([_polyprism("A", 0, 1, 1)])
+    result = build_phantom_shapes(plan)
+    assert len(result.shapes) == 1
 
 
-def test_output_ordering_preserved():
+def test_output_ordering_preserved(cohort_topology_on):  # noqa: ARG001
     """PhantomBuildResult.shapes is in (slab_index, piece_index) ascending order."""
     plan = build_plan(
         [

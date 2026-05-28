@@ -43,12 +43,24 @@ from meshwell.structured.spec import (
 # Default True.
 _PRESHARE_VERTICAL_FACES = True
 
-# Phase 2 kill-switch. When True (default), build_phantom_shapes uses the
-# cohort topology builder for full vertical+lateral face sharing. When
-# False, falls back to the Phase 1 path (which itself has
-# _PRESHARE_VERTICAL_FACES sub-switch). Both paths preserved during Phase 2;
-# legacy retired in Phase 3.
-_USE_COHORT_TOPOLOGY = True
+# Phase 2 kill-switch. When True, build_phantom_shapes uses the cohort
+# topology builder for full vertical+lateral face sharing. When False
+# (default during stabilization), falls back to the Phase 1 path (which
+# itself has _PRESHARE_VERTICAL_FACES sub-switch).
+#
+# Default is False until the cohort topology builder's known regressions
+# are fixed:
+#   - Concentric arc discs trigger StdFail_NotDone in arc-edge construction
+#     because the vertex snap only handles one circle per corner
+#     (see cohort_topology.py:202; tests/structured/test_stress_stacked_patterns.py::
+#     test_stacked_concentric_arc_discs_mesh_clean reproduces).
+#   - Some scenes in the structured suite hang/core when the cohort path
+#     is on (root cause not yet isolated).
+#
+# Phase 2 tests (Tasks 11-13) flip this ON for fixtures that exercise the
+# supported subset (single-z stacks + simple lateral adjacency, no
+# concentric arcs).
+_USE_COHORT_TOPOLOGY = False
 
 # Default point_tolerance matches GeometryEntity.__init__ default (1e-3).
 _POINT_TOLERANCE = 1e-3
