@@ -67,3 +67,42 @@ def test_empty_cohort_returns_empty_topology():
     topology = build_cohort_topology(plan, component_index=99)
     assert topology.vertices == {}
     assert topology.horizontal_edges == {}
+
+
+def test_vertical_edges_registered_per_slab_per_corner():
+    """A stacked cohort with 2 slabs x 4 corners = 8 vertical edges."""
+    plan = build_plan([_polyprism("A", 0, 1, 1), _polyprism("B", 1, 2, 2)])
+    topology = build_cohort_topology(plan, component_index=0)
+    assert len(topology.vertical_edges) == 8
+
+
+def test_vertical_edge_endpoints_match_registry():
+    """Each vertical edge's vertices must be in the registry."""
+    plan = build_plan([_polyprism("A", 0, 1, 1)])
+    topology = build_cohort_topology(plan, component_index=0)
+    edge_key = next(iter(topology.vertical_edges))
+    edge = topology.vertical_edges[edge_key]
+
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+
+    endpoints = set()
+    exp = TopExp_Explorer(edge, TopAbs_VERTEX)
+    while exp.More():
+        endpoints.add(hash(exp.Current()))
+        exp.Next()
+
+    registry = {hash(v) for v in topology.vertices.values()}
+    assert endpoints <= registry
+
+
+def test_vertical_edge_key_uses_slab_index():
+    """vertical_edges keys are (slab_index, corner_id).
+
+    slab_index is plan.slabs's position, not arrangement.component_index.
+    """
+    plan = build_plan([_polyprism("A", 0, 1, 1), _polyprism("B", 1, 2, 2)])
+    topology = build_cohort_topology(plan, component_index=0)
+    slab_indices_in_keys = {k[0] for k in topology.vertical_edges}
+    # Both slabs are in component 0; their slab_indices are 0 and 1.
+    assert slab_indices_in_keys == {0, 1}

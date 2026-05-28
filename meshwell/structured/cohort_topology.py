@@ -125,6 +125,18 @@ def build_cohort_topology(
                 v1, v2
             ).Edge()
 
+    # Vertical edge registry — per slab, per cohort XY corner.
+    # z_interval_id == slab's index in plan.slabs (stable, unique per slab).
+    slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
+    for slab in cohort_slabs:
+        slab_index = slab_to_index[id(slab)]
+        for corner_id in topology.xy_to_corner_id.values():
+            v_lo = topology.vertices[(slab.zlo, corner_id)]
+            v_hi = topology.vertices[(slab.zhi, corner_id)]
+            topology.vertical_edges[(slab_index, corner_id)] = BRepBuilderAPI_MakeEdge(
+                v_lo, v_hi
+            ).Edge()
+
     return topology
 
 
