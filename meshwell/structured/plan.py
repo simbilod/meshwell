@@ -1712,6 +1712,78 @@ def _coalesce_adjacent_arcs(
     ]
 
 
+def _unify_concentric_arc_fits(
+    edges: list[ArrangementEdge],
+    arc_tolerance: float,
+) -> list[ArrangementEdge]:
+    """Replace per-edge fitted circles with one canonical circle per logical disc.
+
+    When the planar arrangement bisects a disc (annular partition + radial
+    cuts), each resulting half-arc has its own independently fitted circle.
+    Tiny fit residual differences (~1e-5 in radius) propagate into the
+    Phase 2 cohort topology builder as vertex-on-cylinder misalignment that
+    BOP+gmsh cannot tolerate, even with vertex-tolerance bumps.
+
+    This pass clusters arc edges by (rounded center, rounded radius) within
+    ``arc_tolerance``, re-fits each cluster's circle from the union of its
+    edges' vertices, and replaces every edge in the cluster with the unified
+    circle. Edge identity, vertex chains, and edge_ids are unchanged — only
+    the ``circle`` attribute is rewritten.
+
+    No-op for arrangements with no arcs.
+    """
+    arc_indices = [i for i, e in enumerate(edges) if e.circle is not None]
+    if not arc_indices:
+        return edges
+
+    import numpy as np
+
+    from meshwell.geometry_entity import fit_circle_2d
+
+    # Cluster by (rounded center, rounded radius).
+    # The rounding bucket size must be large enough to absorb per-edge fit
+    # variance but small enough not to merge geometrically distinct circles.
+    # Use arc_tolerance: half-arcs of the same disc differ by far less than
+    # the user's arc tolerance.
+    _bucket = max(arc_tolerance, 1e-6)
+
+    def _bucket_key(circle):
+        return (
+            round(circle.center[0] / _bucket),
+            round(circle.center[1] / _bucket),
+            round(circle.radius / _bucket),
+        )
+
+    clusters: dict[tuple[int, int, int], list[int]] = {}
+    for i in arc_indices:
+        clusters.setdefault(_bucket_key(edges[i].circle), []).append(i)
+
+    new_edges = list(edges)
+    for cluster_indices in clusters.values():
+        if len(cluster_indices) < 2:
+            continue  # singleton; nothing to unify
+        # Refit using the union of all vertices in this cluster.
+        all_pts = []
+        for i in cluster_indices:
+            all_pts.extend(edges[i].vertices)
+        pts = np.array(all_pts)
+        center, radius, residual = fit_circle_2d(pts)
+        # Refit can fail to converge on degenerate vertex sets; keep the
+        # original per-edge fits in that case.
+        if not np.isfinite(radius) or radius > 1e6 or residual > arc_tolerance:
+            continue
+        unified = CanonicalCircle(
+            center=(float(center[0]), float(center[1])), radius=float(radius)
+        )
+        for i in cluster_indices:
+            new_edges[i] = ArrangementEdge(
+                edge_id=edges[i].edge_id,
+                vertices=edges[i].vertices,
+                circle=unified,
+            )
+    return new_edges
+
+
 def build_stack_arrangements(
     slabs: list[Slab],
     entities: list[Any],
@@ -1800,6 +1872,12 @@ def build_stack_arrangements(
             edges = new_edges
             # Step E — coalesce adjacent arcs.
             edges = _coalesce_adjacent_arcs(edges, tol)
+            # Step E.5 — unify near-identical fitted circles across separate
+            # arc edges (e.g. the half-arcs of a disc split by an annular
+            # radial cut). One canonical CanonicalCircle per logical disc
+            # eliminates per-edge fit residual that would otherwise propagate
+            # into the Phase 2 cohort topology builder.
+            edges = _unify_concentric_arc_fits(edges, tol)
             # Rebuild face boundaries to reference new edge IDs.
             edges, faces = _rebuild_face_boundaries(edges, faces)
         arrangements[comp_idx] = StackArrangement(edges=edges, faces=faces)
