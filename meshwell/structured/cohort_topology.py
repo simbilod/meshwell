@@ -261,15 +261,26 @@ def build_cohort_topology(
 
     # Vertical edge registry — per slab, per cohort XY corner.
     # z_interval_id == slab's index in plan.slabs (stable, unique per slab).
+    #
+    # Sharing invariant: two slabs at the SAME z-interval (same zlo, zhi)
+    # must reference the SAME TopoDS_Edge for vertical edges at the same
+    # corner. Otherwise a shared lateral face (deduped by (zlo, zhi, edge_id)
+    # below) carries vertical edges from one slab while the other slab's
+    # shell uses different TopoDS_Edge objects, leaving the shell open and
+    # producing invalid solids. Dedup by (zlo, zhi, corner_id).
     slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
+    _vertical_by_zinterval: dict[tuple[float, float, int], object] = {}
     for slab in cohort_slabs:
         slab_index = slab_to_index[id(slab)]
         for corner_id in topology.xy_to_corner_id.values():
-            v_lo = topology.vertices[(slab.zlo, corner_id)]
-            v_hi = topology.vertices[(slab.zhi, corner_id)]
-            topology.vertical_edges[(slab_index, corner_id)] = BRepBuilderAPI_MakeEdge(
-                v_lo, v_hi
-            ).Edge()
+            zkey = (slab.zlo, slab.zhi, corner_id)
+            shared = _vertical_by_zinterval.get(zkey)
+            if shared is None:
+                v_lo = topology.vertices[(slab.zlo, corner_id)]
+                v_hi = topology.vertices[(slab.zhi, corner_id)]
+                shared = BRepBuilderAPI_MakeEdge(v_lo, v_hi).Edge()
+                _vertical_by_zinterval[zkey] = shared
+            topology.vertical_edges[(slab_index, corner_id)] = shared
 
     # Lateral face registry: per (slab_index, arrangement_edge_id).
     # Stored as list[TopoDS_Face] — one face per segment of the arrangement edge.
