@@ -147,6 +147,32 @@ def build_cohort_topology(
                 v_lo, v_hi
             ).Edge()
 
+    # Straight lateral face registry: per (slab_index, arrangement_edge_id).
+    # Arc edges (arr_edge.circle is not None) are deferred to Task 8.
+    for slab in cohort_slabs:
+        slab_index = slab_to_index[id(slab)]
+        for arr_edge in arrangement.edges:
+            if arr_edge.circle is not None:
+                continue  # Task 8 handles cylindrical lateral faces
+            key = (slab_index, arr_edge.edge_id)
+            if key in topology.lateral_faces:
+                continue
+            p1 = arr_edge.vertices[0]
+            p2 = arr_edge.vertices[-1]
+            c1 = topology.xy_to_corner_id[(round(p1[0], _ROUND), round(p1[1], _ROUND))]
+            c2 = topology.xy_to_corner_id[(round(p2[0], _ROUND), round(p2[1], _ROUND))]
+            bot_edge = topology.horizontal_edges[(slab.zlo, arr_edge.edge_id)]
+            top_edge = topology.horizontal_edges[(slab.zhi, arr_edge.edge_id)]
+            v_edge_1 = topology.vertical_edges[(slab_index, c1)]
+            v_edge_2 = topology.vertical_edges[(slab_index, c2)]
+            mw = BRepBuilderAPI_MakeWire()
+            mw.Add(bot_edge)
+            mw.Add(v_edge_2)
+            mw.Add(_rev_edge(top_edge))
+            mw.Add(_rev_edge(v_edge_1))
+            wire = mw.Wire()
+            topology.lateral_faces[key] = BRepBuilderAPI_MakeFace(wire).Face()
+
     # Horizontal face registry: per (z_plane, piece_id).
     # piece_id = (slab.source_index, piece_index_within_slab).
     # Same piece_id at multiple z-planes means vertically-adjacent pieces
