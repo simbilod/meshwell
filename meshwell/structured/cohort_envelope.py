@@ -215,7 +215,20 @@ def build_cohort_envelope(
             v_hi = env.vertices[(slab.zhi, corner_id)]
             env.vertical_edges[zkey] = BRepBuilderAPI_MakeEdge(v_lo, v_hi).Edge()
 
-    # Subsequent registries are added in Tasks 5-6.
+    from meshwell.structured.phantom import _make_face_from_provenance
+
+    slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
+    for slab in cohort_slabs:
+        slab_index = slab_to_index[id(slab)]
+        if not slab.face_partition or slab.face_partition_provenance is None:
+            continue
+        for piece_index, provenance in enumerate(slab.face_partition_provenance):
+            bot_face = _make_face_from_provenance(provenance, z=slab.zlo)
+            top_face = _make_face_from_provenance(provenance, z=slab.zhi)
+            env.bottom_sub_faces[FaceKey(slab_index, "bot", piece_index)] = bot_face
+            env.top_sub_faces[FaceKey(slab_index, "top", piece_index)] = top_face
+
+    # Subsequent registries are added in Tasks 6.
     return env
 
 
