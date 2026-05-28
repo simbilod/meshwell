@@ -125,15 +125,24 @@ def build_cohort_topology(
             if key not in topology.xy_to_corner_id:
                 topology.xy_to_corner_id[key] = len(topology.xy_to_corner_id)
 
-    # Vertex snap: corners that touch an arc arrangement edge are snapped to
-    # lie EXACTLY on the fitted circle. Polygon vertices are only approximately
-    # on the arc curve; snapping ensures BRepBuilderAPI_MakeEdge(arc, v1, v2)
-    # accepts them. xy_to_corner_id stays keyed by original polygon-derived XY
-    # (lookups in the lateral-face loop use those keys); corner_id_to_xy stores
-    # the (possibly snapped) XY used when building vertices.
+    # Vertex snap: corners that touch arc arrangement edges are snapped onto
+    # the fitted circles. A corner can be touched by MULTIPLE arc edges (e.g.
+    # the two half-circles of a bisected disc, each with an independently
+    # fitted circle whose radius differs slightly). For multi-arc corners we
+    # snap to the AVERAGE of all touching arcs' snapped positions and record
+    # the max residual distance, then apply that as the vertex's OCC tolerance
+    # so BRepBuilderAPI_MakeEdge(arc, v1, v2) accepts the vertex for each arc.
+    #
+    # xy_to_corner_id stays keyed by the original polygon-derived XY (lookups
+    # in later loops use those keys); corner_id_to_xy stores the post-snap XY
+    # used when building vertices; corner_id_to_tol stores the per-vertex
+    # tolerance to apply.
+    from OCP.BRep import BRep_Builder
+
     corner_id_to_xy: dict[int, tuple[float, float]] = {
         cid: xy for xy, cid in topology.xy_to_corner_id.items()
     }
+    corner_id_to_arc_snaps: dict[int, list[tuple[float, float]]] = {}
     for arr_edge in arrangement.edges:
         if arr_edge.circle is None:
             continue
@@ -146,14 +155,30 @@ def build_cohort_topology(
             dx, dy = x - cx, y - cy
             d = math.hypot(dx, dy)
             if d > 0:
-                corner_id_to_xy[cid] = (cx + r * dx / d, cy + r * dy / d)
+                corner_id_to_arc_snaps.setdefault(cid, []).append(
+                    (cx + r * dx / d, cy + r * dy / d)
+                )
 
-    # Vertex registry — use snapped XY (when applicable).
+    corner_id_to_tol: dict[int, float] = {}
+    for cid, snaps in corner_id_to_arc_snaps.items():
+        avg_x = sum(s[0] for s in snaps) / len(snaps)
+        avg_y = sum(s[1] for s in snaps) / len(snaps)
+        corner_id_to_xy[cid] = (avg_x, avg_y)
+        max_resid = max(math.hypot(s[0] - avg_x, s[1] - avg_y) for s in snaps)
+        if max_resid > 0:
+            corner_id_to_tol[cid] = max_resid
+
+    # Vertex registry — use snapped XY (when applicable) and bump OCC vertex
+    # tolerance to absorb multi-arc snap residual.
+    _brep_builder = BRep_Builder()
+    _VERTEX_TOL_MARGIN = 1e-7  # safety margin above measured residual
     for cid, (x, y) in corner_id_to_xy.items():
+        tol = corner_id_to_tol.get(cid, 0.0)
         for z in z_planes_sorted:
-            topology.vertices[(z, cid)] = BRepBuilderAPI_MakeVertex(
-                gp_Pnt(x, y, z)
-            ).Vertex()
+            v = BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, z)).Vertex()
+            if tol > 0:
+                _brep_builder.UpdateVertex(v, tol + _VERTEX_TOL_MARGIN)
+            topology.vertices[(z, cid)] = v
 
     # Horizontal edge registry — stored as TopoDS_Wire (always).
     #

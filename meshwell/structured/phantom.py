@@ -50,10 +50,14 @@ _PRESHARE_VERTICAL_FACES = True
 #
 # Default is False until the cohort topology builder's known regressions
 # are fixed:
-#   - Concentric arc discs trigger StdFail_NotDone in arc-edge construction
-#     because the vertex snap only handles one circle per corner
-#     (see cohort_topology.py:202; tests/structured/test_stress_stacked_patterns.py::
-#     test_stacked_concentric_arc_discs_mesh_clean reproduces).
+#   - [FIXED] Concentric arc discs triggered StdFail_NotDone in arc-edge
+#     construction because the vertex snap handled only one circle per
+#     corner; multi-arc corners now snap to the average and carry a per-
+#     vertex OCC tolerance that absorbs the residual. See
+#     tests/structured/test_cohort_topology_multi_arc_corner.py.
+#   - Concentric arc disc mesh test still fails downstream at gmsh.open(xao)
+#     even though cohort topology builds cleanly; root cause not isolated
+#     (likely XAO interpretation of the cohort-produced shape).
 #   - Some scenes in the structured suite hang/core when the cohort path
 #     is on (root cause not yet isolated).
 #
