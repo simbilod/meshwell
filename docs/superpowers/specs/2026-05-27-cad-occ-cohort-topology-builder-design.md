@@ -203,3 +203,22 @@ Notes:
 - Default `_USE_COHORT_TOPOLOGY=False` during stabilization. Flip to True
   in Phase 3 cleanup after the concentric-arc snap fix and the
   hanging-scene root-cause are resolved.
+
+## Measured Results — `_fragment_all` BOP wall time (Task 13 follow-up)
+
+Same approach but measuring the actual `_fragment_all` step inside `cad_occ`
+(monkey-patched timer; see `scripts/bench_fragment_all.py`). Scenes use a
+grid of edge-to-edge laterally-adjacent stacks, each with multiple vertical
+layers — i.e., they exercise both vertical and lateral sharing.
+
+| Scene             | Full legacy | Phase 1 (vert only) | Phase 2 (both) |
+|-------------------|-------------|---------------------|----------------|
+| 4 stacks × 6 layers (24 ent)  | 0.0774s (1.00×) | 0.0673s (1.15×) | 0.0268s (**2.89×**) |
+| 4 stacks × 12 layers (48 ent) | 0.1527s (1.00×) | 0.1359s (1.12×) | 0.0492s (**3.11×**) |
+| 8 stacks × 6 layers (48 ent)  | 0.1715s (1.00×) | 0.1192s (1.44×) | 0.0471s (**3.64×**) |
+| 8 stacks × 12 layers (96 ent) | 0.3525s (1.00×) | 0.2970s (1.19×) | 0.0950s (**3.71×**) |
+
+The Phase 2 success criterion (≥3× over legacy `_fragment_all`) is met on
+all 48+ entity scenes. Phase 1 vertical-only sharing gives only modest
+improvement (1.12–1.44×), confirming that lateral sharing is the dominant
+win — which justifies the Phase 2 design choice over the simpler Phase 1.
