@@ -215,16 +215,44 @@ def build_cohort_envelope(
             v_hi = env.vertices[(slab.zhi, corner_id)]
             env.vertical_edges[zkey] = BRepBuilderAPI_MakeEdge(v_lo, v_hi).Edge()
 
-    from meshwell.structured.phantom import _make_face_from_provenance
+    from meshwell.structured.phantom import (
+        _make_face_from_polygon_with_arcs,
+        _make_face_from_provenance,
+    )
 
     slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
     for slab in cohort_slabs:
         slab_index = slab_to_index[id(slab)]
-        if not slab.face_partition or slab.face_partition_provenance is None:
+        if not slab.face_partition:
             continue
-        for piece_index, provenance in enumerate(slab.face_partition_provenance):
-            bot_face = _make_face_from_provenance(provenance, z=slab.zlo)
-            top_face = _make_face_from_provenance(provenance, z=slab.zhi)
+        for piece_index, piece in enumerate(slab.face_partition):
+            # Prefer provenance when available (arc-aware). Fall back to
+            # building from the polygon directly for non-arc structured
+            # slabs (the planner only populates provenance when
+            # identify_arcs=True).
+            provenance = None
+            if slab.face_partition_provenance is not None and piece_index < len(
+                slab.face_partition_provenance
+            ):
+                provenance = slab.face_partition_provenance[piece_index]
+            if provenance is not None:
+                bot_face = _make_face_from_provenance(provenance, z=slab.zlo)
+                top_face = _make_face_from_provenance(provenance, z=slab.zhi)
+            else:
+                bot_face = _make_face_from_polygon_with_arcs(
+                    piece,
+                    z=slab.zlo,
+                    identify_arcs=slab.identify_arcs,
+                    min_arc_points=slab.min_arc_points,
+                    arc_tolerance=slab.arc_tolerance,
+                )
+                top_face = _make_face_from_polygon_with_arcs(
+                    piece,
+                    z=slab.zhi,
+                    identify_arcs=slab.identify_arcs,
+                    min_arc_points=slab.min_arc_points,
+                    arc_tolerance=slab.arc_tolerance,
+                )
             env.bottom_sub_faces[FaceKey(slab_index, "bot", piece_index)] = bot_face
             env.top_sub_faces[FaceKey(slab_index, "top", piece_index)] = top_face
 
