@@ -55,9 +55,20 @@ _PRESHARE_VERTICAL_FACES = True
 #     corner; multi-arc corners now snap to the average and carry a per-
 #     vertex OCC tolerance that absorbs the residual. See
 #     tests/structured/test_cohort_topology_multi_arc_corner.py.
-#   - Concentric arc disc mesh test still fails downstream at gmsh.open(xao)
-#     even though cohort topology builds cleanly; root cause not isolated
-#     (likely XAO interpretation of the cohort-produced shape).
+#   - [FIXED] Laterally-adjacent cohort solids failed gmsh.open(xao) because
+#     vertical_edges were keyed by (slab_index, corner_id), so two slabs at
+#     the same z-interval had different TopoDS_Edges at the same XY corner
+#     and their shared lateral face couldn't close either shell. Now deduped
+#     by (zlo, zhi, corner_id). See tests/structured/test_cohort_topology_lateral_validity.py.
+#   - Concentric arc disc mesh test (test_stacked_concentric_arc_discs_mesh_clean)
+#     still fails at gmsh.open(xao). Bisection shows the trigger is annular
+#     arrangement partition: stacked discs of DIFFERENT radii produce annular
+#     faces whose half-arcs have independently fitted circles. Even with the
+#     multi-arc snap fix, the resulting cohort topology (with cylindrical
+#     lateral faces meeting at slightly-different-radius vertices) trips
+#     gmsh's XAO importer in a way that emits no log message. Likely needs
+#     planner-side circle unification across half-arcs of the same logical
+#     disc, OR a different vertex-tolerance strategy for arc corners. Tracked.
 #   - Some scenes in the structured suite hang/core when the cohort path
 #     is on (root cause not yet isolated).
 #
