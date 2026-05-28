@@ -77,8 +77,18 @@ def build_cohort_topology(
     STRAIGHT arrangement edges. Arc support comes in Task 7; vertical
     edges in Task 4; horizontal faces in Task 5; lateral faces in Task 6.
     """
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeVertex
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeVertex,
+        BRepBuilderAPI_MakeWire,
+    )
     from OCP.gp import gp_Pnt
+    from OCP.TopoDS import TopoDS
+
+    def _rev_edge(e):
+        """edge.Reversed() returns TopoDS_Shape; cast back to TopoDS_Edge."""
+        return TopoDS.Edge_s(e.Reversed())
 
     topology = CohortTopology(component_index=component_index, plan=plan)
 
@@ -136,6 +146,28 @@ def build_cohort_topology(
             topology.vertical_edges[(slab_index, corner_id)] = BRepBuilderAPI_MakeEdge(
                 v_lo, v_hi
             ).Edge()
+
+    # Horizontal face registry: per (z_plane, piece_id).
+    # piece_id = (slab.source_index, piece_index_within_slab).
+    # Same piece_id at multiple z-planes means vertically-adjacent pieces
+    # of the same entity share the face at the shared z-plane. Different
+    # entities (different source_index) at the same XY footprint get
+    # separate piece_ids -> separate faces.
+    for slab in cohort_slabs:
+        if not slab.face_partition or slab.face_partition_edges is None:
+            continue
+        for piece_index, piece_edges in enumerate(slab.face_partition_edges):
+            piece_id = (slab.source_index, piece_index)
+            for z in (slab.zlo, slab.zhi):
+                key = (z, piece_id)
+                if key in topology.horizontal_faces:
+                    continue
+                mw = BRepBuilderAPI_MakeWire()
+                for arr_edge_id, reversed_orient in piece_edges:
+                    edge = topology.horizontal_edges[(z, arr_edge_id)]
+                    mw.Add(_rev_edge(edge) if reversed_orient else edge)
+                wire = mw.Wire()
+                topology.horizontal_faces[key] = BRepBuilderAPI_MakeFace(wire).Face()
 
     return topology
 
