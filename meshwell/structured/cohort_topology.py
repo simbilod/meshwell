@@ -188,11 +188,24 @@ def build_cohort_topology(
 
     # Lateral face registry: per (slab_index, arrangement_edge_id).
     # Straight edges → planar face; arc edges → cylindrical face.
+    #
+    # Sharing invariant: two slabs at the SAME z-interval (same zlo, zhi)
+    # that share an arrangement edge must reference the SAME TopoDS_Face
+    # TShape so that cohort-interior laterals are shared at assembly time.
+    # We achieve this via a secondary dedup dict keyed by (zlo, zhi, edge_id).
+    _lateral_by_zinterval: dict[tuple[float, float, int], object] = {}
     for slab in cohort_slabs:
         slab_index = slab_to_index[id(slab)]
         for arr_edge in arrangement.edges:
             key = (slab_index, arr_edge.edge_id)
             if key in topology.lateral_faces:
+                continue
+            # Reuse an existing lateral face if one was already built for
+            # the same z-interval and arrangement edge (by a laterally-adjacent
+            # slab sharing this z-range).
+            zkey = (slab.zlo, slab.zhi, arr_edge.edge_id)
+            if zkey in _lateral_by_zinterval:
+                topology.lateral_faces[key] = _lateral_by_zinterval[zkey]
                 continue
             p1 = arr_edge.vertices[0]
             p2 = arr_edge.vertices[-1]
@@ -213,11 +226,11 @@ def build_cohort_topology(
                 r = arr_edge.circle.radius
                 axis = gp_Ax3(gp_Pnt(cx, cy, slab.zlo), gp_Dir(0, 0, 1))
                 surface = Geom_CylindricalSurface(axis, r)
-                topology.lateral_faces[key] = BRepBuilderAPI_MakeFace(
-                    surface, wire
-                ).Face()
+                face = BRepBuilderAPI_MakeFace(surface, wire).Face()
             else:
-                topology.lateral_faces[key] = BRepBuilderAPI_MakeFace(wire).Face()
+                face = BRepBuilderAPI_MakeFace(wire).Face()
+            topology.lateral_faces[key] = face
+            _lateral_by_zinterval[zkey] = face
 
     # Horizontal face registry: per (z_plane, piece_id).
     # piece_id = (slab.source_index, piece_index_within_slab).
@@ -249,10 +262,94 @@ def assemble_cohort_sub_prism(
     slab: Slab,
     piece_index: int,
 ) -> PhantomShape:
-    """Assemble one sub-prism's solid + PhantomShape from the registry.
+    """Assemble one sub-prism's solid + PhantomShape from the registry."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS, TopoDS_Shell, TopoDS_Solid
 
-    Implementation lands in Task 9.
-    """
-    raise NotImplementedError(
-        "assemble_cohort_sub_prism is implemented in Task 9 of the plan."
+    from meshwell.structured.spec import EdgeKey, FaceKey, VertexKey
+
+    plan = topology.plan
+    if plan is None:
+        msg = "CohortTopology.plan must not be None during assembly."
+        raise ValueError(msg)
+    slab_index = plan.slabs.index(slab)
+    piece_id = (slab.source_index, piece_index)
+
+    bot_face = topology.horizontal_faces[(slab.zlo, piece_id)]
+    top_face = topology.horizontal_faces[(slab.zhi, piece_id)]
+
+    def _rev_face(f):
+        return TopoDS.Face_s(f.Reversed())
+
+    # Build lateral faces per outer arrangement edge, applying orientation.
+    piece_edges = slab.face_partition_edges[piece_index]
+    lateral_faces_oriented: list = []
+    input_laterals: dict = {}
+    for outer_edge_i, (arr_edge_id, reversed_orient) in enumerate(piece_edges):
+        lateral = topology.lateral_faces[(slab_index, arr_edge_id)]
+        oriented = _rev_face(lateral) if reversed_orient else lateral
+        lateral_faces_oriented.append(oriented)
+        input_laterals[outer_edge_i] = oriented
+
+    # Assemble shell + solid.
+    b = BRep_Builder()
+    shell = TopoDS_Shell()
+    b.MakeShell(shell)
+    b.Add(shell, _rev_face(bot_face))  # bottom face's normal points outward (down)
+    b.Add(shell, top_face)
+    for lf in lateral_faces_oriented:
+        b.Add(shell, lf)
+
+    solid = TopoDS_Solid()
+    b.MakeSolid(solid)
+    b.Add(solid, shell)
+
+    # Populate PhantomShape input dicts.
+    input_faces: dict = {
+        FaceKey(slab_index=slab_index, side="bot", piece_index=piece_index): bot_face,
+        FaceKey(slab_index=slab_index, side="top", piece_index=piece_index): top_face,
+    }
+
+    input_edges: dict = {}
+    input_vertices: dict = {}
+    arrangement = plan.arrangements[topology.component_index]
+    edge_by_id = {e.edge_id: e for e in arrangement.edges}
+    _ROUND = 9
+    for corner_i, (arr_edge_id, reversed_orient) in enumerate(piece_edges):
+        # Edge per side.
+        for side, z in (("bot", slab.zlo), ("top", slab.zhi)):
+            edge = topology.horizontal_edges[(z, arr_edge_id)]
+            input_edges[
+                EdgeKey(
+                    slab_index=slab_index,
+                    side=side,
+                    piece_index=piece_index,
+                    edge_index=corner_i,
+                )
+            ] = edge
+        # Vertex per side: start vertex of the piece-side traversal.
+        arr_edge = edge_by_id[arr_edge_id]
+        if reversed_orient:
+            x, y = arr_edge.vertices[-1]
+        else:
+            x, y = arr_edge.vertices[0]
+        c = topology.xy_to_corner_id[(round(x, _ROUND), round(y, _ROUND))]
+        for side, z in (("bot", slab.zlo), ("top", slab.zhi)):
+            input_vertices[
+                VertexKey(
+                    slab_index=slab_index,
+                    side=side,
+                    piece_index=piece_index,
+                    corner_index=corner_i,
+                )
+            ] = topology.vertices[(z, c)]
+
+    return PhantomShape(
+        slab_index=slab_index,
+        piece_index=piece_index,
+        solid=solid,
+        input_faces_by_key=input_faces,
+        input_edges_by_key=input_edges,
+        input_vertices_by_key=input_vertices,
+        input_laterals_by_outer_edge=input_laterals,
     )

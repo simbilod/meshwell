@@ -40,13 +40,6 @@ def test_build_cohort_topology_returns_cohort_topology_for_empty_plan():
     assert topology.component_index == 0
 
 
-def test_assemble_cohort_sub_prism_raises_not_implemented():
-    """Stub raises NotImplementedError until Task 9."""
-    import pytest
-
-    from meshwell.structured.spec import StructuredPlan
-
-    plan = StructuredPlan(slabs=(), z_planes=(), overlaps=(), arrangements={})
-    topology = build_cohort_topology(plan, component_index=0)
-    with pytest.raises(NotImplementedError):
-        assemble_cohort_sub_prism(topology, slab=None, piece_index=0)
+def test_assemble_cohort_sub_prism_is_callable():
+    """assemble_cohort_sub_prism is importable (implemented in Task 9)."""
+    assert callable(assemble_cohort_sub_prism)
