@@ -329,6 +329,24 @@ discrete 2D entities; gmsh `setSize` on discrete entities behaves
 differently. May need a parallel constraint-propagation path. Defer
 until a concrete consumer surfaces.
 
+**XAO checkpoint sidecar.** If full XAO checkpoint fidelity becomes
+required (i.e., the reload-then-re-mesh workflow needs to recover
+discrete piece volumes and interior interfaces), add a sidecar
+serialization step: alongside `checkpoint.xao`, write
+`checkpoint.structured.json` carrying the `StructuredPlan`, the cohort
+envelope routing (which OCC tag corresponds to which cohort), and the
+PhantomMap. Provide a loader helper that:
+1. `gmsh.open(checkpoint.xao)` to restore the OCC model + envelope
+   physicals;
+2. Reads the sidecar and walks the loaded OCC tags to rebuild the
+   cohort envelope routing in memory;
+3. Re-runs `apply_structured_mesh` to materialize per-piece discrete
+   3D entities and interior interface discrete 2D entities, restoring
+   the structurally complete state.
+
+Defer until a concrete consumer surfaces. Until then, the lossy XAO
+checkpoint is the documented limitation (see Open questions / risks).
+
 ## Testing strategy
 
 New unit tests:
@@ -388,7 +406,33 @@ Bench:
 - **Physical group assignment on discrete entities.** Confirm via a
   smoke test that `gmsh.model.addPhysicalGroup(3, [discrete_tag])` on
   a discrete 3D entity works and that the physical name is exported
-  correctly to XAO/MSH/Palace.
+  correctly to MSH/Palace. (XAO is a separate story — see next bullet.)
+- **XAO checkpoint is lossy for interior structure.** The current
+  orchestrator timeline ([orchestrator.py:210-221](../../../meshwell/orchestrator.py))
+  is: `cad_occ` → `save_to_xao` (if `checkpoint_cad` set) →
+  `apply_structured_mesh` hook → final mesh save.
+
+  In Phase 3, the discrete 3D piece volumes and discrete 2D interior
+  interfaces don't exist yet at XAO-save time — they're created later
+  by the structured hook. Gmsh's XAO writer is OCC+groups oriented and
+  cannot serialize discrete entities anyway.
+
+  **Consequences:**
+  - **End-to-end orchestrator runs** (XAO checkpoint optional, final
+    output is MSH/VTK/Palace): no problem. Discretes are materialized
+    after XAO save but before final mesh save. Physical groups on
+    discretes export to MSH/VTK correctly.
+  - **XAO-as-checkpoint then reload-elsewhere** (e.g., a separate
+    process does `gmsh.open(checkpoint.xao)` then re-runs mesh): the
+    cohort envelope OCC solids and their per-piece top/bottom + lateral
+    physicals come back, but **interior piece volumes and interior
+    interfaces are missing**. The reloaded model is structurally
+    incomplete for the structured cohorts.
+
+  **Phase 3 stance:** Document as a known limitation. The reload-then-
+  re-mesh workflow is a debug feature; production runs are end-to-end.
+  See the **Future work** section for the planned sidecar approach if
+  full XAO checkpoint fidelity becomes required.
 - **PhantomMap key disambiguation.** Today `face_keys` is a single
   dict. Splitting into `face_keys_to_occ` and `face_keys_to_discrete`
   needs every consumer audited to handle both flavors. Could
