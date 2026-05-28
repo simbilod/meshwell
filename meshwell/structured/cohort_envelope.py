@@ -206,7 +206,16 @@ def build_cohort_envelope(
                     mw.Add(BRepBuilderAPI_MakeEdge(va, vb).Edge())
             env.horizontal_edges[(z, arr_edge.edge_id)] = mw.Wire()
 
-    # Subsequent registries are added in Tasks 4-6.
+    for slab in cohort_slabs:
+        for corner_id in env.outline_xy_to_corner_id.values():
+            zkey = (slab.zlo, slab.zhi, corner_id)
+            if zkey in env.vertical_edges:
+                continue
+            v_lo = env.vertices[(slab.zlo, corner_id)]
+            v_hi = env.vertices[(slab.zhi, corner_id)]
+            env.vertical_edges[zkey] = BRepBuilderAPI_MakeEdge(v_lo, v_hi).Edge()
+
+    # Subsequent registries are added in Tasks 5-6.
     return env
 
 
