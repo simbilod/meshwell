@@ -55,8 +55,13 @@ def test_arc_horizontal_edge_is_built_when_arrangement_edge_has_circle():
 
 
 def test_arc_horizontal_edge_has_circle_geometry():
-    """The registered arc edge must be of GeomAbs_Circle type."""
+    """The registered arc wire must contain an edge of GeomAbs_Circle type.
+
+    horizontal_edges now stores TopoDS_Wire; extract the first edge to check
+    its geometry type.
+    """
     from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepTools import BRepTools_WireExplorer
     from OCP.GeomAbs import GeomAbs_Circle
 
     poly = _circle(0, 0, 1, n=32)
@@ -74,7 +79,11 @@ def test_arc_horizontal_edge_has_circle_geometry():
     arc_arr_edges = [e for e in plan.arrangements[0].edges if e.circle is not None]
 
     for arr_edge in arc_arr_edges:
-        edge = topology.horizontal_edges[(0.0, arr_edge.edge_id)]
+        wire = topology.horizontal_edges[(0.0, arr_edge.edge_id)]
+        # Extract the first (and only) edge from the arc wire.
+        exp = BRepTools_WireExplorer(wire)
+        assert exp.More(), "Arc horizontal wire is empty"
+        edge = exp.Current()
         adaptor = BRepAdaptor_Curve(edge)
         assert adaptor.GetType() == GeomAbs_Circle, (
             f"Arc arrangement edge produced non-Circle horizontal edge "
@@ -83,7 +92,11 @@ def test_arc_horizontal_edge_has_circle_geometry():
 
 
 def test_arc_lateral_face_is_cylindrical():
-    """A circular cohort's lateral face for an arc edge is cylindrical."""
+    """A circular cohort's lateral face for an arc edge is cylindrical.
+
+    lateral_faces now stores list[TopoDS_Face]; the first (and only) face for
+    an arc edge should be cylindrical.
+    """
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.GeomAbs import GeomAbs_Cylinder
 
@@ -103,7 +116,10 @@ def test_arc_lateral_face_is_cylindrical():
     assert arc_arr_edges, "Test setup: expected arc edges"
 
     for arr_edge in arc_arr_edges:
-        face = topology.lateral_faces[(0, arr_edge.edge_id)]  # slab_index=0
+        face_list = topology.lateral_faces[(0, arr_edge.edge_id)]  # slab_index=0
+        assert isinstance(face_list, list), "Expected list of faces"
+        assert face_list, "Expected non-empty list of faces"
+        face = face_list[0]
         adaptor = BRepAdaptor_Surface(face)
         assert (
             adaptor.GetType() == GeomAbs_Cylinder

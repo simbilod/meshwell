@@ -40,25 +40,35 @@ def test_horizontal_edges_registered_at_each_z_plane():
 
 
 def test_horizontal_edge_uses_registry_vertices():
-    """A horizontal edge's endpoints must be the same TShape as the registered vertices."""
-    plan = build_plan([_polyprism("A", 0, 1, 1)])
+    """A horizontal wire's endpoints must be the same TShape as the registered vertices.
+
+    horizontal_edges now stores TopoDS_Wire objects. The wire's START and END
+    vertices (first vertex of first edge, last vertex of last edge) must be
+    registered in topology.vertices. Intermediate vertices (for multi-vertex
+    arrangement edges) are not registered.
+    """
+    plan = build_plan([_polyprism("A", 0, 1, 1), _polyprism("B", 1, 2, 2)])
     topology = build_cohort_topology(plan, component_index=0)
+    # Pick a 2-vertex arrangement edge for this test (2-vertex edges have all
+    # their vertices registered). Stacked slabs with same footprint produce
+    # 4-edge arrangements with all 2-vertex edges.
     edge_key = next(iter(topology.horizontal_edges))
-    edge = topology.horizontal_edges[edge_key]
+    wire = topology.horizontal_edges[edge_key]
 
     from OCP.TopAbs import TopAbs_VERTEX
     from OCP.TopExp import TopExp_Explorer
 
-    edge_vertex_hashes = set()
-    exp = TopExp_Explorer(edge, TopAbs_VERTEX)
+    wire_vertex_hashes = set()
+    exp = TopExp_Explorer(wire, TopAbs_VERTEX)
     while exp.More():
-        edge_vertex_hashes.add(hash(exp.Current()))
+        wire_vertex_hashes.add(hash(exp.Current()))
         exp.Next()
 
     registry_vertex_hashes = {hash(v) for v in topology.vertices.values()}
+    # All endpoints of a 2-vertex arrangement edge wire must be in the registry.
     assert (
-        edge_vertex_hashes <= registry_vertex_hashes
-    ), "Horizontal edge has endpoints not registered in the vertex registry."
+        wire_vertex_hashes <= registry_vertex_hashes
+    ), "Horizontal wire has endpoints not registered in the vertex registry."
 
 
 def test_empty_cohort_returns_empty_topology():

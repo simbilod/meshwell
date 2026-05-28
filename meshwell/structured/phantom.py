@@ -43,6 +43,13 @@ from meshwell.structured.spec import (
 # Default True.
 _PRESHARE_VERTICAL_FACES = True
 
+# Phase 2 kill-switch. When True (default), build_phantom_shapes uses the
+# cohort topology builder for full vertical+lateral face sharing. When
+# False, falls back to the Phase 1 path (which itself has
+# _PRESHARE_VERTICAL_FACES sub-switch). Both paths preserved during Phase 2;
+# legacy retired in Phase 3.
+_USE_COHORT_TOPOLOGY = True
+
 # Default point_tolerance matches GeometryEntity.__init__ default (1e-3).
 _POINT_TOLERANCE = 1e-3
 
@@ -892,11 +899,118 @@ def _group_phantom_solids_by_entity(
     return out
 
 
+def _piece_is_degenerate(
+    plan: StructuredPlan,
+    slab: "Slab",
+    piece_index: int,
+) -> bool:
+    """Return True if the piece should fall back to the legacy _build_sub_prism path.
+
+    A piece is degenerate when its entire face_partition boundary is encoded
+    as a SINGLE arrangement edge with more than 2 vertices (i.e., the whole
+    polygon ring is one arrangement edge, missing the closing segment). This
+    happens for single isolated polygons with no arrangement neighbours.
+
+    The cohort topology builder cannot produce a valid closed horizontal face
+    for such pieces without extra closing-segment logic. We detect this case
+    by checking if (a) the piece has exactly one arrangement edge reference
+    AND (b) that edge's first and last vertices are DISTINCT (open chain).
+    """
+    if slab.face_partition_edges is None:
+        return False
+    piece_edges = slab.face_partition_edges[piece_index]
+    if len(piece_edges) != 1:
+        return False
+    arr_edge_id, _ = piece_edges[0]
+    arrangement = plan.arrangements.get(slab.component_index)
+    if arrangement is None:
+        return False
+    edge_by_id = {e.edge_id: e for e in arrangement.edges}
+    arr_edge = edge_by_id.get(arr_edge_id)
+    if arr_edge is None:
+        return False
+    if len(arr_edge.vertices) < 3:
+        return False  # 2-vertex edge is not degenerate (proper line segment)
+    # Multi-vertex straight edge with c1 != c2 → open chain → degenerate.
+    _R = 9
+    v0 = (round(arr_edge.vertices[0][0], _R), round(arr_edge.vertices[0][1], _R))
+    v_last = (round(arr_edge.vertices[-1][0], _R), round(arr_edge.vertices[-1][1], _R))
+    return v0 != v_last
+
+
+def _build_phantom_shapes_via_cohort_topology(
+    plan: StructuredPlan,
+) -> PhantomBuildResult:
+    """Phase 2 path: build each cohort's topology once, then assemble sub-prisms.
+
+    Assembles each sub-prism as a view into the shared cohort topology.
+    Falls back to the legacy _build_sub_prism for "degenerate" pieces
+    (single isolated polygons whose entire boundary is one arrangement edge
+    missing the closing segment — see _piece_is_degenerate).
+    """
+    from meshwell.structured.cohort_topology import (
+        assemble_cohort_sub_prism,
+        build_cohort_topology,
+    )
+
+    # Group slabs by cohort.
+    cohorts: dict[int, list[Slab]] = {}
+    for slab in plan.slabs:
+        cohorts.setdefault(slab.component_index, []).append(slab)
+
+    # Slab -> index lookup so we don't pay O(N) for plan.slabs.index().
+    slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
+
+    face_cache: dict = {}  # Shared cache for legacy fallback path.
+    out: dict[tuple[int, int], PhantomShape] = {}
+    for component_index in sorted(cohorts):
+        topology = build_cohort_topology(plan, component_index)
+        for slab in cohorts[component_index]:
+            slab_index = slab_to_index[id(slab)]
+            if not slab.face_partition:
+                continue
+            for piece_index in range(len(slab.face_partition)):
+                if _piece_is_degenerate(plan, slab, piece_index):
+                    # Fall back to the legacy sub-prism builder for degenerate
+                    # single-entity arrangements.
+                    piece = slab.face_partition[piece_index]
+                    provenance_list = slab.face_partition_provenance
+                    piece_provenance: PieceProvenance | None = None
+                    if provenance_list is not None and piece_index < len(
+                        provenance_list
+                    ):
+                        piece_provenance = provenance_list[piece_index]
+                    ps = _build_sub_prism(
+                        piece=piece,
+                        zlo=slab.zlo,
+                        zhi=slab.zhi,
+                        slab_index=slab_index,
+                        piece_index=piece_index,
+                        identify_arcs=slab.identify_arcs,
+                        min_arc_points=slab.min_arc_points,
+                        arc_tolerance=slab.arc_tolerance,
+                        provenance=piece_provenance,
+                        face_cache=face_cache,
+                    )
+                else:
+                    ps = assemble_cohort_sub_prism(topology, slab, piece_index)
+                out[(slab_index, piece_index)] = ps
+
+    shapes = [out[k] for k in sorted(out.keys())]
+    return PhantomBuildResult(shapes=tuple(shapes))
+
+
 @phase_timed("phantom_build")
 def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     """For each slab, build one OCP sub-prism per partition piece.
 
-    With _PRESHARE_VERTICAL_FACES=True (the default), vertically-stacked
+    When _USE_COHORT_TOPOLOGY=True (the default), delegates to
+    _build_phantom_shapes_via_cohort_topology which builds each cohort's
+    shared topology once and assembles all sub-prisms as views into it.
+    This produces full vertical+lateral face sharing within each cohort.
+
+    When _USE_COHORT_TOPOLOGY=False, falls back to the Phase 1 path:
+    with _PRESHARE_VERTICAL_FACES=True (the sub-default), vertically-stacked
     pieces in the same cohort share their interface TopoDS_Face: each
     upper sub-prism reuses the prism below's LastShape() as its bottom
     face. This produces shared TShape identity at the interface so
@@ -905,6 +1019,9 @@ def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     Returns a PhantomBuildResult with shapes in (slab_index, piece_index)
     ascending order for deterministic downstream processing.
     """
+    if _USE_COHORT_TOPOLOGY:
+        return _build_phantom_shapes_via_cohort_topology(plan)
+
     face_cache: dict = {}
 
     # Map from (slab_index, piece_index) -> PhantomShape; collected here
