@@ -52,6 +52,9 @@ class CohortEnvelope:
     - lateral_faces: keyed by (slab_index, outline_edge_id) -> list[TopoDS_Face].
       One face per segment for multi-vertex straight outline edges;
       one face per arc outline edge.
+    - skipped_edge_ids: set of arrangement edge IDs that were
+      degenerate at horizontal-edge build time; later tasks skip
+      these when populating downstream registries.
 
     Plus:
     - outline_xy_to_corner_id: (round(x,9), round(y,9)) -> outline_corner_id.
@@ -69,6 +72,7 @@ class CohortEnvelope:
     outline_xy_to_corner_id: dict[tuple[float, float], int] = field(
         default_factory=dict
     )
+    skipped_edge_ids: set[int] = field(default_factory=set)
     cohort_solid: Any = None
 
 
@@ -158,7 +162,7 @@ def build_cohort_envelope(
     from OCP.GC import GC_MakeArcOfCircle
     from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
 
-    _skipped_edge_ids: set[int] = set()
+    _skipped_edge_ids = env.skipped_edge_ids
     for arr_edge in arrangement.edges:
         p1 = arr_edge.vertices[0]
         p2 = arr_edge.vertices[-1]
@@ -201,8 +205,6 @@ def build_cohort_envelope(
                     vb = v2 if seg_i == n - 2 else _MV(gp_Pnt(xj, yj, z)).Vertex()
                     mw.Add(BRepBuilderAPI_MakeEdge(va, vb).Edge())
             env.horizontal_edges[(z, arr_edge.edge_id)] = mw.Wire()
-
-    env._skipped_edge_ids = _skipped_edge_ids
 
     # Subsequent registries are added in Tasks 4-6.
     return env
