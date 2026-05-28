@@ -83,7 +83,8 @@ def build_cohort_topology(
         BRepBuilderAPI_MakeVertex,
         BRepBuilderAPI_MakeWire,
     )
-    from OCP.gp import gp_Pnt
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
     from OCP.TopoDS import TopoDS
 
     def _rev_edge(e):
@@ -120,10 +121,8 @@ def build_cohort_topology(
                 gp_Pnt(x, y, z)
             ).Vertex()
 
-    # Horizontal edge registry — straight edges only for now (Task 7 adds arc support).
+    # Horizontal edge registry — straight and arc edges.
     for arr_edge in arrangement.edges:
-        if arr_edge.circle is not None:
-            continue  # arc edges deferred to Task 7
         p1 = arr_edge.vertices[0]
         p2 = arr_edge.vertices[-1]
         c1 = topology.xy_to_corner_id[(round(p1[0], _ROUND), round(p1[1], _ROUND))]
@@ -131,9 +130,22 @@ def build_cohort_topology(
         for z in z_planes_sorted:
             v1 = topology.vertices[(z, c1)]
             v2 = topology.vertices[(z, c2)]
-            topology.horizontal_edges[(z, arr_edge.edge_id)] = BRepBuilderAPI_MakeEdge(
-                v1, v2
-            ).Edge()
+            if arr_edge.circle is not None:
+                cx, cy = arr_edge.circle.center
+                r = arr_edge.circle.radius
+                axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
+                circ = gp_Circ(axis, r)
+                start = gp_Pnt(p1[0], p1[1], z)
+                end = gp_Pnt(p2[0], p2[1], z)
+                arc = GC_MakeArcOfCircle(circ, start, end, True).Value()
+                # Do not pass v1/v2: the fitted-circle endpoints differ from
+                # the polygon vertex positions by a small amount that causes
+                # PointProjectionFailed.  The edge is built from the curve
+                # alone; topology sharing at arc endpoints is handled in Task 8.
+                edge = BRepBuilderAPI_MakeEdge(arc).Edge()
+            else:
+                edge = BRepBuilderAPI_MakeEdge(v1, v2).Edge()
+            topology.horizontal_edges[(z, arr_edge.edge_id)] = edge
 
     # Vertical edge registry — per slab, per cohort XY corner.
     # z_interval_id == slab's index in plan.slabs (stable, unique per slab).
