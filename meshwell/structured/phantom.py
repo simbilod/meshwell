@@ -60,20 +60,13 @@ _PRESHARE_VERTICAL_FACES = True
 #     the same z-interval had different TopoDS_Edges at the same XY corner
 #     and their shared lateral face couldn't close either shell. Now deduped
 #     by (zlo, zhi, corner_id). See tests/structured/test_cohort_topology_lateral_validity.py.
-#   - Concentric arc disc mesh test (test_stacked_concentric_arc_discs_mesh_clean)
-#     still fails at gmsh.open(xao). Circle unification helped (now identical
-#     fitted circles per logical disc) and the snap delta is zero, but the
-#     deeper cause is in the cohort_topology builder's multi-vertex straight
-#     edge handling: when annular partition creates arrangement edges with
-#     many intermediate polygon vertices (e.g. an arc-rejected chain of 17
-#     polygon vertices around r=1.0), the per-segment lateral face build
-#     silently produces mostly NULL TopoDS_Face objects. The assembled shell
-#     ends up with ~25% of the expected lateral faces (plus null-face padding
-#     with ±1e+100 bounding boxes), giving negative volume and breaking
-#     gmsh's XAO importer. Needs a rewrite of cohort_topology's multi-vertex
-#     straight-edge lateral face path to produce one valid planar face per
-#     arrangement edge (using the wire-based bot/top from horizontal_edges)
-#     rather than per-segment quads that the current code mishandles.
+#   - [FIXED] Arc lateral face construction via
+#     BRepBuilderAPI_MakeFace(Geom_CylindricalSurface, wire) produced faces
+#     with no PCurves on the surface, yielding ±1e+100 bounding boxes and
+#     gmsh-rejected XAO. Now built via BRepFill::Face_s(bot_arc, top_arc)
+#     which produces a properly parametrized BSpline approximation of the
+#     cylindrical strip. test_stacked_concentric_arc_discs_mesh_clean passes
+#     end-to-end (with kill-switch flipped ON inside the test).
 #   - Some scenes in the structured suite hang/core when the cohort path
 #     is on (root cause not yet isolated).
 #

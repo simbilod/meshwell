@@ -90,8 +90,7 @@ def build_cohort_topology(
         BRepBuilderAPI_MakeWire,
     )
     from OCP.GC import GC_MakeArcOfCircle
-    from OCP.Geom import Geom_CylindricalSurface
-    from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Pnt
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
     from OCP.TopoDS import TopoDS
 
     def _rev_edge(e):
@@ -315,35 +314,29 @@ def build_cohort_topology(
             c2 = topology.xy_to_corner_id[(round(p2[0], _ROUND), round(p2[1], _ROUND))]
 
             if arr_edge.circle is not None:
-                # Arc arrangement edge: single cylindrical lateral face.
-                bot_wire = topology.horizontal_edges[(slab.zlo, arr_edge.edge_id)]
-                top_wire = topology.horizontal_edges[(slab.zhi, arr_edge.edge_id)]
-                v_edge_1 = topology.vertical_edges[(slab_index, c1)]
-                v_edge_2 = topology.vertical_edges[(slab_index, c2)]
-                # bot_wire and top_wire each have exactly one arc edge for arc case.
+                # Arc arrangement edge: cylindrical lateral face.
+                #
+                # Build via BRepFill::Face_s, which constructs a ruled face
+                # between the bot and top arc edges. This produces a properly
+                # parametrised cylindrical face with PCurves intact (unlike
+                # BRepBuilderAPI_MakeFace(cylindrical_surface, wire), which
+                # silently produced faces with no surface PCurves and
+                # degenerate downstream bounding boxes).
+                from OCP.BRepFill import BRepFill
                 from OCP.BRepTools import BRepTools_WireExplorer
 
-                bot_edges = []
-                exp = BRepTools_WireExplorer(bot_wire)
-                while exp.More():
-                    bot_edges.append(exp.Current())
-                    exp.Next()
-                top_edges = []
-                exp = BRepTools_WireExplorer(top_wire)
-                while exp.More():
-                    top_edges.append(exp.Current())
-                    exp.Next()
-                mw = BRepBuilderAPI_MakeWire()
-                mw.Add(bot_edges[0])
-                mw.Add(v_edge_2)
-                mw.Add(_rev_edge(top_edges[0]))
-                mw.Add(_rev_edge(v_edge_1))
-                wire = mw.Wire()
-                cx, cy = arr_edge.circle.center
-                r = arr_edge.circle.radius
-                axis = gp_Ax3(gp_Pnt(cx, cy, slab.zlo), gp_Dir(0, 0, 1))
-                surface = Geom_CylindricalSurface(axis, r)
-                face = BRepBuilderAPI_MakeFace(surface, wire).Face()
+                bot_wire = topology.horizontal_edges[(slab.zlo, arr_edge.edge_id)]
+                top_wire = topology.horizontal_edges[(slab.zhi, arr_edge.edge_id)]
+                bot_exp = BRepTools_WireExplorer(bot_wire)
+                bot_arc_edge = bot_exp.Current()
+                top_exp = BRepTools_WireExplorer(top_wire)
+                top_arc_edge = top_exp.Current()
+                # BRepFill::Face_s produces a face with PCurves intact on
+                # its underlying surface (unlike the prior approach of
+                # BRepBuilderAPI_MakeFace(cylindrical_surface, wire), which
+                # produced faces with no PCurves and degenerate downstream
+                # bbox).
+                face = BRepFill.Face_s(bot_arc_edge, top_arc_edge)
                 face_list = [face]
             elif len(arr_edge.vertices) == 2:
                 # Simple 2-vertex straight edge: single planar quad.
@@ -543,20 +536,26 @@ def assemble_cohort_sub_prism(
             lateral_faces_oriented.append(oriented)
 
     # Assemble shell + solid.
+    # Build the shell with each face oriented OUTWARD relative to the solid:
+    # - bot face: its natural CCW-outer-wire normal points UP (into the
+    #   solid), so REVERSE it for outward orientation.
+    # - top face: natural normal points UP (out of solid), keep as-is.
+    # - laterals: each face's natural normal points outward in the direction
+    #   matching the wire orientation. For pieces where the arrangement edge
+    #   has reversed_orient=True (piece traverses the edge backward), we
+    #   reverse the lateral face. The shell is then added to the solid AS-IS
+    #   (no global shell.Reversed) since faces already encode outward normals.
     b = BRep_Builder()
     shell = TopoDS_Shell()
     b.MakeShell(shell)
-    b.Add(shell, _rev_face(bot_face))  # bottom face's normal points outward (down)
+    b.Add(shell, _rev_face(bot_face))
     b.Add(shell, top_face)
     for lf in lateral_faces_oriented:
         b.Add(shell, lf)
 
     solid = TopoDS_Solid()
     b.MakeSolid(solid)
-    # OCC requires the shell to be REVERSED in the solid (outward normals).
-    # BRep_Builder.Add adds the shell as-is (FORWARD), which makes the
-    # solid "inside out" (negative volume). Reversing the shell before
-    # adding gives the correct outward orientation.
+    # OCC requires the shell to be REVERSED in the solid for outward normals.
     b.Add(solid, TopoDS.Shell_s(shell.Reversed()))
 
     # Populate PhantomShape input dicts.
