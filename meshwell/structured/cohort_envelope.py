@@ -148,7 +148,63 @@ def build_cohort_envelope(
                 _brep_builder.UpdateVertex(v, tol + _VERTEX_TOL_MARGIN)
             env.vertices[(z, cid)] = v
 
-    # Subsequent registries are added in Tasks 3-6.
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeWire,
+    )
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeVertex as _MV,
+    )
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
+
+    _skipped_edge_ids: set[int] = set()
+    for arr_edge in arrangement.edges:
+        p1 = arr_edge.vertices[0]
+        p2 = arr_edge.vertices[-1]
+        c1 = env.outline_xy_to_corner_id[(round(p1[0], _ROUND), round(p1[1], _ROUND))]
+        c2 = env.outline_xy_to_corner_id[(round(p2[0], _ROUND), round(p2[1], _ROUND))]
+        if arr_edge.circle is None and len(arr_edge.vertices) == 2:
+            dist_2v = math.hypot(
+                arr_edge.vertices[1][0] - arr_edge.vertices[0][0],
+                arr_edge.vertices[1][1] - arr_edge.vertices[0][1],
+            )
+            if dist_2v < 1e-7 or c1 == c2:
+                _skipped_edge_ids.add(arr_edge.edge_id)
+                continue
+        for z in z_planes_sorted:
+            v1 = env.vertices[(z, c1)]
+            v2 = env.vertices[(z, c2)]
+            mw = BRepBuilderAPI_MakeWire()
+            if arr_edge.circle is not None:
+                cx, cy = arr_edge.circle.center
+                r = arr_edge.circle.radius
+                axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
+                circ = gp_Circ(axis, r)
+                p1_snapped = corner_id_to_xy[c1]
+                p2_snapped = corner_id_to_xy[c2]
+                start = gp_Pnt(p1_snapped[0], p1_snapped[1], z)
+                end = gp_Pnt(p2_snapped[0], p2_snapped[1], z)
+                arc = GC_MakeArcOfCircle(circ, start, end, True).Value()
+                edge = BRepBuilderAPI_MakeEdge(arc, v1, v2).Edge()
+                mw.Add(edge)
+            elif len(arr_edge.vertices) == 2:
+                edge = BRepBuilderAPI_MakeEdge(v1, v2).Edge()
+                mw.Add(edge)
+            else:
+                verts_3d = arr_edge.vertices
+                n = len(verts_3d)
+                for seg_i in range(n - 1):
+                    xi, yi = verts_3d[seg_i]
+                    xj, yj = verts_3d[seg_i + 1]
+                    va = v1 if seg_i == 0 else _MV(gp_Pnt(xi, yi, z)).Vertex()
+                    vb = v2 if seg_i == n - 2 else _MV(gp_Pnt(xj, yj, z)).Vertex()
+                    mw.Add(BRepBuilderAPI_MakeEdge(va, vb).Edge())
+            env.horizontal_edges[(z, arr_edge.edge_id)] = mw.Wire()
+
+    env._skipped_edge_ids = _skipped_edge_ids
+
+    # Subsequent registries are added in Tasks 4-6.
     return env
 
 
