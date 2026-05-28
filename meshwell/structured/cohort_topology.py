@@ -77,6 +77,8 @@ def build_cohort_topology(
     STRAIGHT arrangement edges. Arc support comes in Task 7; vertical
     edges in Task 4; horizontal faces in Task 5; lateral faces in Task 6.
     """
+    import math
+
     from OCP.BRepBuilderAPI import (
         BRepBuilderAPI_MakeEdge,
         BRepBuilderAPI_MakeFace,
@@ -84,7 +86,8 @@ def build_cohort_topology(
         BRepBuilderAPI_MakeWire,
     )
     from OCP.GC import GC_MakeArcOfCircle
-    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.gp import gp_Ax2, gp_Ax3, gp_Circ, gp_Dir, gp_Pnt
     from OCP.TopoDS import TopoDS
 
     def _rev_edge(e):
@@ -114,10 +117,33 @@ def build_cohort_topology(
             if key not in topology.xy_to_corner_id:
                 topology.xy_to_corner_id[key] = len(topology.xy_to_corner_id)
 
-    # Vertex registry.
-    for (x, y), corner_id in topology.xy_to_corner_id.items():
+    # Vertex snap: corners that touch an arc arrangement edge are snapped to
+    # lie EXACTLY on the fitted circle. Polygon vertices are only approximately
+    # on the arc curve; snapping ensures BRepBuilderAPI_MakeEdge(arc, v1, v2)
+    # accepts them. xy_to_corner_id stays keyed by original polygon-derived XY
+    # (lookups in the lateral-face loop use those keys); corner_id_to_xy stores
+    # the (possibly snapped) XY used when building vertices.
+    corner_id_to_xy: dict[int, tuple[float, float]] = {
+        cid: xy for xy, cid in topology.xy_to_corner_id.items()
+    }
+    for arr_edge in arrangement.edges:
+        if arr_edge.circle is None:
+            continue
+        cx, cy = arr_edge.circle.center
+        r = arr_edge.circle.radius
+        for endpoint_xy in (arr_edge.vertices[0], arr_edge.vertices[-1]):
+            key = (round(endpoint_xy[0], _ROUND), round(endpoint_xy[1], _ROUND))
+            cid = topology.xy_to_corner_id[key]
+            x, y = corner_id_to_xy[cid]
+            dx, dy = x - cx, y - cy
+            d = math.hypot(dx, dy)
+            if d > 0:
+                corner_id_to_xy[cid] = (cx + r * dx / d, cy + r * dy / d)
+
+    # Vertex registry — use snapped XY (when applicable).
+    for cid, (x, y) in corner_id_to_xy.items():
         for z in z_planes_sorted:
-            topology.vertices[(z, corner_id)] = BRepBuilderAPI_MakeVertex(
+            topology.vertices[(z, cid)] = BRepBuilderAPI_MakeVertex(
                 gp_Pnt(x, y, z)
             ).Vertex()
 
@@ -135,14 +161,15 @@ def build_cohort_topology(
                 r = arr_edge.circle.radius
                 axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
                 circ = gp_Circ(axis, r)
-                start = gp_Pnt(p1[0], p1[1], z)
-                end = gp_Pnt(p2[0], p2[1], z)
+                # Use snapped positions for arc construction; they lie exactly
+                # on the fitted circle so BRepBuilderAPI_MakeEdge(arc, v1, v2)
+                # succeeds and the registered vertices become the arc endpoints.
+                p1_snapped = corner_id_to_xy[c1]
+                p2_snapped = corner_id_to_xy[c2]
+                start = gp_Pnt(p1_snapped[0], p1_snapped[1], z)
+                end = gp_Pnt(p2_snapped[0], p2_snapped[1], z)
                 arc = GC_MakeArcOfCircle(circ, start, end, True).Value()
-                # Do not pass v1/v2: the fitted-circle endpoints differ from
-                # the polygon vertex positions by a small amount that causes
-                # PointProjectionFailed.  The edge is built from the curve
-                # alone; topology sharing at arc endpoints is handled in Task 8.
-                edge = BRepBuilderAPI_MakeEdge(arc).Edge()
+                edge = BRepBuilderAPI_MakeEdge(arc, v1, v2).Edge()
             else:
                 edge = BRepBuilderAPI_MakeEdge(v1, v2).Edge()
             topology.horizontal_edges[(z, arr_edge.edge_id)] = edge
@@ -159,13 +186,11 @@ def build_cohort_topology(
                 v_lo, v_hi
             ).Edge()
 
-    # Straight lateral face registry: per (slab_index, arrangement_edge_id).
-    # Arc edges (arr_edge.circle is not None) are deferred to Task 8.
+    # Lateral face registry: per (slab_index, arrangement_edge_id).
+    # Straight edges → planar face; arc edges → cylindrical face.
     for slab in cohort_slabs:
         slab_index = slab_to_index[id(slab)]
         for arr_edge in arrangement.edges:
-            if arr_edge.circle is not None:
-                continue  # Task 8 handles cylindrical lateral faces
             key = (slab_index, arr_edge.edge_id)
             if key in topology.lateral_faces:
                 continue
@@ -183,7 +208,16 @@ def build_cohort_topology(
             mw.Add(_rev_edge(top_edge))
             mw.Add(_rev_edge(v_edge_1))
             wire = mw.Wire()
-            topology.lateral_faces[key] = BRepBuilderAPI_MakeFace(wire).Face()
+            if arr_edge.circle is not None:
+                cx, cy = arr_edge.circle.center
+                r = arr_edge.circle.radius
+                axis = gp_Ax3(gp_Pnt(cx, cy, slab.zlo), gp_Dir(0, 0, 1))
+                surface = Geom_CylindricalSurface(axis, r)
+                topology.lateral_faces[key] = BRepBuilderAPI_MakeFace(
+                    surface, wire
+                ).Face()
+            else:
+                topology.lateral_faces[key] = BRepBuilderAPI_MakeFace(wire).Face()
 
     # Horizontal face registry: per (z_plane, piece_id).
     # piece_id = (slab.source_index, piece_index_within_slab).

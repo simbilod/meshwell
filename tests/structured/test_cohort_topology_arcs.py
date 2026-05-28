@@ -80,3 +80,64 @@ def test_arc_horizontal_edge_has_circle_geometry():
             f"Arc arrangement edge produced non-Circle horizontal edge "
             f"(got type {adaptor.GetType()})"
         )
+
+
+def test_arc_lateral_face_is_cylindrical():
+    """A circular cohort's lateral face for an arc edge is cylindrical."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Cylinder
+
+    poly = _circle(0, 0, 1, n=32)
+    A = PolyPrism(
+        polygons=poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+        structured=True,
+        identify_arcs=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+    )
+    plan = build_plan([A])
+    topology = build_cohort_topology(plan, component_index=0)
+    arc_arr_edges = [e for e in plan.arrangements[0].edges if e.circle is not None]
+    assert arc_arr_edges, "Test setup: expected arc edges"
+
+    for arr_edge in arc_arr_edges:
+        face = topology.lateral_faces[(0, arr_edge.edge_id)]  # slab_index=0
+        adaptor = BRepAdaptor_Surface(face)
+        assert (
+            adaptor.GetType() == GeomAbs_Cylinder
+        ), f"Arc lateral face is not cylindrical (got {adaptor.GetType()})"
+
+
+def test_arc_horizontal_edge_endpoints_are_registry_vertices():
+    """After Task 8's vertex snap, arc horizontal edges use registry vertices."""
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+
+    poly = _circle(0, 0, 1, n=32)
+    A = PolyPrism(
+        polygons=poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        mesh_order=1,
+        structured=True,
+        identify_arcs=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+    )
+    plan = build_plan([A])
+    topology = build_cohort_topology(plan, component_index=0)
+    arc_arr_edges = [e for e in plan.arrangements[0].edges if e.circle is not None]
+    assert arc_arr_edges
+
+    registry_vertex_hashes = {hash(v) for v in topology.vertices.values()}
+    arc_edge = topology.horizontal_edges[(0.0, arc_arr_edges[0].edge_id)]
+    endpoints = set()
+    exp = TopExp_Explorer(arc_edge, TopAbs_VERTEX)
+    while exp.More():
+        endpoints.add(hash(exp.Current()))
+        exp.Next()
+    assert endpoints <= registry_vertex_hashes, (
+        "Arc horizontal edge's endpoints are NOT in the vertex registry. "
+        "Vertex snap not applied or applied incorrectly."
+    )
