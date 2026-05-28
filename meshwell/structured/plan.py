@@ -1569,6 +1569,7 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
         slabs=tuple(kept_slabs),
         z_planes=tuple(z_planes),
         overlaps=tuple(overlaps),
+        arrangements=arrangements,
     )
 
 

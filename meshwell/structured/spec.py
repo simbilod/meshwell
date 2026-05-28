@@ -314,6 +314,12 @@ class StructuredPlan:
     slabs: tuple[Slab, ...]
     z_planes: tuple[float, ...]
     overlaps: tuple[OverlapPair, ...]
+    # Populated by build_plan. Maps component_index -> StackArrangement for
+    # each connected z-component. Consumed by the cohort topology builder
+    # (Phase 2) to walk arrangement edges and detect cohort-interior vs
+    # cohort-exterior boundaries. See spec
+    # 2026-05-27-cad-occ-cohort-topology-builder-design.md.
+    arrangements: "dict[int, StackArrangement]" = field(default_factory=dict)
 
 
 Side = Literal["bot", "top"]
