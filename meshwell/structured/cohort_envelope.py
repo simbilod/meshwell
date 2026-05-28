@@ -215,16 +215,96 @@ def build_cohort_envelope(
             v_hi = env.vertices[(slab.zhi, corner_id)]
             env.vertical_edges[zkey] = BRepBuilderAPI_MakeEdge(v_lo, v_hi).Edge()
 
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepFill import BRepFill
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.TopoDS import TopoDS
+
     from meshwell.structured.phantom import (
         _make_face_from_polygon_with_arcs,
         _make_face_from_provenance,
     )
+
+    def _rev_edge(e):
+        return TopoDS.Edge_s(e.Reversed())
 
     slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
     for slab in cohort_slabs:
         slab_index = slab_to_index[id(slab)]
         if not slab.face_partition:
             continue
+
+        # Single-piece slabs: build top/bot faces from the shared
+        # horizontal_edges registry so edges share OCC TShape with the lateral
+        # wall. This lets sewing close the solid correctly for arc outlines.
+        if len(slab.face_partition) == 1:
+            # Collect the arrangement edge IDs that belong to this piece.
+            piece_edge_ids: set[int] = set()
+            if slab.face_partition_edges is not None and slab.face_partition_edges:
+                for eid, _forward in slab.face_partition_edges[0]:
+                    piece_edge_ids.add(eid)
+            else:
+                # Fallback: use all non-skipped arrangement edges.
+                for arr_edge in arrangement.edges:
+                    if arr_edge.edge_id not in env.skipped_edge_ids:
+                        piece_edge_ids.add(arr_edge.edge_id)
+
+            # Build a lookup from edge_id to arr_edge for arc detection.
+            arr_edge_by_id = {e.edge_id: e for e in arrangement.edges}
+
+            # Collect all horizontal wire edges for this slab z-plane.
+            for z, face_key_str, face_dict in (
+                (slab.zlo, "bot", env.bottom_sub_faces),
+                (slab.zhi, "top", env.top_sub_faces),
+            ):
+                # Build a combined wire from the piece's arrangement edges at this z.
+                mw = BRepBuilderAPI_MakeWire()
+                closing_arc_edge = None
+                for eid in piece_edge_ids:
+                    if eid in env.skipped_edge_ids:
+                        continue
+                    wire = env.horizontal_edges[(z, eid)]
+                    exp = BRepTools_WireExplorer(wire)
+                    while exp.More():
+                        mw.Add(exp.Current())
+                        exp.Next()
+                    # Check if this is an open-chain arc (start != end corner).
+                    arr_edge = arr_edge_by_id[eid]
+                    if arr_edge.circle is not None:
+                        p1 = arr_edge.vertices[0]
+                        p2 = arr_edge.vertices[-1]
+                        c1 = env.outline_xy_to_corner_id[
+                            (round(p1[0], _ROUND), round(p1[1], _ROUND))
+                        ]
+                        c2 = env.outline_xy_to_corner_id[
+                            (round(p2[0], _ROUND), round(p2[1], _ROUND))
+                        ]
+                        if c1 != c2:
+                            # Build the closing arc edge from c2 back to c1.
+                            cx, cy = arr_edge.circle.center
+                            r = arr_edge.circle.radius
+                            axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
+                            circ = gp_Circ(axis, r)
+                            p2_snapped = corner_id_to_xy[c2]
+                            p1_snapped = corner_id_to_xy[c1]
+                            start_pt = gp_Pnt(p2_snapped[0], p2_snapped[1], z)
+                            end_pt = gp_Pnt(p1_snapped[0], p1_snapped[1], z)
+                            v_c2 = env.vertices[(z, c2)]
+                            v_c1 = env.vertices[(z, c1)]
+                            closing_arc = GC_MakeArcOfCircle(
+                                circ, start_pt, end_pt, True
+                            ).Value()
+                            closing_arc_edge = BRepBuilderAPI_MakeEdge(
+                                closing_arc, v_c2, v_c1
+                            ).Edge()
+                if closing_arc_edge is not None:
+                    mw.Add(closing_arc_edge)
+                face = BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+                face_dict[FaceKey(slab_index, face_key_str, 0)] = face
+            continue
+
+        # Multi-piece slabs: fall back to the existing provenance-based path.
         for piece_index, piece in enumerate(slab.face_partition):
             # Prefer provenance when available (arc-aware). Fall back to
             # building from the polygon directly for non-arc structured
@@ -255,14 +335,6 @@ def build_cohort_envelope(
                 )
             env.bottom_sub_faces[FaceKey(slab_index, "bot", piece_index)] = bot_face
             env.top_sub_faces[FaceKey(slab_index, "top", piece_index)] = top_face
-
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
-    from OCP.BRepFill import BRepFill
-    from OCP.BRepTools import BRepTools_WireExplorer
-    from OCP.TopoDS import TopoDS
-
-    def _rev_edge(e):
-        return TopoDS.Edge_s(e.Reversed())
 
     for slab in cohort_slabs:
         slab_index = slab_to_index[id(slab)]
@@ -369,6 +441,9 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
         BRepBuilderAPI_MakeWire,
         BRepBuilderAPI_Sewing,
     )
+    from OCP.BRepFill import BRepFill
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
     from OCP.TopoDS import TopoDS, TopoDS_Solid
 
     def _rev_face(f):
@@ -412,16 +487,21 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
             sewing.Add(face)
 
     # Synthetic closing lateral faces: when a cohort has only one arrangement
-    # edge and that edge is a multi-vertex open chain (start corner != end
-    # corner), the n-1 segment faces in the registry leave one side open.
-    # Add the closing face from the last corner back to the first corner.
+    # edge and that edge is an open chain (start corner != end corner), the
+    # registered faces leave one side open.
+    #
+    # For straight multi-vertex edges: n-1 segment faces in the registry leave
+    # the closing segment from end back to start missing.
+    # For arc edges: BRepFill::Face_s covers the arc strip but the closing
+    # cylindrical strip from c2 back to c1 (the short way around) is missing.
     if plan.arrangements:
         arrangement = plan.arrangements[env.component_index]
+        # Track which (slab, arr_edge) pairs we've already closed so stacked
+        # slabs sharing no z-overlap don't double-add.
+        _closed = set()
         for slab in cohort_slabs:
             for arr_edge in arrangement.edges:
-                if arr_edge.circle is not None:
-                    continue
-                if len(arr_edge.vertices) <= 2:
+                if arr_edge.edge_id in env.skipped_edge_ids:
                     continue
                 p1 = arr_edge.vertices[0]
                 p2 = arr_edge.vertices[-1]
@@ -434,22 +514,62 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
                 if c1 == c2:
                     # Already closed; no extra face needed.
                     continue
-                # Build closing face from c2 back to c1.
-                v_edge_1 = env.vertical_edges[(slab.zlo, slab.zhi, c1)]
-                v_edge_2 = env.vertical_edges[(slab.zlo, slab.zhi, c2)]
-                va_bot = env.vertices[(slab.zlo, c2)]
-                vb_bot = env.vertices[(slab.zlo, c1)]
-                va_top = env.vertices[(slab.zhi, c2)]
-                vb_top = env.vertices[(slab.zhi, c1)]
-                bot_seg = BRepBuilderAPI_MakeEdge(va_bot, vb_bot).Edge()
-                top_seg = BRepBuilderAPI_MakeEdge(va_top, vb_top).Edge()
-                mw = BRepBuilderAPI_MakeWire()
-                mw.Add(bot_seg)
-                mw.Add(v_edge_1)
-                mw.Add(_rev_edge(top_seg))
-                mw.Add(_rev_edge(v_edge_2))
-                closing_face = BRepBuilderAPI_MakeFace(mw.Wire()).Face()
-                sewing.Add(closing_face)
+                close_key = (slab.zlo, slab.zhi, arr_edge.edge_id)
+                if close_key in _closed:
+                    continue
+                _closed.add(close_key)
+
+                if arr_edge.circle is not None:
+                    # Arc arrangement edge: build a closing cylindrical strip
+                    # via BRepFill::Face_s between two closing arc edges
+                    # (one at zlo, one at zhi), going from c2 back to c1.
+                    cx, cy = arr_edge.circle.center
+                    r = arr_edge.circle.radius
+                    closing_edges = []
+                    corner_id_to_xy_asm: dict[int, tuple[float, float]] = {}
+                    for cid in (c1, c2):
+                        # Reuse existing vertex positions.
+                        v = env.vertices[(slab.zlo, cid)]
+                        from OCP.BRep import BRep_Tool
+
+                        pt = BRep_Tool.Pnt_s(v)
+                        corner_id_to_xy_asm[cid] = (pt.X(), pt.Y())
+                    for z in (slab.zlo, slab.zhi):
+                        axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
+                        circ = gp_Circ(axis, r)
+                        p2_xy = corner_id_to_xy_asm[c2]
+                        p1_xy = corner_id_to_xy_asm[c1]
+                        start_pt = gp_Pnt(p2_xy[0], p2_xy[1], z)
+                        end_pt = gp_Pnt(p1_xy[0], p1_xy[1], z)
+                        v_c2 = env.vertices[(z, c2)]
+                        v_c1 = env.vertices[(z, c1)]
+                        closing_arc = GC_MakeArcOfCircle(
+                            circ, start_pt, end_pt, True
+                        ).Value()
+                        closing_edge = BRepBuilderAPI_MakeEdge(
+                            closing_arc, v_c2, v_c1
+                        ).Edge()
+                        closing_edges.append(closing_edge)
+                    closing_face = BRepFill.Face_s(closing_edges[0], closing_edges[1])
+                    sewing.Add(closing_face)
+
+                elif len(arr_edge.vertices) > 2:
+                    # Straight multi-vertex open chain: close from c2 to c1.
+                    v_edge_1 = env.vertical_edges[(slab.zlo, slab.zhi, c1)]
+                    v_edge_2 = env.vertical_edges[(slab.zlo, slab.zhi, c2)]
+                    va_bot = env.vertices[(slab.zlo, c2)]
+                    vb_bot = env.vertices[(slab.zlo, c1)]
+                    va_top = env.vertices[(slab.zhi, c2)]
+                    vb_top = env.vertices[(slab.zhi, c1)]
+                    bot_seg = BRepBuilderAPI_MakeEdge(va_bot, vb_bot).Edge()
+                    top_seg = BRepBuilderAPI_MakeEdge(va_top, vb_top).Edge()
+                    mw = BRepBuilderAPI_MakeWire()
+                    mw.Add(bot_seg)
+                    mw.Add(v_edge_1)
+                    mw.Add(_rev_edge(top_seg))
+                    mw.Add(_rev_edge(v_edge_2))
+                    closing_face = BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+                    sewing.Add(closing_face)
 
     sewing.Perform()
     sewn = sewing.SewedShape()
