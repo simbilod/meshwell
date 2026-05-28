@@ -256,7 +256,91 @@ def build_cohort_envelope(
             env.bottom_sub_faces[FaceKey(slab_index, "bot", piece_index)] = bot_face
             env.top_sub_faces[FaceKey(slab_index, "top", piece_index)] = top_face
 
-    # Subsequent registries are added in Tasks 6.
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.BRepFill import BRepFill
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.TopoDS import TopoDS
+
+    def _rev_edge(e):
+        return TopoDS.Edge_s(e.Reversed())
+
+    for slab in cohort_slabs:
+        slab_index = slab_to_index[id(slab)]
+        for arr_edge in arrangement.edges:
+            if arr_edge.edge_id in env.skipped_edge_ids:
+                continue
+            key = (slab_index, arr_edge.edge_id)
+            if key in env.lateral_faces:
+                continue
+            p1 = arr_edge.vertices[0]
+            p2 = arr_edge.vertices[-1]
+            c1 = env.outline_xy_to_corner_id[
+                (round(p1[0], _ROUND), round(p1[1], _ROUND))
+            ]
+            c2 = env.outline_xy_to_corner_id[
+                (round(p2[0], _ROUND), round(p2[1], _ROUND))
+            ]
+
+            if arr_edge.circle is not None:
+                bot_wire = env.horizontal_edges[(slab.zlo, arr_edge.edge_id)]
+                top_wire = env.horizontal_edges[(slab.zhi, arr_edge.edge_id)]
+                bot_exp = BRepTools_WireExplorer(bot_wire)
+                bot_arc_edge = bot_exp.Current()
+                top_exp = BRepTools_WireExplorer(top_wire)
+                top_arc_edge = top_exp.Current()
+                face = BRepFill.Face_s(bot_arc_edge, top_arc_edge)
+                env.lateral_faces[key] = [face]
+            elif len(arr_edge.vertices) == 2:
+                bot_wire = env.horizontal_edges[(slab.zlo, arr_edge.edge_id)]
+                top_wire = env.horizontal_edges[(slab.zhi, arr_edge.edge_id)]
+                v_edge_1 = env.vertical_edges[(slab.zlo, slab.zhi, c1)]
+                v_edge_2 = env.vertical_edges[(slab.zlo, slab.zhi, c2)]
+                bot_edges = []
+                exp = BRepTools_WireExplorer(bot_wire)
+                while exp.More():
+                    bot_edges.append(exp.Current())
+                    exp.Next()
+                top_edges = []
+                exp = BRepTools_WireExplorer(top_wire)
+                while exp.More():
+                    top_edges.append(exp.Current())
+                    exp.Next()
+                mw = BRepBuilderAPI_MakeWire()
+                mw.Add(bot_edges[0])
+                mw.Add(v_edge_2)
+                mw.Add(_rev_edge(top_edges[0]))
+                mw.Add(_rev_edge(v_edge_1))
+                face = BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+                env.lateral_faces[key] = [face]
+            else:
+                verts_2d = arr_edge.vertices
+                n = len(verts_2d)
+                face_list = []
+                for seg_i in range(n - 1):
+                    xi, yi = verts_2d[seg_i]
+                    xj, yj = verts_2d[seg_i + 1]
+                    ci = env.outline_xy_to_corner_id[
+                        (round(xi, _ROUND), round(yi, _ROUND))
+                    ]
+                    cj = env.outline_xy_to_corner_id[
+                        (round(xj, _ROUND), round(yj, _ROUND))
+                    ]
+                    v_edge_i = env.vertical_edges[(slab.zlo, slab.zhi, ci)]
+                    v_edge_j = env.vertical_edges[(slab.zlo, slab.zhi, cj)]
+                    va_bot = env.vertices[(slab.zlo, ci)]
+                    vb_bot = env.vertices[(slab.zlo, cj)]
+                    va_top = env.vertices[(slab.zhi, ci)]
+                    vb_top = env.vertices[(slab.zhi, cj)]
+                    bot_seg = BRepBuilderAPI_MakeEdge(va_bot, vb_bot).Edge()
+                    top_seg = BRepBuilderAPI_MakeEdge(va_top, vb_top).Edge()
+                    mw = BRepBuilderAPI_MakeWire()
+                    mw.Add(bot_seg)
+                    mw.Add(v_edge_j)
+                    mw.Add(_rev_edge(top_seg))
+                    mw.Add(_rev_edge(v_edge_i))
+                    face_list.append(BRepBuilderAPI_MakeFace(mw.Wire()).Face())
+                env.lateral_faces[key] = face_list
+
     return env
 
 
