@@ -74,13 +74,19 @@ def _run_cad_occ_structured(entities) -> None:
     cad_occ(entities, entity_shape_overrides=overrides)
 
 
-def _bench_fragment_all(use_cohort: bool, preshare_vertical: bool, entities) -> float:
+def _bench_fragment_all(
+    use_cohort: bool,
+    preshare_vertical: bool,
+    entities,
+    use_discrete_cohort_mesh: bool = False,
+) -> float:
     """Return min wall-clock seconds spent in _fragment_all over 3 timed runs.
 
     Monkey-patches CAD_OCC._fragment_all to capture per-call duration.
     """
     phantom_mod._USE_COHORT_TOPOLOGY = use_cohort
     phantom_mod._PRESHARE_VERTICAL_FACES = preshare_vertical
+    phantom_mod._USE_DISCRETE_COHORT_MESH = use_discrete_cohort_mesh
 
     times: list[float] = []
     original = CAD_OCC._fragment_all
@@ -102,6 +108,7 @@ def _bench_fragment_all(use_cohort: bool, preshare_vertical: bool, entities) -> 
             _run_cad_occ_structured(entities)
     finally:
         CAD_OCC._fragment_all = original
+        phantom_mod._USE_DISCRETE_COHORT_MESH = False
 
     if not times:
         msg = "_fragment_all was not invoked during benchmark"
@@ -119,9 +126,11 @@ def _run_size(n_stacks: int, layers: int) -> None:
     legacy = _bench_fragment_all(False, False, entities)
     phase1 = _bench_fragment_all(False, True, entities)
     phase2 = _bench_fragment_all(True, True, entities)
+    phase3 = _bench_fragment_all(False, False, entities, use_discrete_cohort_mesh=True)
     print(f"  Full legacy:                {legacy:.4f}s  (1.00x)")
     print(f"  Phase 1 (vertical only):    {phase1:.4f}s  ({legacy / phase1:.2f}x)")
     print(f"  Phase 2 (vertical+lateral): {phase2:.4f}s  ({legacy / phase2:.2f}x)")
+    print(f"  Phase 3 (cohort envelope):  {phase3:.4f}s  ({legacy / phase3:.2f}x)")
     print()
 
 
