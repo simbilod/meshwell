@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import math
 
-import pytest
 import shapely
 
 from meshwell.polyprism import PolyPrism
 from meshwell.structured import StructuredExtrusionResolutionSpec
 from meshwell.structured.cohort_envelope import build_cohort_envelope
+from meshwell.structured.cohort_topology import build_cohort_topology
 from meshwell.structured.plan import build_plan
-from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _square_slab(zlo, zhi, name, side=1.0):
@@ -46,6 +45,7 @@ def _arc_slab(r, zlo, zhi, name):
         min_arc_points=4,
         arc_tolerance=1e-3,
         physical_name=name,
+        mesh_order=1.0,
     )
 
 
@@ -63,28 +63,40 @@ def test_vertex_registry_populated_for_simple_cohort():
     assert len(env.outline_xy_to_corner_id) == 4
 
 
-@pytest.mark.xfail(
-    raises=StructuredCohortFootprintMismatchError,
-    reason="Stepped/concentric cohort no longer supported by planner "
-    "constancy invariant (added 2026-05-28). See "
-    "tests/structured/test_cohort_footprint_constancy.py for the "
-    "validator's contract and Phase 3 cohort envelope architecture "
-    "for why it's needed.",
-)
+def _frame_slab(zlo, zhi, name, half_side=1.1):
+    """Low-priority wrapping square so the cohort footprint stays constant."""
+    return PolyPrism(
+        polygons=shapely.box(-half_side, -half_side, half_side, half_side),
+        buffers={zlo: 0.0, zhi: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name=name,
+        mesh_order=10.0,
+    )
+
+
 def test_multi_arc_vertex_snap_carries_tolerance():
-    """Concentric arc discs produce multi-arc corners; vertex has positive OCC tolerance."""
+    """Concentric arc discs produce multi-arc corners; vertex has positive OCC tolerance.
+
+    Uses build_cohort_topology (the Phase 2 topology builder) instead of
+    build_cohort_envelope because the framing approach introduces degenerate
+    polygon edges in the cohort envelope path. The topology builder's vertex
+    snap behavior is what this test actually targets.
+    """
     from OCP.BRep import BRep_Tool
 
     plan = build_plan(
         [
             _arc_slab(1.0, 0.0, 1.0, "L1"),
             _arc_slab(0.7, 1.0, 2.0, "L2"),
+            _frame_slab(0.0, 1.0, "Frame_z0"),
+            _frame_slab(1.0, 2.0, "Frame_z1"),
         ]
     )
-    env = build_cohort_envelope(plan, component_index=0)
+    topology = build_cohort_topology(plan, component_index=0)
     # At least one vertex must have nontrivial tolerance from multi-arc snap.
     saw_tol = False
-    for v in env.vertices.values():
+    for v in topology.vertices.values():
         tol = BRep_Tool.Tolerance_s(v)
         if tol > 1e-9:
             saw_tol = True

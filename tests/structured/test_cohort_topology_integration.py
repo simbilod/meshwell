@@ -18,7 +18,6 @@ from meshwell.structured import StructuredExtrusionResolutionSpec
 from meshwell.structured import phantom as phantom_mod
 from meshwell.structured.phantom import build_phantom_shapes
 from meshwell.structured.plan import build_plan
-from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _square(x0, y0, x1, y1):
@@ -55,21 +54,26 @@ def cohort_topology_on():
         phantom_mod._USE_COHORT_TOPOLOGY = prior
 
 
-@pytest.mark.xfail(
-    raises=StructuredCohortFootprintMismatchError,
-    reason="Stepped/concentric cohort no longer supported by planner "
-    "constancy invariant (added 2026-05-28). See "
-    "tests/structured/test_cohort_footprint_constancy.py for the "
-    "validator's contract and Phase 3 cohort envelope architecture "
-    "for why it's needed.",
-)
+def _frame(name, zlo, zhi, x0, y0, x1, y1):
+    """Low-priority wrapping slab so the cohort footprint stays constant."""
+    return PolyPrism(
+        polygons=_square(x0, y0, x1, y1),
+        buffers={float(zlo): 0.0, float(zhi): 0.0},
+        physical_name=name,
+        mesh_order=10.0,
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+    )
+
+
 def test_mixed_cohort_sharing(cohort_topology_on):  # noqa: ARG001  pytest fixture
     """Scene: vertical stack of 3 PolyPrisms + 2 lateral neighbors + 1 unstructured.
 
-    - Cohort 1: A at z=[0,1], B at z=[1,2], C at z=[2,3] on XY [0,1]x[0,1]
-      (vertical stack)
-    - Cohort 2: D at z=[0,1] on [5,6]x[0,1], E at z=[0,1] on [6,7]x[0,1]
-      (lateral neighbors; cohort 2 to keep separate from cohort 1)
+    - Cohort: A at z=[0,1], B at z=[1,2], C at z=[2,3] on XY [0,1]x[0,1]
+      (vertical stack) plus D, E at z=[0,1] on [5,6]x[0,1] and [6,7]x[0,1]
+      (lateral neighbors in the same cohort as A via same-z grouping).
+      Frame slabs fill in D and E's footprint at z=[1,2] and z=[2,3] so the
+      cohort footprint remains constant.
     - Unstructured: F as a non-structured PolyPrism somewhere disjoint
     """
     A = _polyprism("A", 0, 1, 1, x0=0, y0=0, x1=1, y1=1)
@@ -77,6 +81,11 @@ def test_mixed_cohort_sharing(cohort_topology_on):  # noqa: ARG001  pytest fixtu
     C = _polyprism("C", 2, 3, 3, x0=0, y0=0, x1=1, y1=1)
     D = _polyprism("D", 0, 1, 4, x0=5, y0=0, x1=6, y1=1)
     E = _polyprism("E", 0, 1, 5, x0=6, y0=0, x1=7, y1=1)
+    # Frame slabs to fill D and E's footprint at z=[1,2] and z=[2,3]
+    FD1 = _frame("Frame_D_z1", 1, 2, 5, 0, 6, 1)
+    FE1 = _frame("Frame_E_z1", 1, 2, 6, 0, 7, 1)
+    FD2 = _frame("Frame_D_z2", 2, 3, 5, 0, 6, 1)
+    FE2 = _frame("Frame_E_z2", 2, 3, 6, 0, 7, 1)
     # F: same shape as PolyPrism but structured=False (unstructured neighbor).
     F = PolyPrism(
         polygons=_square(20, 20, 21, 21),
@@ -86,7 +95,7 @@ def test_mixed_cohort_sharing(cohort_topology_on):  # noqa: ARG001  pytest fixtu
         structured=False,
         resolutions=[],
     )
-    plan = build_plan([A, B, C, D, E, F])
+    plan = build_plan([A, B, C, D, E, FD1, FE1, FD2, FE2, F])
     result = build_phantom_shapes(plan)
 
     by_name: dict[str, object] = {}

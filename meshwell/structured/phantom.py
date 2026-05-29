@@ -243,6 +243,40 @@ def _make_arc_wire_from_coords(
     return wire_builder.Wire()
 
 
+def _dedup_coords(
+    coords: list[tuple[float, float]], tol: float = 1e-10
+) -> list[tuple[float, float]]:
+    """Remove consecutive near-duplicate vertices from a closed polygon coordinate list.
+
+    Floating-point jitter from planar arrangement seaming can produce pairs of
+    consecutive vertices that are ~1e-17 apart. OCC cannot build valid edges
+    from such degenerate segments (raises BRepAdaptor_Curve::No geometry).
+    This helper collapses runs of near-identical coordinates before OCC sees
+    them, preserving the polygon shape to within ``tol``.
+
+    Also collapses near-duplicates that span the wrap-around (last → first),
+    since the polygon forms a closed wire where those become an edge too.
+    """
+    if not coords:
+        return coords
+    tol_sq = tol * tol
+    deduped: list[tuple[float, float]] = [coords[0]]
+    for pt in coords[1:]:
+        dx = pt[0] - deduped[-1][0]
+        dy = pt[1] - deduped[-1][1]
+        if dx * dx + dy * dy > tol_sq:
+            deduped.append(pt)
+    # Remove the last point if it is nearly identical to the first (wrap-around).
+    while len(deduped) >= 2:
+        dx = deduped[-1][0] - deduped[0][0]
+        dy = deduped[-1][1] - deduped[0][1]
+        if dx * dx + dy * dy <= tol_sq:
+            deduped.pop()
+        else:
+            break
+    return deduped
+
+
 def _make_face_from_polygon(polygon: Polygon, z: float) -> Any:
     """Build a planar TopoDS_Face at the given z from a shapely Polygon.
 
@@ -262,6 +296,7 @@ def _make_face_from_polygon(polygon: Polygon, z: float) -> Any:
     def _wire_from_coords(coords: list[tuple[float, float]]) -> Any:
         if coords[0] == coords[-1]:
             coords = coords[:-1]
+        coords = _dedup_coords(coords)
         wire_builder = BRepBuilderAPI_MakeWire()
         for i in range(len(coords)):
             p1 = gp_Pnt(coords[i][0], coords[i][1], z)

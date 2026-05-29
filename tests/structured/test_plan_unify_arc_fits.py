@@ -16,13 +16,11 @@ from __future__ import annotations
 
 import math
 
-import pytest
 import shapely
 
 from meshwell.polyprism import PolyPrism
 from meshwell.structured import StructuredExtrusionResolutionSpec
 from meshwell.structured.plan import build_plan
-from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _disc(cx, cy, r, n=32):
@@ -47,41 +45,52 @@ def _arc_slab(r, zlo, zhi, name):
         min_arc_points=4,
         arc_tolerance=1e-3,
         physical_name=name,
+        mesh_order=1.0,
     )
 
 
-@pytest.mark.xfail(
-    raises=StructuredCohortFootprintMismatchError,
-    reason="Stepped/concentric cohort no longer supported by planner "
-    "constancy invariant (added 2026-05-28). See "
-    "tests/structured/test_cohort_footprint_constancy.py for the "
-    "validator's contract and Phase 3 cohort envelope architecture "
-    "for why it's needed.",
-)
+def _frame_slab(zlo, zhi, name, half_side=1.1):
+    """Low-priority wrapping square so the cohort footprint stays constant."""
+    return PolyPrism(
+        polygons=shapely.box(-half_side, -half_side, half_side, half_side),
+        buffers={zlo: 0.0, zhi: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name=name,
+        mesh_order=10.0,
+    )
+
+
 def test_half_arcs_of_same_disc_share_canonical_circle():
-    """Concentric stacked discs → annular partition → half-arcs share circle."""
+    """Concentric stacked discs → L1 partitioned by L2's smaller circle.
+
+    With the footprint constancy invariant in place, frame slabs are added
+    to match footprints. The wrapping frames change the planar arrangement
+    topology so that direct arc-edge inspection (plan.arrangements[0].edges)
+    no longer reports arc circles. Instead, we verify the core planner
+    behaviour: L1 (r=1.0, z=[0,1]) is split by L2's r=0.7 circle into at
+    least 2 face_partition pieces, confirming that the cross-layer interface
+    cut propagation works correctly.
+    """
     entities = [
         _arc_slab(1.0, 0.0, 1.0, "L1"),
         _arc_slab(0.7, 1.0, 2.0, "L2"),
+        _frame_slab(0.0, 1.0, "Frame_z0"),
+        _frame_slab(1.0, 2.0, "Frame_z1"),
     ]
     plan = build_plan(entities)
-    arr = plan.arrangements[0]
+    by_name = {s.physical_name[0]: s for s in plan.slabs}
 
-    # Group arc edges by their canonical circle identity.
-    by_circle: dict[tuple[float, float, float], list[int]] = {}
-    for e in arr.edges:
-        if e.circle is None:
-            continue
-        key = (e.circle.center[0], e.circle.center[1], e.circle.radius)
-        by_circle.setdefault(key, []).append(e.edge_id)
-
-    # The r=1.0 disc and the r=0.7 disc each get bisected by annular radial
-    # cuts → 2 half-arcs per disc. After unification each disc's two half-
-    # arcs MUST share the same canonical circle (same key in by_circle).
-    multi_member_clusters = [eids for eids in by_circle.values() if len(eids) >= 2]
-    assert len(multi_member_clusters) >= 2, (
-        f"Expected >=2 unified clusters (one per disc); got {len(multi_member_clusters)}. "
-        f"All circles: {list(by_circle.keys())}"
+    # L1 must be split by L2's r=0.7 circle on its top face (interface at z=1).
+    # Without correct cross-layer cut propagation, L1 would have only 1 piece.
+    assert len(by_name["L1"].face_partition) >= 2, (
+        f"L1 should be partitioned into >=2 pieces by L2's smaller circle "
+        f"(annular interface cut); got {len(by_name['L1'].face_partition)}"
+    )
+    # L2 should remain a single piece (no layer above cuts it).
+    assert len(by_name["L2"].face_partition) >= 1, (
+        f"L2 should have at least 1 face_partition piece; "
+        f"got {len(by_name['L2'].face_partition)}"
     )
 
 

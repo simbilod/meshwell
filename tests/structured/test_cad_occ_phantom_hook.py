@@ -5,10 +5,8 @@
 """
 from __future__ import annotations
 
-import pytest
+import shapely
 from shapely.geometry import Polygon
-
-from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _square() -> Polygon:
@@ -276,14 +274,6 @@ def test_structured_entity_shapes_are_phantom_solids_after_cad_occ():
         assert s.IsSame(exp), "B's entity solid must IsSame the phantom solid"
 
 
-@pytest.mark.xfail(
-    raises=StructuredCohortFootprintMismatchError,
-    reason="Stepped/concentric cohort no longer supported by planner "
-    "constancy invariant (added 2026-05-28). See "
-    "tests/structured/test_cohort_footprint_constancy.py for the "
-    "validator's contract and Phase 3 cohort envelope architecture "
-    "for why it's needed.",
-)
 def test_no_sliver_solids_for_ring_quarter_cut():
     """Ring-segment quarter-cut scene must produce no sliver sub-solids per entity.
 
@@ -332,6 +322,17 @@ def test_no_sliver_solids_for_ring_quarter_cut():
             min_arc_points=4,
             arc_tolerance=1e-3,
             physical_name=name,
+            mesh_order=1.0,
+        )
+
+    def _frame(zlo, zhi, name, half_side=1.1):
+        return PolyPrism(
+            polygons=shapely.box(-half_side, -half_side, half_side, half_side),
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            physical_name=name,
+            mesh_order=10.0,
         )
 
     L1 = _ring(_ring_segment(0, 0, 0.5, 1.0, 0.0, math.pi), 0.0, 1.0, "L1")
@@ -342,7 +343,10 @@ def test_no_sliver_solids_for_ring_quarter_cut():
         "L2",
     )
     L3 = _ring(_ring_segment(0, 0, 0.5, 1.0, math.pi, 2 * math.pi), 2.0, 3.0, "L3")
-    entities = [L1, L2, L3]
+    F0 = _frame(0.0, 1.0, "Frame_z0")
+    F1 = _frame(1.0, 2.0, "Frame_z1")
+    F2 = _frame(2.0, 3.0, "Frame_z2")
+    entities = [L1, L2, L3, F0, F1, F2]
     plan = build_plan(entities)
     phantom_result = build_phantom_shapes(plan)
     overrides = _group_phantom_solids_by_entity(plan, phantom_result)
@@ -366,14 +370,6 @@ def test_no_sliver_solids_for_ring_quarter_cut():
             )
 
 
-@pytest.mark.xfail(
-    raises=StructuredCohortFootprintMismatchError,
-    reason="Stepped/concentric cohort no longer supported by planner "
-    "constancy invariant (added 2026-05-28). See "
-    "tests/structured/test_cohort_footprint_constancy.py for the "
-    "validator's contract and Phase 3 cohort envelope architecture "
-    "for why it's needed.",
-)
 def test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene():
     """All PhantomMap output_laterals must IsSame match in the XAO compound.
 
@@ -425,6 +421,17 @@ def test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene():
             min_arc_points=4,
             arc_tolerance=1e-3,
             physical_name=name,
+            mesh_order=1.0,
+        )
+
+    def _frame(zlo, zhi, name, half_side=1.1):
+        return PolyPrism(
+            polygons=shapely.box(-half_side, -half_side, half_side, half_side),
+            buffers={zlo: 0.0, zhi: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            physical_name=name,
+            mesh_order=10.0,
         )
 
     L1 = _ring(_ring_segment(0, 0, 0.5, 1.0, 0.0, math.pi), 0.0, 1.0, "L1")
@@ -435,7 +442,10 @@ def test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene():
         "L2",
     )
     L3 = _ring(_ring_segment(0, 0, 0.5, 1.0, math.pi, 2 * math.pi), 2.0, 3.0, "L3")
-    entities = [L1, L2, L3]
+    F0 = _frame(0.0, 1.0, "Frame_z0")
+    F1 = _frame(1.0, 2.0, "Frame_z1")
+    F2 = _frame(2.0, 3.0, "Frame_z2")
+    entities = [L1, L2, L3, F0, F1, F2]
     plan = build_plan(entities)
     phantom_result = build_phantom_shapes(plan)
     overrides = _group_phantom_solids_by_entity(plan, phantom_result)

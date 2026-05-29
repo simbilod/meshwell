@@ -1,17 +1,15 @@
-"""Cohort envelope with concentric arc discs (multi-radius stepped stack).
+"""Concentric arc discs are rejected at plan time.
 
-Spec test #3: verifies the vertex registry's multi-arc snap path (Task 2)
-and exercises the envelope builder against the same scene that broke
-Phase 2 cohort_topology with StdFail_NotDone before the snap fix.
+The multi-radius stepped stack would require modelling annular rings on
+slab-to-slab interfaces — not supported by Phase 3's cohort envelope
+architecture. The planner's `_validate_cohort_footprint_constancy`
+catches the case before it reaches the envelope builder. See
+tests/structured/test_cohort_footprint_constancy.py for the full
+validator coverage and the remediation contract.
 
-Status: xfail. Phase 2 also fails on this scene; it requires modelling
-annular rings on slab-to-slab interfaces (the larger disc's top minus
-the next smaller disc's bottom) as separate OCC faces in the envelope.
-Phase 3's current envelope architecture (Tasks 5-7) handles single-radius
-arc cohorts and same-footprint stacked slabs but not multi-radius stacking.
-Tracked as a follow-up; the multi-arc snap behaviour exercised here is
-still verified end-to-end by tests/structured/test_cohort_envelope_vertices.py
-::test_multi_arc_vertex_snap_carries_tolerance.
+The multi-arc snap behaviour this spec test originally targeted is
+covered by
+tests/structured/test_cohort_envelope_vertices.py::test_multi_arc_vertex_snap_carries_tolerance.
 """
 
 from __future__ import annotations
@@ -23,11 +21,8 @@ import shapely
 
 from meshwell.polyprism import PolyPrism
 from meshwell.structured import StructuredExtrusionResolutionSpec
-from meshwell.structured.cohort_envelope import (
-    assemble_cohort_envelope_solid,
-    build_cohort_envelope,
-)
 from meshwell.structured.plan import build_plan
+from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _disc(r, n=32):
@@ -52,23 +47,13 @@ def _arc_slab(r, zlo, zhi, name):
     )
 
 
-@pytest.mark.xfail(
-    reason="Multi-radius stepped stack requires modelling exposed annular "
-    "rings on slab-to-slab interfaces. Same limitation as Phase 2 "
-    "cohort_topology. Phase 3 envelope architecture currently only handles "
-    "single-radius arc cohorts and same-footprint stacks."
-)
-def test_concentric_arc_discs_envelope_builds():
-    from OCP.BRepCheck import BRepCheck_Analyzer
-
-    plan = build_plan(
-        [
-            _arc_slab(1.0, 0.0, 1.0, "L1"),
-            _arc_slab(0.7, 1.0, 2.0, "L2"),
-            _arc_slab(0.5, 2.0, 3.0, "L3"),
-        ]
-    )
-    env = build_cohort_envelope(plan, component_index=0)
-    solid = assemble_cohort_envelope_solid(env)
-    # Solid must be BRepCheck-valid even with the multi-arc corners.
-    assert BRepCheck_Analyzer(solid).IsValid()
+def test_concentric_arc_discs_rejected_at_plan_time():
+    """build_plan must reject a stepped stack of concentric arc discs."""
+    with pytest.raises(StructuredCohortFootprintMismatchError):
+        build_plan(
+            [
+                _arc_slab(1.0, 0.0, 1.0, "L1"),
+                _arc_slab(0.7, 1.0, 2.0, "L2"),
+                _arc_slab(0.5, 2.0, 3.0, "L3"),
+            ]
+        )
