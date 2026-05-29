@@ -920,38 +920,66 @@ def apply_structured_mesh(
                 (slab_idx_pre, slab_pre)
             )
         for slab_list_pre in cohort_slabs_by_idx_pre.values():
-            slab_list_pre.sort(key=lambda pair: pair[1].zlo)
-            for i_pre in range(len(slab_list_pre) - 1):
-                lower_idx_pre, lower_pre = slab_list_pre[i_pre]
-                upper_idx_pre, upper_pre = slab_list_pre[i_pre + 1]
-                if abs(upper_pre.zlo - lower_pre.zhi) > 1e-9:
-                    continue
-                # Check that the top of the lower slab is indeed interior.
-                for p_pre in range(len(lower_pre.face_partition)):
-                    top_key_pre = FaceKey(lower_idx_pre, "top", p_pre)
-                    if face_map.get(top_key_pre):
-                        continue  # has OCC backing — not interior
-                    bot_key_pre = FaceKey(lower_idx_pre, "bot", p_pre)
-                    bot_tags_pre = face_map.get(bot_key_pre, [])
-                    if len(bot_tags_pre) != 1:
-                        continue  # can't create interior face without bot
-                    disc_tag_pre, b2t_pre = _create_discrete_interior_face(
-                        bot_tags_pre[0], lower_pre.zhi
-                    )
-                    # Add physical group: "lower___upper" interface name.
-                    lo_name = "/".join(lower_pre.physical_name)
-                    up_name = "/".join(upper_pre.physical_name)
-                    pg_name = f"{lo_name}___{up_name}"
-                    pg_tag = gmsh.model.addPhysicalGroup(2, [disc_tag_pre])
-                    gmsh.model.setPhysicalName(2, pg_tag, pg_name)
-                    # Record in phantom_map.
-                    upper_bot_key = FaceKey(upper_idx_pre, "bot", p_pre)
-                    phantom_map.face_keys_to_discrete[upper_bot_key] = disc_tag_pre
-                    # Record: lower's top AND upper's bot both map to this discrete entity.
-                    interior_discrete[top_key_pre] = disc_tag_pre
-                    interior_bot_to_top[top_key_pre] = b2t_pre
-                    interior_discrete[upper_bot_key] = disc_tag_pre
-                    interior_bot_to_top[upper_bot_key] = b2t_pre
+            # Collect all interior z-boundaries: levels where some slab's zhi
+            # equals another slab's zlo.  Use set-intersection to avoid
+            # false positives from external (zmin / zmax) boundaries.
+            lower_by_zhi: dict[float, list[tuple[int, Any]]] = {}
+            upper_by_zlo: dict[float, list[tuple[int, Any]]] = {}
+            for pair_pre in slab_list_pre:
+                _, s_pre = pair_pre
+                lower_by_zhi.setdefault(s_pre.zhi, []).append(pair_pre)
+                upper_by_zlo.setdefault(s_pre.zlo, []).append(pair_pre)
+            # Only z-levels that appear as BOTH zhi of some slab AND zlo of
+            # another slab are interior interfaces.
+            interior_z_levels = set(lower_by_zhi) & set(upper_by_zlo)
+            for z_int in sorted(interior_z_levels):
+                lower_slabs_pre = lower_by_zhi[z_int]
+                upper_slabs_pre = upper_by_zlo[z_int]
+                for lower_idx_pre, lower_pre in lower_slabs_pre:
+                    for p_pre in range(len(lower_pre.face_partition)):
+                        top_key_pre = FaceKey(lower_idx_pre, "top", p_pre)
+                        if face_map.get(top_key_pre):
+                            continue  # has OCC backing — not interior
+                        bot_key_pre = FaceKey(lower_idx_pre, "bot", p_pre)
+                        bot_tags_pre = face_map.get(bot_key_pre, [])
+                        if len(bot_tags_pre) != 1:
+                            continue  # can't create interior face without bot
+                        # Find upper slabs whose footprint overlaps this piece.
+                        lower_piece_poly = lower_pre.face_partition[p_pre]
+                        matching_uppers: list[tuple[int, Any, int]] = []
+                        for upper_idx_pre, upper_pre in upper_slabs_pre:
+                            for q_pre in range(len(upper_pre.face_partition)):
+                                upper_piece_poly = upper_pre.face_partition[q_pre]
+                                if lower_piece_poly.intersects(upper_piece_poly):
+                                    matching_uppers.append(
+                                        (upper_idx_pre, upper_pre, q_pre)
+                                    )
+                        disc_tag_pre, b2t_pre = _create_discrete_interior_face(
+                            bot_tags_pre[0], lower_pre.zhi
+                        )
+                        # Add physical group using the first matching upper's name
+                        # (there should typically be exactly one match per piece).
+                        lo_name = "/".join(lower_pre.physical_name)
+                        if matching_uppers:
+                            _u_idx, _u_slab, _u_p = matching_uppers[0]
+                            up_name = "/".join(_u_slab.physical_name)
+                        else:
+                            up_name = "unknown"
+                        pg_name = f"{lo_name}___{up_name}"
+                        pg_tag = gmsh.model.addPhysicalGroup(2, [disc_tag_pre])
+                        gmsh.model.setPhysicalName(2, pg_tag, pg_name)
+                        # Record lower's top as mapping to this discrete entity.
+                        interior_discrete[top_key_pre] = disc_tag_pre
+                        interior_bot_to_top[top_key_pre] = b2t_pre
+                        # Record each matching upper's bot as mapping to the
+                        # same discrete entity (shared z-interface face).
+                        for upper_idx_pre, _upper_pre, q_pre in matching_uppers:
+                            upper_bot_key = FaceKey(upper_idx_pre, "bot", q_pre)
+                            phantom_map.face_keys_to_discrete[
+                                upper_bot_key
+                            ] = disc_tag_pre
+                            interior_discrete[upper_bot_key] = disc_tag_pre
+                            interior_bot_to_top[upper_bot_key] = b2t_pre
 
     # Cache: (bot_face_tag, top_face_tag) -> (top_map, layer_maps, vol_tag)
     # for shared-face pairs.
@@ -1084,9 +1112,36 @@ def apply_structured_mesh(
                 if top_is_interior:
                     # Lower slab with interior top: use pre-computed map.
                     top_map = interior_bot_to_top[top_key]
-                    layer_maps = [top_map]
-                    interior_layer_maps = []
-                    interior_layer_coords = []
+                    if n_layers == 1:
+                        layer_maps = [top_map]
+                        interior_layer_maps = []
+                        interior_layer_coords = []
+                    else:
+                        # Multi-layer: build intermediate node maps between bot and top.
+                        (
+                            bot_node_tags_arr,
+                            bot_coords_flat,
+                            _,
+                        ) = gmsh.model.mesh.getNodes(2, bot_tag, includeBoundary=True)
+                        bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
+                        bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(
+                            -1, 3
+                        )
+                        next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+                        interior_layer_maps = []
+                        interior_layer_coords = []
+                        for i_layer in range(1, n_layers):
+                            m: dict[int, int] = {}
+                            coords: list[float] = []
+                            z_i = slab.zlo + height * (i_layer / n_layers)
+                            for j, bt in enumerate(bot_node_tags):
+                                new_tag = next_tag
+                                next_tag += 1
+                                m[int(bt)] = new_tag
+                                coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
+                            interior_layer_maps.append(m)
+                            interior_layer_coords.append(coords)
+                        layer_maps = [*interior_layer_maps, top_map]
                 elif bot_is_interior:
                     # Upper slab with interior bot: the bot face is the discrete
                     # interior entity created during pre-processing. Use the
