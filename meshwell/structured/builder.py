@@ -816,6 +816,38 @@ def _stamp_vertical_interior_interfaces(
                             gmsh.model.setPhysicalName(2, pg_tag, pg_name)
 
 
+def _remove_empty_cohort_envelope_volumes() -> None:
+    """Remove cohort envelope OCC 3D entities that have no mesh elements.
+
+    Called at the end of apply_structured_mesh when _USE_DISCRETE_COHORT_MESH
+    is True.  At that point, every per-piece discrete 3D entity has already
+    been stamped with structured wedge/hex elements.  The only remaining
+    un-meshed 3D entities are the cohort envelope OCC volumes — their 2D
+    faces carry sub-face mesh stamps, but the volumes themselves are empty.
+    Removing them (non-recursively) prevents the 3D mesh pass from
+    tetrahedralizing them when MeshOnlyEmpty=1 is active.
+    """
+    import logging
+
+    import gmsh
+
+    logger = logging.getLogger(__name__)
+
+    to_remove: list[tuple[int, int]] = []
+    for _dim, vol_tag in gmsh.model.getEntities(3):
+        elem_types, _, _ = gmsh.model.mesh.getElements(3, vol_tag)
+        if len(elem_types) == 0:
+            to_remove.append((3, vol_tag))
+
+    if to_remove:
+        logger.debug(
+            "Task 18: removing %d empty cohort envelope volume(s): %s",
+            len(to_remove),
+            [t for _, t in to_remove],
+        )
+        gmsh.model.removeEntities(to_remove, recursive=False)
+
+
 @phase_timed("mesh_apply")
 def apply_structured_mesh(
     plan: StructuredPlan,
@@ -1191,8 +1223,36 @@ def apply_structured_mesh(
                 # tagging survives.
                 if _USE_DISCRETE_COHORT_MESH and occ_vol_tag is None:
                     pg_name = "/".join(slab.physical_name)
-                    pg_tag = gmsh.model.addPhysicalGroup(3, [pre_vol_tag])
-                    gmsh.model.setPhysicalName(3, pg_tag, pg_name)
+                    # Find an existing physical group for this name (set by
+                    # load_occ_entities for the cohort envelope OCC volume) and
+                    # add the discrete volume to it.  This avoids the gmsh
+                    # behaviour where setPhysicalName(dim, new_tag, name)
+                    # reassigns the name to the group that already holds it,
+                    # leaving the new group unnamed.
+                    existing_pg_tag: int | None = None
+                    for _pg_d, _pg_t in gmsh.model.getPhysicalGroups(dim=3):
+                        if gmsh.model.getPhysicalName(3, _pg_t) == pg_name:
+                            existing_pg_tag = _pg_t
+                            break
+                    if existing_pg_tag is not None:
+                        # Replace the cohort envelope entity with the discrete
+                        # volume in the existing physical group so the name is
+                        # correctly associated with the structured mesh.
+                        gmsh.model.setPhysicalName(3, existing_pg_tag, pg_name)
+                        _old_ents = list(
+                            gmsh.model.getEntitiesForPhysicalGroup(3, existing_pg_tag)
+                        )
+                        gmsh.model.removePhysicalGroups([(3, existing_pg_tag)])
+                        _new_ents = [e for e in _old_ents if e != pre_vol_tag] + [
+                            pre_vol_tag
+                        ]
+                        new_pg = gmsh.model.addPhysicalGroup(
+                            3, _new_ents, tag=existing_pg_tag
+                        )
+                        gmsh.model.setPhysicalName(3, new_pg, pg_name)
+                    else:
+                        pg_tag = gmsh.model.addPhysicalGroup(3, [pre_vol_tag])
+                        gmsh.model.setPhysicalName(3, pg_tag, pg_name)
 
                 all_pre_tags: list[int] = []
                 all_pre_coords: list[float] = []
@@ -1235,6 +1295,16 @@ def apply_structured_mesh(
             slab_piece_top_map=_slab_piece_top_map,
             slab_piece_layer_maps=_slab_piece_layer_maps,
         )
+
+    # Task 18: Remove cohort envelope OCC 3D entities so the 3D mesh pass
+    # doesn't tetrahedralize them.  Per-piece discrete 3D entities now own
+    # all structured elements; the cohort envelope volumes have no elements
+    # and must be dropped BEFORE generate(3) runs with MeshOnlyEmpty=1.
+    # 2D OCC faces (top / bot / lateral) are intentionally kept — they carry
+    # the per-piece mesh stamps used by all sub-face and interior-interface
+    # entities. recursive=False ensures they are not removed.
+    if _USE_DISCRETE_COHORT_MESH:
+        _remove_empty_cohort_envelope_volumes()
 
     # Global cleanup: merge ~coincident nodes.
     fuzzy = _aggregate_slab_fuzzy(
