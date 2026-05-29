@@ -964,8 +964,15 @@ def apply_structured_mesh(
 
     logger = logging.getLogger(__name__)
 
+    from meshwell.structured.phantom import (
+        _USE_DISCRETE_COHORT_MESH as _phase3_on,
+    )
+
     face_map = _map_phantom_faces_to_gmsh(phantom_map, occ_entities)
     edge_map = _map_phantom_edges_to_gmsh(phantom_map, occ_entities)
+
+    if _phase3_on:
+        face_map = _filter_phase3_face_map_per_piece(face_map, plan)
 
     # Suppress interior-seam 2D meshes: each output lateral face shared between
     # two pieces of the same slab is an internal seam that doesn't need
@@ -1760,4 +1767,57 @@ def _map_phantom_faces_to_gmsh(
                 )
             tags.append(idx)
         out[face_key] = tags
+    return out
+
+
+def _filter_phase3_face_map_per_piece(
+    face_map: dict[Any, list[int]],
+    plan: Any,
+) -> dict[Any, list[int]]:
+    """Keep only the BOP fragment that owns each Phase 3 piece polygon.
+
+    The cohort envelope routes ALL per-piece zmin/zmax FaceKeys to the union
+    face during BOP. After BOP, the union may either:
+      (a) split into N fragments 1-to-1 with face_partition pieces, or
+      (b) split into M < N fragments where multiple pieces share a fragment.
+
+    For each fragment's 2D bbox, check whether the piece polygon's
+    representative interior point falls inside it. This handles both cases:
+    (a) one matching fragment per piece; (b) multiple pieces matching the
+    same fragment (the per-piece volume meshing handles that via piece
+    polygon clipping at mesh time).
+    """
+    import gmsh
+
+    out: dict[Any, list[int]] = {}
+    for face_key, tags in face_map.items():
+        if face_key.slab_index < 0 or len(tags) <= 1:
+            out[face_key] = tags
+            continue
+        if face_key.slab_index >= len(plan.slabs):
+            out[face_key] = tags
+            continue
+        slab = plan.slabs[face_key.slab_index]
+        if face_key.piece_index >= len(slab.face_partition):
+            out[face_key] = tags
+            continue
+        piece_polygon = slab.face_partition[face_key.piece_index]
+        # Use piece's representative interior point — guaranteed to lie inside.
+        piece_rep = piece_polygon.representative_point()
+        px, py = piece_rep.x, piece_rep.y
+        kept: list[int] = []
+        for gmsh_tag in tags:
+            try:
+                xmin, ymin, _zmin, xmax, ymax, _zmax = gmsh.model.getBoundingBox(
+                    2, gmsh_tag
+                )
+            except Exception:
+                kept.append(gmsh_tag)
+                continue
+            tol = 1e-9
+            if (xmin - tol) <= px <= (xmax + tol) and (ymin - tol) <= py <= (
+                ymax + tol
+            ):
+                kept.append(gmsh_tag)
+        out[face_key] = kept if kept else tags
     return out
