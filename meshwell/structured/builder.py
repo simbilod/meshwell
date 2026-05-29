@@ -409,6 +409,225 @@ def _aggregate_slab_fuzzy(
     return max(non_none)
 
 
+def _stamp_top_from_discrete_bot(
+    bot_disc_tag: int,
+    top_occ_tag: int,
+    zhi: float,
+) -> dict[int, int]:
+    """Stamp the top OCC face's mesh using an interior discrete bot entity.
+
+    Used in Phase 3 when the bot face is a discrete interior entity (upper
+    slab). The discrete entity has no bounding curves, so we can't use
+    edge-correspondence or the standard interior/boundary split. Instead:
+    1. XY-match discrete entity nodes against top OCC face boundary nodes.
+    2. Create new interior nodes at z=zhi for unmatched discrete nodes.
+    3. Stamp triangles onto the top OCC face.
+
+    Returns bot_to_top_map (discrete_node_tag → top_face_node_tag).
+    """
+    import gmsh
+
+    # Read the discrete bot entity's triangulation and all nodes.
+    bot_all_tags_arr, bot_all_coords_flat, _ = gmsh.model.mesh.getNodes(
+        2, bot_disc_tag, includeBoundary=True
+    )
+    bot_all_tags = np.asarray(bot_all_tags_arr, dtype=np.int64)
+    bot_all_coords = np.asarray(bot_all_coords_flat, dtype=float).reshape(-1, 3)
+
+    elem_types, _, elem_nodes_per_type = gmsh.model.mesh.getElements(2, bot_disc_tag)
+    bot_tri_nodes: list[np.ndarray] = []
+    for et, en in zip(elem_types, elem_nodes_per_type):
+        if et == 2:
+            bot_tri_nodes.append(np.asarray(en, dtype=np.int64).reshape(-1, 3))
+    if not bot_tri_nodes:
+        return {}
+    bot_triangles = np.concatenate(bot_tri_nodes, axis=0)
+
+    # Clear the top face's 2D mesh (boundary nodes on curves survive).
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        gmsh.model.mesh.clear([(2, top_occ_tag)])
+
+    # Re-read just boundary nodes (survived the clear).
+    top_bnd_only_tags_arr, top_bnd_only_coords_flat, _ = gmsh.model.mesh.getNodes(
+        2, top_occ_tag, includeBoundary=True
+    )
+    top_bnd_only_tags = np.asarray(top_bnd_only_tags_arr, dtype=np.int64)
+    top_bnd_only_coords = np.asarray(top_bnd_only_coords_flat, dtype=float).reshape(
+        -1, 3
+    )
+
+    # Build XY → top boundary node tag lookup.
+    top_xy_to_tag: dict[tuple[float, float], int] = {}
+    for i, tt in enumerate(top_bnd_only_tags):
+        key = (round(top_bnd_only_coords[i, 0], 9), round(top_bnd_only_coords[i, 1], 9))
+        top_xy_to_tag[key] = int(tt)
+
+    # Match each discrete bot node to a top boundary node (by XY) or create new.
+    bot_to_top: dict[int, int] = {}
+    new_tags: list[int] = []
+    new_coords: list[float] = []
+    next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+
+    for i, bt in enumerate(bot_all_tags):
+        xy_key = (round(bot_all_coords[i, 0], 9), round(bot_all_coords[i, 1], 9))
+        top_tt = top_xy_to_tag.get(xy_key)
+        if top_tt is not None:
+            bot_to_top[int(bt)] = top_tt
+        else:
+            new_tag = next_tag
+            next_tag += 1
+            bot_to_top[int(bt)] = new_tag
+            new_tags.append(new_tag)
+            new_coords.extend([bot_all_coords[i, 0], bot_all_coords[i, 1], zhi])
+
+    if new_tags:
+        gmsh.model.mesh.addNodes(2, top_occ_tag, new_tags, new_coords)
+
+    # Stamp triangles.
+    top_tri_flat: list[int] = []
+    for tri in bot_triangles:
+        top_tri_flat.extend(
+            [bot_to_top[int(tri[0])], bot_to_top[int(tri[1])], bot_to_top[int(tri[2])]]
+        )
+
+    next_elem = int(gmsh.model.mesh.getMaxElementTag()) + 1
+    elem_tags = list(range(next_elem, next_elem + bot_triangles.shape[0]))
+    gmsh.model.mesh.addElements(2, top_occ_tag, [2], [elem_tags], [top_tri_flat])
+
+    return bot_to_top
+
+
+def _create_discrete_interior_face(
+    bot_face_tag: int,
+    z_top: float,
+) -> tuple[int, dict[int, int]]:
+    """Create a discrete 2D entity for an interior Phase 3 cohort interface.
+
+    Used when the interface has no OCC backing (it was intentionally excluded
+    from the cohort envelope solid). Creates a new discrete 2D entity at z_top
+    by copying the bot face's triangulation and translating nodes to z_top.
+
+    Returns:
+        (disc_tag, bot_to_top_map) where disc_tag is the new gmsh 2D entity tag
+        and bot_to_top_map maps each bot node tag to its new top node tag.
+    """
+    import gmsh
+
+    # Read bot face's full mesh (nodes + triangles).
+    bot_all_tags_arr, bot_all_coords_flat, _ = gmsh.model.mesh.getNodes(
+        2, bot_face_tag, includeBoundary=True
+    )
+    bot_all_tags = np.asarray(bot_all_tags_arr, dtype=np.int64)
+    bot_all_coords = np.asarray(bot_all_coords_flat, dtype=float).reshape(-1, 3)
+
+    elem_types, _, elem_nodes_per_type = gmsh.model.mesh.getElements(2, bot_face_tag)
+    bot_tri_nodes: list[np.ndarray] = []
+    for et, en in zip(elem_types, elem_nodes_per_type):
+        if et == 2:  # triangle
+            bot_tri_nodes.append(np.asarray(en, dtype=np.int64).reshape(-1, 3))
+    if not bot_tri_nodes:
+        raise RuntimeError(
+            f"Interior Phase 3 face: bot face {bot_face_tag} has no triangle elements."
+        )
+    bot_triangles = np.concatenate(bot_tri_nodes, axis=0)
+
+    # Create a new discrete 2D entity (no bounding curves — standalone discrete face).
+    disc_tag = gmsh.model.addDiscreteEntity(2, -1, [])
+
+    # Allocate new node tags for all bot nodes (translated to z_top).
+    next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+    bot_to_top: dict[int, int] = {}
+    new_tags: list[int] = []
+    new_coords: list[float] = []
+    for i, bt in enumerate(bot_all_tags):
+        new_tag = next_tag + i
+        bot_to_top[int(bt)] = new_tag
+        new_tags.append(new_tag)
+        new_coords.extend([bot_all_coords[i, 0], bot_all_coords[i, 1], z_top])
+
+    gmsh.model.mesh.addNodes(2, disc_tag, new_tags, new_coords)
+
+    # Stamp triangles using the mapping.
+    top_tri_nodes_flat: list[int] = []
+    for tri in bot_triangles:
+        top_tri_nodes_flat.extend(
+            [bot_to_top[int(tri[0])], bot_to_top[int(tri[1])], bot_to_top[int(tri[2])]]
+        )
+
+    next_elem = int(gmsh.model.mesh.getMaxElementTag()) + 1
+    n_tri = bot_triangles.shape[0]
+    elem_tags = list(range(next_elem, next_elem + n_tri))
+    gmsh.model.mesh.addElements(2, disc_tag, [2], [elem_tags], [top_tri_nodes_flat])
+
+    return disc_tag, bot_to_top
+
+
+def _stamp_phase3_interior_interfaces(
+    plan: StructuredPlan,
+    phantom_map: Any,
+    bot_node_tags_per_piece: dict[tuple[int, int], np.ndarray],  # noqa: ARG001
+    top_node_tags_per_piece: dict[tuple[int, int], np.ndarray],  # noqa: ARG001
+    bot_cells_per_piece: dict[tuple[int, int], np.ndarray],
+    interface_delimiter: str = "___",
+) -> None:
+    """Materialize discrete 2D entities for horizontal interior cohort interfaces.
+
+    Walks each cohort's stacked slab pairs. Where the upper slab's bottom
+    XY footprint overlaps the lower slab's top, the shared mesh becomes a
+    discrete 2D entity tagged "{lower}___{upper}".
+
+    Records each interface's FaceKey in phantom_map.face_keys_to_discrete.
+
+    Task 16 will extend this with vertical interior interfaces.
+    """
+    import gmsh
+
+    from meshwell.structured.spec import FaceKey
+
+    cohort_slabs_by_idx: dict[int, list[tuple[int, Any]]] = {}
+    for slab_idx, slab in enumerate(plan.slabs):
+        cohort_slabs_by_idx.setdefault(slab.component_index, []).append(
+            (slab_idx, slab)
+        )
+
+    for slab_list in cohort_slabs_by_idx.values():
+        slab_list.sort(key=lambda pair: pair[1].zlo)
+        for i in range(len(slab_list) - 1):
+            _lower_idx, lower = slab_list[i]
+            upper_idx, upper = slab_list[i + 1]
+            if abs(upper.zlo - lower.zhi) > 1e-9:
+                continue  # not touching in z — not an interface
+
+            # For each piece in the upper slab, if its bot mesh exists in
+            # the per-piece bookkeeping, stamp a discrete 2D entity with
+            # those cells.
+            for u_pidx, _piece in enumerate(upper.face_partition):
+                key = (upper_idx, u_pidx)
+                if key not in bot_cells_per_piece:
+                    continue
+                cells = bot_cells_per_piece[key]
+                if cells.size == 0:
+                    continue
+                disc_tag = gmsh.model.addDiscreteEntity(2, -1, [])
+                next_elem = int(gmsh.model.mesh.getMaxElementTag()) + 1
+                n_elem = cells.shape[0]
+                elem_tags = list(range(next_elem, next_elem + n_elem))
+                elem_type = 3 if cells.shape[1] == 4 else 2  # quad / tri
+                gmsh.model.mesh.addElements(
+                    2, disc_tag, [elem_type], [elem_tags], [cells.flatten().tolist()]
+                )
+                lo_name = "/".join(lower.physical_name)
+                up_name = "/".join(upper.physical_name)
+                pg_name = f"{lo_name}{interface_delimiter}{up_name}"
+                pg_tag = gmsh.model.addPhysicalGroup(2, [disc_tag])
+                gmsh.model.setPhysicalName(2, pg_tag, pg_name)
+                phantom_map.face_keys_to_discrete[
+                    FaceKey(upper_idx, "bot", u_pidx)
+                ] = disc_tag
+
+
 @phase_timed("mesh_apply")
 def apply_structured_mesh(
     plan: StructuredPlan,
@@ -460,6 +679,60 @@ def apply_structured_mesh(
                             "clear failed on interior seam face %d: %s", face_tag, e
                         )
 
+    bot_node_tags_per_piece: dict[tuple[int, int], np.ndarray] = {}
+    top_node_tags_per_piece: dict[tuple[int, int], np.ndarray] = {}
+    bot_cells_per_piece: dict[tuple[int, int], np.ndarray] = {}
+
+    from meshwell.structured.phantom import _USE_DISCRETE_COHORT_MESH
+
+    # Phase 3 pre-pass: create discrete 2D entities for interior cohort interfaces.
+    # An interior interface is where the top face of the lower slab (or bot face of
+    # the upper slab) has no OCC backing. We create a discrete entity by extruding
+    # the lower slab's OCC bot face to z_interface, and record the mapping so that
+    # both FaceKey(lower_idx, 'top', piece) and FaceKey(upper_idx, 'bot', piece)
+    # resolve to the same discrete entity tag in the per-slab loop below.
+    interior_discrete: dict[FaceKey, int] = {}  # FaceKey -> discrete gmsh tag
+    interior_bot_to_top: dict[FaceKey, dict[int, int]] = {}  # FaceKey -> bot_to_top map
+    if _USE_DISCRETE_COHORT_MESH:
+        cohort_slabs_by_idx_pre: dict[int, list[tuple[int, Any]]] = {}
+        for slab_idx_pre, slab_pre in enumerate(plan.slabs):
+            cohort_slabs_by_idx_pre.setdefault(slab_pre.component_index, []).append(
+                (slab_idx_pre, slab_pre)
+            )
+        for slab_list_pre in cohort_slabs_by_idx_pre.values():
+            slab_list_pre.sort(key=lambda pair: pair[1].zlo)
+            for i_pre in range(len(slab_list_pre) - 1):
+                lower_idx_pre, lower_pre = slab_list_pre[i_pre]
+                upper_idx_pre, upper_pre = slab_list_pre[i_pre + 1]
+                if abs(upper_pre.zlo - lower_pre.zhi) > 1e-9:
+                    continue
+                # Check that the top of the lower slab is indeed interior.
+                for p_pre in range(len(lower_pre.face_partition)):
+                    top_key_pre = FaceKey(lower_idx_pre, "top", p_pre)
+                    if face_map.get(top_key_pre):
+                        continue  # has OCC backing — not interior
+                    bot_key_pre = FaceKey(lower_idx_pre, "bot", p_pre)
+                    bot_tags_pre = face_map.get(bot_key_pre, [])
+                    if len(bot_tags_pre) != 1:
+                        continue  # can't create interior face without bot
+                    disc_tag_pre, b2t_pre = _create_discrete_interior_face(
+                        bot_tags_pre[0], lower_pre.zhi
+                    )
+                    # Add physical group: "lower___upper" interface name.
+                    lo_name = "/".join(lower_pre.physical_name)
+                    up_name = "/".join(upper_pre.physical_name)
+                    pg_name = f"{lo_name}___{up_name}"
+                    pg_tag = gmsh.model.addPhysicalGroup(2, [disc_tag_pre])
+                    gmsh.model.setPhysicalName(2, pg_tag, pg_name)
+                    # Record in phantom_map.
+                    upper_bot_key = FaceKey(upper_idx_pre, "bot", p_pre)
+                    phantom_map.face_keys_to_discrete[upper_bot_key] = disc_tag_pre
+                    # Record: lower's top AND upper's bot both map to this discrete entity.
+                    interior_discrete[top_key_pre] = disc_tag_pre
+                    interior_bot_to_top[top_key_pre] = b2t_pre
+                    interior_discrete[upper_bot_key] = disc_tag_pre
+                    interior_bot_to_top[upper_bot_key] = b2t_pre
+
     vol_tags: list[int] = []
     for slab_idx, slab in enumerate(plan.slabs):
         n_layers = mesh_plan.n_layers[slab_idx]
@@ -472,6 +745,13 @@ def apply_structured_mesh(
                 top_key = FaceKey(slab_idx, "top", piece_idx)
                 bot_tags = face_map.get(bot_key, [])
                 top_tags = face_map.get(top_key, [])
+
+                # Phase 3: interior faces may not be in face_map — use pre-created
+                # discrete entities from the interior_discrete lookup instead.
+                if len(bot_tags) == 0 and bot_key in interior_discrete:
+                    bot_tags = [interior_discrete[bot_key]]
+                if len(top_tags) == 0 and top_key in interior_discrete:
+                    top_tags = [interior_discrete[top_key]]
 
                 if len(bot_tags) != 1 or len(top_tags) != 1:
                     raise RuntimeError(
@@ -506,7 +786,66 @@ def apply_structured_mesh(
                                 edge_correspondence[bot_edge_tag] = edge_map[top_ek][0]
                             break
 
-                if n_layers == 1:
+                # Phase 3: if the top face is a discrete interior entity, its mesh
+                # was already created by _create_discrete_interior_face. Use the
+                # pre-computed bot_to_top map directly instead of calling
+                # _stamp_top_face_mesh (which would clear and re-stamp the entity).
+                top_is_interior = (
+                    _USE_DISCRETE_COHORT_MESH and top_key in interior_discrete
+                )
+                # Phase 3: if the bot face is a discrete interior entity (upper slab),
+                # we need to use the mapping that was established when creating it.
+                bot_is_interior = (
+                    _USE_DISCRETE_COHORT_MESH and bot_key in interior_discrete
+                )
+
+                if top_is_interior:
+                    # Lower slab with interior top: use pre-computed map.
+                    top_map = interior_bot_to_top[top_key]
+                    layer_maps = [top_map]
+                    interior_layer_maps = []
+                    interior_layer_coords = []
+                elif bot_is_interior:
+                    # Upper slab with interior bot: the bot face is the discrete
+                    # interior entity created during pre-processing. Use the
+                    # dedicated helper that handles discrete entities without
+                    # bounding curves (XY-matching instead of edge correspondence).
+                    if n_layers == 1:
+                        top_map = _stamp_top_from_discrete_bot(
+                            bot_tag, top_tag, slab.zhi
+                        )
+                        layer_maps = [top_map]
+                        interior_layer_maps = []
+                        interior_layer_coords = []
+                    else:
+                        top_map = _stamp_top_from_discrete_bot(
+                            bot_tag, top_tag, slab.zhi
+                        )
+                        (
+                            bot_node_tags_arr,
+                            bot_coords_flat,
+                            _,
+                        ) = gmsh.model.mesh.getNodes(2, bot_tag, includeBoundary=True)
+                        bot_node_tags = np.asarray(bot_node_tags_arr, dtype=np.int64)
+                        bot_coords = np.asarray(bot_coords_flat, dtype=float).reshape(
+                            -1, 3
+                        )
+                        next_tag = int(gmsh.model.mesh.getMaxNodeTag()) + 1
+                        interior_layer_maps = []
+                        interior_layer_coords = []
+                        for i_layer in range(1, n_layers):
+                            m: dict[int, int] = {}
+                            coords: list[float] = []
+                            z_i = slab.zlo + height * (i_layer / n_layers)
+                            for j, bt in enumerate(bot_node_tags):
+                                new_tag = next_tag
+                                next_tag += 1
+                                m[int(bt)] = new_tag
+                                coords.extend([bot_coords[j, 0], bot_coords[j, 1], z_i])
+                            interior_layer_maps.append(m)
+                            interior_layer_coords.append(coords)
+                        layer_maps = [*interior_layer_maps, top_map]
+                elif n_layers == 1:
                     # Single layer: bottom -> top is the only layer map.
                     top_map = _stamp_top_face_mesh(
                         bot_tag, top_tag, slab.zlo, slab.zhi, edge_correspondence
@@ -545,7 +884,36 @@ def apply_structured_mesh(
                         interior_layer_coords.append(coords)
                     layer_maps = [*interior_layer_maps, top_map]
 
-                from meshwell.structured.phantom import _USE_DISCRETE_COHORT_MESH
+                # Capture per-piece bot face data for horizontal interior interface
+                # stamping (_stamp_phase3_interior_interfaces, Task 15).
+                bot_node_tags_arr_b, _, _ = gmsh.model.mesh.getNodes(
+                    2, bot_tag, includeBoundary=True
+                )
+                bot_node_tags_per_piece[(slab_idx, piece_idx)] = np.asarray(
+                    bot_node_tags_arr_b, dtype=np.int64
+                )
+                top_node_tags_per_piece[(slab_idx, piece_idx)] = np.asarray(
+                    list(top_map.values()), dtype=np.int64
+                )
+                # Collect bot triangulation for the horizontal interior interface
+                # stamp (Task 15). The bot face's 2D mesh at this point is always
+                # triangles (type 2): gmsh meshes it with triangles and _stamp_top_face_mesh
+                # reads and copies them; recombine happens in a later pass.
+                elem_types_b, _, elem_nodes_b = gmsh.model.mesh.getElements(2, bot_tag)
+                bot_cells_list: list[np.ndarray] = []
+                for et, en in zip(elem_types_b, elem_nodes_b):
+                    if et == 2:  # triangle
+                        bot_cells_list.append(
+                            np.asarray(en, dtype=np.int64).reshape(-1, 3)
+                        )
+                    elif et == 3:  # quad (if recombine was already applied)
+                        bot_cells_list.append(
+                            np.asarray(en, dtype=np.int64).reshape(-1, 4)
+                        )
+                if bot_cells_list:
+                    bot_cells_per_piece[(slab_idx, piece_idx)] = np.concatenate(
+                        bot_cells_list, axis=0
+                    )
 
                 if _USE_DISCRETE_COHORT_MESH:
                     # Phase 3: never share a cohort envelope's OCC volume across
@@ -851,12 +1219,20 @@ def _map_phantom_faces_to_gmsh(
     fmap = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(compound, TopAbs_FACE, fmap)
 
+    from meshwell.structured.phantom import _USE_DISCRETE_COHORT_MESH
+
     out: dict[Any, list[int]] = {}
     for face_key, occ_faces in phantom_map.output_faces.items():
         tags: list[int] = []
         for f in occ_faces:
             idx = fmap.FindIndex(f)  # 0 if not present
             if idx == 0:
+                if _USE_DISCRETE_COHORT_MESH:
+                    # Phase 3: interior cohort FaceKeys have no OCC backing — they're
+                    # intentionally omitted from the cohort envelope solid (to avoid
+                    # non-manifold geometry) and will be materialized as gmsh discrete
+                    # 2D entities by _stamp_phase3_interior_interfaces.
+                    continue
                 raise RuntimeError(
                     f"PhantomMap face {face_key} has no IsSame() match in "
                     f"the XAO compound. This indicates the phantom shape "
