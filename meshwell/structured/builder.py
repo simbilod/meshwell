@@ -633,6 +633,7 @@ def _stamp_vertical_interior_interfaces(
     phantom_map: Any,  # noqa: ARG001
     bot_node_tags_per_piece: dict[tuple[int, int], "np.ndarray"],
     slab_piece_top_map: dict[tuple[int, int], dict[int, int]],
+    slab_piece_layer_maps: dict[tuple[int, int], list[dict[int, int]]] | None = None,
     interface_delimiter: str = "___",
 ) -> None:
     """Stamp discrete 2D entities for vertical interior cohort interfaces.
@@ -643,8 +644,10 @@ def _stamp_vertical_interior_interfaces(
     edge).  Stamps a vertical rectangular strip of quads over the slab's
     z-extent and assigns a physical group "{slab_a}___{slab_b}".
 
-    Only n_layers=1 is supported (Task 16).  n_layers>1 is deferred to
-    Task 17.
+    Supports n_layers >= 1 (Task 17).  When slab_piece_layer_maps is
+    provided, the strip spans n_layers + 1 z-rows producing n_layers rows
+    of quads.  Falls back to the n_layers=1 behaviour when the map is
+    absent (Task 16 compatibility).
     """
     import gmsh
     from shapely.ops import linemerge
@@ -748,24 +751,50 @@ def _stamp_vertical_interior_interfaces(
                                 )
                             )
 
-                            # Build vertical quad strip: bot row + top row.
-                            # For each consecutive pair (on_shared[k], on_shared[k+1]),
-                            # create one quad: [bot_k, bot_k+1, top_k+1, top_k].
+                            # Build vertical quad strip spanning n_layers z-rows.
+                            # Row 0 = bot_row (on_shared), row i = layer_maps[i-1].
+                            # Each consecutive row pair produces (n_nodes-1) quads.
                             n_nodes = len(on_shared)
-                            n_quads = n_nodes - 1
-                            if n_quads < 1:
+                            n_edge_quads = n_nodes - 1
+                            if n_edge_quads < 1:
                                 continue
+
+                            # Resolve the full ordered list of layer maps for piece_a.
+                            _lm_key_a = (slab_a_idx, piece_a_idx)
+                            if (
+                                slab_piece_layer_maps is not None
+                                and _lm_key_a in slab_piece_layer_maps
+                            ):
+                                _all_layer_maps = slab_piece_layer_maps[_lm_key_a]
+                            else:
+                                # Fallback: single layer from slab_piece_top_map (Task 16).
+                                _all_layer_maps = [top_map_a]
+
+                            # Build rows: row 0 is on_shared; subsequent rows look up
+                            # each bot-tag in the successive layer maps.
+                            rows: list[list[int]] = [list(on_shared)]
+                            for lm in _all_layer_maps:
+                                row = [lm.get(bt) for bt in on_shared]  # type: ignore[assignment]
+                                rows.append(row)  # type: ignore[arg-type]
 
                             disc_tag = gmsh.model.addDiscreteEntity(2, -1, [])
                             quad_nodes: list[int] = []
-                            for k in range(n_quads):
-                                b0 = on_shared[k]
-                                b1 = on_shared[k + 1]
-                                t0 = top_map_a.get(b0)
-                                t1 = top_map_a.get(b1)
-                                if t0 is None or t1 is None:
-                                    continue
-                                quad_nodes.extend([b0, b1, t1, t0])
+                            for z_slice in range(len(_all_layer_maps)):
+                                row_lo = rows[z_slice]
+                                row_hi = rows[z_slice + 1]
+                                for k in range(n_edge_quads):
+                                    b0 = row_lo[k]
+                                    b1 = row_lo[k + 1]
+                                    t0 = row_hi[k]
+                                    t1 = row_hi[k + 1]
+                                    if (
+                                        b0 is None
+                                        or b1 is None
+                                        or t0 is None
+                                        or t1 is None
+                                    ):
+                                        continue
+                                    quad_nodes.extend([b0, b1, t1, t0])
 
                             if not quad_nodes:
                                 continue
@@ -892,12 +921,17 @@ def apply_structured_mesh(
                     interior_discrete[upper_bot_key] = disc_tag_pre
                     interior_bot_to_top[upper_bot_key] = b2t_pre
 
-    # Cache: (bot_face_tag, top_face_tag) -> (top_map, vol_tag) for shared-face pairs.
+    # Cache: (bot_face_tag, top_face_tag) -> (top_map, layer_maps, vol_tag)
+    # for shared-face pairs.
     # When two same-z-interval cohort slabs share the same union bot/top face (Task 16),
     # the second slab must reuse the first slab's already-built mesh and volume.
-    _shared_face_cache: dict[tuple[int, int], tuple[dict[int, int], int]] = {}
+    _shared_face_cache: dict[
+        tuple[int, int], tuple[dict[int, int], list[dict[int, int]], int]
+    ] = {}
     # Track which slabs were given a "shared" volume so we know their top_map too.
     _slab_piece_top_map: dict[tuple[int, int], dict[int, int]] = {}
+    # Task 17: full layer_maps per piece (list of n_layers dicts bot->layer_i node tag).
+    _slab_piece_layer_maps: dict[tuple[int, int], list[dict[int, int]]] = {}
 
     vol_tags: list[int] = []
     for slab_idx, slab in enumerate(plan.slabs):
@@ -940,8 +974,13 @@ def apply_structured_mesh(
                 # group that points to the existing volume entity.
                 _face_pair = (bot_tag, top_tag)
                 if _USE_DISCRETE_COHORT_MESH and _face_pair in _shared_face_cache:
-                    cached_top_map, cached_vol_tag = _shared_face_cache[_face_pair]
+                    (
+                        cached_top_map,
+                        cached_layer_maps,
+                        cached_vol_tag,
+                    ) = _shared_face_cache[_face_pair]
                     _slab_piece_top_map[(slab_idx, piece_idx)] = cached_top_map
+                    _slab_piece_layer_maps[(slab_idx, piece_idx)] = cached_layer_maps
                     # Read bot nodes for vertical-interface stamping bookkeeping.
                     bot_node_tags_arr_c, _, _ = gmsh.model.mesh.getNodes(
                         2, bot_tag, includeBoundary=True
@@ -1176,23 +1215,25 @@ def apply_structured_mesh(
                     pre_allocated_vol_tag=pre_vol_tag,
                 )
 
-                # Cache the (bot_tag, top_tag) → (top_map, vol_tag) so that
+                # Cache the (bot_tag, top_tag) → (top_map, layer_maps, vol_tag) so that
                 # same-z-interval cohort slabs sharing the union faces can
-                # reuse the already-built volume (Task 16).
+                # reuse the already-built volume (Task 16/17).
                 if _USE_DISCRETE_COHORT_MESH:
-                    _shared_face_cache[_face_pair] = (top_map, vol_tag)
+                    _shared_face_cache[_face_pair] = (top_map, layer_maps, vol_tag)
                     _slab_piece_top_map[(slab_idx, piece_idx)] = top_map
+                    _slab_piece_layer_maps[(slab_idx, piece_idx)] = layer_maps
 
                 vol_tags.append(vol_tag)
 
-    # Task 16: stamp vertical interior interfaces between laterally-adjacent
-    # same-z-interval cohort slab pairs.
+    # Task 16/17: stamp vertical interior interfaces between laterally-adjacent
+    # same-z-interval cohort slab pairs.  Task 17 extends to n_layers > 1.
     if _USE_DISCRETE_COHORT_MESH:
         _stamp_vertical_interior_interfaces(
             plan=plan,
             phantom_map=phantom_map,
             bot_node_tags_per_piece=bot_node_tags_per_piece,
             slab_piece_top_map=_slab_piece_top_map,
+            slab_piece_layer_maps=_slab_piece_layer_maps,
         )
 
     # Global cleanup: merge ~coincident nodes.
