@@ -78,6 +78,12 @@ class CohortEnvelope:
     # When 2+ pieces share the same z-level, these are used instead of individual sub-faces.
     bottom_union_face: Any = None
     top_union_face: Any = None
+    # Set per slab_index when that slab's multi-piece sub-faces were built from
+    # the shared horizontal_edges registry (so they share OCC TShapes across
+    # pieces). When True, assemble_cohort_envelope_solid adds the per-piece
+    # sub-faces directly instead of unioning them, so post-BOP each piece
+    # FaceKey routes to its own OCC fragment.
+    multi_piece_shares_edges_by_slab: dict[int, bool] = field(default_factory=dict)
     # Sewn lateral faces: keyed by (slab_index, outline_edge_id).
     # After assemble_cohort_envelope_solid, each entry holds the face(s) from
     # the sewn solid that correspond to the original env.lateral_faces entry.
@@ -337,37 +343,89 @@ def build_cohort_envelope(
                 face_dict[FaceKey(slab_index, face_key_str, 0)] = face
             continue
 
-        # Multi-piece slabs: fall back to the existing provenance-based path.
-        for piece_index, piece in enumerate(slab.face_partition):
-            # Prefer provenance when available (arc-aware). Fall back to
-            # building from the polygon directly for non-arc structured
-            # slabs (the planner only populates provenance when
-            # identify_arcs=True).
-            provenance = None
-            if slab.face_partition_provenance is not None and piece_index < len(
-                slab.face_partition_provenance
-            ):
-                provenance = slab.face_partition_provenance[piece_index]
-            if provenance is not None:
-                bot_face = _make_face_from_provenance(provenance, z=slab.zlo)
-                top_face = _make_face_from_provenance(provenance, z=slab.zhi)
-            else:
-                bot_face = _make_face_from_polygon_with_arcs(
-                    piece,
-                    z=slab.zlo,
-                    identify_arcs=slab.identify_arcs,
-                    min_arc_points=slab.min_arc_points,
-                    arc_tolerance=slab.arc_tolerance,
-                )
-                top_face = _make_face_from_polygon_with_arcs(
-                    piece,
-                    z=slab.zhi,
-                    identify_arcs=slab.identify_arcs,
-                    min_arc_points=slab.min_arc_points,
-                    arc_tolerance=slab.arc_tolerance,
-                )
-            env.bottom_sub_faces[FaceKey(slab_index, "bot", piece_index)] = bot_face
-            env.top_sub_faces[FaceKey(slab_index, "top", piece_index)] = top_face
+        # Multi-piece slabs: try the horizontal_edges-based path first so
+        # that sibling pieces' sub-faces share OCC TShapes (post-BOP, each
+        # FaceKey routes to its own fragment cleanly). Falls back to the
+        # legacy provenance/polygon path if face_partition_edges is missing.
+        _used_shared_edges = False
+        if slab.face_partition_edges is not None and len(
+            slab.face_partition_edges
+        ) == len(slab.face_partition):
+            try:
+                for piece_index, _piece in enumerate(slab.face_partition):
+                    piece_edge_list = slab.face_partition_edges[piece_index]
+                    if not piece_edge_list:
+                        raise ValueError(
+                            f"piece {piece_index} has empty face_partition_edges"
+                        )
+                    for z, side, face_dict in (
+                        (slab.zlo, "bot", env.bottom_sub_faces),
+                        (slab.zhi, "top", env.top_sub_faces),
+                    ):
+                        mw = BRepBuilderAPI_MakeWire()
+                        for eid, fwd in piece_edge_list:
+                            wire = env.horizontal_edges.get((z, eid))
+                            if wire is None:
+                                raise ValueError(
+                                    f"missing horizontal_edges[({z}, {eid})]"
+                                )
+                            sub_edges = []
+                            exp = BRepTools_WireExplorer(wire)
+                            while exp.More():
+                                sub_edges.append(exp.Current())
+                                exp.Next()
+                            if fwd:
+                                for edge in sub_edges:
+                                    mw.Add(edge)
+                            else:
+                                for edge in reversed(sub_edges):
+                                    mw.Add(TopoDS.Edge_s(edge.Reversed()))
+                        face = BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+                        face_dict[FaceKey(slab_index, side, piece_index)] = face
+                _used_shared_edges = True
+            except Exception:
+                # Fall back to legacy path on any construction error.
+                env.bottom_sub_faces = {
+                    k: v
+                    for k, v in env.bottom_sub_faces.items()
+                    if k.slab_index != slab_index
+                }
+                env.top_sub_faces = {
+                    k: v
+                    for k, v in env.top_sub_faces.items()
+                    if k.slab_index != slab_index
+                }
+                _used_shared_edges = False
+
+        env.multi_piece_shares_edges_by_slab[slab_index] = _used_shared_edges
+
+        if not _used_shared_edges:
+            for piece_index, piece in enumerate(slab.face_partition):
+                provenance = None
+                if slab.face_partition_provenance is not None and piece_index < len(
+                    slab.face_partition_provenance
+                ):
+                    provenance = slab.face_partition_provenance[piece_index]
+                if provenance is not None:
+                    bot_face = _make_face_from_provenance(provenance, z=slab.zlo)
+                    top_face = _make_face_from_provenance(provenance, z=slab.zhi)
+                else:
+                    bot_face = _make_face_from_polygon_with_arcs(
+                        piece,
+                        z=slab.zlo,
+                        identify_arcs=slab.identify_arcs,
+                        min_arc_points=slab.min_arc_points,
+                        arc_tolerance=slab.arc_tolerance,
+                    )
+                    top_face = _make_face_from_polygon_with_arcs(
+                        piece,
+                        z=slab.zhi,
+                        identify_arcs=slab.identify_arcs,
+                        min_arc_points=slab.min_arc_points,
+                        arc_tolerance=slab.arc_tolerance,
+                    )
+                env.bottom_sub_faces[FaceKey(slab_index, "bot", piece_index)] = bot_face
+                env.top_sub_faces[FaceKey(slab_index, "top", piece_index)] = top_face
 
     # Detect interior arrangement edges: those shared by 2+ arrangement faces.
     # Interior edges lie INSIDE the cohort's union footprint and must NOT get
@@ -644,6 +702,7 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
     zmin = min(s.zlo for s in cohort_slabs)
     zmax = max(s.zhi for s in cohort_slabs)
     slab_by_index = dict(enumerate(plan.slabs))
+    slab_to_index = {id(s): i for i, s in enumerate(plan.slabs)}
     _ROUND = 9
 
     # Compute arrangement and interior edge IDs early — needed for _build_union_hz_face
@@ -674,13 +733,36 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
         if slab_by_index[fk.slab_index].zhi == zmax
     ]
 
+    def _can_skip_union_at_z(_z: float, _side: str) -> bool:
+        # Skip the union face only in the safe case: exactly ONE slab at
+        # this z-level, it has multi-piece face_partition, AND its sub-faces
+        # were built via the shared horizontal_edges registry. This handles
+        # the in-slab common refinement (cap-above-slab, overlapping-
+        # neighbors, etc.) without touching multi-slab same-z cohorts
+        # (which still need the union approach for sewing to close).
+        if _side == "bot":
+            _z_slabs = [s for s in cohort_slabs if s.zlo == _z]
+        else:
+            _z_slabs = [s for s in cohort_slabs if s.zhi == _z]
+        if len(_z_slabs) != 1:
+            return False
+        _s = _z_slabs[0]
+        if len(_s.face_partition) <= 1:
+            return False
+        _idx = slab_to_index[id(_s)]
+        return env.multi_piece_shares_edges_by_slab.get(_idx, False)
+
     if len(_zmin_bot_faces) == 1:
         # Single piece at zmin — add the existing sub-face directly.
         sewing.Add(_rev_face(_zmin_bot_faces[0]))
+    elif _can_skip_union_at_z(zmin, "bot"):
+        # Single slab, multi-piece, shared-edges: sewing merges per-piece
+        # sub-faces at the shared interior edges into a manifold sheet.
+        for fk, _face in env.bottom_sub_faces.items():
+            if slab_by_index[fk.slab_index].zlo == zmin:
+                sewing.Add(_rev_face(_face))
     else:
-        # Multiple lateral pieces at zmin — build a union face using the EXISTING
-        # OCC wires from env.horizontal_edges so TShapes are shared with the
-        # lateral faces (preserving IsSame() matching after BRepBuilderAPI_Sewing).
+        # Multi-slab same-z or mixed-build cohort — union to keep envelope manifold.
         _zmin_union_face = _build_union_hz_face(
             env, arrangement, interior_edge_ids, zmin
         )
@@ -690,8 +772,11 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
     if len(_zmax_top_faces) == 1:
         # Single piece at zmax — add the existing sub-face directly.
         sewing.Add(_zmax_top_faces[0])
+    elif _can_skip_union_at_z(zmax, "top"):
+        for fk, _face in env.top_sub_faces.items():
+            if slab_by_index[fk.slab_index].zhi == zmax:
+                sewing.Add(_face)
     else:
-        # Multiple lateral pieces at zmax — union into one face (same approach).
         _zmax_union_face = _build_union_hz_face(
             env, arrangement, interior_edge_ids, zmax
         )
