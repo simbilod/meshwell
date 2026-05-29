@@ -831,18 +831,24 @@ def _stamp_vertical_interior_interfaces(
                             gmsh.model.setPhysicalName(2, pg_tag, pg_name)
 
 
-def _suppress_empty_cohort_envelope_volumes() -> list[int]:
+def _suppress_empty_cohort_envelope_volumes(
+    structured_pg_names: set[str] | None = None,
+) -> list[int]:
     """Purge OCC cohort envelope volumes from physical groups.
 
     Called at the end of apply_structured_mesh when _USE_DISCRETE_COHORT_MESH
     is True.  At that point, every per-piece discrete 3D entity has already
     been stamped with structured wedge/hex elements.  The remaining OCC 3D
-    volumes (cohort envelopes) have no 3D elements.  With MeshOnlyEmpty=1
-    active, gmsh will tetrahedralize these empty volumes.
+    cohort envelope volumes have no 3D elements; with MeshOnlyEmpty=1 active,
+    gmsh will tetrahedralize them and we don't want those tets in the output.
 
-    This function removes those volumes from all 3D physical groups so that
-    when the tetrahedral mesh is later cleared (in _clear_dummy_cohort_envelope_tets,
-    called via post_3d_hook), the tetrahedra won't appear in gmsh.write output.
+    To avoid suppressing user OCC volumes that simply haven't been
+    tetrahedralized yet (e.g. an unstructured neighbour like a cap on top of
+    a structured slab — its 3D mesh is generated in the next gmsh pass), we
+    restrict suppression to volumes that live in a structured slab's physical
+    group.  ``structured_pg_names`` is the set of "/".join(slab.physical_name)
+    values from plan.slabs.  Volumes that appear ONLY in non-structured
+    physical groups (or in no group at all) are left alone.
 
     The actual mesh clearing of the OCC volumes happens in a post_3d_hook
     (after generate(3) has run).  The two-step approach avoids all the crash
@@ -858,9 +864,9 @@ def _suppress_empty_cohort_envelope_volumes() -> list[int]:
     The OCC 2D face children are left untouched — they keep their mesh elements
     and valid parent-volume back-references, preventing gmsh.write crashes.
 
-    Returns the list of empty OCC volume tags.  The caller must pass these to
-    _clear_dummy_cohort_envelope_tets() in a post_3d_hook so the tetrahedra
-    are cleared before gmsh.write is called.
+    Returns the list of empty OCC volume tags actually suppressed.  The
+    caller must pass these to _clear_dummy_cohort_envelope_tets() in a
+    post_3d_hook so the tetrahedra are cleared before gmsh.write is called.
     """
     import logging
 
@@ -868,11 +874,28 @@ def _suppress_empty_cohort_envelope_volumes() -> list[int]:
 
     logger = logging.getLogger(__name__)
 
+    # Build vol_tag -> set of physical group names it appears in.
+    vol_to_pg_names: dict[int, set[str]] = {}
+    for _pg_dim, pg_tag in gmsh.model.getPhysicalGroups(dim=3):
+        pg_name = gmsh.model.getPhysicalName(3, pg_tag)
+        for v in gmsh.model.getEntitiesForPhysicalGroup(3, pg_tag):
+            vol_to_pg_names.setdefault(int(v), set()).add(pg_name)
+
     empty_vols: list[int] = []
     for _dim, vol_tag in gmsh.model.getEntities(3):
         elem_types, _, _ = gmsh.model.mesh.getElements(3, vol_tag)
-        if len(elem_types) == 0:
-            empty_vols.append(vol_tag)
+        if len(elem_types) != 0:
+            continue
+        # Empty volume — only treat it as a cohort envelope if it lives in
+        # at least one structured slab's physical group. This protects
+        # not-yet-tetrahedralized user volumes (e.g. unstructured neighbours)
+        # from being kicked out of their own physical groups.
+        if structured_pg_names is None:
+            empty_vols.append(int(vol_tag))
+            continue
+        pg_names = vol_to_pg_names.get(int(vol_tag), set())
+        if pg_names & structured_pg_names:
+            empty_vols.append(int(vol_tag))
 
     if not empty_vols:
         return []
@@ -1474,7 +1497,10 @@ def apply_structured_mesh(
     # (see _clear_dummy_cohort_envelope_tets) before gmsh.write is called.
     suppressed_vol_tags: list[int] = []
     if _USE_DISCRETE_COHORT_MESH:
-        suppressed_vol_tags = _suppress_empty_cohort_envelope_volumes()
+        _structured_pg_names = {"/".join(s.physical_name) for s in plan.slabs}
+        suppressed_vol_tags = _suppress_empty_cohort_envelope_volumes(
+            _structured_pg_names
+        )
 
     # Global cleanup: merge ~coincident nodes.
     # In Phase 3 (discrete cohort mesh) mode, intra-slab adjacent-piece nodes
