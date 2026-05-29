@@ -791,6 +791,21 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
                 sewn_list.append(face)
         env.sewn_lateral_faces[key] = sewn_list
 
+    # Update union horizontal faces to their post-sewing TShapes.
+    # BRepBuilderAPI_Sewing may regenerate face TShapes when stitching
+    # edges shared between the union face and lateral faces. If we keep
+    # the pre-sewing face, fmap.FindIndex(face) returns 0 after BOP
+    # (the face is not in the compound). Use sewing.Modified() to get
+    # the canonical post-sewing shape.
+    if env.bottom_union_face is not None:
+        _bot_mod = sewing.Modified(env.bottom_union_face)
+        if not _bot_mod.IsNull():
+            env.bottom_union_face = _bot_mod
+    if env.top_union_face is not None:
+        _top_mod = sewing.Modified(env.top_union_face)
+        if not _top_mod.IsNull():
+            env.top_union_face = _top_mod
+
     b = BRep_Builder()
     solid = TopoDS_Solid()
     b.MakeSolid(solid)

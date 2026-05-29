@@ -119,7 +119,7 @@ def _stamp_top_face_mesh(
 
     bot_to_top_tag: dict[int, int] = {}
 
-    if edge_correspondence is not None:
+    if edge_correspondence:
         # --- Phase 5(a): edge-identity + parametric-position matching ---
 
         # Step 1: match boundary nodes per edge pair using XY position.
@@ -628,6 +628,165 @@ def _stamp_phase3_interior_interfaces(
                 ] = disc_tag
 
 
+def _stamp_vertical_interior_interfaces(
+    plan: StructuredPlan,
+    phantom_map: Any,  # noqa: ARG001
+    bot_node_tags_per_piece: dict[tuple[int, int], "np.ndarray"],
+    slab_piece_top_map: dict[tuple[int, int], dict[int, int]],
+    interface_delimiter: str = "___",
+) -> None:
+    """Stamp discrete 2D entities for vertical interior cohort interfaces.
+
+    For each cohort, groups slabs by (zlo, zhi).  In each z-interval that
+    has ≥2 pieces across cohort slabs, finds pairs of pieces whose XY
+    footprint polygons share a boundary segment (the shared arrangement
+    edge).  Stamps a vertical rectangular strip of quads over the slab's
+    z-extent and assigns a physical group "{slab_a}___{slab_b}".
+
+    Only n_layers=1 is supported (Task 16).  n_layers>1 is deferred to
+    Task 17.
+    """
+    import gmsh
+    from shapely.ops import linemerge
+
+    cohort_slabs_by_idx: dict[int, list[tuple[int, Any]]] = {}
+    for slab_idx, slab in enumerate(plan.slabs):
+        cohort_slabs_by_idx.setdefault(slab.component_index, []).append(
+            (slab_idx, slab)
+        )
+
+    for slab_list in cohort_slabs_by_idx.values():
+        # Group by z-interval.
+        z_interval_groups: dict[tuple[float, float], list[tuple[int, Any]]] = {}
+        for slab_idx, slab in slab_list:
+            key = (slab.zlo, slab.zhi)
+            z_interval_groups.setdefault(key, []).append((slab_idx, slab))
+
+        for interval_slabs in z_interval_groups.values():
+            if len(interval_slabs) < 2:
+                continue  # Only one slab at this z-interval — no vertical interface.
+
+            # For each pair of slabs, check if their XY footprints share a
+            # boundary edge (LineString intersection).
+            for i_a in range(len(interval_slabs)):
+                slab_a_idx, slab_a = interval_slabs[i_a]
+                for i_b in range(i_a + 1, len(interval_slabs)):
+                    _slab_b_idx, slab_b = interval_slabs[i_b]
+
+                    # Each slab in the same z-interval has exactly one piece (piece 0)
+                    # for the simple case.  For multi-piece per slab, we'd need to
+                    # iterate pieces — but for Task 16 n_layers=1 the common case is
+                    # one piece per slab.
+                    for piece_a_idx in range(len(slab_a.face_partition)):
+                        for piece_b_idx in range(len(slab_b.face_partition)):
+                            poly_a = slab_a.face_partition[piece_a_idx]
+                            poly_b = slab_b.face_partition[piece_b_idx]
+                            shared = poly_a.boundary.intersection(poly_b.boundary)
+
+                            # Only proceed if the shared geometry is a line.
+                            if shared.is_empty:
+                                continue
+                            if shared.geom_type == "MultiLineString":
+                                shared = linemerge(shared)
+                            if shared.geom_type not in (
+                                "LineString",
+                                "MultiLineString",
+                            ):
+                                continue
+                            if shared.is_empty or shared.length < 1e-9:
+                                continue
+
+                            # Get bot nodes for piece_a from the already-collected map.
+                            key_a = (slab_a_idx, piece_a_idx)
+                            if key_a not in bot_node_tags_per_piece:
+                                continue
+                            bot_tags_a = bot_node_tags_per_piece[key_a]
+                            if len(bot_tags_a) == 0:
+                                continue
+
+                            top_map_a = slab_piece_top_map.get(key_a)
+                            if top_map_a is None:
+                                continue
+
+                            # Build tag → (x, y, z) for bot nodes of piece_a.
+                            # gmsh.model.mesh.getNode(t) is acceptable for the
+                            # typically small number of boundary nodes.
+                            bot_xyzs: dict[int, tuple[float, float, float]] = {}
+                            for bt in bot_tags_a:
+                                (
+                                    coords_flat,
+                                    _pcoords,
+                                    _edim,
+                                    _etag,
+                                ) = gmsh.model.mesh.getNode(int(bt))
+                                bot_xyzs[int(bt)] = (
+                                    float(coords_flat[0]),
+                                    float(coords_flat[1]),
+                                    float(coords_flat[2]),
+                                )
+
+                            # Filter nodes within 1e-7 of the shared LineString.
+                            import shapely.geometry as sg
+
+                            on_shared: list[int] = []
+                            for bt, (x, y, _z) in bot_xyzs.items():
+                                pt = sg.Point(x, y)
+                                if shared.distance(pt) < 1e-7:
+                                    on_shared.append(bt)
+
+                            if len(on_shared) < 2:
+                                continue
+
+                            # Order nodes along the shared LineString by projection.
+                            _shared_ref = shared
+                            _bot_xyzs_ref = bot_xyzs
+                            on_shared.sort(
+                                key=lambda tag: _shared_ref.project(
+                                    sg.Point(
+                                        _bot_xyzs_ref[tag][0], _bot_xyzs_ref[tag][1]
+                                    )
+                                )
+                            )
+
+                            # Build vertical quad strip: bot row + top row.
+                            # For each consecutive pair (on_shared[k], on_shared[k+1]),
+                            # create one quad: [bot_k, bot_k+1, top_k+1, top_k].
+                            n_nodes = len(on_shared)
+                            n_quads = n_nodes - 1
+                            if n_quads < 1:
+                                continue
+
+                            disc_tag = gmsh.model.addDiscreteEntity(2, -1, [])
+                            quad_nodes: list[int] = []
+                            for k in range(n_quads):
+                                b0 = on_shared[k]
+                                b1 = on_shared[k + 1]
+                                t0 = top_map_a.get(b0)
+                                t1 = top_map_a.get(b1)
+                                if t0 is None or t1 is None:
+                                    continue
+                                quad_nodes.extend([b0, b1, t1, t0])
+
+                            if not quad_nodes:
+                                continue
+
+                            actual_quads = len(quad_nodes) // 4
+                            next_elem_tag = int(gmsh.model.mesh.getMaxElementTag()) + 1
+                            elem_tags = list(
+                                range(next_elem_tag, next_elem_tag + actual_quads)
+                            )
+                            gmsh.model.mesh.addElements(
+                                2, disc_tag, [3], [elem_tags], [quad_nodes]
+                            )
+
+                            # Assign physical group.
+                            name_a = "/".join(slab_a.physical_name)
+                            name_b = "/".join(slab_b.physical_name)
+                            pg_name = f"{name_a}{interface_delimiter}{name_b}"
+                            pg_tag = gmsh.model.addPhysicalGroup(2, [disc_tag])
+                            gmsh.model.setPhysicalName(2, pg_tag, pg_name)
+
+
 @phase_timed("mesh_apply")
 def apply_structured_mesh(
     plan: StructuredPlan,
@@ -733,6 +892,13 @@ def apply_structured_mesh(
                     interior_discrete[upper_bot_key] = disc_tag_pre
                     interior_bot_to_top[upper_bot_key] = b2t_pre
 
+    # Cache: (bot_face_tag, top_face_tag) -> (top_map, vol_tag) for shared-face pairs.
+    # When two same-z-interval cohort slabs share the same union bot/top face (Task 16),
+    # the second slab must reuse the first slab's already-built mesh and volume.
+    _shared_face_cache: dict[tuple[int, int], tuple[dict[int, int], int]] = {}
+    # Track which slabs were given a "shared" volume so we know their top_map too.
+    _slab_piece_top_map: dict[tuple[int, int], dict[int, int]] = {}
+
     vol_tags: list[int] = []
     for slab_idx, slab in enumerate(plan.slabs):
         n_layers = mesh_plan.n_layers[slab_idx]
@@ -765,6 +931,51 @@ def apply_structured_mesh(
                     )
                 bot_tag = bot_tags[0]
                 top_tag = top_tags[0]
+
+                # Task 16: detect same-z-interval cohort slabs sharing the same
+                # union bot/top OCC face pair.  The first slab to process a given
+                # (bot_tag, top_tag) pair does the normal stamp+volume work and
+                # caches the result.  Subsequent slabs with the same pair reuse
+                # the cached top_map and vol_tag, and only register a new physical
+                # group that points to the existing volume entity.
+                _face_pair = (bot_tag, top_tag)
+                if _USE_DISCRETE_COHORT_MESH and _face_pair in _shared_face_cache:
+                    cached_top_map, cached_vol_tag = _shared_face_cache[_face_pair]
+                    _slab_piece_top_map[(slab_idx, piece_idx)] = cached_top_map
+                    # Read bot nodes for vertical-interface stamping bookkeeping.
+                    bot_node_tags_arr_c, _, _ = gmsh.model.mesh.getNodes(
+                        2, bot_tag, includeBoundary=True
+                    )
+                    bot_node_tags_per_piece[(slab_idx, piece_idx)] = np.asarray(
+                        bot_node_tags_arr_c, dtype=np.int64
+                    )
+                    top_node_tags_per_piece[(slab_idx, piece_idx)] = np.asarray(
+                        list(cached_top_map.values()), dtype=np.int64
+                    )
+                    elem_types_c, _, elem_nodes_c = gmsh.model.mesh.getElements(
+                        2, bot_tag
+                    )
+                    bot_cells_c: list[np.ndarray] = []
+                    for et, en in zip(elem_types_c, elem_nodes_c):
+                        if et == 2:
+                            bot_cells_c.append(
+                                np.asarray(en, dtype=np.int64).reshape(-1, 3)
+                            )
+                        elif et == 3:
+                            bot_cells_c.append(
+                                np.asarray(en, dtype=np.int64).reshape(-1, 4)
+                            )
+                    if bot_cells_c:
+                        bot_cells_per_piece[(slab_idx, piece_idx)] = np.concatenate(
+                            bot_cells_c, axis=0
+                        )
+                    # Register a new physical group for this slab pointing to the
+                    # shared cohort volume.
+                    pg_name = "/".join(slab.physical_name)
+                    pg_tag = gmsh.model.addPhysicalGroup(3, [cached_vol_tag])
+                    gmsh.model.setPhysicalName(3, pg_tag, pg_name)
+                    vol_tags.append(cached_vol_tag)
+                    continue
 
                 # Build per-piece edge_correspondence: dict[bot_edge_gmsh_tag, top_edge_gmsh_tag].
                 edge_correspondence: dict[int, int] = {}
@@ -965,7 +1176,24 @@ def apply_structured_mesh(
                     pre_allocated_vol_tag=pre_vol_tag,
                 )
 
+                # Cache the (bot_tag, top_tag) → (top_map, vol_tag) so that
+                # same-z-interval cohort slabs sharing the union faces can
+                # reuse the already-built volume (Task 16).
+                if _USE_DISCRETE_COHORT_MESH:
+                    _shared_face_cache[_face_pair] = (top_map, vol_tag)
+                    _slab_piece_top_map[(slab_idx, piece_idx)] = top_map
+
                 vol_tags.append(vol_tag)
+
+    # Task 16: stamp vertical interior interfaces between laterally-adjacent
+    # same-z-interval cohort slab pairs.
+    if _USE_DISCRETE_COHORT_MESH:
+        _stamp_vertical_interior_interfaces(
+            plan=plan,
+            phantom_map=phantom_map,
+            bot_node_tags_per_piece=bot_node_tags_per_piece,
+            slab_piece_top_map=_slab_piece_top_map,
+        )
 
     # Global cleanup: merge ~coincident nodes.
     fuzzy = _aggregate_slab_fuzzy(
