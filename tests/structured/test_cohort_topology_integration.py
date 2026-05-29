@@ -18,6 +18,7 @@ from meshwell.structured import StructuredExtrusionResolutionSpec
 from meshwell.structured import phantom as phantom_mod
 from meshwell.structured.phantom import build_phantom_shapes
 from meshwell.structured.plan import build_plan
+from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _square(x0, y0, x1, y1):
@@ -54,6 +55,14 @@ def cohort_topology_on():
         phantom_mod._USE_COHORT_TOPOLOGY = prior
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_mixed_cohort_sharing(cohort_topology_on):  # noqa: ARG001  pytest fixture
     """Scene: vertical stack of 3 PolyPrisms + 2 lateral neighbors + 1 unstructured.
 

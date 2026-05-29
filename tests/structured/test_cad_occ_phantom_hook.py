@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import pytest
 from shapely.geometry import Polygon
+
+from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _square() -> Polygon:
@@ -273,6 +276,14 @@ def test_structured_entity_shapes_are_phantom_solids_after_cad_occ():
         assert s.IsSame(exp), "B's entity solid must IsSame the phantom solid"
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_no_sliver_solids_for_ring_quarter_cut():
     """Ring-segment quarter-cut scene must produce no sliver sub-solids per entity.
 
@@ -355,6 +366,14 @@ def test_no_sliver_solids_for_ring_quarter_cut():
             )
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_phantom_map_laterals_all_in_xao_compound_for_arc_cut_scene():
     """All PhantomMap output_laterals must IsSame match in the XAO compound.
 

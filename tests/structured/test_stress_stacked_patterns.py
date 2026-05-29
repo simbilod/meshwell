@@ -21,6 +21,8 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
+from meshwell.structured.spec import StructuredCohortFootprintMismatchError
+
 
 def _box(x0: float, y0: float, x1: float, y1: float) -> Polygon:
     return Polygon([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
@@ -225,6 +227,14 @@ def test_three_stacked_layers_different_xy_tilings_mesh_clean_wedges(tmp_path):
     )
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_three_stacked_layers_with_void_keep_patterns_mesh_clean(tmp_path):
     """Stacked structured layers where each z-range has a different keep / void pattern.
 
@@ -389,6 +399,14 @@ def _disc(cx: float, cy: float, r: float, n: int = 32) -> Polygon:
     )
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_plan_stacked_concentric_discs_propagates_arc_provenance():
     """Plan-only: three concentric arc-bearing discs of decreasing radius.
 
@@ -493,6 +511,14 @@ def test_plan_stacked_concentric_discs_propagates_arc_provenance():
     ), f"L2: no inherited R=0.5 arc; radii seen: {l2_radii}"
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_stacked_concentric_arc_discs_mesh_clean(tmp_path):
     """End-to-end mesh: three concentric arc-bearing discs produce a clean wedge mesh.
 
@@ -589,6 +615,14 @@ def _ring_segment(
     return Polygon(outer + inner)
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_plan_stacked_overlapping_ring_segments_propagates_radial_cuts():
     """Plan-only: three stacked half-rings rotated by 90 degrees per layer.
 
@@ -678,6 +712,14 @@ def test_plan_stacked_overlapping_ring_segments_propagates_radial_cuts():
             )
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_stacked_overlapping_ring_segments_mesh_clean(tmp_path):
     """End-to-end mesh: three rotated half-rings produce a clean wedge mesh.
 
@@ -771,7 +813,11 @@ def test_stacked_overlapping_ring_segments_with_lower_priority_planes_mesh_clean
             polygons=_ring_segment(0, 0, 0.5, 1.0, theta_start, theta_end),
             buffers={zlo: 0.0, zhi: 0.0},
             structured=True,
-            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            resolutions=[
+                StructuredExtrusionResolutionSpec(
+                    n_layers=[3], recombine_lateral_faces=True
+                )
+            ],
             identify_arcs=True,
             min_arc_points=4,
             arc_tolerance=1e-3,
@@ -784,7 +830,11 @@ def test_stacked_overlapping_ring_segments_with_lower_priority_planes_mesh_clean
             polygons=Polygon([(-1.5, -1.5), (1.5, -1.5), (1.5, 1.5), (-1.5, 1.5)]),
             buffers={zlo: 0.0, zhi: 0.0},
             structured=True,
-            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+            resolutions=[
+                StructuredExtrusionResolutionSpec(
+                    n_layers=[3], recombine_lateral_faces=True
+                )
+            ],
             physical_name=name,
             mesh_order=2.0,
         )

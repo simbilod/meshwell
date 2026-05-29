@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import shapely
 
 from meshwell.polyprism import PolyPrism
 from meshwell.structured import StructuredExtrusionResolutionSpec
 from meshwell.structured.cohort_topology import build_cohort_topology
 from meshwell.structured.plan import build_plan
+from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _disc(cx, cy, r, n=32):
@@ -49,6 +51,14 @@ def _arc_slab(r, zlo, zhi, name):
     )
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_concentric_arc_disc_cohort_topology_builds_without_stdfail():
     """Stacked concentric arc discs must not crash build_cohort_topology.
 

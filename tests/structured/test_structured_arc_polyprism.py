@@ -11,6 +11,7 @@ import pytest
 from shapely.geometry import Polygon
 
 import meshio
+from meshwell.structured.spec import StructuredCohortFootprintMismatchError
 
 
 def _disc(cx=0.0, cy=0.0, r=1.0, n=32):
@@ -166,6 +167,14 @@ def test_split_disc_meshes_with_provenance(tmp_path):
     assert "cap" in m.field_data
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_arc_provenance_propagates_to_neighbour_below():
     """A structured arc slab's PieceArcEdge propagates to a below-neighbour's provenance.
 
@@ -250,6 +259,14 @@ def test_arc_provenance_propagates_to_neighbour_below():
     ), f"no inherited arc has radius ~1; got radii: {radii}"
 
 
+@pytest.mark.xfail(
+    raises=StructuredCohortFootprintMismatchError,
+    reason="Stepped/concentric cohort no longer supported by planner "
+    "constancy invariant (added 2026-05-28). See "
+    "tests/structured/test_cohort_footprint_constancy.py for the "
+    "validator's contract and Phase 3 cohort envelope architecture "
+    "for why it's needed.",
+)
 def test_no_arc_inheritance_when_neighbour_identify_arcs_false():
     """When the arc-bearing neighbour has identify_arcs=False, no arc inherits."""
     import math
