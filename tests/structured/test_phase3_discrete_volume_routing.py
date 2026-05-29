@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 import shapely
 
 from meshwell.polyprism import PolyPrism
@@ -21,21 +20,6 @@ def _square_slab(zlo, zhi, name):
     )
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Phase 3 mesh stage is not yet complete: apply_structured_mesh calls "
-        "_map_phantom_faces_to_gmsh which fails for interior cohort faces "
-        "(e.g. FaceKey(slab_index=1, side='bot', piece_index=0) at z=1.0) "
-        "because those faces are excluded from the cohort envelope solid "
-        "(to avoid non-manifold geometry) and therefore have no gmsh tag in "
-        "the XAO compound. Task 15 (interior 2D interface stamping) must "
-        "land before this test can reach the volume-routing assertion. "
-        "The Task 14 code change (builder.py: per-piece discrete 3D entity "
-        "allocation under Phase 3) IS in place; only the test cannot run "
-        "end-to-end yet."
-    ),
-    strict=True,
-)
 def test_each_piece_gets_dedicated_discrete_volume(tmp_path):
     """Two stacked single-piece slabs in one cohort → 2 distinct volume tags."""
     import gmsh
