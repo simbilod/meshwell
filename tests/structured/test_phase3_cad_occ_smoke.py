@@ -58,6 +58,45 @@ def test_phase3_group_phantom_solids_by_entity_handles_cohort():
     )
 
 
+def test_phase3_group_phantom_solids_splits_multi_shell_by_source():
+    """Disjoint-XY cohort with two sources -> each source gets its own shell.
+
+    Two structured slabs at z=[0,1] but XY-disjoint (A at [0,1]x[0,1], B at
+    [10,11]x[0,1]) form a single cohort whose envelope solid is a multi-shell
+    TopoDS_Solid (one shell per source). _group_phantom_solids_by_entity must
+    split the multi-shell solid into per-source single-shell solids so cad_occ
+    receives the correct geometry for each entity.
+    """
+    from meshwell.structured.phantom import (
+        _group_phantom_solids_by_entity,
+        build_phantom_shapes,
+    )
+    from meshwell.structured.plan import build_plan
+
+    a = PolyPrism(
+        polygons=shapely.box(0, 0, 1, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="A",
+    )
+    b = PolyPrism(
+        polygons=shapely.box(10, 0, 11, 1),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        structured=True,
+        resolutions=[StructuredExtrusionResolutionSpec(n_layers=[1])],
+        physical_name="B",
+    )
+    plan = build_plan([a, b])
+    with patch("meshwell.structured.phantom._USE_DISCRETE_COHORT_MESH", True):
+        phantom_result = build_phantom_shapes(plan)
+        overrides = _group_phantom_solids_by_entity(plan, phantom_result)
+
+    assert set(overrides.keys()) == {0, 1}
+    assert len(overrides[0]) == 1, f"source 0 got {overrides[0]}"
+    assert len(overrides[1]) == 1, f"source 1 got {overrides[1]}"
+
+
 def test_phase3_extract_phantom_map_populates_all_face_keys():
     """extract_phantom_map walks per-piece FaceKeys from cohort PhantomShape."""
     from OCP.BOPAlgo import BOPAlgo_Builder

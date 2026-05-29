@@ -973,23 +973,32 @@ def _group_phantom_solids_by_entity(
             cohort_slabs = [s for s in plan.slabs if s.component_index == cidx]
             cohort_srcs = sorted({s.source_index for s in cohort_slabs})
             # Identify which source indices have at least one non-carved slab
-            # (face_partition is non-empty). The envelope solid represents only
-            # the non-carved geometry, so assign it to the first non-carved
-            # source. Fully-carved sources (all their slabs have empty
-            # face_partition) get an empty entry to suppress instanciate_occ().
+            # (face_partition is non-empty).
             carved_srcs: set[int] = set()
             for src in cohort_srcs:
                 src_slabs = [s for s in cohort_slabs if s.source_index == src]
                 if all(not s.face_partition for s in src_slabs):
                     carved_srcs.add(src)
             non_carved_srcs = [s for s in cohort_srcs if s not in carved_srcs]
-            if non_carved_srcs:
-                # Assign the envelope solid to the lowest non-carved source.
+            # If the envelope solid is a multi-shell (disjoint XY components),
+            # split it into per-shell single-shell solids and assign each shell
+            # to whichever source's footprint contains it.
+            per_src_solids = _split_cohort_solid_by_source(
+                shape.solid, cohort_slabs, non_carved_srcs
+            )
+            if per_src_solids is not None:
+                for src in non_carved_srcs:
+                    src_solids = per_src_solids.get(src, [])
+                    if src_solids:
+                        out.setdefault(src, []).extend(src_solids)
+                    else:
+                        out.setdefault(src, [])
+            elif non_carved_srcs:
+                # Single shell or split failed: legacy behavior — assign the
+                # envelope solid to the lowest non-carved source.
                 out.setdefault(non_carved_srcs[0], []).append(shape.solid)
-                # All other non-carved sources get empty entries.
                 for src in non_carved_srcs[1:]:
                     out.setdefault(src, [])
-            # Fully-carved sources always get empty entries.
             for src in carved_srcs:
                 out.setdefault(src, [])
         else:
@@ -997,6 +1006,96 @@ def _group_phantom_solids_by_entity(
             out.setdefault(src, []).append(shape.solid)
     for slab in plan.slabs:
         out.setdefault(slab.source_index, [])
+    return out
+
+
+def _split_cohort_solid_by_source(
+    cohort_solid: Any,
+    cohort_slabs: list["Slab"],
+    non_carved_srcs: list[int],
+) -> dict[int, list[Any]] | None:
+    """Split a multi-shell cohort envelope solid by source for Phase 3.
+
+    Iterates TopAbs_SHELL sub-shapes of the cohort solid, matches each
+    shell's XY vertex centroid against each source's slab-footprint bbox,
+    and returns single-shell TopoDS_Solid copies per matched source.
+
+    Returns None if the cohort solid contains only one shell (no split needed)
+    or if no shell matches any source (caller falls back to legacy assignment).
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Solid
+
+    shells: list = []
+    exp = TopExp_Explorer(cohort_solid, TopAbs_SHELL)
+    while exp.More():
+        shells.append(TopoDS.Shell_s(exp.Current()))
+        exp.Next()
+    if len(shells) <= 1:
+        return None
+
+    # Per source: union of slab XY footprints (use bbox for simple containment).
+    src_bboxes: dict[int, tuple[float, float, float, float]] = {}
+    for src in non_carved_srcs:
+        bx0, by0, bx1, by1 = float("inf"), float("inf"), float("-inf"), float("-inf")
+        any_slab = False
+        for slab in cohort_slabs:
+            if slab.source_index != src:
+                continue
+            for piece in slab.face_partition:
+                px0, py0, px1, py1 = piece.bounds
+                bx0 = min(bx0, px0)
+                by0 = min(by0, py0)
+                bx1 = max(bx1, px1)
+                by1 = max(by1, py1)
+                any_slab = True
+        if any_slab:
+            src_bboxes[src] = (bx0, by0, bx1, by1)
+
+    if not src_bboxes:
+        return None
+
+    out: dict[int, list[Any]] = {src: [] for src in non_carved_srcs}
+    matched_any = False
+    for shell in shells:
+        # Shell XY centroid via vertex average.
+        from OCP.BRep import BRep_Tool
+        from OCP.TopAbs import TopAbs_VERTEX
+
+        sx, sy, n = 0.0, 0.0, 0
+        v_exp = TopExp_Explorer(shell, TopAbs_VERTEX)
+        while v_exp.More():
+            pnt = BRep_Tool.Pnt_s(TopoDS.Vertex_s(v_exp.Current()))
+            sx += pnt.X()
+            sy += pnt.Y()
+            n += 1
+            v_exp.Next()
+        if n == 0:
+            continue
+        cx, cy = sx / n, sy / n
+
+        # Find matching source by bbox containment.
+        matched_src: int | None = None
+        tol = 1e-9
+        for src, (bx0, by0, bx1, by1) in src_bboxes.items():
+            if (bx0 - tol) <= cx <= (bx1 + tol) and (by0 - tol) <= cy <= (by1 + tol):
+                matched_src = src
+                break
+        if matched_src is None:
+            return None  # unmatched shell — fall back to legacy
+
+        # Build a single-shell TopoDS_Solid from this shell.
+        b = BRep_Builder()
+        per_shell_solid = TopoDS_Solid()
+        b.MakeSolid(per_shell_solid)
+        b.Add(per_shell_solid, shell)
+        out[matched_src].append(per_shell_solid)
+        matched_any = True
+
+    if not matched_any:
+        return None
     return out
 
 
