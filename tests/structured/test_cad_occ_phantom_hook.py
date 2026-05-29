@@ -5,8 +5,11 @@
 """
 from __future__ import annotations
 
+import pytest
 import shapely
 from shapely.geometry import Polygon
+
+import meshwell.structured.phantom as _phantom_mod
 
 
 def _square() -> Polygon:
@@ -274,6 +277,10 @@ def test_structured_entity_shapes_are_phantom_solids_after_cad_occ():
         assert s.IsSame(exp), "B's entity solid must IsSame the phantom solid"
 
 
+@pytest.mark.skipif(
+    getattr(_phantom_mod, "_USE_DISCRETE_COHORT_MESH", False),
+    reason="Phase 1+2 path only — Phase 3 envelope assigns cohort solid to lowest-priority source",
+)
 def test_no_sliver_solids_for_ring_quarter_cut():
     """Ring-segment quarter-cut scene must produce no sliver sub-solids per entity.
 

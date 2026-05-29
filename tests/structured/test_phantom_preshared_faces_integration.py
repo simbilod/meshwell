@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
 import shapely
 from OCP.TopAbs import TopAbs_FACE
 from OCP.TopExp import TopExp_Explorer
 
+import meshwell.structured.phantom as _phantom_mod
 from meshwell.polyprism import PolyPrism
 from meshwell.structured import StructuredExtrusionResolutionSpec
 from meshwell.structured.phantom import build_phantom_shapes
@@ -25,6 +27,10 @@ def _faces(shape):
     return out
 
 
+@pytest.mark.skipif(
+    getattr(_phantom_mod, "_USE_DISCRETE_COHORT_MESH", False),
+    reason="Phase 1+2 path only — Phase 3 envelope produces 1 cohort shape, not per-piece",
+)
 def test_stacked_sub_prisms_share_interface_face_tshape():
     """Two vertically-stacked PolyPrisms (same XY, touching in z) -> shared TShape."""
     A = PolyPrism(

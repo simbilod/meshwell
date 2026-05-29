@@ -66,6 +66,10 @@ def _frame(name, zlo, zhi, x0, y0, x1, y1):
     )
 
 
+@pytest.mark.skipif(
+    getattr(phantom_mod, "_USE_DISCRETE_COHORT_MESH", False),
+    reason="Phase 2 cohort_topology only — Phase 3 global flag overrides cohort_topology_on routing",
+)
 def test_mixed_cohort_sharing(cohort_topology_on):  # noqa: ARG001  pytest fixture
     """Scene: vertical stack of 3 PolyPrisms + 2 lateral neighbors + 1 unstructured.
 

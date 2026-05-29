@@ -4,6 +4,10 @@ from __future__ import annotations
 import pytest
 from shapely.geometry import Polygon
 
+import meshwell.structured.phantom as _phantom_mod
+
+_PHASE3_ON = getattr(_phantom_mod, "_USE_DISCRETE_COHORT_MESH", False)
+
 
 def _unit_square() -> Polygon:
     return Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
@@ -137,6 +141,10 @@ def test_build_phantom_shapes_empty_plan_returns_empty_result():
     assert result.shapes == ()
 
 
+@pytest.mark.skipif(
+    _PHASE3_ON,
+    reason="Phase 1+2 path only — Phase 3 cohort shape sets slab_index = -1",
+)
 def test_build_phantom_shapes_one_slab_one_piece():
     """Single slab with a one-piece partition yields one PhantomShape."""
     from meshwell.polyprism import PolyPrism
@@ -157,6 +165,10 @@ def test_build_phantom_shapes_one_slab_one_piece():
     assert result.shapes[0].piece_index == 0
 
 
+@pytest.mark.skipif(
+    _PHASE3_ON,
+    reason="Phase 1+2 path only — Phase 3 collapses per-piece shapes into one envelope",
+)
 def test_build_phantom_shapes_multi_piece_partition():
     """A slab with a 2-piece face_partition yields 2 PhantomShapes."""
     from meshwell.polyprism import PolyPrism
@@ -212,6 +224,10 @@ def test_build_phantom_shapes_is_deterministic_ordering():
     assert indices == sorted(indices)
 
 
+@pytest.mark.skipif(
+    _PHASE3_ON,
+    reason="Phase 1+2 path only — Phase 3 verifies per-source grouping via test_phase3_group_phantom_solids_by_entity_handles_cohort",
+)
 def test_group_phantom_solids_by_entity_inverts_slab_source_index():
     """Phantom solids are grouped under their entity's source_index in input order."""
     from meshwell.polyprism import PolyPrism

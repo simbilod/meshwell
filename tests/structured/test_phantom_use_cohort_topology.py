@@ -59,6 +59,10 @@ def test_kill_switch_default_is_off_during_stabilization():
     assert phantom_mod._USE_COHORT_TOPOLOGY is False
 
 
+@pytest.mark.skipif(
+    getattr(phantom_mod, "_USE_DISCRETE_COHORT_MESH", False),
+    reason="Phase 1+2 path only — Phase 3 global flag overrides cohort_topology_on routing",
+)
 def test_cohort_topology_path_produces_shared_lateral_face(
     cohort_topology_on,  # noqa: ARG001  pytest fixture
 ):

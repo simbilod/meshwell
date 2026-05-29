@@ -4,6 +4,8 @@ from __future__ import annotations
 import pytest
 from shapely.geometry import Polygon
 
+import meshwell.structured.phantom as _phantom_mod
+
 
 def _square(x=0, y=0, w=1, h=1) -> Polygon:
     return Polygon([(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
@@ -1557,6 +1559,10 @@ def test_build_stack_arrangements_splits_annular_face_into_single_loop_pieces():
             )
 
 
+@pytest.mark.skipif(
+    getattr(_phantom_mod, "_USE_DISCRETE_COHORT_MESH", False),
+    reason="Phase 1+2 path only — Phase 3 cohort shape uses slab_index = -1 which can't index plan.slabs",
+)
 def test_fully_carved_slab_leaves_face_partition_empty_and_phantom_skips_it():
     """Slab fully contained inside a higher-priority slab → empty face_partition.
 
