@@ -19,17 +19,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import meshio
 import numpy as np
 import pytest
 import shapely
 from shapely.geometry import LineString
 
+import meshio
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.interface_tag import InterfaceTag
 from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
+from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
 
@@ -435,6 +436,292 @@ def test_pipeline_runs_on_both_backends(cad_pipeline, scene_factory):
     dim = 2 if any(type(e).__name__ == "PolySurface" for e in entities) else 3
     m = cad_pipeline(entities, dim=dim)
     assert "A" in m.cell_sets_dict
+
+
+# ----- Stress tests: increasing complexity ---------------------------------
+
+
+def test_many_physicals_grid_match(tmp_path):
+    """3x3 grid of 9 abutting prisms => 9 volume groups + 12 internal interfaces.
+
+    Stresses fragmenter with many bodies and many shared faces. Each row of
+    three squares meets the row above at y=2,4 and the column to its right
+    at x=2,4. Both backends must produce identical volumes per region and
+    must tag every shared interface.
+    """
+
+    def make():
+        buffers = {0.0: 0.0, 1.0: 0.0}
+        entities = []
+        order = 1
+        for i in range(3):
+            for j in range(3):
+                poly = shapely.Polygon(
+                    [
+                        (2 * i, 2 * j),
+                        (2 * (i + 1), 2 * j),
+                        (2 * (i + 1), 2 * (j + 1)),
+                        (2 * i, 2 * (j + 1)),
+                    ]
+                )
+                entities.append(
+                    PolyPrism(
+                        polygons=poly,
+                        buffers=buffers,
+                        physical_name=f"R{i}{j}",
+                        mesh_order=order,
+                    )
+                )
+                order += 1
+        return entities
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    # All 9 region tetra masses must match.
+    for i in range(3):
+        for j in range(3):
+            name = f"R{i}{j}"
+            assert name in s_gmsh
+            assert "tetra" in s_gmsh[name]
+            assert name in s_occ
+            assert "tetra" in s_occ[name]
+    _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_polyline_embedded_in_prism_match(tmp_path):
+    """3D PolyPrism with an embedded 1-D PolyLine running through its interior.
+
+    Stresses dim-mixing in the fragmenter: the line must survive as a
+    1-D physical group inside the 3-D body on both backends.
+    """
+
+    def make():
+        poly = shapely.Polygon([(-2, -2), (2, -2), (2, 2), (-2, 2)])
+        line = LineString([(-1, 0, 0.5), (1, 0, 0.5)])
+        return [
+            PolyPrism(
+                polygons=poly,
+                buffers={0.0: 0.0, 1.0: 0.0},
+                physical_name="block",
+                mesh_order=1,
+            ),
+            PolyLine(linestrings=line, physical_name="wire", mesh_order=2),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    # Wire must survive as a line group on both backends with matching length.
+    assert "wire" in s_gmsh
+    assert "line" in s_gmsh["wire"]
+    assert "wire" in s_occ
+    assert "line" in s_occ["wire"]
+    _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def test_polysurface_with_polyline_2d_match(tmp_path):
+    """2D scene: two abutting PolySurfaces + an embedded PolyLine on x=5.
+
+    Pure 2D + 1D parity: mixes triangle and line element types in one
+    scene. Backend output for line lengths is compared directly (no seam
+    artefacts here since the line is embedded along an existing surface
+    boundary, not introduced by a boolean cut).
+    """
+
+    def make():
+        A = shapely.Polygon([(0, 0), (5, 0), (5, 5), (0, 5)])
+        B = shapely.Polygon([(5, 0), (10, 0), (10, 5), (5, 5)])
+        wire = LineString([(5, 1), (5, 4)])
+        return [
+            PolySurface(polygons=A, physical_name="A", mesh_order=1),
+            PolySurface(polygons=B, physical_name="B", mesh_order=2),
+            PolyLine(linestrings=wire, physical_name="wire", mesh_order=3),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path, dim=2)
+    # Triangles + lines both compared.
+    s_gmsh = _mesh_summary(m_gmsh, element_types=("triangle", "line"))
+    s_occ = _mesh_summary(m_occ, element_types=("triangle", "line"))
+    assert "wire" in s_gmsh
+    assert "wire" in s_occ
+    _assert_summaries_equivalent(s_gmsh, s_occ)
+
+
+def _circle_polygon(cx: float, cy: float, r: float, n: int = 64) -> shapely.Polygon:
+    """Discretized circle as a closed polygon."""
+    angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    pts = [(cx + r * np.cos(a), cy + r * np.sin(a)) for a in angles]
+    return shapely.Polygon(pts)
+
+
+def test_circular_prism_with_arcs_match(tmp_path):
+    """PolyPrism whose boundary is a 64-segment circle, identify_arcs=True.
+
+    Both backends must fit the polyline as one (or a few) arc(s) and
+    produce a cylindrical body. Volumes / lateral areas must match.
+    """
+
+    def make():
+        circle = _circle_polygon(0.0, 0.0, 5.0, n=64)
+        return [
+            PolyPrism(
+                polygons=circle,
+                buffers={0.0: 0.0, 2.0: 0.0},
+                physical_name="cyl",
+                mesh_order=1,
+                identify_arcs=True,
+                arc_tolerance=1e-3,
+            )
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    # rel_tol slightly looser: arc-fit on the two backends can differ in
+    # how many circular arcs the polyline collapses to, which slightly
+    # changes the surface mesh discretization.
+    _assert_summaries_equivalent(s_gmsh, s_occ, rel_tol=5e-3)
+
+
+def test_concentric_arcs_annulus_match(tmp_path):
+    """Outer disk-with-hole + inner disk filling the hole; both arc-fitted.
+
+    Stresses two distinct closed arcs (inner / outer rings) that together
+    bound an interface. Both backends must tag the inner__outer interface
+    with matching cylindrical area.
+    """
+
+    def make():
+        n = 64
+        outer_pts = [
+            (5.0 * np.cos(a), 5.0 * np.sin(a))
+            for a in np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+        ]
+        inner_hole_pts = [
+            (2.0 * np.cos(a), 2.0 * np.sin(a))
+            for a in np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+        ]
+        outer = shapely.Polygon(outer_pts, holes=[inner_hole_pts])
+        inner = _circle_polygon(0.0, 0.0, 2.0, n=n)
+        buffers = {0.0: 0.0, 1.0: 0.0}
+        return [
+            PolyPrism(
+                polygons=outer,
+                buffers=buffers,
+                physical_name="O",
+                mesh_order=2,
+                identify_arcs=True,
+                arc_tolerance=1e-3,
+            ),
+            PolyPrism(
+                polygons=inner,
+                buffers=buffers,
+                physical_name="I",
+                mesh_order=1,
+                identify_arcs=True,
+                arc_tolerance=1e-3,
+            ),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    ns_gmsh = _normalize_summary(s_gmsh)
+    ns_occ = _normalize_summary(s_occ)
+    # Both inner and outer must exist; their interface must too.
+    for grp in ("I", "O", "I___O"):
+        assert grp in ns_gmsh, (ns_gmsh.keys(), "gmsh missing", grp)
+        assert grp in ns_occ, (ns_occ.keys(), "occ missing", grp)
+    _assert_summaries_equivalent(s_gmsh, s_occ, rel_tol=5e-3)
+
+
+def _bend_polygon(
+    r_inner: float, r_outer: float, angle_deg: float, num_points: int = 50
+) -> shapely.Polygon:
+    """Annular sector polygon: arc bend between r_inner and r_outer."""
+    angle_rad = np.deg2rad(angle_deg)
+    angles = np.linspace(0.0, angle_rad, num_points)
+    inner_pts = [(r_inner * np.cos(a), r_inner * np.sin(a)) for a in angles]
+    outer_pts = [(r_outer * np.cos(a), r_outer * np.sin(a)) for a in reversed(angles)]
+    return shapely.Polygon(inner_pts + outer_pts + [inner_pts[0]])
+
+
+def test_cpw_bend_overlapping_arcs_match(tmp_path):
+    """CPW bend: trace + 2 ground bends + a straight overlap block.
+
+    The marquee "many polygons with overlapping arcs" stress test. Three
+    concentric annular-sector prisms share inner/outer arc faces; a
+    straight rectangular prism overlaps the bend at its start, forcing
+    fragmentation across an arc/straight boundary. Both backends must
+    tag every region and every interface with matching mass.
+    """
+
+    def make():
+        r_center = 20.0
+        trace_w = 5.0
+        gap = 2.0
+        gnd_w = 10.0
+        buffers = {0.0: 0.0, 5.0: 0.0}
+
+        poly_trace = _bend_polygon(
+            r_inner=r_center - trace_w / 2,
+            r_outer=r_center + trace_w / 2,
+            angle_deg=90.0,
+        )
+        poly_gnd_in = _bend_polygon(
+            r_inner=r_center - trace_w / 2 - gap - gnd_w,
+            r_outer=r_center - trace_w / 2 - gap,
+            angle_deg=90.0,
+        )
+        poly_gnd_out = _bend_polygon(
+            r_inner=r_center + trace_w / 2 + gap,
+            r_outer=r_center + trace_w / 2 + gap + gnd_w,
+            angle_deg=90.0,
+        )
+        poly_straight = shapely.Polygon(
+            [(-5.0, 15.0), (5.0, 15.0), (5.0, 25.0), (-5.0, 25.0)]
+        )
+        return [
+            PolyPrism(
+                polygons=poly_trace,
+                buffers=buffers,
+                physical_name="trace",
+                mesh_order=1,
+                identify_arcs=True,
+                arc_tolerance=1e-3,
+            ),
+            PolyPrism(
+                polygons=poly_gnd_in,
+                buffers=buffers,
+                physical_name="gnd_in",
+                mesh_order=1,
+                identify_arcs=True,
+                arc_tolerance=1e-3,
+            ),
+            PolyPrism(
+                polygons=poly_gnd_out,
+                buffers=buffers,
+                physical_name="gnd_out",
+                mesh_order=1,
+                identify_arcs=True,
+                arc_tolerance=1e-3,
+            ),
+            PolyPrism(
+                polygons=poly_straight,
+                buffers=buffers,
+                physical_name="straight",
+                mesh_order=2,
+            ),
+        ]
+
+    m_gmsh, m_occ = _run_both(make, tmp_path)
+    s_gmsh = _mesh_summary(m_gmsh)
+    s_occ = _mesh_summary(m_occ)
+    for region in ("trace", "gnd_in", "gnd_out", "straight"):
+        assert region in s_gmsh, (s_gmsh.keys(), "gmsh missing", region)
+        assert region in s_occ, (s_occ.keys(), "occ missing", region)
+    _assert_summaries_equivalent(s_gmsh, s_occ, rel_tol=5e-3)
 
 
 def test_tapered_prism_match(tmp_path):

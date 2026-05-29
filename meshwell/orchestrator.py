@@ -92,6 +92,7 @@ def generate_mesh(
             extract_phantom_map,
         )
         from meshwell.structured.builder import (
+            _clear_dummy_cohort_envelope_tets,
             apply_structured_mesh,
             apply_structured_transfinite_hints,
             resolve_mesh_plan,
@@ -217,11 +218,24 @@ def generate_mesh(
         # apply_structured_mesh are not re-meshed.
         _plan, _mesh_plan, _phantom_map, _occ_entities = structured_state
 
+        # Mutable container: pre_3d_hook populates this list with OCC volume
+        # tags that had dummy tets injected by _suppress_empty_cohort_envelope_volumes;
+        # post_3d_hook clears those tets after generate(3) but before gmsh.write.
+        _suppressed_vols: list[int] = []
+
         def _structured_hook() -> None:
-            apply_structured_mesh(_plan, _mesh_plan, _phantom_map, _occ_entities)
+            suppressed = apply_structured_mesh(
+                _plan, _mesh_plan, _phantom_map, _occ_entities
+            )
+            if suppressed:
+                _suppressed_vols.extend(suppressed)
 
         def _pre_2d_hook() -> None:
             apply_structured_transfinite_hints(_mesh_plan, _phantom_map, _occ_entities)
+
+        def _post_3d_hook() -> None:
+            if _suppressed_vols:
+                _clear_dummy_cohort_envelope_tets(_suppressed_vols)
 
         return mesh(
             dim=dim,
@@ -229,6 +243,7 @@ def generate_mesh(
             output_file=Path(output_mesh) if output_mesh else None,
             pre_3d_hook=_structured_hook,
             pre_2d_hook=_pre_2d_hook,
+            post_3d_hook=_post_3d_hook,
             **mesh_kwargs,
         )
     return mesh(

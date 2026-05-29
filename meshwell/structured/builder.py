@@ -287,6 +287,7 @@ def _build_slab_volume(
     n_layers: int,
     recombine: bool,
     pre_allocated_vol_tag: int | None = None,
+    bot_cells_override: "np.ndarray | None" = None,
 ) -> int:
     """Create one discrete 3D entity with wedge or hex elements.
 
@@ -306,6 +307,12 @@ def _build_slab_volume(
             caller must have already added any interior nodes to it
             before calling this function so that addElements finds all
             referenced node tags in the model.
+        bot_cells_override: if not None, use this array of cell node tags
+            directly instead of calling getElements(2, bottom_face_tag).
+            Required when bottom_face_tag is a discrete interior entity
+            (from _stamp_phase3_interior_interfaces) because getElements
+            on such entities returns garbage node tags unless addNodes was
+            also called on them.
 
     Returns:
         The discrete 3D entity's tag.
@@ -317,20 +324,28 @@ def _build_slab_volume(
             f"Expected {n_layers} layer maps, got {len(bot_to_top_layer_tags)}"
         )
 
-    elem_types, _, elem_nodes_per_type = gmsh.model.mesh.getElements(2, bottom_face_tag)
     target_type = 3 if recombine else 2
     elem_3d_type = 5 if recombine else 6
     cells_per_face = 4 if recombine else 3
-    bot_cells: list[np.ndarray] = []
-    for et, en in zip(elem_types, elem_nodes_per_type):
-        if et == target_type:
-            bot_cells.append(np.asarray(en, dtype=np.int64).reshape(-1, cells_per_face))
-    if not bot_cells:
-        raise RuntimeError(
-            f"Bottom OCC face {bottom_face_tag} has no element type "
-            f"{target_type} (need {'quads' if recombine else 'triangles'})"
+
+    if bot_cells_override is not None:
+        bot_cells_flat = bot_cells_override
+    else:
+        elem_types, _, elem_nodes_per_type = gmsh.model.mesh.getElements(
+            2, bottom_face_tag
         )
-    bot_cells_flat = np.concatenate(bot_cells, axis=0)
+        bot_cells: list[np.ndarray] = []
+        for et, en in zip(elem_types, elem_nodes_per_type):
+            if et == target_type:
+                bot_cells.append(
+                    np.asarray(en, dtype=np.int64).reshape(-1, cells_per_face)
+                )
+        if not bot_cells:
+            raise RuntimeError(
+                f"Bottom OCC face {bottom_face_tag} has no element type "
+                f"{target_type} (need {'quads' if recombine else 'triangles'})"
+            )
+        bot_cells_flat = np.concatenate(bot_cells, axis=0)
     n_cells = bot_cells_flat.shape[0]
 
     if pre_allocated_vol_tag is not None:
@@ -816,16 +831,36 @@ def _stamp_vertical_interior_interfaces(
                             gmsh.model.setPhysicalName(2, pg_tag, pg_name)
 
 
-def _remove_empty_cohort_envelope_volumes() -> None:
-    """Remove cohort envelope OCC 3D entities that have no mesh elements.
+def _suppress_empty_cohort_envelope_volumes() -> list[int]:
+    """Purge OCC cohort envelope volumes from physical groups.
 
     Called at the end of apply_structured_mesh when _USE_DISCRETE_COHORT_MESH
     is True.  At that point, every per-piece discrete 3D entity has already
-    been stamped with structured wedge/hex elements.  The only remaining
-    un-meshed 3D entities are the cohort envelope OCC volumes — their 2D
-    faces carry sub-face mesh stamps, but the volumes themselves are empty.
-    Removing them (non-recursively) prevents the 3D mesh pass from
-    tetrahedralizing them when MeshOnlyEmpty=1 is active.
+    been stamped with structured wedge/hex elements.  The remaining OCC 3D
+    volumes (cohort envelopes) have no 3D elements.  With MeshOnlyEmpty=1
+    active, gmsh will tetrahedralize these empty volumes.
+
+    This function removes those volumes from all 3D physical groups so that
+    when the tetrahedral mesh is later cleared (in _clear_dummy_cohort_envelope_tets,
+    called via post_3d_hook), the tetrahedra won't appear in gmsh.write output.
+
+    The actual mesh clearing of the OCC volumes happens in a post_3d_hook
+    (after generate(3) has run).  The two-step approach avoids all the crash
+    modes encountered with dummy-tet injection:
+      - addElements(3, OCC_vol, ...) using existing 2D face nodes corrupts
+        gmsh's internal _mesh_vertices indexing for other discrete 3D entities
+        (cause unclear, possibly related to the global vertex cache being
+        rebuilt after a new element references 2D-classified nodes in 3D context).
+      - addNodes(3, vol_tag, ...): similarly corrupts _mesh_vertices indexing.
+      - removeEntities: removes OCC entities leaving orphaned children or
+        frees MVertex objects still referenced by discrete elements.
+
+    The OCC 2D face children are left untouched — they keep their mesh elements
+    and valid parent-volume back-references, preventing gmsh.write crashes.
+
+    Returns the list of empty OCC volume tags.  The caller must pass these to
+    _clear_dummy_cohort_envelope_tets() in a post_3d_hook so the tetrahedra
+    are cleared before gmsh.write is called.
     """
     import logging
 
@@ -833,19 +868,71 @@ def _remove_empty_cohort_envelope_volumes() -> None:
 
     logger = logging.getLogger(__name__)
 
-    to_remove: list[tuple[int, int]] = []
+    empty_vols: list[int] = []
     for _dim, vol_tag in gmsh.model.getEntities(3):
         elem_types, _, _ = gmsh.model.mesh.getElements(3, vol_tag)
         if len(elem_types) == 0:
-            to_remove.append((3, vol_tag))
+            empty_vols.append(vol_tag)
 
-    if to_remove:
-        logger.debug(
-            "Task 18: removing %d empty cohort envelope volume(s): %s",
-            len(to_remove),
-            [t for _, t in to_remove],
-        )
-        gmsh.model.removeEntities(to_remove, recursive=False)
+    if not empty_vols:
+        return []
+
+    logger.debug(
+        "Task 18: removing %d empty cohort envelope volume(s) from physical groups: %s",
+        len(empty_vols),
+        empty_vols,
+    )
+
+    # Purge empty OCC volumes from every 3D physical group.
+    # After generate(3), _clear_dummy_cohort_envelope_tets will clear their
+    # mesh.  Since they're not in any physical group, gmsh.write won't output
+    # their elements regardless.
+    removed_vol_tags: set[int] = set(empty_vols)
+    for _pg_dim, pg_tag in gmsh.model.getPhysicalGroups(dim=3):
+        old_ents = list(gmsh.model.getEntitiesForPhysicalGroup(3, pg_tag))
+        new_ents = [e for e in old_ents if e not in removed_vol_tags]
+        if len(new_ents) != len(old_ents):
+            pg_name = gmsh.model.getPhysicalName(3, pg_tag)
+            gmsh.model.removePhysicalGroups([(3, pg_tag)])
+            if new_ents:
+                new_tag = gmsh.model.addPhysicalGroup(3, new_ents, tag=pg_tag)
+                gmsh.model.setPhysicalName(3, new_tag, pg_name)
+            else:
+                logger.debug(
+                    "Task 18: physical group '%s' (tag %d) is now empty; "
+                    "dropping it.",
+                    pg_name,
+                    pg_tag,
+                )
+
+    return empty_vols
+
+
+def _clear_dummy_cohort_envelope_tets(suppressed_vol_tags: list[int]) -> None:
+    """Clear the tetrahedral mesh from OCC cohort envelope volumes.
+
+    Called as a post_3d_hook — after generate(3) has run with MeshOnlyEmpty=1.
+    The discrete 3D per-piece volumes were skipped by MeshOnlyEmpty=1 (they
+    already had wedge elements).  The OCC cohort envelope volumes, which had
+    no elements before generate(3), were tetrahedralized by gmsh in that pass.
+
+    This function clears the tetrahedral mesh from those OCC volumes so that
+    gmsh.write does not output their elements.  Since the volumes were already
+    removed from all 3D physical groups by _suppress_empty_cohort_envelope_volumes,
+    their elements would not appear in the output anyway, but clearing them avoids
+    any potential issues with inconsistent mesh state.
+
+    The OCC 2D face children retain their valid mesh elements and parent-volume
+    back-references, so gmsh.write does not crash when iterating them.
+
+    Args:
+        suppressed_vol_tags: List of OCC volume entity tags whose mesh must be
+            cleared.  Returned by _suppress_empty_cohort_envelope_volumes.
+    """
+    import gmsh
+
+    for vol_tag in suppressed_vol_tags:
+        gmsh.model.mesh.clear(dimTags=[(3, vol_tag)])
 
 
 @phase_timed("mesh_apply")
@@ -861,8 +948,13 @@ def apply_structured_mesh(
     Uses PhantomMap to route per (slab, piece). Phase 5(d): each piece has
     exactly 1 bot + 1 top OCC face by construction (common-refinement partition).
 
-    Returns a flat list of all per-piece volume entity tags created or
-    populated (one per piece, not per slab).
+    When _USE_DISCRETE_COHORT_MESH is True (Phase 3), returns the list of OCC
+    cohort envelope volume tags that had dummy tets injected by
+    _suppress_empty_cohort_envelope_volumes.  The caller (orchestrator) must
+    pass these to _clear_dummy_cohort_envelope_tets() in a post_3d_hook so
+    the sentinel elements are removed before gmsh.write is called.
+
+    When _USE_DISCRETE_COHORT_MESH is False, returns an empty list.
     """
     import logging
 
@@ -943,7 +1035,14 @@ def apply_structured_mesh(
                         bot_key_pre = FaceKey(lower_idx_pre, "bot", p_pre)
                         bot_tags_pre = face_map.get(bot_key_pre, [])
                         if len(bot_tags_pre) != 1:
-                            continue  # can't create interior face without bot
+                            # Fall back: bot may itself be an interior discrete
+                            # face already created for a lower z-level (multi-level
+                            # cohorts with 3+ z-intervals).
+                            _disc_bot = interior_discrete.get(bot_key_pre)
+                            if _disc_bot is not None:
+                                bot_tags_pre = [_disc_bot]
+                            else:
+                                continue  # can't create interior face without bot
                         # Find upper slabs whose footprint overlaps this piece.
                         lower_piece_poly = lower_pre.face_partition[p_pre]
                         matching_uppers: list[tuple[int, Any, int]] = []
@@ -1317,10 +1416,16 @@ def apply_structured_mesh(
                         all_pre_tags.extend(m.values())
                         all_pre_coords.extend(coords)
 
-                if all_pre_tags and pre_vol_tag is not None:
-                    gmsh.model.mesh.addNodes(
-                        3, pre_vol_tag, all_pre_tags, all_pre_coords
-                    )
+                if all_pre_tags:
+                    # Classify interior-layer nodes on the TOP OCC 2D face
+                    # (not on the 3D discrete entity).  Classifying interior
+                    # nodes on a discrete 3D entity causes getElements(3, vtag)
+                    # to return garbage values due to a gmsh internal indexing
+                    # inconsistency, which then corrupts element-node pointers
+                    # and crashes gmsh.write.  Nodes classified on a 2D entity
+                    # are safe regardless of which 3D volume element references
+                    # them: element connectivity is by node TAG, not by entity.
+                    gmsh.model.mesh.addNodes(2, top_tag, all_pre_tags, all_pre_coords)
 
                 vol_tag = _build_slab_volume(
                     bottom_face_tag=bot_tag,
@@ -1351,29 +1456,49 @@ def apply_structured_mesh(
             slab_piece_layer_maps=_slab_piece_layer_maps,
         )
 
-    # Task 18: Remove cohort envelope OCC 3D entities so the 3D mesh pass
-    # doesn't tetrahedralize them.  Per-piece discrete 3D entities now own
-    # all structured elements; the cohort envelope volumes have no elements
-    # and must be dropped BEFORE generate(3) runs with MeshOnlyEmpty=1.
-    # 2D OCC faces (top / bot / lateral) are intentionally kept — they carry
-    # the per-piece mesh stamps used by all sub-face and interior-interface
-    # entities. recursive=False ensures they are not removed.
+    # Task 18: Prevent cohort envelope OCC 3D volumes from being tetrahedral
+    # meshed by generate(3) with MeshOnlyEmpty=1.  We inject a single
+    # degenerate tet into each empty OCC volume so gmsh considers it
+    # "already meshed" and skips it.  We also purge those volumes from
+    # their physical groups so the degenerate tet is never written to the
+    # mesh file.  The OCC 2D face children are intentionally kept intact —
+    # their valid parent-volume back-references prevent gmsh.write crashes.
+    # The dummy tets MUST be removed after generate(3) via a post_3d_hook
+    # (see _clear_dummy_cohort_envelope_tets) before gmsh.write is called.
+    suppressed_vol_tags: list[int] = []
     if _USE_DISCRETE_COHORT_MESH:
-        _remove_empty_cohort_envelope_volumes()
+        suppressed_vol_tags = _suppress_empty_cohort_envelope_volumes()
 
     # Global cleanup: merge ~coincident nodes.
-    fuzzy = _aggregate_slab_fuzzy(
+    # In Phase 3 (discrete cohort mesh) mode, intra-slab adjacent-piece nodes
+    # are deduplicated by construction (they reuse the same tags from the OCC
+    # 2D face mesh).  However, inter-slab horizontal interface nodes (top face
+    # of slab i vs bottom face of slab i+1) may be duplicated in the .msh
+    # output if two separate discrete 3D volumes each hold a copy at the same
+    # XY position — removeDuplicateNodes merges them.
+    #
+    # Previously removeDuplicateNodes caused SIGSEGV in Phase 3 because the
+    # addNodes(3, discrete_entity, ...) and addElements(3, OCC_vol, ...) calls
+    # corrupted gmsh's internal _mesh_vertices indexing.  Those calls have been
+    # replaced: interior layer nodes are now classified on OCC 2D faces (not on
+    # discrete 3D entities), and OCC envelope volumes are suppressed via pure PG
+    # cleanup (no element injection).  With those root causes resolved,
+    # removeDuplicateNodes is safe to re-enable in Phase 3.
+    _aggregate_slab_fuzzy(
         [slab.fragment_fuzzy_value for slab in plan.slabs],
         default=fuzzy_tol,
     )
     try:
         with phase_timer("removeDuplicateNodes"):
-            gmsh.model.mesh.removeDuplicateNodes(tag=[], tol=2 * fuzzy)
+            gmsh.model.mesh.removeDuplicateNodes(dimTags=[])
     except TypeError:
         with phase_timer("removeDuplicateNodes"):
             gmsh.model.mesh.removeDuplicateNodes()
 
-    return vol_tags
+    # In Phase 3, return the suppressed OCC envelope vol tags so the
+    # orchestrator can schedule _clear_dummy_cohort_envelope_tets as a
+    # post_3d_hook (after generate(3), before gmsh.write).
+    return suppressed_vol_tags
 
 
 def _build_xao_compound(occ_entities: list[Any]) -> Any:

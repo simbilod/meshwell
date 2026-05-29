@@ -970,16 +970,28 @@ def _group_phantom_solids_by_entity(
         if shape.slab_index < 0:
             # Phase 3 cohort envelope: slab_index = -(component_index + 1).
             cidx = -(shape.slab_index + 1)
-            cohort_srcs = sorted(
-                {s.source_index for s in plan.slabs if s.component_index == cidx}
-            )
-            if cohort_srcs:
-                # Assign the envelope solid to the lowest source entity index.
-                out.setdefault(cohort_srcs[0], []).append(shape.solid)
-                # All other source indices in the cohort get empty entries so
-                # cad_occ skips their instanciate_occ() calls.
-                for src in cohort_srcs[1:]:
+            cohort_slabs = [s for s in plan.slabs if s.component_index == cidx]
+            cohort_srcs = sorted({s.source_index for s in cohort_slabs})
+            # Identify which source indices have at least one non-carved slab
+            # (face_partition is non-empty). The envelope solid represents only
+            # the non-carved geometry, so assign it to the first non-carved
+            # source. Fully-carved sources (all their slabs have empty
+            # face_partition) get an empty entry to suppress instanciate_occ().
+            carved_srcs: set[int] = set()
+            for src in cohort_srcs:
+                src_slabs = [s for s in cohort_slabs if s.source_index == src]
+                if all(not s.face_partition for s in src_slabs):
+                    carved_srcs.add(src)
+            non_carved_srcs = [s for s in cohort_srcs if s not in carved_srcs]
+            if non_carved_srcs:
+                # Assign the envelope solid to the lowest non-carved source.
+                out.setdefault(non_carved_srcs[0], []).append(shape.solid)
+                # All other non-carved sources get empty entries.
+                for src in non_carved_srcs[1:]:
                     out.setdefault(src, [])
+            # Fully-carved sources always get empty entries.
+            for src in carved_srcs:
+                out.setdefault(src, [])
         else:
             src = plan.slabs[shape.slab_index].source_index
             out.setdefault(src, []).append(shape.solid)
