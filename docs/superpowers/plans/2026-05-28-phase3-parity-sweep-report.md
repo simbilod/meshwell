@@ -197,9 +197,47 @@ rejections observed.
 - **Bucket B3** (interior interface non-conformality) is a known
   limitation of the discrete cohort approach for multi-tiling stacks;
   fix requires interior cut-line stamping on shared horizontal faces.
-- [ ] Fix B1 (`_sew_cohort_solid` disconnected-shell handling).
+- [x] Fix B1 (`_sew_cohort_solid` disconnected-shell handling) — landed 2026-05-29.
 - [ ] Fix B2 (arc top/bot face identification post-BOP).
 - [ ] Fix B3 (interior cut-line stamping).
 - [ ] Rerun sweep after B1–B3 fixes; expect B4 (SIGSEGV) to resolve.
 - [ ] Flip default to True (Task 22) after B1–B4 pass.
 - [ ] Task 23: remove Phase 1+2 cohort code + Bucket A tests.
+
+## Update — B1 fix landed (2026-05-29)
+
+`assemble_cohort_envelope_solid` (formerly `_sew_cohort_solid`) now iterates
+shells from `BRepBuilderAPI_Sewing.SewedShape()` via `TopExp_Explorer` instead
+of casting the result directly to `TopoDS_Shell` with `TopoDS.Shell_s()`.
+Disjoint cohorts (compound of shells) now add each shell to the solid as a
+separate boundary component. The `Standard_TypeMismatch: Shape is not a
+TopoDS_Shell` error is fully eliminated.
+
+### Post-fix Phase 3 sweep (2026-05-29)
+
+Run: `tests/structured/` with `_USE_DISCRETE_COHORT_MESH=True`.
+Stress tests (`test_stress_stacked_patterns.py`) still SIGSEGV; counted
+individually per-test.
+
+- Bucket A — Phase 1+2 path assumption: **7** (unchanged)
+- Bucket B1 — TopoDS::Shell cast: **0** (fixed — `Standard_TypeMismatch` gone)
+  - 2 of the 4 former B1 tests now pass outright.
+  - 2 of the 4 former B1 tests now fail with a different downstream error
+    (multi-shell solid entity grouping / fixture routing mismatch, not the
+    cast error); re-bucketed as B1b below.
+- Bucket B1b — multi-shell solid not grouped to all entities (new): **2**
+  - `test_group_phantom_solids_by_entity_inverts_slab_source_index`: entity B
+    gets 0 shapes instead of 1 (`_group_phantom_solids_by_entity` does not
+    handle the multi-shell cohort solid correctly).
+  - `test_mixed_cohort_sharing`: `KeyError: 'A'` — cohort solid not assigned
+    to entity A after multi-shell fix.
+- Bucket B2 — Phase 5(d) arc BOP face count: **5** (unchanged)
+- Bucket B3 — Interior interface non-conformality: **2** (unchanged)
+- Bucket B4 — SIGSEGV in mesh-producing stress tests: **4** (unchanged; still
+  crashes even after B1 cast fix — root cause not yet in B1)
+- Bucket B5 — phantom_to_gmsh_map routing: **2** (unchanged)
+- Total excluding stress-test SIGSEGVs: **25 failed** (was 20 non-SIGSEGV
+  failures before; delta is the 2 new B1b failures and 3 additional failures
+  in end-to-end tests that were previously masked by the B1 crash).
+
+Baseline (Phase 3 off): **290 passed, 0 failed** — unchanged.

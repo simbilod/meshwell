@@ -270,6 +270,10 @@ def build_cohort_envelope(
                 # Build a combined wire from the piece's arrangement edges at this z.
                 mw = BRepBuilderAPI_MakeWire()
                 closing_arc_edge = None
+                # Track overall start/end corners for straight open-chain detection.
+                _piece_start_corner: int | None = None
+                _piece_end_corner: int | None = None
+                _piece_needs_straight_close = False
                 for eid in piece_edge_ids:
                     if eid in env.skipped_edge_ids:
                         continue
@@ -278,37 +282,57 @@ def build_cohort_envelope(
                     while exp.More():
                         mw.Add(exp.Current())
                         exp.Next()
-                    # Check if this is an open-chain arc (start != end corner).
                     arr_edge = arr_edge_by_id[eid]
-                    if arr_edge.circle is not None:
-                        p1 = arr_edge.vertices[0]
-                        p2 = arr_edge.vertices[-1]
-                        c1 = env.outline_xy_to_corner_id[
-                            (round(p1[0], _ROUND), round(p1[1], _ROUND))
-                        ]
-                        c2 = env.outline_xy_to_corner_id[
-                            (round(p2[0], _ROUND), round(p2[1], _ROUND))
-                        ]
-                        if c1 != c2:
-                            # Build the closing arc edge from c2 back to c1.
-                            cx, cy = arr_edge.circle.center
-                            r = arr_edge.circle.radius
-                            axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
-                            circ = gp_Circ(axis, r)
-                            p2_snapped = corner_id_to_xy[c2]
-                            p1_snapped = corner_id_to_xy[c1]
-                            start_pt = gp_Pnt(p2_snapped[0], p2_snapped[1], z)
-                            end_pt = gp_Pnt(p1_snapped[0], p1_snapped[1], z)
-                            v_c2 = env.vertices[(z, c2)]
-                            v_c1 = env.vertices[(z, c1)]
-                            closing_arc = GC_MakeArcOfCircle(
-                                circ, start_pt, end_pt, True
-                            ).Value()
-                            closing_arc_edge = BRepBuilderAPI_MakeEdge(
-                                closing_arc, v_c2, v_c1
-                            ).Edge()
+                    p1 = arr_edge.vertices[0]
+                    p2 = arr_edge.vertices[-1]
+                    ec1 = env.outline_xy_to_corner_id[
+                        (round(p1[0], _ROUND), round(p1[1], _ROUND))
+                    ]
+                    ec2 = env.outline_xy_to_corner_id[
+                        (round(p2[0], _ROUND), round(p2[1], _ROUND))
+                    ]
+                    if _piece_start_corner is None:
+                        _piece_start_corner = ec1
+                    _piece_end_corner = ec2
+                    if arr_edge.circle is not None and ec1 != ec2:
+                        # Open-chain arc: build the closing arc edge from c2 back to c1.
+                        cx, cy = arr_edge.circle.center
+                        r = arr_edge.circle.radius
+                        axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
+                        circ = gp_Circ(axis, r)
+                        p2_snapped = corner_id_to_xy[ec2]
+                        p1_snapped = corner_id_to_xy[ec1]
+                        start_pt = gp_Pnt(p2_snapped[0], p2_snapped[1], z)
+                        end_pt = gp_Pnt(p1_snapped[0], p1_snapped[1], z)
+                        v_c2 = env.vertices[(z, ec2)]
+                        v_c1 = env.vertices[(z, ec1)]
+                        closing_arc = GC_MakeArcOfCircle(
+                            circ, start_pt, end_pt, True
+                        ).Value()
+                        closing_arc_edge = BRepBuilderAPI_MakeEdge(
+                            closing_arc, v_c2, v_c1
+                        ).Edge()
+                    elif (
+                        arr_edge.circle is None
+                        and len(arr_edge.vertices) > 2
+                        and ec1 != ec2
+                    ):
+                        # Open-chain straight multi-vertex edge: need a straight
+                        # closing segment from ec2 back to ec1.
+                        _piece_needs_straight_close = True
                 if closing_arc_edge is not None:
                     mw.Add(closing_arc_edge)
+                elif (
+                    _piece_needs_straight_close
+                    and _piece_start_corner is not None
+                    and _piece_end_corner is not None
+                    and _piece_start_corner != _piece_end_corner
+                ):
+                    # Degenerate single-edge open-chain polygon: add closing straight
+                    # segment from last corner back to first corner.
+                    v_end = env.vertices[(z, _piece_end_corner)]
+                    v_start = env.vertices[(z, _piece_start_corner)]
+                    mw.Add(BRepBuilderAPI_MakeEdge(v_end, v_start).Edge())
                 face = BRepBuilderAPI_MakeFace(mw.Wire()).Face()
                 face_dict[FaceKey(slab_index, face_key_str, 0)] = face
             continue
@@ -806,10 +830,29 @@ def assemble_cohort_envelope_solid(env: CohortEnvelope) -> Any:
         if not _top_mod.IsNull():
             env.top_union_face = _top_mod
 
+    # BRepBuilderAPI_Sewing.SewedShape() returns a TopoDS_Shell when the
+    # cohort geometry is a single connected body, but a TopoDS_Compound of
+    # multiple TopoDS_Shell objects when the cohort has disjoint XY
+    # sub-volumes (e.g. two separated footprints in the same cohort).
+    # Iterate sub-shapes via TopExp_Explorer so both cases are handled.
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+
+    shells: list = []
+    exp = TopExp_Explorer(sewn, TopAbs_SHELL)
+    while exp.More():
+        shells.append(TopoDS.Shell_s(exp.Current()))
+        exp.Next()
+
+    if not shells:
+        msg = f"Sewing produced no shells (shape type {sewn.ShapeType()})"
+        raise RuntimeError(msg)
+
     b = BRep_Builder()
     solid = TopoDS_Solid()
     b.MakeSolid(solid)
-    b.Add(solid, TopoDS.Shell_s(sewn))
+    for shell in shells:
+        b.Add(solid, shell)
 
     env.cohort_solid = solid
     return solid
