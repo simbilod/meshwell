@@ -545,19 +545,36 @@ def apply_structured_mesh(
                         interior_layer_coords.append(coords)
                     layer_maps = [*interior_layer_maps, top_map]
 
-                # Find the OCC volume entity containing both the bottom face and the
-                # top face. Add wedge elements directly to that OCC volume so it
-                # retains its physical-group membership and MeshOnlyEmpty=1 skips
-                # re-meshing it in the 3D pass.
-                occ_vol_tag: int | None = _find_volume_containing_faces(
-                    bot_tag, top_tag
-                )
+                from meshwell.structured.phantom import _USE_DISCRETE_COHORT_MESH
+
+                if _USE_DISCRETE_COHORT_MESH:
+                    # Phase 3: never share a cohort envelope's OCC volume across
+                    # pieces — each piece needs its own discrete 3D entity so
+                    # per-piece physical groups stay distinct.
+                    occ_vol_tag = None
+                else:
+                    # Find the OCC volume entity containing both the bottom face and the
+                    # top face. Add wedge elements directly to that OCC volume so it
+                    # retains its physical-group membership and MeshOnlyEmpty=1 skips
+                    # re-meshing it in the 3D pass.
+                    occ_vol_tag: int | None = _find_volume_containing_faces(
+                        bot_tag, top_tag
+                    )
 
                 # Register all interior nodes BEFORE addElements so all referenced
                 # node tags exist in gmsh at the time addElements validates them.
                 pre_vol_tag: int | None = occ_vol_tag
-                if n_layers > 1 and pre_vol_tag is None:
+                if pre_vol_tag is None:
                     pre_vol_tag = gmsh.model.addDiscreteEntity(3, -1, [])
+                # Phase 3: when we allocated a fresh discrete 3D entity (no
+                # OCC volume owns the bot/top faces), the orchestrator's
+                # load_occ_entities didn't attach a physical group to it.
+                # Attach the slab/piece physical group directly so per-piece
+                # tagging survives.
+                if _USE_DISCRETE_COHORT_MESH and occ_vol_tag is None:
+                    pg_name = "/".join(slab.physical_name)
+                    pg_tag = gmsh.model.addPhysicalGroup(3, [pre_vol_tag])
+                    gmsh.model.setPhysicalName(3, pg_tag, pg_name)
 
                 all_pre_tags: list[int] = []
                 all_pre_coords: list[float] = []
