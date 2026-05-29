@@ -118,6 +118,28 @@ class StructuredLateralUnstructuredNeighbourError(ValueError):
     """
 
 
+class StructuredCohortFootprintMismatchError(ValueError):
+    """Raised when a structured cohort's XY footprint changes across z-intervals.
+
+    Phase 3's cohort envelope architecture builds one OCC solid per
+    connected z-component (cohort) by stacking lateral OCC faces against
+    a single un-subdivided outline that is constant in XY across z.
+    A cohort whose combined-by-piece XY footprint differs from one
+    z-interval to another (e.g. concentric stacked discs of decreasing
+    radius) would require modelling exposed annular rings on the
+    slab-to-slab interface — not yet implemented.
+
+    Remediation: at every z-interval inside a cohort, supply additional
+    structured slabs so the union of their XY footprints equals the
+    cohort's canonical (largest) footprint. For a stepped concentric
+    stack this means adding annular-ring or square-filler structured
+    slabs around the smaller inner slabs.
+
+    Future work: support stepped envelopes natively by modelling exposed
+    interface annuli as separate OCC faces in the cohort envelope.
+    """
+
+
 class StructuredPartitionConvergenceError(RuntimeError):
     """face_partition fixed-point iteration did not converge within the iteration cap."""
 

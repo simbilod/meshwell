@@ -336,6 +336,70 @@ def _assign_component_indices(slabs: list[Slab]) -> None:
             s.component_index = comp_idx
 
 
+def _validate_cohort_footprint_constancy(
+    slabs: list[Slab],
+    area_tol: float = 1e-9,
+) -> None:
+    """Enforce that each cohort's XY footprint is constant across z-intervals.
+
+    Phase 3's cohort envelope builds a single OCC solid per cohort whose
+    lateral wall is one un-subdivided OCC face per outline edge. That
+    only produces a valid manifold when the cohort's union footprint at
+    every z-interval matches its canonical (largest) footprint. Stepped
+    stacks (e.g. concentric arc discs of decreasing radius) would leave
+    exposed annular rings on slab-to-slab interfaces — not modelled.
+
+    Raises ``StructuredCohortFootprintMismatchError`` listing the
+    z-interval whose union footprint differs from the canonical
+    (largest-area) interval, along with the missing area.
+
+    Must be called after ``_assign_component_indices``.
+    """
+    from shapely.ops import unary_union
+
+    from meshwell.structured.spec import StructuredCohortFootprintMismatchError
+
+    cohorts: dict[int, list[Slab]] = {}
+    for slab in slabs:
+        cohorts.setdefault(slab.component_index, []).append(slab)
+
+    for cidx, cohort_slabs in cohorts.items():
+        by_z: dict[tuple[float, float], list[Slab]] = {}
+        for s in cohort_slabs:
+            by_z.setdefault((s.zlo, s.zhi), []).append(s)
+        if len(by_z) < 2:
+            continue  # single z-interval cohort is trivially constant
+
+        footprints_by_z: dict[tuple[float, float], Polygon | MultiPolygon] = {
+            zkey: unary_union([s.footprint for s in zslabs])
+            for zkey, zslabs in by_z.items()
+        }
+        canonical_zkey, canonical_fp = max(
+            footprints_by_z.items(), key=lambda kv: kv[1].area
+        )
+        for zkey, fp in footprints_by_z.items():
+            if zkey == canonical_zkey:
+                continue
+            missing = canonical_fp.difference(fp)
+            if missing.area > area_tol:
+                names = sorted({"/".join(s.physical_name) for s in by_z[zkey]})
+                canon_names = sorted(
+                    {"/".join(s.physical_name) for s in by_z[canonical_zkey]}
+                )
+                raise StructuredCohortFootprintMismatchError(
+                    f"Structured cohort {cidx} has inconsistent XY "
+                    f"footprint across z-intervals. z={zkey} "
+                    f"(slabs: {names}, area={fp.area:.6g}) is missing "
+                    f"{missing.area:.6g} relative to the canonical "
+                    f"footprint at z={canonical_zkey} "
+                    f"(slabs: {canon_names}, area={canonical_fp.area:.6g}). "
+                    f"Fill the missing area with additional structured "
+                    f"slabs at z={zkey} (e.g. a surrounding square or "
+                    f"annular ring), or detach the smaller slab into its "
+                    f"own cohort by removing its z-touching neighbour."
+                )
+
+
 def _neighbours_touching_z(
     z: float, entities: list[Any], skip_indices: set[int], tol: float = 1e-9
 ) -> list[Polygon | MultiPolygon]:
@@ -1558,6 +1622,7 @@ def build_plan(entities: list[Any]) -> StructuredPlan:
     _validate_no_unstructured_lateral_neighbour(kept_slabs, entities)
     _resolve_sublevel_mesh_order(kept_slabs, entities)
     _assign_component_indices(kept_slabs)
+    _validate_cohort_footprint_constancy(kept_slabs)
     arrangements = build_stack_arrangements(kept_slabs, entities)
     assign_face_partition_from_arrangement(kept_slabs, arrangements)
     z_set: set[float] = set()
