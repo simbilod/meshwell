@@ -1115,11 +1115,45 @@ def _build_phantom_shapes_via_cohort_envelope(
         solid = assemble_cohort_envelope_solid(env)
 
         input_faces: dict[FaceKey, Any] = {}
-        input_faces.update(env.bottom_sub_faces)
-        input_faces.update(env.top_sub_faces)
+        # For multi-piece same-z-level cohorts, assemble_cohort_envelope_solid
+        # uses a union face (not the individual piece sub-faces) in the solid.
+        # Map ALL piece FaceKeys at zmin/zmax to the union face so BOP history
+        # tracking works. For single-piece levels, fall back to the individual face.
+        cohort_slabs = [s for s in plan.slabs if s.component_index == cidx]
+        _zmin = min(s.zlo for s in cohort_slabs)
+        _zmax = max(s.zhi for s in cohort_slabs)
+        _slab_by_index = dict(enumerate(plan.slabs))
+        if env.bottom_union_face is not None:
+            # Multi-piece zmin level: map all bot FaceKeys to the union face.
+            for fk in env.bottom_sub_faces:
+                if _slab_by_index[fk.slab_index].zlo == _zmin:
+                    input_faces[fk] = env.bottom_union_face
+            # Non-zmin bot faces (interior, stacked) use their own sub-face.
+            for fk, face in env.bottom_sub_faces.items():
+                if fk not in input_faces:
+                    input_faces[fk] = face
+        else:
+            input_faces.update(env.bottom_sub_faces)
+        if env.top_union_face is not None:
+            # Multi-piece zmax level: map all top FaceKeys to the union face.
+            for fk in env.top_sub_faces:
+                if _slab_by_index[fk.slab_index].zhi == _zmax:
+                    input_faces[fk] = env.top_union_face
+            # Non-zmax top faces use their own sub-face.
+            for fk, face in env.top_sub_faces.items():
+                if fk not in input_faces:
+                    input_faces[fk] = face
+        else:
+            input_faces.update(env.top_sub_faces)
 
         input_laterals: dict[int, Any] = {}
-        for (_slab_idx, outline_edge_id), face_list in env.lateral_faces.items():
+        # Use sewn_lateral_faces (post-sewing TShapes) so BOP history tracking
+        # works: sewing may regenerate face TShapes for multi-segment lateral
+        # faces. Using the pre-sewing face as input to BOP would yield no match.
+        lateral_source = (
+            env.sewn_lateral_faces if env.sewn_lateral_faces else env.lateral_faces
+        )
+        for (_slab_idx, outline_edge_id), face_list in lateral_source.items():
             # Phase 3 lateral wall is un-subdivided per piece, so we
             # key by arrangement edge id only. The first face of the
             # per-segment list is the representative; downstream code
