@@ -449,6 +449,12 @@ class PhantomMap:
     # cut"). Phase 3's builder uses this to decide which lateral faces
     # to exclude from transfinite hints.
     lateral_has_midheight_cut: dict[LateralKey, bool] = field(default_factory=dict)
+    # Phase 3 (discrete cohort mesh): FaceKey -> gmsh 2D-discrete-entity
+    # tag for interior piece-to-piece interfaces materialized at mesh time.
+    # Distinct from output_faces (which holds OCC-backed face tags).
+    # Empty unless _USE_DISCRETE_COHORT_MESH=True. See spec
+    # docs/superpowers/specs/2026-05-28-cad-occ-discrete-internal-cohort-mesh-design.md.
+    face_keys_to_discrete: dict[FaceKey, int] = field(default_factory=dict)
 
 
 class StructuredMeshOverlapError(ValueError):
