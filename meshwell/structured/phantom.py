@@ -75,6 +75,21 @@ _PRESHARE_VERTICAL_FACES = True
 # concentric arcs).
 _USE_COHORT_TOPOLOGY = False
 
+# Phase 3 kill-switch. When True, build_phantom_shapes routes through
+# _build_phantom_shapes_via_cohort_envelope (one OCC envelope solid per
+# cohort, discrete elements for interior pieces/interfaces at mesh time).
+# When False (default during stabilization), routes through Phase 1+2
+# path (per-piece OCC sub-prisms).
+#
+# Promote to default True once the Phase 3 path passes the full
+# structured test suite end-to-end. Once that's done and the new path
+# has soaked in production, delete the Phase 1+2 cohort code entirely
+# (cohort_topology.py, _USE_COHORT_TOPOLOGY, _PRESHARE_VERTICAL_FACES,
+# _build_phantom_shapes_via_cohort_topology).
+#
+# See spec docs/superpowers/specs/2026-05-28-cad-occ-discrete-internal-cohort-mesh-design.md.
+_USE_DISCRETE_COHORT_MESH = False
+
 # Default point_tolerance matches GeometryEntity.__init__ default (1e-3).
 _POINT_TOLERANCE = 1e-3
 
@@ -1060,25 +1075,83 @@ def _build_phantom_shapes_via_cohort_topology(
     return PhantomBuildResult(shapes=tuple(shapes))
 
 
+def _build_phantom_shapes_via_cohort_envelope(
+    plan: StructuredPlan,
+) -> PhantomBuildResult:
+    """Phase 3: one PhantomShape per cohort (envelope solid).
+
+    Per-piece top/bottom sub-faces are bundled into the cohort
+    PhantomShape's input_faces_by_key. Lateral wall faces are bundled
+    into input_laterals_by_outer_edge keyed by arrangement edge id.
+
+    The slab_index field on the returned PhantomShape is set to a
+    synthetic cohort marker (-(component_index + 1)) so it cannot
+    collide with real per-slab indices in downstream lookups.
+    """
+    from meshwell.structured.cohort_envelope import (
+        assemble_cohort_envelope_solid,
+        build_cohort_envelope,
+    )
+
+    component_indices = sorted({s.component_index for s in plan.slabs})
+
+    shapes: list[PhantomShape] = []
+    for cidx in component_indices:
+        env = build_cohort_envelope(plan, component_index=cidx)
+        solid = assemble_cohort_envelope_solid(env)
+
+        input_faces: dict[FaceKey, Any] = {}
+        input_faces.update(env.bottom_sub_faces)
+        input_faces.update(env.top_sub_faces)
+
+        input_laterals: dict[int, Any] = {}
+        for (_slab_idx, outline_edge_id), face_list in env.lateral_faces.items():
+            # Phase 3 lateral wall is un-subdivided per piece, so we
+            # key by arrangement edge id only. The first face of the
+            # per-segment list is the representative; downstream code
+            # uses input_laterals only as a presence map for the BOP
+            # history walk.
+            if outline_edge_id not in input_laterals and face_list:
+                input_laterals[outline_edge_id] = face_list[0]
+
+        shapes.append(
+            PhantomShape(
+                slab_index=-(cidx + 1),
+                piece_index=0,
+                solid=solid,
+                input_faces_by_key=input_faces,
+                input_edges_by_key={},
+                input_vertices_by_key={},
+                input_laterals_by_outer_edge=input_laterals,
+            )
+        )
+
+    return PhantomBuildResult(shapes=tuple(shapes))
+
+
 @phase_timed("phantom_build")
 def build_phantom_shapes(plan: StructuredPlan) -> PhantomBuildResult:
     """For each slab, build one OCP sub-prism per partition piece.
 
-    When _USE_COHORT_TOPOLOGY=True (the default), delegates to
+    When _USE_DISCRETE_COHORT_MESH=True (Phase 3), routes through
+    _build_phantom_shapes_via_cohort_envelope: one envelope OCC solid
+    per cohort, interior pieces/interfaces materialize as discrete
+    entities at mesh time.
+
+    When _USE_COHORT_TOPOLOGY=True (Phase 2), delegates to
     _build_phantom_shapes_via_cohort_topology which builds each cohort's
     shared topology once and assembles all sub-prisms as views into it.
     This produces full vertical+lateral face sharing within each cohort.
 
-    When _USE_COHORT_TOPOLOGY=False, falls back to the Phase 1 path:
-    with _PRESHARE_VERTICAL_FACES=True (the sub-default), vertically-stacked
-    pieces in the same cohort share their interface TopoDS_Face: each
-    upper sub-prism reuses the prism below's LastShape() as its bottom
-    face. This produces shared TShape identity at the interface so
-    BOPAlgo's pave-filler can skip the heavy intersection there.
+    When both flags are False (Phase 1 default), pre-shared vertical
+    faces are used: each upper sub-prism reuses the prism below's
+    LastShape() as its bottom face.
 
     Returns a PhantomBuildResult with shapes in (slab_index, piece_index)
     ascending order for deterministic downstream processing.
     """
+    if _USE_DISCRETE_COHORT_MESH:
+        return _build_phantom_shapes_via_cohort_envelope(plan)
     if _USE_COHORT_TOPOLOGY:
         return _build_phantom_shapes_via_cohort_topology(plan)
 
