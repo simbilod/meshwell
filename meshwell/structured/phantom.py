@@ -967,8 +967,22 @@ def _group_phantom_solids_by_entity(
     """
     out: dict[int, list[Any]] = {}
     for shape in phantom_result.shapes:
-        src = plan.slabs[shape.slab_index].source_index
-        out.setdefault(src, []).append(shape.solid)
+        if shape.slab_index < 0:
+            # Phase 3 cohort envelope: slab_index = -(component_index + 1).
+            cidx = -(shape.slab_index + 1)
+            cohort_srcs = sorted(
+                {s.source_index for s in plan.slabs if s.component_index == cidx}
+            )
+            if cohort_srcs:
+                # Assign the envelope solid to the lowest source entity index.
+                out.setdefault(cohort_srcs[0], []).append(shape.solid)
+                # All other source indices in the cohort get empty entries so
+                # cad_occ skips their instanciate_occ() calls.
+                for src in cohort_srcs[1:]:
+                    out.setdefault(src, [])
+        else:
+            src = plan.slabs[shape.slab_index].source_index
+            out.setdefault(src, []).append(shape.solid)
     for slab in plan.slabs:
         out.setdefault(slab.source_index, [])
     return out
@@ -1219,11 +1233,23 @@ def _slab_z_range_for_shape(shape: PhantomShape) -> tuple[float, float]:
     PhantomShape doesn't store zlo/zhi directly; read it from any
     vertex on the bottom face (= zlo) and any vertex on the top face
     (= zhi).
+
+    For Phase 3 cohort PhantomShapes (``shape.slab_index < 0``), the
+    canonical ``FaceKey(shape.slab_index, ...)`` keys do not exist —
+    input_faces_by_key carries real per-slab indices.  In that case we
+    scan all "bot" keys for the global minimum z and all "top" keys for
+    the global maximum z, which gives the full cohort z-range (zlo =
+    bottom of lowest slab, zhi = top of highest slab).
     """
     from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_VERTEX
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
+
+    def _any_z(face: Any) -> float:
+        exp = TopExp_Explorer(face, TopAbs_VERTEX)
+        v = TopoDS.Vertex_s(exp.Current())
+        return BRep_Tool.Pnt_s(v).Z()
 
     bot_key = FaceKey(
         slab_index=shape.slab_index, side="bot", piece_index=shape.piece_index
@@ -1231,15 +1257,20 @@ def _slab_z_range_for_shape(shape: PhantomShape) -> tuple[float, float]:
     top_key = FaceKey(
         slab_index=shape.slab_index, side="top", piece_index=shape.piece_index
     )
-    bot_face = shape.input_faces_by_key[bot_key]
-    top_face = shape.input_faces_by_key[top_key]
+    if bot_key in shape.input_faces_by_key and top_key in shape.input_faces_by_key:
+        return _any_z(shape.input_faces_by_key[bot_key]), _any_z(
+            shape.input_faces_by_key[top_key]
+        )
 
-    def _any_z(face: Any) -> float:
-        exp = TopExp_Explorer(face, TopAbs_VERTEX)
-        v = TopoDS.Vertex_s(exp.Current())
-        return BRep_Tool.Pnt_s(v).Z()
-
-    return _any_z(bot_face), _any_z(top_face)
+    # Phase 3: synthetic slab_index — scan all keyed faces.
+    bot_faces = [f for k, f in shape.input_faces_by_key.items() if k.side == "bot"]
+    top_faces = [f for k, f in shape.input_faces_by_key.items() if k.side == "top"]
+    if not bot_faces or not top_faces:
+        raise KeyError(
+            f"_slab_z_range_for_shape: no 'bot'/'top' faces found in "
+            f"input_faces_by_key for slab_index={shape.slab_index}"
+        )
+    return min(_any_z(f) for f in bot_faces), max(_any_z(f) for f in top_faces)
 
 
 def _has_midheight_vertex(
