@@ -241,3 +241,124 @@ individually per-test.
   in end-to-end tests that were previously masked by the B1 crash).
 
 Baseline (Phase 3 off): **290 passed, 0 failed** — unchanged.
+
+## B4 SIGSEGV localization — 2026-05-29
+
+### Setup
+
+Faulthandler-instrumented runs of each B4 test under Phase 3
+(`_USE_DISCRETE_COHORT_MESH = True`).  A checkpoint wrapper was installed
+around every major call site in `apply_structured_mesh` and `mesh.py` to
+determine the last Python frame before the native crash.
+
+### Per-test crash sites
+
+#### Test: `test_stress_stacked_patterns.py::test_four_stacked_layers_misaligned_seams_mesh_clean`
+
+- **Crash site**: `builder.py:1381` — `gmsh.model.mesh.removeDuplicateNodes()`
+  (the no-argument fallback branch in the `except TypeError` handler).
+- **Call sequence before crash**:
+  1. `generate(2)` completes successfully.
+  2. `apply_structured_mesh` (pre_3d_hook) runs to completion:
+     - all `_build_slab_volume` calls complete.
+     - `_stamp_vertical_interior_interfaces` completes.
+     - `_remove_empty_cohort_envelope_volumes` completes.
+  3. `removeDuplicateNodes(tag=[], tol=2e-06)` raises `TypeError: got an
+     unexpected keyword argument 'tag'` (this gmsh version does not support
+     the `tag` kwarg).
+  4. Fallback `removeDuplicateNodes()` (**no args**) → **SIGSEGV**.
+- **Secondary crash** (if `removeDuplicateNodes` is bypassed): `generate(3)`
+  with `Mesh.MeshOnlyEmpty=1` also segfaults, confirming the model state
+  itself is invalid.
+- **Hypothesis**: After Phase 3 removes OCC 3D volumes
+  (`_remove_empty_cohort_envelope_volumes`) and builds discrete 3D entities
+  with manually-added nodes, calling `removeDuplicateNodes()` without a
+  `tag` restriction tells gmsh to scan every entity including the now-orphaned
+  OCC faces whose parent volumes were removed.  The global scan hits an
+  invalid state — likely an entity with nodes but no bounding geometry —
+  triggering an assertion failure / null-pointer dereference in gmsh's C++
+  layer.  The `generate(3)` secondary crash supports the same hypothesis:
+  gmsh's 3D mesher also cannot handle volumes that were removed after 2D
+  meshing.
+- **Baseline** (Phase 3 off): test PASSES in 0.53 s.
+
+#### Test: `test_stress_stacked_patterns.py::test_stacked_concentric_arc_discs_mesh_clean`
+
+- **Crash site**: `builder.py:1381` — `gmsh.model.mesh.removeDuplicateNodes()`.
+- **Call sequence**: identical to Test 1.  `generate(2)` passes, all of
+  `apply_structured_mesh` (including `_remove_empty_cohort_envelope_volumes`)
+  completes, first `removeDuplicateNodes(tag=[], tol=...)` raises `TypeError`,
+  fallback `removeDuplicateNodes()` → **SIGSEGV**.
+- **Hypothesis**: same as Test 1.
+
+#### Test: `test_stress_stacked_patterns.py::test_stacked_overlapping_ring_segments_mesh_clean`
+
+- **Crash site**: `builder.py:1381` — `gmsh.model.mesh.removeDuplicateNodes()`.
+- **Call sequence**: identical to Tests 1–2.
+- **Hypothesis**: same as Test 1.
+
+#### Test: `test_stress_stacked_patterns.py::test_stacked_overlapping_ring_segments_with_lower_priority_planes_mesh_clean`
+
+- **Crash site**: `builder.py:1381` — `gmsh.model.mesh.removeDuplicateNodes()`.
+- **Call sequence**: identical to Tests 1–3.
+- **Hypothesis**: same as Test 1.
+
+### Common patterns
+
+All 4 B4 crashes share an identical execution trace:
+
+```
+generate(2) DONE
+apply_structured_mesh ENTER → all _build_slab_volume calls → EXIT
+_remove_empty_cohort_envelope_volumes ENTER → EXIT
+removeDuplicateNodes(tag=[], tol=2e-06) → TypeError (caught)
+removeDuplicateNodes()                  → SIGSEGV  ← crash here
+```
+
+The crash is 100% reproducible at the same Python line for all 4 tests.
+The root issue is independent of scene geometry (rectangular slabs, arc
+discs, ring segments all hit the same site).
+
+### Two contributing factors
+
+1. **`tag` kwarg not supported by the installed gmsh version**: the first
+   call `removeDuplicateNodes(tag=[], tol=2*fuzzy)` raises `TypeError`,
+   silently falling through to the no-args variant.  The no-args variant
+   then crashes.
+
+2. **Invalid model state after OCC volume removal**: Phase 3 removes the
+   OCC 3D cohort envelope volumes (Task 18) but retains their 2D face
+   children.  When gmsh's `removeDuplicateNodes()` is asked to scan all
+   entities (no `tag` filter), it traverses the model including these
+   orphaned faces, hits an internal consistency check or null-pointer on
+   the removed volumes, and segfaults.  Even if `removeDuplicateNodes` is
+   skipped entirely, `generate(3)` with `Mesh.MeshOnlyEmpty=1` also
+   segfaults — confirming the model state is fundamentally corrupt for
+   gmsh after OCC volume removal.
+
+### Recommendation
+
+The fix has two parts:
+
+1. **Eliminate the `tag`-kwarg `TypeError`**: replace the try/except with a
+   version-safe call that uses `tag=[]` when the kwarg is supported and
+   omits it otherwise — or upgrade gmsh to a version that accepts `tag`.
+   This stops the silent fallback to the no-args variant.
+
+2. **Fix the model state before `removeDuplicateNodes` / `generate(3)`**:
+   `_remove_empty_cohort_envelope_volumes` must not leave dangling OCC face
+   children.  Options:
+   - Call `gmsh.model.occ.synchronize()` or `gmsh.model.geo.synchronize()`
+     after removing the OCC volumes so the CAD kernel updates its internal
+     entity graph.
+   - Restrict `removeDuplicateNodes` to only the discrete entity tags that
+     Phase 3 created (pass the discrete tag list explicitly as a `tag`
+     argument once the gmsh API supports it).
+   - Alternatively, avoid removing OCC volumes entirely and instead rely on
+     `Mesh.MeshOnlyEmpty=1` to skip re-meshing them — the empty volumes
+     are then re-meshed as tetrahedral fill, which may be undesirable but
+     would at least not crash.
+
+The crash is **not** downstream of B1 (TopoDS::Shell) — it survived the
+B1 fix.  It is a standalone Phase 3 bug in the OCC-volume-removal +
+gmsh-state interaction at `builder.py:1368-1381`.
