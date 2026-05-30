@@ -221,7 +221,10 @@ def _dump_env(env):
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
 
-    for fk, face in sorted(env.bottom_sub_faces.items()):
+    def _fk_sort(kv):
+        return (kv[0].slab_index, kv[0].side, kv[0].piece_index)
+
+    for fk, face in sorted(env.bottom_sub_faces.items(), key=_fk_sort):
         bbox = Bnd_Box()
         BRepBndLib.Add_s(face, bbox)
         if not bbox.IsVoid():
@@ -231,7 +234,7 @@ def _dump_env(env):
             )
         else:
             print(f"  bot  {fk}: void bbox")
-    for fk, face in sorted(env.top_sub_faces.items()):
+    for fk, face in sorted(env.top_sub_faces.items(), key=_fk_sort):
         bbox = Bnd_Box()
         BRepBndLib.Add_s(face, bbox)
         if not bbox.IsVoid():
