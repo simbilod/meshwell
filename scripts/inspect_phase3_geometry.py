@@ -156,6 +156,83 @@ SCENES = {
             physical_name="slab",
         ),
     ],
+    # Two stacked structured slabs sharing a 4x4 footprint, with an
+    # unstructured cap above layer2 covering x in [0,2]. Builds ONE
+    # cohort spanning z in [0, 2]. Per-cohort arrangement unification
+    # means BOTH layers share the same 2-piece partition at x=2 —
+    # the cap's chord projects through the entire cohort. Internal
+    # horizontal interface at z=1 between layer1 top and layer2 bot
+    # gets stamped as a discrete 2D entity at mesh time.
+    "stacked-cap-features": [
+        PolyPrism(
+            polygons=_box(0, 0, 4, 4),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="layer1",
+            mesh_order=2.0,
+        ),
+        PolyPrism(
+            polygons=_box(0, 0, 4, 4),
+            buffers={1.0: 0.0, 2.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="layer2",
+            mesh_order=2.0,
+        ),
+        PolyPrism(
+            polygons=_box(0, 0, 2, 4),
+            buffers={2.0: 0.0, 3.0: 0.0},
+            physical_name="cap",
+        ),
+    ],
+    # Three stacked structured slabs sharing a 4x4 footprint, with a
+    # cap ABOVE layer3 (chord at x=2) AND a "pad" UNDER layer1 (chord
+    # at x=1). ONE cohort spanning z in [0, 3]. Per-cohort arrangement
+    # unification: ALL three layers share the same 3-piece partition
+    # at x in {1, 2}. Two internal horizontal interfaces at z=1 and
+    # z=2; six internal vertical interfaces (two chord lines x stacked
+    # over three z-ranges). Good stress test for Phase 3 discrete
+    # entity stamping across multiple z-ranges + multiple piece
+    # boundaries.
+    "stacked-3-layer-features": [
+        PolyPrism(
+            polygons=_box(0, 0, 4, 4),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="layer1",
+            mesh_order=2.0,
+        ),
+        PolyPrism(
+            polygons=_box(0, 0, 4, 4),
+            buffers={1.0: 0.0, 2.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="layer2",
+            mesh_order=2.0,
+        ),
+        PolyPrism(
+            polygons=_box(0, 0, 4, 4),
+            buffers={2.0: 0.0, 3.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="layer3",
+            mesh_order=2.0,
+        ),
+        # Pad below layer1 (touches z=0)
+        PolyPrism(
+            polygons=_box(0, 0, 1, 4),
+            buffers={-1.0: 0.0, 0.0: 0.0},
+            physical_name="pad",
+        ),
+        # Cap above layer3 (touches z=3)
+        PolyPrism(
+            polygons=_box(0, 0, 2, 4),
+            buffers={3.0: 0.0, 4.0: 0.0},
+            physical_name="cap",
+        ),
+    ],
 }
 
 
