@@ -91,6 +91,54 @@ class CohortEnvelope:
     sewn_lateral_faces: dict[tuple[int, int], list] = field(default_factory=dict)
 
 
+def _chain_piece_edges_by_corner(
+    piece_edge_list: "list[tuple[int, bool]]",
+    arr_edge_by_id: dict,
+    outline_xy_to_corner_id: dict,
+    round_digits: int,
+) -> "list[tuple[int, bool]]":
+    """Walk piece edges in connected traversal order.
+
+    face_partition_edges from the planner gives edges per piece but not
+    necessarily in chain order. Builds an entry-corner -> (edge, fwd)
+    lookup, then follows the chain by exit corner of each edge equals
+    entry corner of the next. Returns the chained list, or fewer entries
+    if the chain breaks early.
+    """
+
+    def _corner_id_at(xy):
+        return outline_xy_to_corner_id[
+            (round(xy[0], round_digits), round(xy[1], round_digits))
+        ]
+
+    def _entry_cid(eid, fwd):
+        ae = arr_edge_by_id[eid]
+        return _corner_id_at(ae.vertices[0] if fwd else ae.vertices[-1])
+
+    def _exit_cid(eid, fwd):
+        ae = arr_edge_by_id[eid]
+        return _corner_id_at(ae.vertices[-1] if fwd else ae.vertices[0])
+
+    start_lookup: dict[int, tuple[int, bool]] = {
+        _entry_cid(eid, fwd): (eid, fwd) for eid, fwd in piece_edge_list
+    }
+    first_eid, first_fwd = piece_edge_list[0]
+    chained: list[tuple[int, bool]] = []
+    visited: set[int] = set()
+    cur_cid = _entry_cid(first_eid, first_fwd)
+    start_cid = cur_cid
+    while True:
+        nxt = start_lookup.get(cur_cid)
+        if nxt is None or nxt[0] in visited:
+            break
+        chained.append(nxt)
+        visited.add(nxt[0])
+        cur_cid = _exit_cid(*nxt)
+        if cur_cid == start_cid:
+            break
+    return chained
+
+
 def build_cohort_envelope(
     plan: StructuredPlan,
     component_index: int,
@@ -346,24 +394,47 @@ def build_cohort_envelope(
         # Multi-piece slabs: try the horizontal_edges-based path first so
         # that sibling pieces' sub-faces share OCC TShapes (post-BOP, each
         # FaceKey routes to its own fragment cleanly). Falls back to the
-        # legacy provenance/polygon path if face_partition_edges is missing.
+        # legacy provenance/polygon path if face_partition_edges is missing
+        # or any piece has interior holes (the simple single-wire builder
+        # cannot encode outer+inner ring polygons).
+        _has_hole_piece = any(len(piece.interiors) > 0 for piece in slab.face_partition)
         _used_shared_edges = False
-        if slab.face_partition_edges is not None and len(
-            slab.face_partition_edges
-        ) == len(slab.face_partition):
+        if (
+            not _has_hole_piece
+            and slab.face_partition_edges is not None
+            and len(slab.face_partition_edges) == len(slab.face_partition)
+        ):
             try:
+                arr_edge_by_id = {e.edge_id: e for e in arrangement.edges}
+                _ROUND = 9
                 for piece_index, _piece in enumerate(slab.face_partition):
                     piece_edge_list = slab.face_partition_edges[piece_index]
                     if not piece_edge_list:
                         raise ValueError(
                             f"piece {piece_index} has empty face_partition_edges"
                         )
+
+                    # Chain edges in connected order. face_partition_edges
+                    # gives edges per piece but not necessarily in traversal
+                    # order, so we walk them by matching exit corner to next
+                    # entry corner.
+                    chained = _chain_piece_edges_by_corner(
+                        piece_edge_list,
+                        arr_edge_by_id,
+                        env.outline_xy_to_corner_id,
+                        _ROUND,
+                    )
+                    if len(chained) != len(piece_edge_list):
+                        raise ValueError(
+                            f"piece {piece_index} edges did not form connected chain"
+                        )
+
                     for z, side, face_dict in (
                         (slab.zlo, "bot", env.bottom_sub_faces),
                         (slab.zhi, "top", env.top_sub_faces),
                     ):
                         mw = BRepBuilderAPI_MakeWire()
-                        for eid, fwd in piece_edge_list:
+                        for eid, fwd in chained:
                             wire = env.horizontal_edges.get((z, eid))
                             if wire is None:
                                 raise ValueError(

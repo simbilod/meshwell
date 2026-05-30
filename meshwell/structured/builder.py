@@ -232,10 +232,14 @@ def _stamp_top_face_mesh(
         top_bnd_coords = np.asarray(top_bnd_coords_flat, dtype=float).reshape(-1, 3)
 
         # Build XY -> top-boundary-tag lookup for fast matching.
-        top_bnd_xy_to_tag: dict[tuple[float, float], int] = {}
-        for i, tt in enumerate(top_bnd_tags):
-            key = (round(top_bnd_coords[i, 0], 9), round(top_bnd_coords[i, 1], 9))
-            top_bnd_xy_to_tag[key] = int(tt)
+        # Tolerance-based nearest-XY match for boundary nodes. Bot and top
+        # boundary nodes are placed by gmsh's 1D mesher on the respective
+        # OCC edges; for arc edges they can drift by ~1e-5 due to
+        # parameterization precision. Exact dict lookup would silently
+        # skip these nodes, leading to KeyError when stamping triangles.
+        # Greedy nearest-neighbor pairing with a tolerance cap reliably
+        # pairs the corresponding boundary nodes.
+        _XY_MATCH_TOL = 1e-3
 
         new_interior_tags2: list[int] = []
         new_interior_coords_flat2: list[float] = []
@@ -245,11 +249,15 @@ def _stamp_top_face_mesh(
         for i, bt in enumerate(bot_all_tags):
             bt_int = int(bt)
             if bt_int not in bot_int_tags:
-                # Boundary node: match by XY.
-                key = (round(bot_all_coords[i, 0], 9), round(bot_all_coords[i, 1], 9))
-                top_tt = top_bnd_xy_to_tag.get(key)
-                if top_tt is not None:
-                    bot_to_top_tag[bt_int] = top_tt
+                # Boundary node: match to nearest top boundary node by XY.
+                if len(top_bnd_tags) == 0:
+                    continue
+                bx = bot_all_coords[i, 0]
+                by = bot_all_coords[i, 1]
+                dists = np.hypot(top_bnd_coords[:, 0] - bx, top_bnd_coords[:, 1] - by)
+                ti = int(np.argmin(dists))
+                if dists[ti] <= _XY_MATCH_TOL:
+                    bot_to_top_tag[bt_int] = int(top_bnd_tags[ti])
             else:
                 new_tag = next_tag + new_node_counter
                 new_node_counter += 1
@@ -928,7 +936,22 @@ def _suppress_empty_cohort_envelope_volumes(
                     pg_tag,
                 )
 
-    return empty_vols
+    # Remove the empty cohort envelope volumes outright so gmsh's 3D mesher
+    # does not try to tetrahedralize them. The 2D face children (bot/top/
+    # laterals) are retained — they're shared with neighboring unstructured
+    # entities and must stay meshed for conformality. recursive=False keeps
+    # the children attached to the model.
+    try:
+        gmsh.model.removeEntities([(3, vt) for vt in empty_vols], recursive=False)
+    except Exception as exc:
+        logger.warning(
+            "removeEntities failed for cohort envelope volumes %s: %s",
+            empty_vols,
+            exc,
+        )
+        return empty_vols
+
+    return []
 
 
 def _clear_dummy_cohort_envelope_tets(suppressed_vol_tags: list[int]) -> None:
