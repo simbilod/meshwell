@@ -1264,14 +1264,20 @@ def _build_phantom_shapes_via_cohort_envelope(
         lateral_source = (
             env.sewn_lateral_faces if env.sewn_lateral_faces else env.lateral_faces
         )
+        # Multi-segment arrangement edges (e.g. a perimeter run that wraps
+        # multiple corners) have N OCC lateral sub-faces. Each sub-face needs
+        # its own input_laterals entry so all of them participate in the BOP
+        # history walk and reach apply_structured_transfinite_hints — missing
+        # sub-faces fall back to gmsh's default tri-mesher and produce
+        # non-conformal lateral triangles. Encode the sub-segment index into
+        # the synthetic outer_edge_index so each (edge_id, segment) pair has
+        # a unique key.
+        _SEG_STRIDE = 10000
         for (_slab_idx, outline_edge_id), face_list in lateral_source.items():
-            # Phase 3 lateral wall is un-subdivided per piece, so we
-            # key by arrangement edge id only. The first face of the
-            # per-segment list is the representative; downstream code
-            # uses input_laterals only as a presence map for the BOP
-            # history walk.
-            if outline_edge_id not in input_laterals and face_list:
-                input_laterals[outline_edge_id] = face_list[0]
+            for seg_idx, face in enumerate(face_list):
+                key = outline_edge_id * _SEG_STRIDE + seg_idx
+                if key not in input_laterals:
+                    input_laterals[key] = face
 
         shapes.append(
             PhantomShape(
