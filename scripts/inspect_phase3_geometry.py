@@ -233,6 +233,83 @@ SCENES = {
             physical_name="cap",
         ),
     ],
+    # Photonics-like cross-section: stacked structured layers with a
+    # circular waveguide at the middle z-range, plus an unstructured
+    # cladding above and a keep=False sim-box footprint to fix the
+    # cohort's XY extent.
+    #
+    #   z in [4, 5]: 'air'  — unstructured cladding, keep=True
+    #   z in [3, 4]: 'top_oxide' — structured (full footprint)
+    #   z in [2, 3]: 'waveguide' (disc r=1) + 'side_oxide' (frame)
+    #                — TWO structured slabs at the same z-interval, one
+    #                  with arcs, one filling the rest. Both keep=True.
+    #   z in [1, 2]: 'bottom_oxide' — structured (full footprint)
+    #   z in [0, 1]: 'substrate' — structured (full footprint)
+    #
+    # All 5 structured layers share the same 6x4 XY footprint via the
+    # waveguide/side_oxide co-located pair, so they form ONE cohort.
+    # The disc waveguide is the only piece with arc geometry; the
+    # planner's arrangement at z in [2, 3] subdivides the cohort into
+    # 'disc' and 'around-disc' regions, and that subdivision propagates
+    # to every other slab in the cohort (per-cohort arrangement
+    # unification — every layer sees a disc-shaped piece + an annular
+    # 'around-disc' piece, even though disc only physically exists in
+    # the waveguide layer).
+    "photonics-cross-section": [
+        PolyPrism(
+            polygons=_box(-3, -2, 3, 2),
+            buffers={0.0: 0.0, 1.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="substrate",
+            mesh_order=5.0,
+        ),
+        PolyPrism(
+            polygons=_box(-3, -2, 3, 2),
+            buffers={1.0: 0.0, 2.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="bottom_oxide",
+            mesh_order=5.0,
+        ),
+        # Disc waveguide with arcs (the only arc-bearing slab).
+        PolyPrism(
+            polygons=_disc(cx=0.0, cy=0.0, r=1.0, n=48),
+            buffers={2.0: 0.0, 3.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            identify_arcs=True,
+            min_arc_points=4,
+            arc_tolerance=1e-3,
+            physical_name="waveguide",
+            mesh_order=1.0,
+        ),
+        # Filler oxide at the same z as the waveguide (the disc carves
+        # it). Lower priority so disc wins.
+        PolyPrism(
+            polygons=_box(-3, -2, 3, 2),
+            buffers={2.0: 0.0, 3.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="side_oxide",
+            mesh_order=5.0,
+        ),
+        PolyPrism(
+            polygons=_box(-3, -2, 3, 2),
+            buffers={3.0: 0.0, 4.0: 0.0},
+            structured=True,
+            resolutions=[StructuredExtrusionResolutionSpec(n_layers=[2])],
+            physical_name="top_oxide",
+            mesh_order=5.0,
+        ),
+        # Unstructured air on top.
+        PolyPrism(
+            polygons=_box(-3, -2, 3, 2),
+            buffers={4.0: 0.0, 5.0: 0.0},
+            physical_name="air",
+            mesh_order=5.0,
+        ),
+    ],
 }
 
 
