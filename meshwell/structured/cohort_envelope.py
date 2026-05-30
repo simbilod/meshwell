@@ -244,15 +244,25 @@ def build_cohort_envelope(
             v2 = env.vertices[(z, c2)]
             mw = BRepBuilderAPI_MakeWire()
             if arr_edge.circle is not None:
-                cx, cy = arr_edge.circle.center
-                r = arr_edge.circle.radius
-                axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
-                circ = gp_Circ(axis, r)
                 p1_snapped = corner_id_to_xy[c1]
                 p2_snapped = corner_id_to_xy[c2]
                 start = gp_Pnt(p1_snapped[0], p1_snapped[1], z)
                 end = gp_Pnt(p2_snapped[0], p2_snapped[1], z)
-                arc = GC_MakeArcOfCircle(circ, start, end, True).Value()
+                # Use a 3-point arc constructor with a middle vertex from the
+                # planner's arrangement edge so the arc picks the correct half
+                # of the circle. The (circ, start, end, Sense) constructor
+                # always picks CCW for Sense=True, which is wrong for inner
+                # arcs (hole rings traversed CW in shapely convention).
+                if len(arr_edge.vertices) >= 3:
+                    mid_xy = arr_edge.vertices[len(arr_edge.vertices) // 2]
+                    middle = gp_Pnt(mid_xy[0], mid_xy[1], z)
+                    arc = GC_MakeArcOfCircle(start, middle, end).Value()
+                else:
+                    cx, cy = arr_edge.circle.center
+                    r = arr_edge.circle.radius
+                    axis = gp_Ax2(gp_Pnt(cx, cy, z), gp_Dir(0, 0, 1))
+                    circ = gp_Circ(axis, r)
+                    arc = GC_MakeArcOfCircle(circ, start, end, True).Value()
                 edge = BRepBuilderAPI_MakeEdge(arc, v1, v2).Edge()
                 mw.Add(edge)
             elif len(arr_edge.vertices) == 2:
