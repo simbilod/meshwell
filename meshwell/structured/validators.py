@@ -14,18 +14,6 @@ from meshwell.structured.exceptions import StructuredZStackError
 from meshwell.structured.types import Cohort
 
 
-def _entity_z_range(ent: Any) -> tuple[float, float] | None:
-    """Return (zmin, zmax) for an entity that has identifiable z-extent."""
-    if isinstance(ent, PolyPrism):
-        if ent.extrude:
-            return (ent.zmin, ent.zmax)
-        zs = sorted(ent.buffers.keys())
-        return (zs[0], zs[-1])
-    if hasattr(ent, "zmin") and hasattr(ent, "zmax"):
-        return (ent.zmin, ent.zmax)
-    return None
-
-
 def _entity_z_boundaries(ent: Any) -> list[float]:
     """List of z-boundaries this entity introduces."""
     if isinstance(ent, PolyPrism):
@@ -37,9 +25,19 @@ def _entity_z_boundaries(ent: Any) -> list[float]:
 
 def _entity_xy_at(ent: Any, z: float):
     """Shapely geometry of entity's footprint at z, or None if no overlap."""
+    # v1: only extrude=True PolyPrisms are considered for z-stack
+    # overlap checks. Buffered PolyPrisms are not structured-eligible
+    # upstream, and their z-boundaries are returned by
+    # _entity_z_boundaries but their XY footprint at intermediate z
+    # is variable — out of scope for v1.
     if isinstance(ent, PolyPrism) and ent.extrude and ent.zmin <= z <= ent.zmax:
         return ent.polygons
     return None
+
+
+def _approx_in(z: float, zs: set[float], tol: float = 1e-9) -> bool:
+    """Return True if z is within tol of any value in zs."""
+    return any(abs(z - zp) <= tol for zp in zs)
 
 
 def _cohort_xy_at(cohort: Cohort, z: float):
@@ -61,13 +59,13 @@ def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
     for cohort_idx, cohort in enumerate(cohorts):
         cohort_z_set = set(cohort.z_planes)
         for ent_idx, ent in enumerate(entities):
-            ent_z_range = _entity_z_range(ent)
-            if ent_z_range is None:
+            boundaries = _entity_z_boundaries(ent)
+            if not boundaries:
                 continue
-            for z in _entity_z_boundaries(ent):
+            for z in boundaries:
                 if not (cohort.zmin < z < cohort.zmax):
                     continue
-                if z in cohort_z_set:
+                if _approx_in(z, cohort_z_set):
                     continue
                 ent_xy = _entity_xy_at(ent, z)
                 if ent_xy is None:

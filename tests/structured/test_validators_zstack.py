@@ -72,3 +72,14 @@ def test_multi_slab_cohort_z_plane_is_legal():
     slabs, _ = collect_structured_slabs(entities)
     cohorts = build_cohorts(slabs)
     validate_z_stacks(cohorts, entities)
+
+
+def test_near_match_z_plane_treated_as_coincident():
+    bot = s("bot", 0, 1, structured=True)
+    top = s("top", 1, 2, structured=True)
+    # cap shares z=1 with cohort, but pass a value that differs by 1e-12.
+    cap = s("cap", 1.0 + 1e-12, 3)
+    entities = [bot, top, cap]
+    slabs, _ = collect_structured_slabs(entities)
+    cohorts = build_cohorts(slabs)
+    validate_z_stacks(cohorts, entities)  # no raise
