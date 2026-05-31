@@ -1,22 +1,10 @@
-"""Tests for meshwell.structured.wedge — pre_2d transfinite hints.
-
-Integration tests (test_transfinite_hints_* and test_n_layers_mismatch_raises)
-are marked xfail because they depend on Task 18 (orchestrator wiring).
-
-Unit tests for resolve_n_layers do NOT require orchestrator wiring and
-must pass immediately.
-"""
+"""Tests for meshwell.structured.wedge — pre_2d transfinite hints."""
 import pytest
 from shapely.geometry import Polygon
 
 from meshwell.resolution import StructuredExtrusionResolutionSpec
 
 SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-
-
-# ---------------------------------------------------------------------------
-# Integration tests — xfail until Task 18 wires the hooks
-# ---------------------------------------------------------------------------
 
 
 def test_transfinite_hints_produce_quad_laterals(tmp_path):
@@ -45,15 +33,6 @@ def test_transfinite_hints_produce_quad_laterals(tmp_path):
     assert quads >= 16
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Adjacent same-z-interval structured prisms are currently fused into "
-        "one sub-solid by zinterval_footprint's unary_union; n_layers mismatch "
-        "detection requires decompose to keep per-slab boundaries (separate "
-        "task — orchestrator wiring is complete)."
-    ),
-    strict=False,
-)
 def test_n_layers_mismatch_raises(tmp_path):
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
