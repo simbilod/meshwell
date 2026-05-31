@@ -1,0 +1,96 @@
+"""Dataclasses shared across all structured-pipeline stages.
+
+Kept in one module so importers don't have to know which stage owns
+which type. All dataclasses are frozen — these records flow through
+the pipeline immutably.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from shapely.geometry import MultiPolygon, Polygon
+
+
+@dataclass(frozen=True)
+class ShapeKey:
+    """Stable identity for a TopoDS_Shape used as a dict key.
+
+    TShape pointer + orientation matches cad_occ._shape_key. We
+    redeclare it here as a frozen dataclass so it's pickle-safe and
+    type-checkable.
+    """
+
+    tshape_id: int
+    orientation: int
+
+
+@dataclass(frozen=True)
+class StructuredSlab:
+    """One z-interval of one structured PolyPrism.
+
+    A single PolyPrism with N+1 buffer keys yields N StructuredSlab
+    records, one per adjacent (zlo, zhi) pair.
+
+    n_layers is intentionally absent — it is read at mesh time from
+    the StructuredExtrusionResolutionSpec attached to physical_name.
+    """
+
+    source_index: int
+    footprint: "Polygon | MultiPolygon"
+    zlo: float
+    zhi: float
+    mesh_order: float | None
+    mesh_bool: bool
+    physical_name: tuple[str, ...]
+    identify_arcs: bool
+    arc_tolerance: float
+    min_arc_points: int
+
+
+@dataclass(frozen=True)
+class Cohort:
+    """Connected component of structured slabs (Union-Find)."""
+
+    slabs: tuple[StructuredSlab, ...]
+    z_planes: tuple[float, ...]  # sorted unique cohort z-boundaries
+
+    @property
+    def zmin(self) -> float:
+        """Return the lowest z boundary of this cohort."""
+        return self.z_planes[0]
+
+    @property
+    def zmax(self) -> float:
+        """Return the highest z boundary of this cohort."""
+        return self.z_planes[-1]
+
+
+@dataclass(frozen=True)
+class SubPiece:
+    """One (z-interval x sub-polygon) cell after decomposition.
+
+    Each SubPiece becomes one TopoDS_Solid in the cohort compound.
+    """
+
+    cohort_index: int
+    z_interval: tuple[float, float]
+    sub_polygon: "Polygon"
+    source_slab_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SlabMeta:
+    """Per-sub-solid metadata used at meshing time.
+
+    Lookup happens by post-BOP ShapeKey of the sub-solid in the
+    OCCLabeledEntity's shapes list. n_layers is NOT here — wedge.py
+    resolves it from the resolution_specs dict via physical_name.
+    """
+
+    slab_index: int
+    physical_name: tuple[str, ...]
+    bot_face_key: ShapeKey
+    top_face_key: ShapeKey
+    lateral_face_keys: tuple[ShapeKey, ...]
