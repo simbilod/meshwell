@@ -19,7 +19,6 @@ SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="Orchestrator wiring lands in Task 18", strict=False)
 def test_transfinite_hints_produce_quad_laterals(tmp_path):
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
@@ -46,7 +45,15 @@ def test_transfinite_hints_produce_quad_laterals(tmp_path):
     assert quads >= 16
 
 
-@pytest.mark.xfail(reason="Orchestrator wiring lands in Task 18", strict=False)
+@pytest.mark.xfail(
+    reason=(
+        "Adjacent same-z-interval structured prisms are currently fused into "
+        "one sub-solid by zinterval_footprint's unary_union; n_layers mismatch "
+        "detection requires decompose to keep per-slab boundaries (separate "
+        "task — orchestrator wiring is complete)."
+    ),
+    strict=False,
+)
 def test_n_layers_mismatch_raises(tmp_path):
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism

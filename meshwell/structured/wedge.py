@@ -110,6 +110,11 @@ def apply_lateral_transfinite_hints(
                 gmsh.model.mesh.setTransfiniteCurve(etag, n_layers + 1)
 
         gmsh.model.mesh.setTransfiniteSurface(face_tag)
+        # Wedge prisms have quad lateral faces. Recombine the lateral 2D
+        # surface mesh to quads so its boundary topology matches what
+        # stamp_wedges emits (otherwise gmsh's PLC sees a triangle on the
+        # wedge side and a quad on the bulk side at the same face).
+        gmsh.model.mesh.setRecombine(2, face_tag)
 
 
 # ---------------------------------------------------------------------------

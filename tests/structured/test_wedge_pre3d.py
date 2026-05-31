@@ -1,4 +1,3 @@
-import pytest
 from shapely.geometry import Polygon
 
 from meshwell.orchestrator import generate_mesh
@@ -8,9 +7,6 @@ from meshwell.resolution import StructuredExtrusionResolutionSpec
 SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 
-@pytest.mark.xfail(
-    reason="end-to-end test — enabled after Task 18 wiring", strict=False
-)
 def test_wedge_count_matches_bot_triangles_times_n_layers(tmp_path):
     p = PolyPrism(
         polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0}, physical_name="s", structured=True
@@ -33,9 +29,6 @@ def test_wedge_count_matches_bot_triangles_times_n_layers(tmp_path):
     assert tets == 0
 
 
-@pytest.mark.xfail(
-    reason="end-to-end test — enabled after Task 18 wiring", strict=False
-)
 def test_stacked_cohort_wedges_conformal(tmp_path):
     a = PolyPrism(
         polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0}, physical_name="a", structured=True
