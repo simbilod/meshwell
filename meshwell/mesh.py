@@ -8,9 +8,9 @@ from os import cpu_count
 from pathlib import Path
 
 import gmsh
-import meshio
 import numpy as np
 
+import meshio
 from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
 
@@ -404,6 +404,8 @@ class Mesh:
         global_scaling: float,
         verbosity: int,
         optimization_flags: tuple[tuple[str, int]] | None,
+        pre_2d_hook: callable | None = None,
+        pre_3d_hook: callable | None = None,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -419,7 +421,19 @@ class Mesh:
         if global_3D_algorithm == 1 and verbosity:
             gmsh.logger.start()
 
-        self.model_manager.model.mesh.generate(dim)
+        if dim >= 2 and (
+            pre_2d_hook is not None or (dim >= 3 and pre_3d_hook is not None)
+        ):
+            # Call hooks at the appropriate generate boundaries
+            if pre_2d_hook is not None:
+                pre_2d_hook()
+            self.model_manager.model.mesh.generate(2)
+            if dim >= 3:
+                if pre_3d_hook is not None:
+                    pre_3d_hook()
+                self.model_manager.model.mesh.generate(3)
+        else:
+            self.model_manager.model.mesh.generate(dim)
 
         if optimization_flags:
             for optimization_flag, niter in optimization_flags:
@@ -491,6 +505,8 @@ class Mesh:
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
+        pre_2d_hook: callable | None = None,
+        pre_3d_hook: callable | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -512,6 +528,8 @@ class Mesh:
             gmsh_version: GMSH version
             blueprint: mapping between entity and extrusion type
             interface_delimiter: String used to separate names in an interface
+            pre_2d_hook: Optional callable invoked immediately before generate(2)
+            pre_3d_hook: Optional callable invoked immediately before generate(3)
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -545,6 +563,8 @@ class Mesh:
                 global_scaling=global_scaling,
                 verbosity=verbosity,
                 optimization_flags=optimization_flags,
+                pre_2d_hook=pre_2d_hook,
+                pre_3d_hook=pre_3d_hook,
             )
 
         if len(attempts) == 1:
@@ -598,6 +618,8 @@ def mesh(
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
+    pre_2d_hook: callable | None = None,
+    pre_3d_hook: callable | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -624,6 +646,8 @@ def mesh(
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
         interface_delimiter: String used to separate names in an interface
+        pre_2d_hook: Optional callable invoked immediately before generate(2)
+        pre_3d_hook: Optional callable invoked immediately before generate(3)
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -660,6 +684,8 @@ def mesh(
             resolution_specs=resolution_specs,
             gmsh_version=gmsh_version,
             interface_delimiter=interface_delimiter,
+            pre_2d_hook=pre_2d_hook,
+            pre_3d_hook=pre_3d_hook,
         )
 
         # Save to file if output file provided
