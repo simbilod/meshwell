@@ -36,13 +36,14 @@ class PolyPrism(GeometryEntity):
         additive: bool = False,
         subdivision: tuple[int, int, int] | None = None,
         point_tolerance: float = 1e-3,
-        identify_arcs: bool = False,
+        identify_arcs: bool | None = None,
         min_arc_points: int = 4,
         arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
+        structured: bool = False,
     ):
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
@@ -77,20 +78,32 @@ class PolyPrism(GeometryEntity):
                 tuple[float, Polygon]
             ] = self._get_buffered_polygons(polygons, buffers)
 
+        # Structured validation and identify_arcs resolution
+        if structured:
+            from meshwell.structured.exceptions import (
+                StructuredExtrudeRequiredError,
+            )
+
+            if not self.extrude:
+                raise StructuredExtrudeRequiredError(entity_index=-1)
+        if identify_arcs is None:
+            identify_arcs = bool(structured)
+        self.structured = structured
+        self.identify_arcs = identify_arcs
+
+        if self.identify_arcs and not self.extrude:
+            raise NotImplementedError(
+                "Arc identification is currently only supported for PolyPrism when extrude=True."
+            )
+
         # Store other attributes
         self.buffers = buffers
         self.mesh_order = mesh_order
         self.additive = additive
         self.dimension = 3
         self.subdivision = subdivision
-        self.identify_arcs = identify_arcs
         self.min_arc_points = min_arc_points
         self.arc_tolerance = arc_tolerance
-
-        if self.identify_arcs and not self.extrude:
-            raise NotImplementedError(
-                "Arc identification is currently only supported for PolyPrism when extrude=True."
-            )
 
         # Format physical name
         self.physical_name = format_physical_name(physical_name)
