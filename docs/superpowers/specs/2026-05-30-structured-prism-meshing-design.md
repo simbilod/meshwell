@@ -16,37 +16,62 @@ between structured and unstructured volumes is conformal.
 
 The feature must support, in v1:
 
-- Multi-layer structured slabs (`n_layers > 1`) for vertical refinement.
+- Multi-layer structured slabs (`n_layers > 1`) for vertical
+  refinement. **Note:** `n_layers` is a meshing-time concern only — the
+  planner and OCC builder do not consider it. It travels through as
+  metadata and is consumed by `wedge.py`.
 - Vertical stacks of structured polyprisms (cohorts), with internal
   z-plane interfaces shared cleanly between adjacent slabs.
+  Inter-slab arc and line interfaces are conformal by construction
+  via shared internal TShapes (built once, referenced by both
+  sub-solids).
 - mesh_order-based **Policy B** carving when two structured polyprisms
   overlap in 3D (lower mesh_order wins, gets subtracted from higher).
-- First-class arc preservation on lateral walls (curved boundaries
-  produce true OCC arc edges, not polyline approximations, so the
-  lateral structured mesh respects the underlying circle).
-- **Imprint from unstructured neighbours above/below**: an unstructured
-  PolyPrism whose bot/top face lands on a structured cohort's top/bot
-  cuts the cohort face along the neighbour's outline. (Missing from
-  the old design — was the source of conformality breaks at the cohort
-  bot/top.)
-- **Lateral imprint**: an unstructured neighbour whose z-range starts
-  or ends strictly inside a structured cohort's z-extent splits the
-  cohort vertically at that z-plane so the lateral wall can be
-  imprinted cleanly. (Old design raised `StructuredMidHeightCutError`
-  here.)
+- First-class arc preservation on lateral walls AND on internal
+  inter-slab faces (curved boundaries produce true OCC arc edges, not
+  polyline approximations).
+- **Bidirectional imprint at shared z-planes between cohorts and
+  unstructured PolyPrism neighbours**: the planner pre-cuts BOTH
+  sides (cohort top/bot AND opposing unstructured bot/top) along
+  their shared XY decomposition, so BOP merges coincident TShapes
+  rather than splitting faces. See "Why bidirectional pre-cut" below.
 
-Not in v1: `recombine=True` (hex elements via gmsh recombine of
-wedges), structured entities other than PolyPrism.
+**Not in v1:**
+
+- `recombine=True` (hex elements via gmsh recombine of wedges).
+- Structured entities other than PolyPrism.
+- **Lateral imprint** (unstructured neighbour z-boundaries strictly
+  inside a cohort's z-extent). This was tentatively planned but
+  dropped — too complex for v1. Instead, **raise** at planner stage
+  if z-values do not form proper stacks (see Constraints).
 
 ## Constraints (raise at planner stage)
 
-The planner rejects the following inputs with explicit errors:
+The planner rejects the following inputs with explicit errors. **No
+silent fallbacks anywhere in this pipeline** — every unhandled case
+is a raise with a precise message identifying the offending entity
+indices and z-values.
 
 - A structured PolyPrism with `extrude=False` (z-buffered footprints).
   Only constant-XY-footprint prisms are structured-eligible.
-- Two laterally-touching structured slabs (same cohort, same z-interval)
-  with different `n_layers`.
 - Any non-PolyPrism entity flagged structured.
+- **Z-stack violation:** any entity whose `zlo` or `zhi` falls
+  strictly inside a cohort's z-extent while sharing XY with that
+  cohort, unless that z-value is already a shared cohort z-plane.
+  This covers the dropped "lateral imprint" case and forces the user
+  to make z-stacks explicit.
+- Any unstructured neighbour that shares a z-plane with a cohort
+  but is not a PolyPrism with `extrude=True`. (Pre-cut requires a
+  shapely polygon.)
+- A `_CohortEntity` whose pre-baked shell faces are modified by the
+  cad_occ cut cascade or `fragment_all` (see post-pass validator,
+  Stage 5 integration). Indicates either a planner pre-cut bug or
+  a BOP fuzzy mismatch.
+- At meshing stage: two laterally-touching structured sub-pieces
+  whose source slabs disagree on `n_layers`. Detected when
+  `pre_2d_hook` walks lateral faces.
+- At meshing stage: any lateral face that fails
+  `setTransfiniteSurface` (e.g. multi-wire, > 4 boundary edges).
 
 ## Why the old design was bloated
 
@@ -118,32 +143,41 @@ same cohort when:
 Produces `cohorts: list[Cohort]` where each cohort holds its member
 slabs and the union of their z-boundaries.
 
-Lateral-touch with mismatched `n_layers` is detected here and raised.
+`n_layers` is not checked here — it's a meshing concern and is
+validated in `wedge.py` when laterally-adjacent sub-pieces are about
+to receive transfinite hints on a shared lateral face.
 
 ### Stage 3 — `decompose.py`
 
 For each cohort, compute the per-z-interval sub-polygon decomposition
-in shapely. This is the only nontrivial planner stage.
+in shapely AND the matching pre-cut of opposing unstructured
+neighbour faces. This is the only nontrivial planner stage.
 
-**3a. Z-plane set.**
+**3a. Z-stack validation.**
+
+Before anything else, validate that the scene forms proper z-stacks
+around every cohort:
 
 ```
-z_planes(cohort) =
-    sorted set of (
-        slab.zlo, slab.zhi  for slab in cohort.slabs
-      ∪ {z in unstructured_entity.buffers.keys()
-          for unstructured_entity in unstructured_entities
-          if z lies strictly inside (cohort.zmin, cohort.zmax)
-          and unstructured_entity z-overlaps cohort
-          and unstructured_entity's XY footprint at z
-              intersects cohort footprint at z}
-    )
+for entity in all_entities:
+    for z in (entity.zlo, entity.zhi):
+        if cohort.zmin < z < cohort.zmax
+           and entity.xy_at(z) intersects cohort.xy_at(z):
+            raise StructuredZStackError(entity, z, cohort)
 ```
 
-The unstructured contribution is what lets the planner pre-imprint
-mid-height lateral cuts.
+This enforces the v1 restriction "no lateral imprint": every
+entity's z-boundaries that share XY with a cohort must coincide with
+one of the cohort's own slab boundaries.
 
-**3b. Per-z-interval footprint with Policy B carving.**
+**3b. Z-plane set.** Just the union of structured-slab z-boundaries
+in the cohort (after 3a, no other entities contribute):
+
+```
+z_planes(cohort) = sorted set(slab.zlo, slab.zhi for slab in cohort.slabs)
+```
+
+**3c. Per-z-interval footprint with Policy B carving.**
 
 For each z-interval `(z_i, z_{i+1})`:
 
@@ -159,30 +193,54 @@ for s in slabs_here:
         footprint = footprint − s.footprint
 ```
 
-This is one shapely pass per z-interval; no iteration.
+One shapely pass per z-interval; no iteration.
 
-**3c. Pre-imprint cut sources.**
+**3d. Bidirectional pre-cut at shared z-planes.**
+
+For each z-interval `(z_i, z_{i+1})`, gather the union of cohort
+sub-polygon boundaries inside this z-interval and pre-cut along:
 
 ```
-cuts(z_interval) =
-    sibling structured slab boundaries in other cohorts at this z-interval
-  ∪ unstructured neighbour XY outlines at z_i (cohort.bot of z-interval)
-  ∪ unstructured neighbour XY outlines at z_{i+1} (cohort.top of z-interval)
-  ∪ unstructured neighbour XY outlines at any z in (z_i, z_{i+1})
-    intersected with the z-interval (lateral imprint)
+cuts_at(z) =
+    union of (cohort sub-polygon boundaries at z)
+  ∪ union of (unstructured PolyPrism polygon boundaries at z)
+    for every unstructured PolyPrism whose z-extent includes z
+    and whose polygon intersects cohort footprint at z
 ```
 
-For each z-interval: `polygonize(footprint.boundary ∪ cuts.boundary)`,
-filter pieces whose representative_point lies inside `footprint`,
-emit as `SubPiece(z_interval, sub_polygon, source_slabs)`.
+Then, in shapely:
 
-**3d. n_layers propagation.**
+- **Cohort side:** for each z-interval, `polygonize(footprint.boundary
+  ∪ cuts_at(z_i).boundary ∪ cuts_at(z_{i+1}).boundary)`, filter to
+  pieces whose `representative_point` lies inside `footprint`, emit as
+  `SubPiece(z_interval, sub_polygon, source_slab_indices)`.
 
-Each `SubPiece` inherits `n_layers` from its source structured slab.
-If multiple source slabs contributed (overlap zone), they all had to
-agree per the Stage 2 invariant.
+- **Unstructured side (new):** for each unstructured PolyPrism `U`
+  whose `extrude` z-extent shares a z-plane `z` with a cohort and
+  whose polygon overlaps the cohort footprint at `z`: replace `U`'s
+  polygon with the MultiPolygon
+  `polygonize(U.polygon.boundary ∪ cuts_at(z).boundary)`, filtered to
+  pieces inside `U.polygon`. The cohort's union footprint at `z` plus
+  the cohort's internal sub-polygon boundary lines at `z` are *both*
+  imprinted. `U`'s physical_name, mesh_order, mesh_bool are
+  preserved.
 
-Output: `cohort.subpieces: list[SubPiece]`.
+The result: at every shared z-plane between a cohort and an
+unstructured neighbour, both sides have *identical* sub-face
+decompositions (same vertex sequences, same arc geometry once
+constructed in OCC). BOP merges coincident TShapes via fuzzy without
+having to split any face.
+
+The cuts_at gather is symmetric in z (every cohort sub-piece sees
+both its bot-z and top-z neighbours; every unstructured PolyPrism
+sees the cohorts above and below it). So after Stage 3d, the
+entity list contains: cohort `SubPiece` records (ready for Stage 4)
++ pre-cut copies of every unstructured PolyPrism that shares a
+z-plane with any cohort.
+
+Output: `cohort.subpieces: list[SubPiece]` AND a mutated
+`unstructured_entities` list where pre-cut PolyPrisms have been
+replaced with their multi-polygon equivalents.
 
 ### Stage 4 — `build.py`
 
@@ -207,15 +265,18 @@ with shared internal TShapes. Bottom-up assembly:
    - **Horizontal interior faces** at internal z-planes (z-planes
      strictly inside the cohort) where two z-adjacent subpieces share
      XY overlap → one shared face between them, built from their
-     intersection polygon.
+     intersection polygon. Edges (including any arcs) reference the
+     unique edge registry → conformal across the z-step.
    - **Horizontal boundary faces** at the cohort's zmin and zmax.
-     One face per subpiece at that boundary (no shared owner).
-     **Pre-imprinted** by the decompose stage, so each is a single
-     sub_polygon with neighbour outlines already baked into its edges.
+     One face per subpiece at that boundary. **Pre-imprinted** by
+     Stage 3d, so each is a single sub_polygon with neighbour outlines
+     already baked into its edges.
    - **Lateral faces.** Per subpiece, one face per boundary edge of
      its sub_polygon, extruded between its z-interval. Two
      laterally-adjacent subpieces in the same z-interval share their
-     interface face.
+     interface face (and its vertical edges) via the unique
+     edge/face registry — so arc lateral walls between subpieces are
+     shared TShapes, not two coincident-but-distinct faces.
 
 4. **Sub-solid assembly.** For each `SubPiece`, assemble a
    `TopoDS_Solid` from its six-ish faces (bot, top, laterals) via
@@ -244,15 +305,21 @@ For each cohort sub-solid's lateral face (looked up via
 `slab_meta[...].lateral_face_keys` → post-BOP gmsh tag via standard
 `cad_occ` face mapping):
 
+- Look up every cohort sub-solid that owns this face. If two
+  sub-solids share the face and their slab `n_layers` disagree,
+  **raise** `StructuredLateralNLayersMismatchError` naming both
+  slab source_indices, the face's gmsh tag, and the two `n_layers`
+  values.
 - Find the 1D vertical edges (endpoints differ in z).
   `setTransfiniteCurve(edge, n_layers + 1)`.
 - `setTransfiniteSurface(face)` so the 2D mesh is a structured quad
   grid (no interior face nodes).
 
-Lateral faces that gmsh would reject the hint on (multi-wire,
-not-quadrilateral after BOP imprint) fall back silently to default
-2D meshing — non-conformality on those faces will be caught by a
-post-mesh validator.
+Lateral faces that gmsh would reject the hint on (multi-wire, > 4
+boundary edges) **raise** with the offending face's gmsh tag and
+slab source_index. A face that ends up multi-wire after BOP usually
+means the planner pre-cut decomposition missed something — the
+shell-invariance validator (below) should also catch it.
 
 **`pre_3d_hook`** — wedge stamping per cohort sub-solid.
 
@@ -359,12 +426,31 @@ the compound's outer boundary, not its internal faces).
 
 **Post-pass** (between `fragment_all` and XAO emission):
 
-1. For each `OCCLabeledEntity` whose source is a `_CohortEntity`:
+1. **Shell-invariance validator.** For each cohort's pre-recorded
+   bot, top, and lateral face TShapes (captured in `slab_meta` at
+   Stage 4): query `BOPAlgo_Builder.Modified(face)`.
+   - Empty `Modified()` AND not `IsDeleted` → face unchanged. OK.
+   - `Modified()` returns exactly one face whose vertex/edge IDs
+     match the original up to fuzzy → face merged with a coincident
+     neighbour face (the expected pre-cut outcome). OK; update
+     `slab_meta` to the new TShape.
+   - `Modified()` returns multiple faces, or one face with different
+     edge structure → BOP introduced a cut on the cohort shell.
+     **Raise** with the original face's slab_index and face role,
+     the post-BOP fragment count, and the suggestion that
+     Stage 3d's pre-cut decomposition was incomplete (or a fuzzy
+     value needs adjustment).
+
+   This is the validator that justifies the bidirectional pre-cut
+   strategy: if it ever fires, our shapely pre-decomposition missed
+   a cut that BOP felt obligated to make.
+
+2. For each `OCCLabeledEntity` whose source is a `_CohortEntity`:
    walk its `shapes` list, look up each sub-solid by `ShapeKey` in
    `slab_meta`, and synthesize one fresh `OCCLabeledEntity` per
    sub-solid carrying that slab's `physical_name` and a synthetic
    `index` derived from the slab's `source_index`.
-2. Replace the cohort entity in the result list with its expanded
+3. Replace the cohort entity in the result list with its expanded
    per-sub-solid entities.
 
 `slab_meta` survives BOP because the planner-built sub-solid TShapes
@@ -382,32 +468,28 @@ After XAO load, the wedge hooks
 post-BOP `ShapeKey`. The bot/top/lateral face_keys are similarly
 looked up via `builder.Modified()` and cached during the post-pass.
 
-## Failure modes and validators
+## Failure modes summary
 
-Planner-time (raise):
+Every failure is a raise. No silent fallback anywhere. Consolidated
+list (the same errors are documented in their owning stages):
 
-- Structured PolyPrism with `extrude=False`.
-- Structured flag on non-PolyPrism.
-- Lateral-touching structured slabs with mismatched `n_layers`.
-- (Inherited from old) cohort footprint constancy is **not** enforced —
-  z-stepped cohort outlines are now legal because sub-solids are
-  per-z-interval first-class entities.
+| Stage | Error | Trigger |
+|-------|-------|---------|
+| collect | `StructuredExtrudeRequiredError` | `structured=True` with `extrude=False` |
+| collect | `StructuredEntityTypeError` | `structured=True` on non-PolyPrism |
+| decompose 3a | `StructuredZStackError` | entity z-boundary strictly inside cohort with XY overlap |
+| decompose 3d | `UnstructuredImprintRequiresPolyPrismError` | non-PolyPrism unstructured shares z-plane with a cohort |
+| build | `SubPolygonAssemblyError` | degenerate polygon or OCC arc fit failure |
+| build | `CohortNonManifoldError` | sewn compound has non-manifold edges (planner bug) |
+| cad_occ post-pass | `CohortShellModifiedError` | BOP modified a pre-baked cohort shell face (Stage 5 validator) |
+| wedge pre_2d | `StructuredLateralNLayersMismatchError` | shared lateral face between subpieces with different `n_layers` |
+| wedge pre_2d | `StructuredTransfiniteRejectedError` | lateral face is multi-wire or > 4 boundary edges |
+| wedge post-stamp | `WedgeCountMismatchError` | bot triangle count × `n_layers` ≠ emitted wedge count for a sub-solid |
+| wedge post-stamp | `WedgeBotNodeMismatchError` | wedge bot vertices don't match the bot face mesh node tags |
 
-Build-time (raise):
-
-- Sub-polygon assembly fails (degenerate polygon, OCC arc fit blows up).
-- Sewn cohort compound has non-manifold edges (indicates a planner bug).
-
-Mesh-time (warn, fall back to default mesher):
-
-- Lateral face fails `setTransfiniteSurface` (multi-wire, > 4 boundary
-  edges after imprint). Tet fallback for that one face only.
-
-Post-mesh (validate):
-
-- For every cohort sub-solid: bot triangle count × `n_layers` ==
-  emitted wedge count. Otherwise raise.
-- Wedge bot vertices align with bot face mesh node tags exactly.
+Cohort footprint constancy (the old `StructuredCohortFootprintMismatchError`)
+is **not** enforced — z-stepped cohort outlines are legal because each
+z-interval contributes its own first-class sub-solids.
 
 ## API additions
 
