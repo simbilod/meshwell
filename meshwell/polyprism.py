@@ -8,6 +8,7 @@ import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
 from meshwell.geometry_entity import GeometryEntity
+from meshwell.structured.exceptions import StructuredExtrudeRequiredError
 from meshwell.validation import format_physical_name
 
 if TYPE_CHECKING:
@@ -79,13 +80,11 @@ class PolyPrism(GeometryEntity):
             ] = self._get_buffered_polygons(polygons, buffers)
 
         # Structured validation and identify_arcs resolution
-        if structured:
-            from meshwell.structured.exceptions import (
-                StructuredExtrudeRequiredError,
-            )
-
-            if not self.extrude:
-                raise StructuredExtrudeRequiredError(entity_index=-1)
+        # entity_index=-1 is a placeholder: the real index is unknown at
+        # construction time; the cad_occ pre-pass will re-raise with the
+        # correct entity index once it has scanned the full entity list.
+        if structured and not self.extrude:
+            raise StructuredExtrudeRequiredError(entity_index=-1)
         if identify_arcs is None:
             identify_arcs = bool(structured)
         self.structured = structured
@@ -613,6 +612,7 @@ class PolyPrism(GeometryEntity):
             "mesh_bool": self.mesh_bool,
             "additive": self.additive,
             "point_tolerance": self.point_tolerance,
+            "structured": self.structured,
             "identify_arcs": self.identify_arcs,
             "min_arc_points": self.min_arc_points,
             "arc_tolerance": self.arc_tolerance,
@@ -650,6 +650,7 @@ class PolyPrism(GeometryEntity):
             mesh_bool=data["mesh_bool"],
             additive=data["additive"],
             point_tolerance=data["point_tolerance"],
+            structured=data.get("structured", False),
             identify_arcs=data["identify_arcs"],
             min_arc_points=data["min_arc_points"],
             arc_tolerance=data["arc_tolerance"],

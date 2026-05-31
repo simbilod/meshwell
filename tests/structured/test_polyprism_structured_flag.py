@@ -10,6 +10,7 @@ SQUARE = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
 def test_default_is_unstructured():
     p = PolyPrism(polygons=SQUARE, buffers={0.0: 0.0, 1.0: 0.0}, physical_name="x")
     assert p.structured is False
+    assert p.identify_arcs is False
 
 
 def test_structured_true_extrude_ok():
@@ -43,3 +44,19 @@ def test_structured_buffered_raises():
             physical_name="x",
             structured=True,
         )
+
+
+def test_structured_round_trips_through_dict():
+    p = PolyPrism(
+        polygons=SQUARE,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="x",
+        structured=True,
+    )
+    d = p.to_dict()
+    p2 = PolyPrism.from_dict(d) if hasattr(PolyPrism, "from_dict") else None
+    # If from_dict not on PolyPrism, fall back to checking the dict directly.
+    if p2 is not None:
+        assert p2.structured is True
+    else:
+        assert d.get("structured") is True
