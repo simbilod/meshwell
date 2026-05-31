@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from meshwell.polyprism import PolyPrism
+from meshwell.structured._zmath import approx_in
 from meshwell.structured.exceptions import StructuredZStackError
 from meshwell.structured.types import Cohort
 
@@ -33,11 +34,6 @@ def _entity_xy_at(ent: Any, z: float):
     if isinstance(ent, PolyPrism) and ent.extrude and ent.zmin <= z <= ent.zmax:
         return ent.polygons
     return None
-
-
-def _approx_in(z: float, zs: set[float], tol: float = 1e-9) -> bool:
-    """Return True if z is within tol of any value in zs."""
-    return any(abs(z - zp) <= tol for zp in zs)
 
 
 def _cohort_xy_at(cohort: Cohort, z: float):
@@ -65,7 +61,7 @@ def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
             for z in boundaries:
                 if not (cohort.zmin < z < cohort.zmax):
                     continue
-                if _approx_in(z, cohort_z_set):
+                if approx_in(z, cohort_z_set):
                     continue
                 ent_xy = _entity_xy_at(ent, z)
                 if ent_xy is None:

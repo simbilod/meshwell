@@ -14,6 +14,7 @@ from typing import Any
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
+from meshwell.structured._zmath import approx_in, approx_key
 from meshwell.structured.types import Cohort, StructuredSlab, SubPiece
 
 
@@ -81,11 +82,15 @@ def decompose_cohorts(
         for z in (z_keys[0], z_keys[-1]):
             # Only contribute if this entity touches some cohort at z.
             for cohort in cohorts:
-                if z not in cohort.z_planes:
+                if not approx_in(z, cohort.z_planes):
                     continue
                 cohort_xy_at_z = _cohort_xy_at(cohort, z)
                 if cohort_xy_at_z.intersects(ent.polygons):
-                    cut_sources.setdefault(z, []).append(ent.polygons.boundary)
+                    # Normalize to the existing key (cohort's exact z-plane value)
+                    # so all contributions for the same plane share one dict entry.
+                    existing = approx_key(z, cut_sources)
+                    key = existing if existing is not None else z
+                    cut_sources.setdefault(key, []).append(ent.polygons.boundary)
 
     cut_unions = {z: unary_union(lines) for z, lines in cut_sources.items()}
 
@@ -125,15 +130,16 @@ def decompose_cohorts(
         if not isinstance(ent, PolyPrism) or not ent.extrude:
             pre_cut.append(ent)
             continue
-        touched_zs = [
-            z
+        touched_keys = [
+            approx_key(z, cut_unions)
             for z in (ent.zmin, ent.zmax)
-            if any(z in c.z_planes for c in cohorts) and z in cut_unions
+            if any(approx_in(z, c.z_planes) for c in cohorts)
+            and approx_key(z, cut_unions) is not None
         ]
-        if not touched_zs:
+        if not touched_keys:
             pre_cut.append(ent)
             continue
-        all_cuts = unary_union([cut_unions[z] for z in touched_zs])
+        all_cuts = unary_union([cut_unions[k] for k in touched_keys])
         merged = unary_union([ent.polygons.boundary, all_cuts])
         pieces = list(polygonize(merged))
         inside = [p for p in pieces if ent.polygons.contains(p.representative_point())]

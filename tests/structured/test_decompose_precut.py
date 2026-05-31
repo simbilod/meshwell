@@ -65,6 +65,28 @@ def test_unstructured_above_gets_pre_cut():
     assert pre_cut_cap.physical_name == ("cap",)
 
 
+def test_decompose_touch_uses_z_tolerance():
+    from meshwell.polyprism import PolyPrism
+
+    structured = PolyPrism(
+        polygons=SQ_SMALL,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="s",
+        structured=True,
+    )
+    # Cap z-plane differs by 1e-12 from cohort's z=1.0.
+    cap = PolyPrism(
+        polygons=SQ_BIG,
+        buffers={1.0 + 1e-12: 0.0, 2.0: 0.0},
+        physical_name="cap",
+    )
+    slabs, unstr = collect_structured_slabs([structured, cap])
+    cohorts = build_cohorts(slabs)
+    _, pre_cut_unstr = decompose_cohorts(cohorts, unstr)
+    # Cap should be pre-cut (despite the 1e-12 z mismatch) → MultiPolygon
+    assert isinstance(pre_cut_unstr[0].polygons, MultiPolygon)
+
+
 def test_unstructured_not_touching_cohort_unchanged():
     structured = make(SQ_SMALL, 0, 1, "s", structured=True)
     far = make(Polygon([(50, 50), (60, 50), (60, 60), (50, 60)]), 1, 2, "far")
