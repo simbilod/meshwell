@@ -28,7 +28,8 @@
 - 12 test files under `tests/structured/`
 
 **Modified:**
-- `meshwell/polyprism.py` — add `structured`, `n_layers` fields
+- `meshwell/polyprism.py` — add `structured` field (geometry-only)
+- `meshwell/resolution.py` — add `StructuredExtrusionResolutionSpec(n_layers=...)`
 - `meshwell/cad_occ.py` — unwrap compound at instantiation; expose post-BOP `Modified()` map
 - `meshwell/mesh.py` — accept `pre_2d_hook`, `pre_3d_hook` parameters
 - `meshwell/orchestrator.py` — wire structured pre/post passes and hooks
@@ -265,11 +266,15 @@ git commit -m "feat(structured): module skeleton + custom exception hierarchy"
 
 ---
 
-## Task 1: PolyPrism gains `structured` and `n_layers` fields
+## Task 1: PolyPrism gains `structured` field (only)
 
 **Files:**
 - Modify: `meshwell/polyprism.py:29-98` (`__init__`)
 - Test: `tests/structured/test_polyprism_structured_flag.py`
+
+`n_layers` is NOT a PolyPrism field — it lives on a
+`StructuredExtrusionResolutionSpec` (Task 1b) attached via
+`resolution_specs` at mesh time. PolyPrism stays geometry-only.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -288,30 +293,22 @@ SQUARE = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
 def test_default_is_unstructured():
     p = PolyPrism(polygons=SQUARE, buffers={0.0: 0.0, 1.0: 0.0}, physical_name="x")
     assert p.structured is False
-    assert p.n_layers == 1
 
 
 def test_structured_true_extrude_ok():
     p = PolyPrism(
-        polygons=SQUARE,
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="x",
-        structured=True,
-        n_layers=3,
+        polygons=SQUARE, buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="x", structured=True,
     )
     assert p.structured is True
-    assert p.n_layers == 3
     assert p.extrude is True
     assert p.identify_arcs is True  # default flips when structured
 
 
 def test_structured_identify_arcs_user_override():
     p = PolyPrism(
-        polygons=SQUARE,
-        buffers={0.0: 0.0, 1.0: 0.0},
-        physical_name="x",
-        structured=True,
-        identify_arcs=False,
+        polygons=SQUARE, buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="x", structured=True, identify_arcs=False,
     )
     assert p.identify_arcs is False
 
@@ -319,21 +316,8 @@ def test_structured_identify_arcs_user_override():
 def test_structured_buffered_raises():
     with pytest.raises(StructuredExtrudeRequiredError):
         PolyPrism(
-            polygons=SQUARE,
-            buffers={0.0: 0.0, 1.0: 0.5},  # non-zero buffer → extrude=False
-            physical_name="x",
-            structured=True,
-        )
-
-
-def test_n_layers_validation():
-    with pytest.raises(ValueError, match="n_layers"):
-        PolyPrism(
-            polygons=SQUARE,
-            buffers={0.0: 0.0, 1.0: 0.0},
-            physical_name="x",
-            structured=True,
-            n_layers=0,
+            polygons=SQUARE, buffers={0.0: 0.0, 1.0: 0.5},
+            physical_name="x", structured=True,
         )
 ```
 
@@ -342,73 +326,38 @@ def test_n_layers_validation():
 ```
 pytest tests/structured/test_polyprism_structured_flag.py -v
 ```
-Expected: FAIL — `structured` is not a kwarg of `PolyPrism.__init__`.
+Expected: FAIL.
 
 - [ ] **Step 3: Modify PolyPrism.__init__**
 
-Add two parameters and validation. In `meshwell/polyprism.py`, locate the existing `__init__` signature and add `structured: bool = False, n_layers: int = 1` right after `identify_arcs`. Add validation immediately after `self.extrude` is set:
+In `meshwell/polyprism.py`, change `identify_arcs` default to `None`,
+add `structured: bool = False`, and resolve validation in the body:
 
 ```python
-# In PolyPrism.__init__, in the signature block:
-        structured: bool = False,
-        n_layers: int = 1,
-```
-
-```python
-# In __init__ body, AFTER self.extrude is set (~line 78) and BEFORE
-# self.identify_arcs is assigned:
-        if structured:
-            from meshwell.structured.exceptions import (
-                StructuredExtrudeRequiredError,
-            )
-            if not self.extrude:
-                raise StructuredExtrudeRequiredError(entity_index=-1)
-            if n_layers < 1:
-                raise ValueError(
-                    f"n_layers must be >= 1 (got {n_layers})"
-                )
-            # Default identify_arcs flips True for structured (arcs matter
-            # for lateral wall quad quality). User override wins.
-            if identify_arcs is False and "identify_arcs" not in (
-                # crude detection: leave alone if user set it explicitly.
-                # Easier path: just trust the caller's value.
-                {}
-            ):
-                identify_arcs = True
-        self.structured = structured
-        self.n_layers = n_layers
-```
-
-The `identify_arcs` default flip is awkward because `__init__` can't easily know if the caller passed `identify_arcs` explicitly. Cleaner: change the default of `identify_arcs` from `False` to `None`, then resolve it after we see `structured`. Apply this:
-
-```python
-# Signature (replace):
+# Signature:
         identify_arcs: bool | None = None,
         ...
         structured: bool = False,
-        n_layers: int = 1,
 ```
 
 ```python
-# Body (replace the identify_arcs assignment + add structured validation):
+# In __init__ body, AFTER self.extrude is set, BEFORE the existing
+# identify_arcs assignment:
         if structured:
             from meshwell.structured.exceptions import (
                 StructuredExtrudeRequiredError,
             )
             if not self.extrude:
                 raise StructuredExtrudeRequiredError(entity_index=-1)
-            if n_layers < 1:
-                raise ValueError(f"n_layers must be >= 1 (got {n_layers})")
         if identify_arcs is None:
             identify_arcs = True if structured else False
         self.structured = structured
-        self.n_layers = n_layers
         self.identify_arcs = identify_arcs
 ```
 
-Remove the old `self.identify_arcs = identify_arcs` line that already exists if it's now duplicated.
+Remove any duplicate `self.identify_arcs = identify_arcs` line.
 
-- [ ] **Step 4: Run test to verify it passes + existing tests still pass**
+- [ ] **Step 4: Run test + regressions**
 
 ```
 pytest tests/structured/test_polyprism_structured_flag.py -v
@@ -420,7 +369,81 @@ Expected: PASS on both.
 
 ```
 git add meshwell/polyprism.py tests/structured/test_polyprism_structured_flag.py
-git commit -m "feat(polyprism): add structured + n_layers fields with validation"
+git commit -m "feat(polyprism): add structured flag (geometry-only)"
+```
+
+---
+
+## Task 1b: `StructuredExtrusionResolutionSpec` in `resolution.py`
+
+**Files:**
+- Modify: `meshwell/resolution.py`
+- Test: `tests/structured/test_resolution_spec.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/structured/test_resolution_spec.py
+import pytest
+from meshwell.resolution import StructuredExtrusionResolutionSpec
+
+
+def test_default_n_layers_is_one():
+    s = StructuredExtrusionResolutionSpec()
+    assert s.n_layers == 1
+    assert s.apply_to == "volumes"
+
+
+def test_explicit_n_layers():
+    s = StructuredExtrusionResolutionSpec(n_layers=4)
+    assert s.n_layers == 4
+
+
+def test_invalid_n_layers_raises():
+    with pytest.raises(ValueError):
+        StructuredExtrusionResolutionSpec(n_layers=0)
+
+
+def test_to_dict_round_trip():
+    s = StructuredExtrusionResolutionSpec(n_layers=3)
+    d = s.to_dict()
+    assert d["n_layers"] == 3
+    assert d["resolution_type"] == "StructuredExtrusionResolutionSpec"
+```
+
+- [ ] **Step 2: Run** — expected FAIL.
+
+- [ ] **Step 3: Add the class to `meshwell/resolution.py`**
+
+Append to `meshwell/resolution.py`:
+
+```python
+from typing import Literal as _Literal
+
+from pydantic import Field as _Field
+
+
+class StructuredExtrusionResolutionSpec(ResolutionSpec):
+    """Number of z-layers per structured slab for wedge stamping.
+
+    Attached to a structured PolyPrism's physical_name via the
+    standard `resolution_specs={name: [spec, ...]}` dict passed to
+    generate_mesh. Read by meshwell.structured.wedge at mesh time;
+    has no gmsh-field apply() because wedge stamping doesn't go
+    through the mesh-size field machinery.
+    """
+
+    apply_to: _Literal["volumes"] = "volumes"
+    n_layers: int = _Field(default=1, ge=1)
+```
+
+- [ ] **Step 4: Run** — expected PASS.
+
+- [ ] **Step 5: Commit**
+
+```
+git add meshwell/resolution.py tests/structured/test_resolution_spec.py
+git commit -m "feat(resolution): StructuredExtrusionResolutionSpec carrying n_layers"
 ```
 
 ---
@@ -447,7 +470,7 @@ SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 def test_structured_slab_is_frozen():
     s = StructuredSlab(
         source_index=0, footprint=SQ, zlo=0.0, zhi=1.0,
-        n_layers=2, mesh_order=1.0, mesh_bool=True,
+        mesh_order=1.0, mesh_bool=True,
         physical_name=("a",), identify_arcs=True,
         arc_tolerance=1e-3, min_arc_points=4,
     )
@@ -461,8 +484,8 @@ def test_structured_slab_is_frozen():
 
 
 def test_cohort_default_z_planes_sorted():
-    s1 = StructuredSlab(0, SQ, 0.0, 1.0, 1, 1.0, True, ("a",), True, 1e-3, 4)
-    s2 = StructuredSlab(1, SQ, 1.0, 2.0, 1, 1.0, True, ("b",), True, 1e-3, 4)
+    s1 = StructuredSlab(0, SQ, 0.0, 1.0, 1.0, True, ("a",), True, 1e-3, 4)
+    s2 = StructuredSlab(1, SQ, 1.0, 2.0, 1.0, True, ("b",), True, 1e-3, 4)
     c = Cohort(slabs=(s1, s2), z_planes=(0.0, 1.0, 2.0))
     assert c.z_planes == (0.0, 1.0, 2.0)
     assert c.zmin == 0.0
@@ -526,12 +549,14 @@ class StructuredSlab:
 
     A single PolyPrism with N+1 buffer keys yields N StructuredSlab
     records, one per adjacent (zlo, zhi) pair.
+
+    n_layers is intentionally absent — it is read at mesh time from
+    the StructuredExtrusionResolutionSpec attached to physical_name.
     """
     source_index: int
     footprint: "Polygon | MultiPolygon"
     zlo: float
     zhi: float
-    n_layers: int
     mesh_order: float | None
     mesh_bool: bool
     physical_name: tuple[str, ...]
@@ -572,10 +597,10 @@ class SlabMeta:
     """Per-sub-solid metadata used at meshing time.
 
     Lookup happens by post-BOP ShapeKey of the sub-solid in the
-    OCCLabeledEntity's shapes list.
+    OCCLabeledEntity's shapes list. n_layers is NOT here — wedge.py
+    resolves it from the resolution_specs dict via physical_name.
     """
     slab_index: int
-    n_layers: int
     physical_name: tuple[str, ...]
     bot_face_key: ShapeKey
     top_face_key: ShapeKey
@@ -621,11 +646,11 @@ from meshwell.structured.exceptions import StructuredEntityTypeError
 SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 
-def make_prism(name, zlo=0.0, zhi=1.0, structured=False, n_layers=1, mesh_order=1.0):
+def make_prism(name, zlo=0.0, zhi=1.0, structured=False, mesh_order=1.0):
     return PolyPrism(
         polygons=SQ, buffers={zlo: 0.0, zhi: 0.0},
         physical_name=name, structured=structured,
-        n_layers=n_layers, mesh_order=mesh_order,
+        mesh_order=mesh_order,
     )
 
 
@@ -636,7 +661,6 @@ def test_separates_structured_from_unstructured():
     assert len(slabs) == 1
     assert len(unstructured) == 1
     assert slabs[0].source_index == 0
-    assert slabs[0].n_layers == 1
     assert unstructured[0] is b
 
 
@@ -731,7 +755,6 @@ def collect_structured_slabs(
                     footprint=ent.polygons,
                     zlo=zlo,
                     zhi=zhi,
-                    n_layers=ent.n_layers,
                     mesh_order=ent.mesh_order,
                     mesh_bool=ent.mesh_bool,
                     physical_name=ent.physical_name,
@@ -775,10 +798,10 @@ from meshwell.structured.cohort import build_cohorts
 from meshwell.structured.types import StructuredSlab
 
 
-def slab(idx, poly, zlo, zhi, n_layers=1):
+def slab(idx, poly, zlo, zhi):
     return StructuredSlab(
         source_index=idx, footprint=poly, zlo=zlo, zhi=zhi,
-        n_layers=n_layers, mesh_order=1.0, mesh_bool=True,
+        mesh_order=1.0, mesh_bool=True,
         physical_name=("x",), identify_arcs=False,
         arc_tolerance=1e-3, min_arc_points=4,
     )
@@ -1138,7 +1161,7 @@ from meshwell.structured.types import StructuredSlab
 def slab(idx, poly, mesh_bool=True, mesh_order=1.0):
     return StructuredSlab(
         source_index=idx, footprint=poly, zlo=0.0, zhi=1.0,
-        n_layers=1, mesh_order=mesh_order, mesh_bool=mesh_bool,
+        mesh_order=mesh_order, mesh_bool=mesh_bool,
         physical_name=("x",), identify_arcs=False,
         arc_tolerance=1e-3, min_arc_points=4,
     )
@@ -1992,7 +2015,6 @@ def build_cohort_compound(
         source_slab = slab_by_source[sp.source_slab_indices[0]]
         slab_meta[_shape_key(solid)] = SlabMeta(
             slab_index=source_slab.source_index,
-            n_layers=source_slab.n_layers,
             physical_name=source_slab.physical_name,
             bot_face_key=_shape_key(bot),
             top_face_key=_shape_key(top),
@@ -2272,7 +2294,7 @@ def test_no_changes_passes():
         exp.Next()
     bot, top, *laterals = faces
     meta = SlabMeta(
-        slab_index=0, n_layers=1, physical_name=("x",),
+        slab_index=0, physical_name=("x",),
         bot_face_key=_key_of(bot), top_face_key=_key_of(top),
         lateral_face_keys=tuple(_key_of(f) for f in laterals),
     )
@@ -2301,7 +2323,7 @@ def test_split_face_raises():
     exp = TopExp_Explorer(box, TopAbs_FACE)
     bot = exp.Current()
     meta = SlabMeta(
-        slab_index=5, n_layers=1, physical_name=("x",),
+        slab_index=5, physical_name=("x",),
         bot_face_key=_key_of(bot), top_face_key=_key_of(bot),
         lateral_face_keys=(),
     )
@@ -2779,13 +2801,19 @@ from meshwell.structured.exceptions import StructuredLateralNLayersMismatchError
 SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 
+from meshwell.resolution import StructuredExtrusionResolutionSpec
+
+
 def test_transfinite_hints_produce_quad_laterals(tmp_path):
     p = PolyPrism(polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="s", structured=True, n_layers=2)
+                  physical_name="s", structured=True)
     out = generate_mesh(
         entities=[p], dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
+        resolution_specs={
+            "s": [StructuredExtrusionResolutionSpec(n_layers=2)],
+        },
     )
     # Lateral faces should be quadrangular meshes (4 quads per wall
     # x 4 walls = 16 quads for n_layers=2 and one segment per wall).
@@ -2796,17 +2824,22 @@ def test_transfinite_hints_produce_quad_laterals(tmp_path):
 
 
 def test_n_layers_mismatch_raises(tmp_path):
-    # Two laterally-touching structured slabs with different n_layers.
+    # Two laterally-touching structured slabs with different n_layers
+    # supplied via resolution_specs.
     A = PolyPrism(polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="a", structured=True, n_layers=2)
+                  physical_name="a", structured=True)
     SQ2 = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
     B = PolyPrism(polygons=SQ2, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="b", structured=True, n_layers=5)
+                  physical_name="b", structured=True)
     with pytest.raises(StructuredLateralNLayersMismatchError):
         generate_mesh(
             entities=[A, B], dim=3,
             output_mesh=tmp_path / "out.msh",
             default_characteristic_length=0.5,
+            resolution_specs={
+                "a": [StructuredExtrusionResolutionSpec(n_layers=2)],
+                "b": [StructuredExtrusionResolutionSpec(n_layers=5)],
+            },
         )
 ```
 
@@ -2844,9 +2877,37 @@ from meshwell.structured.exceptions import (
 from meshwell.structured.types import ShapeKey, SlabMeta
 
 
+def resolve_n_layers(
+    physical_name: tuple[str, ...] | str,
+    resolution_specs: dict | None,
+) -> int:
+    """Look up n_layers from resolution_specs for one physical_name.
+
+    Returns 1 if no spec. Raises if more than one
+    StructuredExtrusionResolutionSpec is present for the name.
+    """
+    from meshwell.resolution import StructuredExtrusionResolutionSpec
+    from meshwell.structured.exceptions import StructuredError
+
+    if not resolution_specs:
+        return 1
+    key = physical_name[0] if isinstance(physical_name, tuple) else physical_name
+    specs = [
+        s for s in resolution_specs.get(key, [])
+        if isinstance(s, StructuredExtrusionResolutionSpec)
+    ]
+    if len(specs) > 1:
+        raise StructuredError(
+            f"physical_name {key!r} has {len(specs)} "
+            "StructuredExtrusionResolutionSpec entries; expected at most 1."
+        )
+    return specs[0].n_layers if specs else 1
+
+
 def apply_lateral_transfinite_hints(
     slab_meta: dict[ShapeKey, SlabMeta],
     face_tag_by_key: dict[ShapeKey, int],
+    resolution_specs: dict | None = None,
 ) -> None:
     """For each cohort sub-solid lateral face: enforce n_layers and
     apply gmsh transfinite + setTransfiniteSurface hints.
@@ -2859,11 +2920,12 @@ def apply_lateral_transfinite_hints(
     # n_layers consistency.
     owners_per_face: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for sub_key, meta in slab_meta.items():
+        n_layers = resolve_n_layers(meta.physical_name, resolution_specs)
         for fk in meta.lateral_face_keys:
             tag = face_tag_by_key.get(fk)
             if tag is None:
                 continue
-            owners_per_face[tag].append((meta.slab_index, meta.n_layers))
+            owners_per_face[tag].append((meta.slab_index, n_layers))
 
     for face_tag, owners in owners_per_face.items():
         # n_layers must agree across all owners of this face.
@@ -2934,31 +2996,41 @@ from meshwell.polyprism import PolyPrism
 SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 
+from meshwell.resolution import StructuredExtrusionResolutionSpec
+
+
 def test_wedge_count_matches_bot_triangles_times_n_layers(tmp_path):
     p = PolyPrism(polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="s", structured=True, n_layers=3)
+                  physical_name="s", structured=True)
     generate_mesh(
         entities=[p], dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
+        resolution_specs={
+            "s": [StructuredExtrusionResolutionSpec(n_layers=3)],
+        },
     )
     import meshio
     m = meshio.read(tmp_path / "out.msh")
     wedges = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
     tets = sum(cb.data.shape[0] for cb in m.cells if cb.type == "tetra")
     assert wedges > 0
-    assert tets == 0  # entire volume is structured
+    assert tets == 0
 
 
 def test_stacked_cohort_wedges_conformal(tmp_path):
     a = PolyPrism(polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="a", structured=True, n_layers=2)
+                  physical_name="a", structured=True)
     b = PolyPrism(polygons=SQ, buffers={1.0: 0.0, 2.0: 0.0},
-                  physical_name="b", structured=True, n_layers=2)
+                  physical_name="b", structured=True)
     generate_mesh(
         entities=[a, b], dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
+        resolution_specs={
+            "a": [StructuredExtrusionResolutionSpec(n_layers=2)],
+            "b": [StructuredExtrusionResolutionSpec(n_layers=2)],
+        },
     )
     import meshio
     m = meshio.read(tmp_path / "out.msh")
@@ -2992,10 +3064,14 @@ def stamp_wedges(
     slab_meta: dict[ShapeKey, SlabMeta],
     face_tag_by_key: dict[ShapeKey, int],
     sub_solid_tag_by_key: dict[ShapeKey, int],
+    resolution_specs: dict | None = None,
     point_tolerance: float = 1e-3,
 ) -> None:
     """For each cohort sub-solid: read bot tri mesh, stamp on top,
     emit n_layers wedges per bot triangle into the sub-solid's 3D tag.
+
+    n_layers per sub-solid resolved from resolution_specs via the
+    slab's physical_name (defaults to 1 if no spec present).
 
     Iterates sub-solids in z_lo ascending order so shared bot/top
     faces are stamped from below before being read from above.
@@ -3014,7 +3090,8 @@ def stamp_wedges(
         bot_tag = face_tag_by_key[meta.bot_face_key]
         top_tag = face_tag_by_key[meta.top_face_key]
         vol_tag = sub_solid_tag_by_key[sub_key]
-        _stamp_one(bot_tag, top_tag, vol_tag, meta, point_tolerance)
+        n_layers = resolve_n_layers(meta.physical_name, resolution_specs)
+        _stamp_one(bot_tag, top_tag, vol_tag, meta, n_layers, point_tolerance)
 
 
 def _face_centroid(face_tag: int) -> tuple[float, float, float]:
@@ -3029,7 +3106,7 @@ def _face_centroid(face_tag: int) -> tuple[float, float, float]:
 
 def _stamp_one(
     bot_tag: int, top_tag: int, vol_tag: int,
-    meta: SlabMeta, point_tolerance: float,
+    meta: SlabMeta, n_layers: int, point_tolerance: float,
 ) -> None:
     # 1) Read bot triangulation.
     elem_types, elem_tags, node_tags = gmsh.model.mesh.getElements(2, bot_tag)
@@ -3047,7 +3124,7 @@ def _stamp_one(
     # 2) Determine top z from top face bbox.
     bbox = gmsh.model.getBoundingBox(2, top_tag)
     top_z = bbox[5]
-    dz = (top_z - bot_z) / meta.n_layers
+    dz = (top_z - bot_z) / n_layers
 
     # 3) Clear top face mesh & rebuild from bot.
     gmsh.model.mesh.clear([(2, top_tag)])
@@ -3090,8 +3167,8 @@ def _stamp_one(
 
     # 4) Intermediate layer nodes (for n_layers > 1).
     layer_node_maps: list[dict[int, int]] = [bot_tag_by_idx_to_tag := dict(zip(range(len(bot_node_tags)), bot_node_tags))]
-    if meta.n_layers > 1:
-        for layer in range(1, meta.n_layers):
+    if n_layers > 1:
+        for layer in range(1, n_layers):
             z_layer = bot_z + dz * layer
             this_map: dict[int, int] = {}
             for i, bpt in enumerate(bot_pts):
@@ -3109,7 +3186,7 @@ def _stamp_one(
     # 5) Emit wedges. gmsh element type 6 = prism (6-node wedge).
     wedge_node_tags: list[int] = []
     expected = 0
-    for layer in range(meta.n_layers):
+    for layer in range(n_layers):
         bot_map = {i: layer_node_maps[layer][i] for i in range(len(bot_node_tags))}
         top_map = {i: layer_node_maps[layer + 1][i] for i in range(len(bot_node_tags))}
         bot_idx_by_tag = {t: i for i, t in enumerate(bot_node_tags)}
@@ -3210,22 +3287,29 @@ if state.slab_meta:
         exp.Next()
 
 
+user_pre_2d = mesh_kwargs.pop("pre_2d_hook", None)
+user_pre_3d = mesh_kwargs.pop("pre_3d_hook", None)
+resolution_specs_for_wedge = mesh_kwargs.get("resolution_specs")
+
+
 def _pre_2d():
     if state.slab_meta:
-        apply_lateral_transfinite_hints(state.slab_meta, face_tag_by_key)
+        apply_lateral_transfinite_hints(
+            state.slab_meta, face_tag_by_key,
+            resolution_specs=resolution_specs_for_wedge,
+        )
     if user_pre_2d:
         user_pre_2d()
 
 
 def _pre_3d():
     if state.slab_meta:
-        stamp_wedges(state.slab_meta, face_tag_by_key, sub_solid_tag_by_key)
+        stamp_wedges(
+            state.slab_meta, face_tag_by_key, sub_solid_tag_by_key,
+            resolution_specs=resolution_specs_for_wedge,
+        )
     if user_pre_3d:
         user_pre_3d()
-
-
-user_pre_2d = mesh_kwargs.pop("pre_2d_hook", None)
-user_pre_3d = mesh_kwargs.pop("pre_3d_hook", None)
 
 return mesh(
     dim=dim,
@@ -3276,7 +3360,7 @@ SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 def test_single_slab_yields_wedges_only(tmp_path):
     p = PolyPrism(polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="slab", structured=True, n_layers=2)
+                  physical_name="slab", structured=True)
     generate_mesh([p], dim=3, output_mesh=tmp_path / "out.msh",
                   default_characteristic_length=0.5)
     m = meshio.read(tmp_path / "out.msh")
@@ -3324,14 +3408,19 @@ SQ_SMALL = Polygon([(1, 1), (3, 1), (3, 3), (1, 3)])
 
 
 def test_stacked_with_unstructured_cap_conformal(tmp_path):
+    from meshwell.resolution import StructuredExtrusionResolutionSpec
     a = PolyPrism(polygons=SQ_BIG, buffers={0.0: 0.0, 1.0: 0.0},
-                  physical_name="a", structured=True, n_layers=2)
+                  physical_name="a", structured=True)
     b = PolyPrism(polygons=SQ_SMALL, buffers={1.0: 0.0, 2.0: 0.0},
-                  physical_name="b", structured=True, n_layers=2)
+                  physical_name="b", structured=True)
     cap = PolyPrism(polygons=SQ_BIG, buffers={2.0: 0.0, 3.0: 0.0},
                     physical_name="cap")
     generate_mesh([a, b, cap], dim=3, output_mesh=tmp_path / "out.msh",
-                  default_characteristic_length=0.5)
+                  default_characteristic_length=0.5,
+                  resolution_specs={
+                      "a": [StructuredExtrusionResolutionSpec(n_layers=2)],
+                      "b": [StructuredExtrusionResolutionSpec(n_layers=2)],
+                  })
     m = meshio.read(tmp_path / "out.msh")
     wedge_count = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
     tet_count = sum(cb.data.shape[0] for cb in m.cells if cb.type == "tetra")
@@ -3484,29 +3573,48 @@ BIG_CAP = _rect(-15, -15, 15, 15)
 CAP_ARCH = _circle(3, 3, 2)  # carves part of the cap (lower mesh_order)
 
 
+STRUCTURED_RESOLUTION = {
+    "A_square": [{"n_layers": 2}],
+    "A_circle": [{"n_layers": 2}],
+    "A_recth": [{"n_layers": 2}],
+    "B_circle": [{"n_layers": 2}],
+    "B_annulus": [{"n_layers": 2}],
+    "C_hex": [{"n_layers": 2}],
+}
+
+
+def _resolution_specs() -> dict:
+    """Build the resolution_specs dict for the complex scene fixture."""
+    from meshwell.resolution import StructuredExtrusionResolutionSpec
+    return {
+        name: [StructuredExtrusionResolutionSpec(n_layers=specs[0]["n_layers"])]
+        for name, specs in STRUCTURED_RESOLUTION.items()
+    }
+
+
 @pytest.fixture
 def complex_scene_entities() -> list:
     return [
         # Cohort layer A
         PolyPrism(SQUARE_A, {0.0: 0.0, 1.0: 0.0}, physical_name="A_square",
-                  structured=True, n_layers=2, mesh_order=3.0),
+                  structured=True, mesh_order=3.0),
         PolyPrism(CIRCLE_A, {0.0: 0.0, 1.0: 0.0}, physical_name="A_circle",
-                  structured=True, n_layers=2, mesh_order=3.0,
+                  structured=True, mesh_order=3.0,
                   identify_arcs=True),
         PolyPrism(RECT_HOLE_A, {0.0: 0.0, 1.0: 0.0}, physical_name="A_recth",
-                  structured=True, n_layers=2, mesh_order=3.0),
+                  structured=True, mesh_order=3.0),
         # Cohort layer B
         PolyPrism(CIRCLE_B, {1.0: 0.0, 2.0: 0.0}, physical_name="B_circle",
-                  structured=True, n_layers=2, mesh_order=3.0,
+                  structured=True, mesh_order=3.0,
                   identify_arcs=True),
         PolyPrism(ANNULUS_B, {1.0: 0.0, 2.0: 0.0}, physical_name="B_annulus",
-                  structured=True, n_layers=2, mesh_order=3.0,
+                  structured=True, mesh_order=3.0,
                   identify_arcs=True),
         # Cohort layer C with void
         PolyPrism(HEX_C, {2.0: 0.0, 3.0: 0.0}, physical_name="C_hex",
-                  structured=True, n_layers=2, mesh_order=3.0),
+                  structured=True, mesh_order=3.0),
         PolyPrism(VOID_C, {2.0: 0.0, 3.0: 0.0}, physical_name="C_void",
-                  structured=True, n_layers=2, mesh_order=1.0, mesh_bool=False),
+                  structured=True, mesh_order=1.0, mesh_bool=False),
         # Unstructured below
         PolyPrism(Polygon(BIG_BASE.exterior.coords,
                           holes=[HOLE_BASE.exterior.coords]),
@@ -3525,6 +3633,7 @@ def test_complex_scene_meshes_without_error(complex_scene_entities, tmp_path):
         complex_scene_entities, dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.8,
+        resolution_specs=_resolution_specs(),
     )
     m = meshio.read(tmp_path / "out.msh")
     wedge_count = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
@@ -3540,6 +3649,7 @@ def test_complex_scene_all_physical_groups_present(
         complex_scene_entities, dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.8,
+        resolution_specs=_resolution_specs(),
     )
     m = meshio.read(tmp_path / "out.msh")
     expected = {
@@ -3561,6 +3671,7 @@ def test_complex_scene_node_uniqueness(complex_scene_entities, tmp_path):
         complex_scene_entities, dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.8,
+        resolution_specs=_resolution_specs(),
     )
     m = meshio.read(tmp_path / "out.msh")
     pts = np.round(m.points, 5)
@@ -3642,13 +3753,18 @@ def test_zstack_violation_raises(tmp_path):
 
 
 def test_n_layers_mismatch_lateral_touch_raises(tmp_path):
+    from meshwell.resolution import StructuredExtrusionResolutionSpec
     a = PolyPrism(SQ, {0.0: 0.0, 1.0: 0.0}, physical_name="a",
-                  structured=True, n_layers=2)
+                  structured=True)
     b = PolyPrism(SQ2, {0.0: 0.0, 1.0: 0.0}, physical_name="b",
-                  structured=True, n_layers=5)
+                  structured=True)
     with pytest.raises(StructuredLateralNLayersMismatchError):
         generate_mesh([a, b], dim=3, output_mesh=tmp_path / "x.msh",
-                      default_characteristic_length=1.0)
+                      default_characteristic_length=1.0,
+                      resolution_specs={
+                          "a": [StructuredExtrusionResolutionSpec(n_layers=2)],
+                          "b": [StructuredExtrusionResolutionSpec(n_layers=5)],
+                      })
 ```
 
 - [ ] **Step 2: Run**
@@ -3696,9 +3812,12 @@ def test_public_imports():
 # meshwell/structured/__init__.py
 """Structured prism meshing for meshwell.cad_occ.
 
-User-facing: set ``structured=True`` and ``n_layers=N`` on a PolyPrism
-to have its volume meshed with wedge elements. Surrounding unstructured
-regions remain tet-meshed; interfaces are conformal by construction.
+User-facing: set ``structured=True`` on a PolyPrism, then attach a
+``StructuredExtrusionResolutionSpec(n_layers=N)`` to the prism's
+physical_name in the ``resolution_specs`` dict passed to
+``generate_mesh``. The volume will be meshed with wedge elements;
+surrounding unstructured regions remain tet-meshed and interfaces
+are conformal by construction.
 """
 from meshwell.structured.exceptions import (
     CohortNonManifoldError,

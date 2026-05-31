@@ -17,9 +17,12 @@ between structured and unstructured volumes is conformal.
 The feature must support, in v1:
 
 - Multi-layer structured slabs (`n_layers > 1`) for vertical
-  refinement. **Note:** `n_layers` is a meshing-time concern only — the
-  planner and OCC builder do not consider it. It travels through as
-  metadata and is consumed by `wedge.py`.
+  refinement. **`n_layers` is supplied via a
+  `StructuredExtrusionResolutionSpec` attached through the standard
+  `resolution_specs={physical_name: [spec, ...]}` dict** passed to
+  `generate_mesh` — same pattern as `ConstantInField`,
+  `ThresholdField`, etc. The planner and OCC builder do not see it.
+  See "API additions" below.
 - Vertical stacks of structured polyprisms (cohorts), with internal
   z-plane interfaces shared cleanly between adjacent slabs.
   Inter-slab arc and line interfaces are conformal by construction
@@ -122,9 +125,10 @@ Walks the input entity list and partitions it into:
 
 - `structured_slabs: list[StructuredSlab]` — one `StructuredSlab` per
   (PolyPrism with `structured=True`) × (z-interval from `buffers.keys()`).
-  Carries `footprint`, `zlo`, `zhi`, `n_layers`, `mesh_order`,
+  Carries `footprint`, `zlo`, `zhi`, `mesh_order`,
   `mesh_bool`, `physical_name`, `source_index`, `identify_arcs`,
-  `arc_tolerance`, `min_arc_points`.
+  `arc_tolerance`, `min_arc_points`. **No `n_layers`** — resolved
+  later at mesh time.
 - `unstructured_entities: list` — pass-through to `cad_occ`.
 
 Errors on: `structured=True` with `extrude=False`; `structured=True` on
@@ -301,12 +305,26 @@ Two gmsh hooks, both narrow.
 
 **`pre_2d_hook`** — transfinite hints on cohort lateral faces.
 
+Resolves `n_layers` per slab once at hook entry:
+
+```python
+def resolve_n_layers(physical_name) -> int:
+    specs = [
+        s for s in resolution_specs.get(physical_name, [])
+        if isinstance(s, StructuredExtrusionResolutionSpec)
+    ]
+    if len(specs) > 1:
+        raise AmbiguousStructuredResolutionError(physical_name, len(specs))
+    return specs[0].n_layers if specs else 1
+```
+
 For each cohort sub-solid's lateral face (looked up via
 `slab_meta[...].lateral_face_keys` → post-BOP gmsh tag via standard
 `cad_occ` face mapping):
 
-- Look up every cohort sub-solid that owns this face. If two
-  sub-solids share the face and their slab `n_layers` disagree,
+- Look up every cohort sub-solid that owns this face. Resolve
+  `n_layers` for each owning slab via its `physical_name`. If two
+  sub-solids share the face and their resolved `n_layers` disagree,
   **raise** `StructuredLateralNLayersMismatchError` naming both
   slab source_indices, the face's gmsh tag, and the two `n_layers`
   values.
@@ -325,8 +343,10 @@ shell-invariance validator (below) should also catch it.
 
 For each cohort sub-solid (in `slab_meta`):
 
-1. Look up the bot face gmsh tag and read its triangulation.
-2. Look up the top face gmsh tag. For each bot node:
+1. Resolve `n_layers = resolve_n_layers(meta.physical_name)` from
+   the `resolution_specs` dict (same resolver as `pre_2d_hook`).
+2. Look up the bot face gmsh tag and read its triangulation.
+3. Look up the top face gmsh tag. For each bot node:
    - **Boundary node** (lies on a bot 1D edge): the corresponding
      top edge is the vertical-projection counterpart; the top
      boundary node already exists from 2D meshing. Match by
@@ -334,9 +354,9 @@ For each cohort sub-solid (in `slab_meta`):
    - **Interior node**: allocate a new top tag at `(bot.x, bot.y,
      zhi)`. Add to top face. If `n_layers > 1`, allocate
      intermediate-layer nodes at evenly-spaced z slices.
-3. For each bot triangle: emit `n_layers` wedge elements stacked in z,
+4. For each bot triangle: emit `n_layers` wedge elements stacked in z,
    into the sub-solid's gmsh 3D tag.
-4. Register the slab's physical group on this 3D tag.
+5. Register the slab's physical group on this 3D tag.
 
 After the per-sub-solid loop, `gmsh.model.mesh.removeDuplicateNodes()`
 dedups any boundary nodes that the per-sub-solid loop allocated
@@ -355,7 +375,6 @@ class StructuredSlab:
     footprint: Polygon | MultiPolygon
     zlo: float
     zhi: float
-    n_layers: int
     mesh_order: float | None
     mesh_bool: bool
     physical_name: tuple[str, ...]
@@ -378,11 +397,11 @@ class SubPiece:
 @dataclass(frozen=True)
 class SlabMeta:
     slab_index: int           # back to StructuredSlab.source_index
-    n_layers: int
     physical_name: tuple[str, ...]
     bot_face_key: ShapeKey
     top_face_key: ShapeKey
     lateral_face_keys: tuple[ShapeKey, ...]
+    # n_layers is NOT here — resolved at mesh time from generate_mesh kwarg.
 ```
 
 ## Integration with `cad_occ`
@@ -482,7 +501,8 @@ list (the same errors are documented in their owning stages):
 | build | `SubPolygonAssemblyError` | degenerate polygon or OCC arc fit failure |
 | build | `CohortNonManifoldError` | sewn compound has non-manifold edges (planner bug) |
 | cad_occ post-pass | `CohortShellModifiedError` | BOP modified a pre-baked cohort shell face (Stage 5 validator) |
-| wedge pre_2d | `StructuredLateralNLayersMismatchError` | shared lateral face between subpieces with different `n_layers` |
+| wedge pre_2d | `StructuredLateralNLayersMismatchError` | shared lateral face between subpieces whose physical_names resolve to different `n_layers` |
+| wedge pre_2d | `AmbiguousStructuredResolutionError` | physical_name has more than one `StructuredExtrusionResolutionSpec` |
 | wedge pre_2d | `StructuredTransfiniteRejectedError` | lateral face is multi-wire or > 4 boundary edges |
 | wedge post-stamp | `WedgeCountMismatchError` | bot triangle count × `n_layers` ≠ emitted wedge count for a sub-solid |
 | wedge post-stamp | `WedgeBotNodeMismatchError` | wedge bot vertices don't match the bot face mesh node tags |
@@ -493,20 +513,60 @@ z-interval contributes its own first-class sub-solids.
 
 ## API additions
 
-`PolyPrism.__init__` gains:
+**`PolyPrism.__init__` gains a single field:**
 
 ```python
 structured: bool = False
-n_layers: int = 1
 ```
 
-No new entity class — `structured` is a per-instance flag, consistent
-with `identify_arcs`. When `structured=True`:
+`structured` is a per-instance flag, consistent with `identify_arcs`.
+When `structured=True`:
 
 - `extrude` must be True (raise otherwise).
-- `n_layers >= 1`.
 - `identify_arcs` defaults to True (arcs matter for lateral wall
   quad quality on curves); user can override.
+
+**`meshwell.resolution` gains `StructuredExtrusionResolutionSpec`:**
+
+```python
+class StructuredExtrusionResolutionSpec(ResolutionSpec):
+    """Number of z-layers for wedge stamping on a structured slab.
+
+    Attached to a structured PolyPrism's physical_name via the
+    standard `resolution_specs={name: [spec, ...]}` dict passed to
+    generate_mesh.
+    """
+    apply_to: Literal["volumes"] = "volumes"
+    n_layers: int = 1
+```
+
+It has no `apply()` method (this spec is read directly by
+`wedge.py`, not by gmsh field machinery). The base-class `apply_to`
+required field is set to `"volumes"` so it's catalogued correctly if
+ever introspected.
+
+**Usage:**
+
+```python
+from meshwell.polyprism import PolyPrism
+from meshwell.resolution import StructuredExtrusionResolutionSpec
+
+slab = PolyPrism(SQ, {0.0: 0.0, 1.0: 0.0}, physical_name="metal",
+                 structured=True)
+
+generate_mesh(
+    [slab], dim=3,
+    resolution_specs={
+        "metal": [StructuredExtrusionResolutionSpec(n_layers=3)],
+    },
+    output_mesh=...,
+)
+```
+
+If no spec is provided for a structured PolyPrism's `physical_name`,
+`n_layers=1` is used as default. Multiple
+`StructuredExtrusionResolutionSpec`s on one physical_name is an
+error (raise: ambiguous).
 
 ## Out of scope for v1
 
