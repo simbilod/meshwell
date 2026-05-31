@@ -18,7 +18,10 @@ from meshwell.structured.cohort_entity import _CohortEntity
 from meshwell.structured.collect import collect_structured_slabs
 from meshwell.structured.decompose import decompose_cohorts
 from meshwell.structured.types import ShapeKey, SlabMeta
-from meshwell.structured.validators import validate_z_stacks
+from meshwell.structured.validators import (
+    validate_arc_consistency,
+    validate_z_stacks,
+)
 
 
 @dataclass
@@ -44,6 +47,7 @@ def structured_pre_pass(
         return StructuredState(entities_out=entities)
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
+    validate_arc_consistency(cohorts)
     subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(cohorts, unstructured)
 
     cohort_entities: list[_CohortEntity] = []
@@ -74,13 +78,19 @@ def structured_post_pass(
     """Expand every cohort OCCLabeledEntity into per-sub-solid entities.
 
     Matches each surviving post-BOP shape to its slab_meta entry by
-    ShapeKey (cad_occ already preserved sub-solid TShapes via the
-    fragment piece-ownership pass). One OCCLabeledEntity per
-    sub-solid, carrying the source slab's physical_name and a
-    synthetic index.
+    ShapeKey (fast path) or by bounding-box fingerprint (fallback for
+    the multi-cohort case where BOPAlgo_Builder regenerates TShape IDs
+    even for geometrically unchanged shapes).
+
+    One OCCLabeledEntity per sub-solid, carrying the source slab's
+    physical_name and a synthetic index.
     """
     from meshwell.cad_occ import OCCLabeledEntity
     from meshwell.structured.build import _shape_key
+
+    # Build a bbox-keyed lookup from pre-BOP slab ShapeKeys.
+    # Used as fallback when the ShapeKey doesn't survive BOP.
+    slab_fp_by_key = _build_slab_fingerprints(state)
 
     expanded: list = []
     next_index = max((e.index for e in occ_entities), default=-1) + 1
@@ -93,7 +103,13 @@ def structured_post_pass(
             key = _shape_key(shape)
             meta = state.slab_meta.get(key)
             if meta is None:
-                # Sub-solid was modified by BOP; still represent it.
+                # Fast-path miss: BOPAlgo_Builder regenerated the TShape.
+                # Fall back to spatial fingerprint matching.
+                meta = _match_by_bbox(shape, slab_fp_by_key, state.slab_meta)
+            if meta is None:
+                # Sub-solid has no matching slab (e.g. a void or leftover
+                # fragment from a BOP boundary split). Represent it as-is
+                # under the cohort name so it still gets meshed.
                 expanded.append(_copy_with(ent, [shape], next_index))
                 next_index += 1
                 continue
@@ -108,6 +124,76 @@ def structured_post_pass(
             expanded.append(sub_ent)
             next_index += 1
     return expanded
+
+
+def _build_slab_fingerprints(
+    state: StructuredState,
+) -> dict[ShapeKey, tuple[float, ...]]:
+    """Return bbox fingerprint (xmin,ymin,zmin,xmax,ymax,zmax) per slab ShapeKey.
+
+    Walks the pre-BOP cohort compounds to compute bounding boxes for
+    every solid whose ShapeKey is in slab_meta.
+    """
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    from meshwell.structured.build import _shape_key
+
+    result: dict[ShapeKey, tuple[float, ...]] = {}
+    for ce in state.cohort_entities:
+        exp = TopExp_Explorer(ce.compound, TopAbs_SOLID)
+        while exp.More():
+            solid = exp.Current()
+            sk = _shape_key(solid)
+            if sk in state.slab_meta:
+                box = Bnd_Box()
+                BRepBndLib.Add_s(solid, box)
+                if not box.IsVoid():
+                    result[sk] = box.Get()
+            exp.Next()
+    return result
+
+
+def _match_by_bbox(
+    shape,
+    slab_fp_by_key: dict[ShapeKey, tuple[float, ...]],
+    slab_meta: "dict[ShapeKey, SlabMeta]",
+    tol: float = 1e-3,
+) -> "SlabMeta | None":
+    """Match a post-BOP solid to a slab_meta entry by bounding box.
+
+    Returns the SlabMeta whose pre-BOP bbox agrees with ``shape``'s
+    bbox within ``tol`` on every axis, or None if no match.
+    """
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if box.IsVoid():
+        return None
+    g = box.Get()  # (xmin, ymin, zmin, xmax, ymax, zmax)
+
+    best_key: "ShapeKey | None" = None
+    best_volume_overlap = -1.0
+    for sk, fp in slab_fp_by_key.items():
+        # Check bbox corner agreement within tolerance.
+        if all(abs(g[i] - fp[i]) <= tol for i in range(6)):
+            # Volume of bbox overlap (approximation of "most similar").
+            overlap_vol = (
+                (min(g[3], fp[3]) - max(g[0], fp[0]))
+                * (min(g[4], fp[4]) - max(g[1], fp[1]))
+                * (min(g[5], fp[5]) - max(g[2], fp[2]))
+            )
+            if overlap_vol > best_volume_overlap:
+                best_volume_overlap = overlap_vol
+                best_key = sk
+
+    if best_key is not None:
+        return slab_meta.get(best_key)
+    return None
 
 
 def _copy_with(ent, shapes, idx: int):

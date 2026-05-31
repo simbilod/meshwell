@@ -167,3 +167,19 @@ class WedgeBotNodeMismatchError(StructuredError):
             f"Wedge stamp for slab #{slab_index}: {mismatched_count} bot "
             "vertices did not match the bot face mesh node tags."
         )
+
+
+class ArcIdentifyConflictError(StructuredError):
+    """Two slabs sharing XY curves disagree on identify_arcs."""
+
+    def __init__(self, slab_a: int, slab_b: int, name_a: str, name_b: str):
+        self.slab_a = slab_a
+        self.slab_b = slab_b
+        self.name_a = name_a
+        self.name_b = name_b
+        super().__init__(
+            f"Structured slabs #{slab_a} ({name_a}) and #{slab_b} ({name_b}) "
+            "have overlapping XY curves but disagree on identify_arcs. "
+            "Either set both True or both False — mixing them on shared "
+            "edges leads to inconsistent OCC edge geometry."
+        )

@@ -85,8 +85,12 @@ class PolyPrism(GeometryEntity):
         # correct entity index once it has scanned the full entity list.
         if structured and not self.extrude:
             raise StructuredExtrudeRequiredError(entity_index=-1)
+        # identify_arcs must be EXPLICITLY set to True; structured=True alone
+        # does NOT imply arc detection. Automatically enabling it caused
+        # polygons with all vertices co-circular (e.g. rectangles, whose corners
+        # lie on the circumscribed circle) to be mis-built as disk-shaped solids.
         if identify_arcs is None:
-            identify_arcs = bool(structured)
+            identify_arcs = False
         self.structured = structured
         self.identify_arcs = identify_arcs
 
