@@ -42,5 +42,12 @@ class _CohortEntity:
     def physical_name(self) -> tuple[str, ...]:
         return (f"__cohort_{self.cohort_index}",)
 
+    # Signal to cad_occ that this compound must be passed to
+    # BOPAlgo_Builder as ONE argument, not unwrapped into individual
+    # solids.  Passing the sub-solids separately causes BOP to fuse
+    # adjacent solids that share TShape faces, destroying the per-slab
+    # structure needed by stamp_wedges.
+    keep_compound_for_bop: bool = field(init=False, default=True)
+
     def instanciate_occ(self) -> TopoDS_Compound:
         return self.compound

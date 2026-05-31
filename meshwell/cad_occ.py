@@ -289,7 +289,15 @@ class CAD_OCC:
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
-        shapes = self._unwrap_shape(shape, dim) if shape is not None else []
+        # Entities that set keep_compound_for_bop=True (e.g. _CohortEntity)
+        # must be passed to BOPAlgo_Builder as a single compound argument so
+        # that BOP does not fuse their internal sub-solids (which would occur
+        # if the sub-solids share TShape faces and are added as separate args).
+        keep_compound = getattr(entity_obj, "keep_compound_for_bop", False)
+        if keep_compound and shape is not None:
+            shapes = [shape]
+        else:
+            shapes = self._unwrap_shape(shape, dim) if shape is not None else []
         return OCCLabeledEntity(
             shapes=shapes,
             physical_name=physical_name,
@@ -309,10 +317,17 @@ class CAD_OCC:
         Each entity's ``shapes`` list is replaced with the fragment
         pieces it owns. Matches ``gmsh.model.occ.fragment`` + mesh_order
         post-processing semantically.
+
+        The last ``BOPAlgo_Builder`` instance is stashed on
+        ``self.last_fragment_builder`` so callers (e.g. the orchestrator's
+        post-pass shell-invariance validator) can query
+        ``builder.Modified(shape)`` after the BOP runs.
         """
         if not entities:
+            self.last_fragment_builder = None
             return []
         if len(entities) == 1:
+            self.last_fragment_builder = None
             return entities
 
         builder = BOPAlgo_Builder()
@@ -371,6 +386,9 @@ class CAD_OCC:
             ent.shapes = []
         for key, ent_idx in owners.items():
             entities[ent_idx].shapes.append(piece_shapes[key])
+
+        # Stash the builder so callers can query Modified() post-BOP.
+        self.last_fragment_builder = builder
 
         return entities
 
@@ -538,6 +556,7 @@ def cad_occ(
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
+    return_processor: bool = False,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 
@@ -545,6 +564,12 @@ def cad_occ(
     gmsh-specific ``model`` / ``filename`` / tagging kwargs); the result
     feeds :func:`meshwell.occ_xao_writer.write_xao` to produce a tagged
     XAO gmsh can load.
+
+    When ``return_processor`` is True the call returns
+    ``(entities, processor)`` so callers can inspect
+    ``processor.last_fragment_builder`` and query ``Modified()`` on
+    pre-BOP shapes (used by the structured shell-invariance validator).
+    See :class:`CAD_OCC` for the rest of the parameter semantics.
     """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
@@ -553,4 +578,7 @@ def cad_occ(
         fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
-    return processor.process_entities(entities_list, progress_bars=progress_bars)
+    out = processor.process_entities(entities_list, progress_bars=progress_bars)
+    if return_processor:
+        return out, processor
+    return out

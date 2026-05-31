@@ -213,6 +213,17 @@ def _compute_physical_groups(
 
         if not common:
             continue
+        # Synthetic structured-pipeline entities (``__cohort_*`` names)
+        # are bookkeeping companions to a real user entity; they share
+        # the SAME TShapes. If we let them mark those TShapes as
+        # interface faces, the kept solid's exterior set would lose all
+        # its boundary faces (the ones the synthetic 2D entity points
+        # at), and ``A___None`` would come out empty. Skip them entirely
+        # at the interface stage.
+        if any(
+            n.startswith("__cohort_") for n in ent1.physical_name + ent2.physical_name
+        ):
+            continue
         entity_interface_ids[i1].update(common)
         entity_interface_ids[i2].update(common)
         if not (ent1.keep or ent2.keep):
@@ -239,6 +250,11 @@ def _compute_physical_groups(
     lower_dim_ids: set[int] = set()
     for ent, leaves in zip(entities, entity_leaves):
         if ent.dim < max_dim:
+            # Synthetic structured-pipeline names tag the same TShape as
+            # their user-visible parent; they must not steal those faces
+            # out of the parent's ``___None`` exterior boundary group.
+            if any(n.startswith("__cohort_") for n in ent.physical_name):
+                continue
             for leaf in leaves:
                 lower_dim_ids.add(_HASHER(leaf))
 

@@ -278,14 +278,8 @@ def _build_horizontal_face(
     min_arc_points: int,
     arc_tolerance: float,
 ) -> TopoDS_Face:
-    """Build a horizontal TopoDS_Face for a polygon at fixed z.
-
-    OCC MakeFace expects outer wire CCW and hole wires CW (both viewed from
-    the face normal, which is +Z for a horizontal face).  Normalise ring
-    orientations explicitly because Shapely's boolean operations can return
-    rings with unexpected orientations.
-    """
-    outer_coords = _ring_coords_ccw(polygon.exterior)
+    """Build a horizontal TopoDS_Face for a polygon at fixed z."""
+    outer_coords = _ring_coords(polygon.exterior)
     outer_edges = ereg.polyline_xy(
         outer_coords,
         z,
@@ -299,8 +293,7 @@ def _build_horizontal_face(
     outer_wire = mw.Wire()
     mf = BRepBuilderAPI_MakeFace(outer_wire)
     for interior in polygon.interiors:
-        # OCC MakeFace.Add(hole_wire) expects the hole wire to be CW.
-        hole_coords = _ring_coords_cw(interior)
+        hole_coords = _ring_coords(interior)
         hole_edges = ereg.polyline_xy(
             hole_coords,
             z,
@@ -491,12 +484,24 @@ def build_cohort_compound(
         return id_arcs, min_p, arc_tol
 
     # Build shared interior faces first.
+    # A face is shared (same TShape) only when the intersection covers the
+    # FULL polygon of the sub-piece being assigned.  If inter_poly is only a
+    # fragment of the sub-piece's polygon (e.g., an above-sub-piece is larger
+    # than the below-sub-piece), assigning the tiny intersection as the face
+    # would cause stamp_wedges to read only that fragment's triangulation.
+    # In that situation we skip the assignment here and let the "remaining
+    # bot/top faces" loop below build the correct full-polygon face.
     for (b, a), inter_poly in shared_horizontal.items():
         z = subpieces[b].z_interval[1]
         id_arcs, min_p, arc_tol = arc_params_for_z(z, b)
+        area_tol = 1e-8
+        below_full = abs(inter_poly.area - subpieces[b].sub_polygon.area) < area_tol
+        above_full = abs(inter_poly.area - subpieces[a].sub_polygon.area) < area_tol
         face = _build_horizontal_face(inter_poly, z, ereg, id_arcs, min_p, arc_tol)
-        horiz_faces[(b, "top")] = face
-        horiz_faces[(a, "bot")] = face
+        if below_full:
+            horiz_faces[(b, "top")] = face
+        if above_full:
+            horiz_faces[(a, "bot")] = face
 
     # Build remaining bot/top faces (those that weren't shared).
     for i, sp in enumerate(subpieces):
@@ -525,6 +530,35 @@ def build_cohort_compound(
     # subpiece's sub_polygon becomes one lateral face. The edge
     # registry shares vertical edges between laterally-adjacent
     # subpieces in the same z-interval automatically.
+    #
+    # A lateral face cache keyed by the same vertex identity used by the
+    # edge registry shares the FACE TShape between two subpieces that
+    # have a coincident xy-edge at the same z-interval. The cohort
+    # compound is passed to BOPAlgo_Builder as one argument
+    # (keep_compound_for_bop=True) so it does NOT fragment internal
+    # coincident-but-distinct-TShape faces. Without this cache the
+    # n_layers-mismatch lateral-touch detection in
+    # ``apply_lateral_transfinite_hints`` cannot see that two adjacent
+    # slabs share a lateral face.
+    lateral_face_cache: dict[tuple, TopoDS_Face] = {}
+
+    def _lateral_key(
+        a: tuple[float, float],
+        b: tuple[float, float],
+        zlo: float,
+        zhi: float,
+    ) -> tuple:
+        k_a = vreg._key(a[0], a[1], zlo)
+        k_b = vreg._key(b[0], b[1], zlo)
+        # Endpoint-order-invariant; same lateral whether traversed
+        # left->right or right->left.
+        return (
+            "F",
+            tuple(sorted([k_a, k_b])),
+            vreg._key(0, 0, zlo)[2],
+            vreg._key(0, 0, zhi)[2],
+        )
+
     lateral_faces: dict[int, list[TopoDS_Face]] = {i: [] for i in range(len(subpieces))}
     for i, sp in enumerate(subpieces):
         zlo, zhi = sp.z_interval
@@ -534,7 +568,12 @@ def build_cohort_compound(
             e_hi = ereg.line_xy(a[0], a[1], b[0], b[1], zhi)
             v_left = ereg.vertical(a[0], a[1], zlo, zhi)
             v_right = ereg.vertical(b[0], b[1], zlo, zhi)
-            lateral_faces[i].append(_build_lateral_face(e_lo, e_hi, v_left, v_right))
+            cache_key = _lateral_key(a, b, zlo, zhi)
+            face = lateral_face_cache.get(cache_key)
+            if face is None:
+                face = _build_lateral_face(e_lo, e_hi, v_left, v_right)
+                lateral_face_cache[cache_key] = face
+            lateral_faces[i].append(face)
 
     # Build each sub-solid.
     builder = BRep_Builder()
