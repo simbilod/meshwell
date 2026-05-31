@@ -71,3 +71,66 @@ def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
                     raise StructuredZStackError(
                         entity_index=ent_idx, z=z, cohort_index=cohort_idx
                     )
+
+
+from typing import TYPE_CHECKING, Iterable  # noqa: E402
+
+from meshwell.structured.exceptions import CohortShellModifiedError  # noqa: E402
+from meshwell.structured.types import ShapeKey, SlabMeta  # noqa: E402
+
+if TYPE_CHECKING:
+    from OCP.TopoDS import TopoDS_Face
+
+
+def validate_cohort_shells(
+    slab_meta: dict[ShapeKey, SlabMeta],
+    faces_by_key: "dict[ShapeKey, TopoDS_Face]",
+    builder,
+) -> None:
+    """Stage 5 post-pass validator for cohort shell face invariance.
+
+    Raise if BOP modified any pre-baked cohort shell face into more
+    than one piece.
+
+    For each face role (bot/top/lateral) in each SlabMeta, query
+    builder.Modified(original_face). Acceptable outcomes:
+      - empty + not deleted: face passed through BOP unchanged.
+      - single replacement: face merged with a coincident neighbour.
+    Unacceptable:
+      - multiple replacements: BOP introduced a cut on this shell face.
+    """
+    for meta in slab_meta.values():
+        face_roles: list[tuple[str, ShapeKey]] = [
+            ("bot", meta.bot_face_key),
+            ("top", meta.top_face_key),
+        ] + [(f"lateral_{i}", lk) for i, lk in enumerate(meta.lateral_face_keys)]
+        for role, fk in face_roles:
+            face = faces_by_key.get(fk)
+            if face is None:
+                continue
+            modified = builder.Modified(face)
+            count = sum(1 for _ in _iterate_list(modified))
+            if count > 1:
+                raise CohortShellModifiedError(
+                    slab_index=meta.slab_index,
+                    face_role=role,
+                    fragment_count=count,
+                )
+
+
+def _iterate_list(lst) -> Iterable:
+    """Iterate a TopTools_ListOfShape (or empty list-like)."""
+    n = lst.Extent() if hasattr(lst, "Extent") else 0
+    if n == 0:
+        return iter(())
+    out: list = []
+    try:
+        out = list(lst)
+    except TypeError:
+        from OCP.TopTools import TopTools_ListIteratorOfListOfShape
+
+        it = TopTools_ListIteratorOfListOfShape(lst)
+        while it.More():
+            out.append(it.Value())
+            it.Next()
+    return out
