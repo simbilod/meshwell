@@ -479,3 +479,11 @@ class StructuredExtrusionResolutionSpec(ResolutionSpec):
 
     apply_to: Literal["volumes"] = "volumes"
     n_layers: int = Field(default=1, ge=1)
+
+    def apply(self, **_kwargs):
+        """No-op.
+
+        StructuredExtrusionResolutionSpec is consumed by the wedge hook,
+        not by the gmsh mesh-size field machinery.
+        """
+        return

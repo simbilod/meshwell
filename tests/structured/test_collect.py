@@ -54,9 +54,18 @@ def test_non_polyprism_structured_raises():
 
 
 def test_carries_arc_metadata():
-    p = make_prism("a", structured=True)
-    p.arc_tolerance = 5e-4
-    p.min_arc_points = 5
+    # Explicit identify_arcs=True to test that arc metadata is carried through.
+    # structured=True alone no longer implies identify_arcs=True (that caused
+    # rectangular polygons to be built as arc-inflated disk solids).
+    p = PolyPrism(
+        polygons=SQ,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="a",
+        structured=True,
+        identify_arcs=True,
+        arc_tolerance=5e-4,
+        min_arc_points=5,
+    )
     slabs, _ = collect_structured_slabs([p])
     assert slabs[0].arc_tolerance == 5e-4
     assert slabs[0].min_arc_points == 5

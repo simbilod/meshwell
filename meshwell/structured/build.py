@@ -235,6 +235,41 @@ def _ring_coords(ring) -> list[tuple[float, float]]:
     return list(ring.coords)
 
 
+def _ring_coords_ccw(ring) -> list[tuple[float, float]]:
+    """Return ring coords ensuring CCW orientation (positive signed area).
+
+    OCC ``BRepBuilderAPI_MakeFace`` expects the outer wire to be CCW when
+    viewed from the face normal (+Z for a horizontal face).
+    """
+    coords = list(ring.coords)
+    # Signed area using the shoelace formula.  Positive => CCW.
+    n = len(coords)
+    area2 = sum(
+        coords[i][0] * coords[(i + 1) % n][1] - coords[(i + 1) % n][0] * coords[i][1]
+        for i in range(n)
+    )
+    if area2 < 0:
+        coords = list(reversed(coords))
+    return coords
+
+
+def _ring_coords_cw(ring) -> list[tuple[float, float]]:
+    """Return ring coords ensuring CW orientation (negative signed area).
+
+    OCC ``BRepBuilderAPI_MakeFace.Add(hole_wire)`` expects the hole wire
+    to be CW when viewed from the face normal (+Z for a horizontal face).
+    """
+    coords = list(ring.coords)
+    n = len(coords)
+    area2 = sum(
+        coords[i][0] * coords[(i + 1) % n][1] - coords[(i + 1) % n][0] * coords[i][1]
+        for i in range(n)
+    )
+    if area2 > 0:
+        coords = list(reversed(coords))
+    return coords
+
+
 def _build_horizontal_face(
     polygon,
     z: float,
@@ -243,8 +278,14 @@ def _build_horizontal_face(
     min_arc_points: int,
     arc_tolerance: float,
 ) -> TopoDS_Face:
-    """Build a horizontal TopoDS_Face for a polygon at fixed z."""
-    outer_coords = _ring_coords(polygon.exterior)
+    """Build a horizontal TopoDS_Face for a polygon at fixed z.
+
+    OCC MakeFace expects outer wire CCW and hole wires CW (both viewed from
+    the face normal, which is +Z for a horizontal face).  Normalise ring
+    orientations explicitly because Shapely's boolean operations can return
+    rings with unexpected orientations.
+    """
+    outer_coords = _ring_coords_ccw(polygon.exterior)
     outer_edges = ereg.polyline_xy(
         outer_coords,
         z,
@@ -258,7 +299,8 @@ def _build_horizontal_face(
     outer_wire = mw.Wire()
     mf = BRepBuilderAPI_MakeFace(outer_wire)
     for interior in polygon.interiors:
-        hole_coords = _ring_coords(interior)
+        # OCC MakeFace.Add(hole_wire) expects the hole wire to be CW.
+        hole_coords = _ring_coords_cw(interior)
         hole_edges = ereg.polyline_xy(
             hole_coords,
             z,
@@ -273,13 +315,40 @@ def _build_horizontal_face(
     return mf.Face()
 
 
+def _is_arc_edge(edge: "TopoDS_Edge") -> bool:
+    """Return True iff the edge's underlying curve is a circular arc."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.GeomAdaptor import GeomAdaptor_Curve
+
+    fp, lp = 0.0, 1.0
+    curv = BRep_Tool.Curve_s(edge, fp, lp)
+    if curv is None:
+        return False
+    try:
+        adaptor = GeomAdaptor_Curve(curv)
+        return adaptor.GetType() == GeomAbs_Circle
+    except Exception:
+        return False
+
+
 def _build_lateral_face(
-    edge_xy_low: TopoDS_Edge,
-    edge_xy_high: TopoDS_Edge,
-    v_left: TopoDS_Edge,
-    v_right: TopoDS_Edge,
-) -> TopoDS_Face:
-    """Stitch four edges into a lateral quad face."""
+    edge_xy_low: "TopoDS_Edge",
+    edge_xy_high: "TopoDS_Edge",
+    v_left: "TopoDS_Edge",
+    v_right: "TopoDS_Edge",
+) -> "TopoDS_Face":
+    """Stitch four edges into a lateral face.
+
+    For straight edges the face is planar.  For arc edges (circular
+    curves in the XY-plane) the face is built on the matching
+    ``Geom_CylindricalSurface`` so that the OCC BRep is topologically
+    closed and passes BRepCheck validation.
+    """
+    if _is_arc_edge(edge_xy_low):
+        return _build_cylindrical_lateral_face(
+            edge_xy_low, edge_xy_high, v_left, v_right
+        )
     mw = BRepBuilderAPI_MakeWire()
     mw.Add(edge_xy_low)
     mw.Add(v_right)
@@ -287,6 +356,58 @@ def _build_lateral_face(
     mw.Add(v_left)
     wire = mw.Wire()
     return BRepBuilderAPI_MakeFace(wire).Face()
+
+
+def _build_cylindrical_lateral_face(
+    edge_low: "TopoDS_Edge",
+    edge_high: "TopoDS_Edge",
+    v_left: "TopoDS_Edge",
+    v_right: "TopoDS_Edge",
+) -> "TopoDS_Face":
+    """Build a ruled cylindrical lateral face between two arc edges.
+
+    Uses ``BRepOffsetAPI_ThruSections`` (ruled=True) to produce a face
+    whose parametric domain lives on the cylinder, then extracts the
+    single face from the resulting shell.
+    """
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    mw_lo = BRepBuilderAPI_MakeWire()
+    mw_lo.Add(edge_low)
+    mw_hi = BRepBuilderAPI_MakeWire()
+    mw_hi.Add(edge_high)
+
+    tss = BRepOffsetAPI_ThruSections(False, True)  # solid=False, ruled=True
+    tss.AddWire(mw_lo.Wire())
+    tss.AddWire(mw_hi.Wire())
+    tss.Build()
+    if not tss.IsDone():
+        # Fallback: planar face (may be invalid for large arcs but avoids crash)
+        mw = BRepBuilderAPI_MakeWire()
+        mw.Add(edge_low)
+        mw.Add(v_right)
+        mw.Add(edge_high)
+        mw.Add(v_left)
+        return BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+
+    shell = tss.Shape()
+    # ThruSections returns a Shell; extract the single Face.
+    exp = TopExp_Explorer(shell, TopAbs_FACE)
+    if exp.More():
+        face_raw = exp.Current()
+        from OCP.TopoDS import TopoDS
+
+        return TopoDS.Face_s(face_raw)
+    # Fallback
+    mw = BRepBuilderAPI_MakeWire()
+    mw.Add(edge_low)
+    mw.Add(v_right)
+    mw.Add(edge_high)
+    mw.Add(v_left)
+    return BRepBuilderAPI_MakeFace(mw.Wire()).Face()
 
 
 def build_cohort_compound(
@@ -300,6 +421,12 @@ def build_cohort_compound(
     N == len(subpieces). Faces and edges shared between sub-solids are
     constructed once and referenced from both — guaranteeing shared
     TShapes without BOP.
+
+    Arc-detection conformality: when two subpieces from adjacent z-levels
+    share a z-plane, one source slab may have ``identify_arcs=True`` while
+    the other does not.  We propagate ``identify_arcs=True`` across shared
+    z-planes so that BOTH faces at the interface use the same arc
+    representation.
     """
     vreg = VertexRegistry(point_tolerance=point_tolerance)
     ereg = EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
@@ -307,6 +434,31 @@ def build_cohort_compound(
     slab_by_source: dict[int, StructuredSlab] = {
         s.source_index: s for s in cohort.slabs
     }
+
+    # Pre-compute, for each z-plane in the cohort, whether ANY source slab
+    # active AT that plane (either touching from below or from above) has
+    # identify_arcs=True.  A subpiece's bottom face uses the z=zlo plane
+    # setting and its top face uses the z=zhi plane setting.
+    z_plane_id_arcs: dict[float, bool] = {}
+    z_plane_min_arc_pts: dict[float, int] = {}
+    z_plane_arc_tol: dict[float, float] = {}
+    for slab in cohort.slabs:
+        for z in (slab.zlo, slab.zhi):
+            if slab.identify_arcs:
+                z_plane_id_arcs[z] = True
+                # Use the most sensitive (smallest) arc_tolerance and
+                # largest min_arc_points when multiple slabs contribute.
+                if z not in z_plane_arc_tol or slab.arc_tolerance < z_plane_arc_tol[z]:
+                    z_plane_arc_tol[z] = slab.arc_tolerance
+                if (
+                    z not in z_plane_min_arc_pts
+                    or slab.min_arc_points > z_plane_min_arc_pts[z]
+                ):
+                    z_plane_min_arc_pts[z] = slab.min_arc_points
+            else:
+                z_plane_id_arcs.setdefault(z, False)
+                z_plane_arc_tol.setdefault(z, slab.arc_tolerance)
+                z_plane_min_arc_pts.setdefault(z, slab.min_arc_points)
 
     # First pass: identify shared horizontal interior faces.
     # Two subpieces share an interior face when their z_intervals are
@@ -331,22 +483,25 @@ def build_cohort_compound(
     # side: "bot" or "top".
     horiz_faces: dict[tuple[int, str], TopoDS_Face] = {}
 
-    def arc_params_for(sp_idx: int):
+    def arc_params_for_z(z: float, sp_idx: int):
         s = slab_by_source[subpieces[sp_idx].source_slab_indices[0]]
-        return s.identify_arcs, s.min_arc_points, s.arc_tolerance
+        id_arcs = z_plane_id_arcs.get(z, s.identify_arcs)
+        min_p = z_plane_min_arc_pts.get(z, s.min_arc_points)
+        arc_tol = z_plane_arc_tol.get(z, s.arc_tolerance)
+        return id_arcs, min_p, arc_tol
 
     # Build shared interior faces first.
     for (b, a), inter_poly in shared_horizontal.items():
         z = subpieces[b].z_interval[1]
-        id_arcs, min_p, arc_tol = arc_params_for(b)
+        id_arcs, min_p, arc_tol = arc_params_for_z(z, b)
         face = _build_horizontal_face(inter_poly, z, ereg, id_arcs, min_p, arc_tol)
         horiz_faces[(b, "top")] = face
         horiz_faces[(a, "bot")] = face
 
     # Build remaining bot/top faces (those that weren't shared).
     for i, sp in enumerate(subpieces):
-        id_arcs, min_p, arc_tol = arc_params_for(i)
         if (i, "bot") not in horiz_faces:
+            id_arcs, min_p, arc_tol = arc_params_for_z(sp.z_interval[0], i)
             horiz_faces[(i, "bot")] = _build_horizontal_face(
                 sp.sub_polygon,
                 sp.z_interval[0],
@@ -356,6 +511,7 @@ def build_cohort_compound(
                 arc_tol,
             )
         if (i, "top") not in horiz_faces:
+            id_arcs, min_p, arc_tol = arc_params_for_z(sp.z_interval[1], i)
             horiz_faces[(i, "top")] = _build_horizontal_face(
                 sp.sub_polygon,
                 sp.z_interval[1],
