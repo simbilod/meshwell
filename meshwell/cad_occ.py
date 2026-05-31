@@ -274,7 +274,14 @@ class CAD_OCC:
         index: int,
         entity_obj: Any,
     ) -> OCCLabeledEntity:
-        """Instantiate a single entity into an OCC shape."""
+        """Instantiate a single entity into an OCC shape.
+
+        Compounds are flattened to their constituent dim-level
+        sub-shapes so BOPAlgo_Builder.Modified() in fragment_all
+        can track per-sub-shape provenance. Required for the
+        structured pipeline's cohort compound (multiple sub-solids
+        per cohort).
+        """
         shape = entity_obj.instanciate_occ()
         dim = getattr(entity_obj, "dimension", None)
         if dim is None:
@@ -282,8 +289,9 @@ class CAD_OCC:
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
+        shapes = self._unwrap_shape(shape, dim) if shape is not None else []
         return OCCLabeledEntity(
-            shapes=[shape],
+            shapes=shapes,
             physical_name=physical_name,
             index=index,
             keep=getattr(entity_obj, "mesh_bool", True),
