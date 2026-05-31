@@ -75,6 +75,17 @@ def decompose_cohorts(
         for (zlo, zhi), fp in per_cohort_per_interval_footprint[_ci].items():
             cut_sources.setdefault(zlo, []).append(fp.boundary)
             cut_sources.setdefault(zhi, []).append(fp.boundary)
+            # Also add each individual slab's footprint boundary that
+            # spans this z-interval (including voids).  Without this,
+            # polygonize would emit one sub-piece per Policy-B union
+            # region instead of one per per-slab region, so overlapping
+            # solids with higher mesh_order would lose their share to
+            # the lowest-mesh_order slab, and void carvings would never
+            # split the surrounding solid.
+            for s in _cohort.slabs:
+                if s.zlo <= zlo and s.zhi >= zhi:
+                    cut_sources.setdefault(zlo, []).append(s.footprint.boundary)
+                    cut_sources.setdefault(zhi, []).append(s.footprint.boundary)
     for ent in unstructured_entities:
         if not isinstance(ent, PolyPrism) or not ent.extrude:
             continue
@@ -90,7 +101,12 @@ def decompose_cohorts(
                     # so all contributions for the same plane share one dict entry.
                     existing = approx_key(z, cut_sources)
                     key = existing if existing is not None else z
-                    cut_sources.setdefault(key, []).append(ent.polygons.boundary)
+                    # Use only the exterior ring of the unstructured entity's
+                    # polygon.  Including hole boundaries would propagate an
+                    # entity's internal holes into structured subpieces at a
+                    # z-plane where those holes do not physically exist.  The
+                    # BOP fragmentation later handles the actual hole geometry.
+                    cut_sources.setdefault(key, []).append(ent.polygons.exterior)
 
     cut_unions = {z: unary_union(lines) for z, lines in cut_sources.items()}
 
@@ -110,18 +126,22 @@ def decompose_cohorts(
             pieces = list(polygonize(merged))
             # Filter to pieces whose representative_point lies inside fp.
             inside = [p for p in pieces if fp.contains(p.representative_point())]
-            slab_indices = tuple(
-                s.source_index for s in cohort.slabs if s.zlo <= zlo and s.zhi >= zhi
-            )
-            cohort_subs.extend(
-                SubPiece(
-                    cohort_index=ci,
-                    z_interval=(zlo, zhi),
-                    sub_polygon=sub_poly,
-                    source_slab_indices=slab_indices,
+            candidate_slabs = [s for s in cohort.slabs if s.zlo <= zlo and s.zhi >= zhi]
+            for sub_poly in inside:
+                owner = _owner_slab(sub_poly, candidate_slabs)
+                if owner is None:
+                    # The representative point falls inside a void with
+                    # higher priority than any solid here, or outside all
+                    # candidate footprints — no SubPiece to emit.
+                    continue
+                cohort_subs.append(
+                    SubPiece(
+                        cohort_index=ci,
+                        z_interval=(zlo, zhi),
+                        sub_polygon=sub_poly,
+                        source_slab_indices=(owner,),
+                    )
                 )
-                for sub_poly in inside
-            )
         subpieces_per_cohort.append(cohort_subs)
 
     # 4. Unstructured side: pre-cut PolyPrisms that touch a cohort z-plane.
@@ -158,3 +178,37 @@ def _cohort_xy_at(cohort: Cohort, z: float):
     """Return the union of all slab footprints active at height z."""
     polys = [s.footprint for s in cohort.slabs if s.zlo <= z <= s.zhi]
     return unary_union(polys)
+
+
+def _owner_slab(
+    sub_polygon: Polygon, candidate_slabs: list[StructuredSlab]
+) -> int | None:
+    """Pick the slab that owns a sub-piece under Policy B.
+
+    Take the sub_polygon's representative_point, find every candidate
+    whose footprint contains it (solids and voids), then resolve the
+    same way `zinterval_footprint` does:
+
+      - Sort by (mesh_order, source_index) ascending.
+      - The first slab in that order wins the point.
+      - If that winner is a void (mesh_bool=False), return None — the
+        sub-piece is carved away and no SubPiece should be emitted.
+
+    Returns the winning slab's source_index, or None if the point is
+    void-carved or outside every candidate's footprint.
+    """
+    pt = sub_polygon.representative_point()
+    here = [s for s in candidate_slabs if s.footprint.contains(pt)]
+    if not here:
+        return None
+    ordered = sorted(
+        here,
+        key=lambda s: (
+            s.mesh_order if s.mesh_order is not None else float("inf"),
+            s.source_index,
+        ),
+    )
+    winner = ordered[0]
+    if not winner.mesh_bool:
+        return None
+    return winner.source_index
