@@ -162,8 +162,33 @@ def decompose_cohorts(
             pre_cut.append(ent)
             continue
         new_polys = MultiPolygon(inside) if len(inside) > 1 else inside[0]
+        # Determine whether any touching cohort has arc-bearing slabs.
+        # If so, propagate arc detection to the pre-cut entity so its boundary
+        # (which now follows the cohort's polyline-approximated arc) is built
+        # with matching OCC arc edges rather than polyline edges. Without this,
+        # the unstructured and cohort sides build geometrically-coincident-but-
+        # topologically-different OCC representations on the shared boundary, and
+        # BOP cannot merge them within fragment_fuzzy_value.
+        arc_bearing_slabs: list[StructuredSlab] = []
+        for c in cohorts:
+            for z_check in (ent.zmin, ent.zmax):
+                if not approx_in(z_check, c.z_planes):
+                    continue
+                if not _cohort_xy_at(c, z_check).intersects(ent.polygons):
+                    continue
+                arc_bearing_slabs.extend(s for s in c.slabs if s.identify_arcs)
+                break  # one match is enough to flag the cohort
+
         new_ent = copy(ent)
         new_ent.polygons = new_polys
+        if arc_bearing_slabs:
+            # Propagate arc detection settings from the most-permissive cohort slab.
+            # arc_tolerance: use the LOOSEST tolerance among touching cohort slabs
+            # so arc detection on the pre-cut succeeds whenever it succeeded on the
+            # cohort side.
+            new_ent.identify_arcs = True
+            new_ent.arc_tolerance = max(s.arc_tolerance for s in arc_bearing_slabs)
+            new_ent.min_arc_points = min(s.min_arc_points for s in arc_bearing_slabs)
         pre_cut.append(new_ent)
 
     return subpieces_per_cohort, pre_cut
