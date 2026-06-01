@@ -87,3 +87,140 @@ def test_void_inside_single_structured_slab(tmp_path: Path):
     assert _has_interface(
         names, "bg", "hole"
     ), f"expected bg___hole lateral; got groups: {sorted(names)}"
+
+
+def test_void_below_unstructured_cap(tmp_path: Path):
+    """Bg + void + cap above.
+
+    Expected: bg___hole + cap___hole.
+    """
+    bg = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=2.0,
+    )
+    hole = PolyPrism(
+        _disc(0, 0, 1.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    cap = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        mesh_order=3.0,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [bg, hole, cap],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("bg"),
+    )
+    m = meshio.read(msh)
+    names = _physical_names(msh)
+    assert "bg" in m.cell_sets
+    assert "cap" in m.cell_sets
+    assert "hole" not in m.cell_sets
+    assert _has_interface(
+        names, "bg", "hole"
+    ), f"missing bg___hole; groups: {sorted(names)}"
+    assert _has_interface(
+        names, "cap", "hole"
+    ), f"missing cap___hole; groups: {sorted(names)}"
+
+
+def test_void_above_unstructured_base(tmp_path: Path):
+    """Base + bg + void.
+
+    Expected: bg___hole + base___hole.
+    """
+    base = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        mesh_order=3.0,
+    )
+    bg = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=2.0,
+    )
+    hole = PolyPrism(
+        _disc(0, 0, 1.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [base, bg, hole],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("bg"),
+    )
+    names = _physical_names(msh)
+    assert _has_interface(names, "bg", "hole")
+    assert _has_interface(
+        names, "base", "hole"
+    ), f"missing base___hole; groups: {sorted(names)}"
+
+
+def test_void_sandwiched_between_unstructured(tmp_path: Path):
+    """Base + bg + void + cap.
+
+    All three void interfaces expected.
+    """
+    base = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        mesh_order=3.0,
+    )
+    bg = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=2.0,
+    )
+    hole = PolyPrism(
+        _disc(0, 0, 1.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    cap = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        mesh_order=3.0,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [base, bg, hole, cap],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("bg"),
+    )
+    names = _physical_names(msh)
+    assert _has_interface(names, "bg", "hole"), "lateral"
+    assert _has_interface(names, "base", "hole"), "void bot"
+    assert _has_interface(names, "cap", "hole"), "void top"
