@@ -214,7 +214,7 @@ class StructuredVoidMeshOrderRequiredError(StructuredError):
     against the solids around them.
     """
 
-    def __init__(self, entity_index: int, physical_name):
+    def __init__(self, entity_index: int, physical_name: tuple[str, ...] | str):
         self.entity_index = entity_index
         self.physical_name = physical_name
         super().__init__(
