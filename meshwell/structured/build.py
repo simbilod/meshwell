@@ -471,11 +471,28 @@ def _build_cylindrical_lateral_face(
     v_bot_first = TopExp.FirstVertex_s(edge_low)
     bot_z = BRep_Tool.Pnt_s(v_bot_first).Z()
 
-    # Construct a canonical vertical cylindrical surface through the arc's
-    # axis location with the arc's radius. The cylinder's axis sense is +Z
-    # (matches gp_Circ.Axis() for arcs that lie in a z-plane traversed CCW).
+    # Construct a vertical cylindrical surface through the arc's axis
+    # location with the arc's radius. We orient the cylinder's X-axis (its
+    # u=0 reference direction) to point at the arc's start vertex.  This
+    # guarantees the PCurve of the arc on this surface has u starting at 0
+    # and lying in [0, 2π) rather than crossing the u=0/u=2π seam of the
+    # cylinder's intrinsic parameterization — which is what triggered
+    # "BRepCheck_UnorientableShape" for the second half-arc of a closed
+    # circle (its arc spans π → 2π on a cylinder whose +X reference points
+    # at u=0).
     center = gp_circ.Location()
-    cyl_axis = gp_Ax3(gp_Pnt(center.X(), center.Y(), bot_z), gp_Dir(0, 0, 1))
+    start_pt = BRep_Tool.Pnt_s(v_bot_first)
+    dx = start_pt.X() - center.X()
+    dy = start_pt.Y() - center.Y()
+    norm = (dx * dx + dy * dy) ** 0.5
+    # Degenerate (start coincident with center) shouldn't happen; fall
+    # back to global +X.
+    x_dir = gp_Dir(1, 0, 0) if norm < 1e-12 else gp_Dir(dx / norm, dy / norm, 0.0)
+    cyl_axis = gp_Ax3(
+        gp_Pnt(center.X(), center.Y(), bot_z),
+        gp_Dir(0, 0, 1),
+        x_dir,
+    )
     radius = gp_circ.Radius()
     surf = Geom_CylindricalSurface(cyl_axis, radius)
 
@@ -484,6 +501,8 @@ def _build_cylindrical_lateral_face(
     # one orientation first and fall back to the reverse if BRepBuilderAPI
     # complains.
     def _try_wire(wire_edges) -> "TopoDS_Face | None":
+        from OCP.BRepCheck import BRepCheck_Analyzer
+
         mw = BRepBuilderAPI_MakeWire()
         for e in wire_edges:
             mw.Add(e)
@@ -503,6 +522,11 @@ def _build_cylindrical_lateral_face(
             # already exist on the edge for this face.
             sfe.FixAddPCurve(e, face, False, 1e-7)
             exp.Next()
+        # Reject "unorientable" faces — these arise when the wire's PCurves
+        # straddle the cylinder's u=0/u=2π seam.  The caller will try the
+        # reversed wire orientation next, then fall back to a ruled surface.
+        if not BRepCheck_Analyzer(face).IsValid():
+            return None
         return face
 
     # Order 1: bot forward, right up, top reversed, left down.
@@ -669,18 +693,46 @@ def build_cohort_compound(
     lateral_face_cache: dict[tuple, TopoDS_Face] = {}
 
     def _lateral_key(
-        a: tuple[float, float],
-        b: tuple[float, float],
+        seg: _PolylineSegment,
         zlo: float,
         zhi: float,
     ) -> tuple:
+        """Build a lateral-face cache key for one polyline segment.
+
+        The key distinguishes lateral faces that genuinely differ even
+        when their endpoints coincide. Crucially, for a closed circle
+        ``polyline_segments`` returns two half-arcs whose endpoint pair
+        ``(start, end)`` are identical when sorted (start = coords[0],
+        end = coords[mid]; second arc swaps them). Without the segment
+        ``mid`` in the key, the two half-cylinder faces would collapse
+        to one TShape and the lateral wall would only be half-covered
+        in the final mesh.
+
+        For straight-line segments shared by two side-by-side subpieces
+        (e.g., two squares touching at x=10) the key is endpoint-order-
+        invariant so the same face is shared between subpieces. That
+        sharing is what lets ``apply_lateral_transfinite_hints`` detect
+        n_layers mismatches and lets two adjacent solids hold the same
+        TShape.
+        """
+        a, b = seg.start, seg.end
         k_a = vreg._key(a[0], a[1], zlo)
         k_b = vreg._key(b[0], b[1], zlo)
         # Endpoint-order-invariant; same lateral whether traversed
         # left->right or right->left.
+        endpoints = tuple(sorted([k_a, k_b]))
+        if seg.kind == "arc":
+            # Arcs with the same endpoints but different midpoints
+            # (the two halves of a full circle) MUST get distinct keys.
+            mid = seg.mid
+            k_mid = vreg._key(mid[0], mid[1], zlo)
+            disambig: tuple = ("arc", k_mid)
+        else:
+            disambig = ("line",)
         return (
             "F",
-            tuple(sorted([k_a, k_b])),
+            endpoints,
+            disambig,
             vreg._key(0, 0, zlo)[2],
             vreg._key(0, 0, zhi)[2],
         )
@@ -719,7 +771,7 @@ def build_cohort_compound(
                 e_hi = ereg.line_xy(a[0], a[1], b[0], b[1], zhi)
             v_left = ereg.vertical(a[0], a[1], zlo, zhi)
             v_right = ereg.vertical(b[0], b[1], zlo, zhi)
-            cache_key = _lateral_key(a, b, zlo, zhi)
+            cache_key = _lateral_key(seg, zlo, zhi)
             face = lateral_face_cache.get(cache_key)
             if face is None:
                 face = _build_lateral_face(e_lo, e_hi, v_left, v_right)
