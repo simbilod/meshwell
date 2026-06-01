@@ -118,6 +118,45 @@ def _aabbs_close(b1: tuple[float, ...], b2: tuple[float, ...], tol: float) -> bo
     return all(abs(b1[i] - b2[i]) < tol for i in range(6))
 
 
+def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
+    """True if ``ent`` is a structured-pipeline bookkeeping companion only.
+
+    Structured-pipeline post-pass emits two flavours of entities carrying
+    a synthetic ``__cohort_<ci>__slab_<si>[...]`` name:
+
+    1. Real cohort sub-solids: their ``physical_name`` is a tuple where
+       the synthetic name is **appended** to the user's real name
+       (e.g. ``("lower", "__cohort_0__slab_0")``). These are real
+       geometry — they own faces, can interface with neighbours, and
+       must produce ``A___B`` / ``A___None`` groups normally.
+
+    2. Synthetic 2D face annotators: their ``physical_name`` consists
+       **only** of a synthetic name (e.g. ``("__cohort_0__slab_0__top",)``).
+       They duplicate the parent solid's face TShape so the orchestrator
+       can resolve face → gmsh tag by physical-group name lookup after
+       gmsh.merge. They must not affect interface or boundary detection
+       — purely an annotator on an existing face.
+
+    We use "all names start with ``__cohort_``" rather than "any" so the
+    real sub-solid (flavour 1) is treated as real geometry while the
+    annotator (flavour 2) is correctly identified as bookkeeping-only.
+    """
+    return bool(ent.physical_name) and all(
+        n.startswith("__cohort_") for n in ent.physical_name
+    )
+
+
+def _filter_real_names(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Drop synthetic ``__cohort_*`` names; keep the user-visible names only.
+
+    Used when forming ``A___B`` interface group names from a pair of real
+    cohort sub-solids: their ``physical_name`` tuple has a synthetic name
+    appended, but we only want the user-visible ``A___B``, not also the
+    spurious ``A_____cohort_X``, ``__cohort_X___B``, ``__cohort_X_____cohort_Y``.
+    """
+    return tuple(n for n in names if not n.startswith("__cohort_"))
+
+
 def _compute_physical_groups(
     entities: list[OCCLabeledEntity],
     interface_delimiter: str,
@@ -213,22 +252,39 @@ def _compute_physical_groups(
 
         if not common:
             continue
-        # Synthetic structured-pipeline entities (``__cohort_*`` names)
-        # are bookkeeping companions to a real user entity; they share
-        # the SAME TShapes. If we let them mark those TShapes as
-        # interface faces, the kept solid's exterior set would lose all
-        # its boundary faces (the ones the synthetic 2D entity points
-        # at), and ``A___None`` would come out empty. Skip them entirely
-        # at the interface stage.
-        if any(
-            n.startswith("__cohort_") for n in ent1.physical_name + ent2.physical_name
-        ):
+        # Purely-synthetic structured-pipeline 2D annotators duplicate the
+        # parent solid's face TShape so the orchestrator can name-resolve
+        # ``__cohort_X__slab_Y__role`` -> gmsh face tag after merge. They
+        # are bookkeeping companions, not real geometry: they must NOT
+        # consume their parent's exterior boundary faces (otherwise
+        # ``A___None`` is empty), and they must NOT contribute to "shared
+        # between A and B" interface detection (otherwise the natural
+        # ``A___B`` interface gets attributed to ``A___annotator`` and
+        # the real ``A___B`` is never emitted).
+        #
+        # Real cohort sub-solids ALSO carry a synthetic name appended to
+        # their tuple (e.g. ``("lower", "__cohort_0__slab_0")``) but they
+        # are real geometry — their interfaces still need to be detected
+        # normally. ``_is_purely_synthetic`` distinguishes the two flavours.
+        if _is_purely_synthetic(ent1) or _is_purely_synthetic(ent2):
             continue
         entity_interface_ids[i1].update(common)
         entity_interface_ids[i2].update(common)
         if not (ent1.keep or ent2.keep):
             continue
-        if ent1.physical_name == ent2.physical_name:
+        # Skip synthetic names from the cross product: a cohort sub-solid
+        # named ``("lower", "__cohort_0__slab_0")`` should yield the user
+        # ``lower___upper`` interface only, not ``__cohort_0__slab_0___upper``.
+        # Fall back to the full tuple if filtering left nothing — only
+        # happens for purely-synthetic pairs, which we skipped above.
+        names1 = _filter_real_names(ent1.physical_name) or ent1.physical_name
+        names2 = _filter_real_names(ent2.physical_name) or ent2.physical_name
+        # Two cohort sub-solids from the same user entity (e.g. ``b``
+        # split into two slabs) share an internal slab boundary face;
+        # that's an interior face of ``b``, not a ``b___b`` group.
+        # Compare on the real-name view so the synthetic appendix
+        # doesn't fool the same-entity check.
+        if names1 == names2:
             continue
         # Internal "iface" helpers (named e.g. ``oxide_iface``) carry their
         # own physical_name and should not also be glued to a neighbour pair.
@@ -240,7 +296,7 @@ def _compute_physical_groups(
         # entity matches a top-dim entity's face, both are FACEs (dim=2)
         # even though ent.dim differs.
         interface_dim = 2 if common_shapes[0].ShapeType() == TopAbs_FACE else 1
-        for n1, n2 in product(ent1.physical_name, ent2.physical_name):
+        for n1, n2 in product(names1, names2):
             name = f"{n1}{interface_delimiter}{n2}"
             groups.setdefault((interface_dim, name), []).extend(common_shapes)
 
@@ -250,10 +306,11 @@ def _compute_physical_groups(
     lower_dim_ids: set[int] = set()
     for ent, leaves in zip(entities, entity_leaves):
         if ent.dim < max_dim:
-            # Synthetic structured-pipeline names tag the same TShape as
-            # their user-visible parent; they must not steal those faces
-            # out of the parent's ``___None`` exterior boundary group.
-            if any(n.startswith("__cohort_") for n in ent.physical_name):
+            # Purely-synthetic structured-pipeline 2D annotators tag the
+            # same TShape as their user-visible parent; they must not
+            # steal those faces out of the parent's ``___None`` exterior
+            # boundary group.
+            if _is_purely_synthetic(ent):
                 continue
             for leaf in leaves:
                 lower_dim_ids.add(_HASHER(leaf))
