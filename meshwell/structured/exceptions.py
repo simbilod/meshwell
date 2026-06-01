@@ -203,3 +203,23 @@ class ArcIdentifyConflictError(StructuredError):
             "Either set both True or both False — mixing them on shared "
             "edges leads to inconsistent OCC edge geometry."
         )
+
+
+class StructuredVoidMeshOrderRequiredError(StructuredError):
+    """A structured void (mesh_bool=False) must declare mesh_order.
+
+    Without an explicit mesh_order, the void would sort last in the
+    Policy B resolution (mesh_order=None -> float("inf")) and carve
+    solids that already ran. Voids must explicitly state their priority
+    against the solids around them.
+    """
+
+    def __init__(self, entity_index: int, physical_name):
+        self.entity_index = entity_index
+        self.physical_name = physical_name
+        super().__init__(
+            f"Structured void at entity #{entity_index} "
+            f"(physical_name={physical_name!r}) has mesh_bool=False but no "
+            "mesh_order. Voids must declare an explicit mesh_order so "
+            "Policy B can resolve them against neighbouring solids."
+        )

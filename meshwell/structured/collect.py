@@ -13,6 +13,7 @@ from meshwell.polyprism import PolyPrism
 from meshwell.structured.exceptions import (
     StructuredEntityTypeError,
     StructuredExtrudeRequiredError,
+    StructuredVoidMeshOrderRequiredError,
 )
 from meshwell.structured.types import StructuredSlab
 
@@ -40,6 +41,14 @@ def collect_structured_slabs(
             )
         if not ent.extrude:
             raise StructuredExtrudeRequiredError(entity_index=idx)
+        # Voids (mesh_bool=False) must declare an explicit mesh_order so
+        # Policy B can resolve them against surrounding solids; without one
+        # they would sort last and carve material that already ran.
+        if not ent.mesh_bool and ent.mesh_order is None:
+            raise StructuredVoidMeshOrderRequiredError(
+                entity_index=idx,
+                physical_name=ent.physical_name,
+            )
         z_keys = sorted(ent.buffers.keys())
         for zlo, zhi in itertools.pairwise(z_keys):
             structured.append(
