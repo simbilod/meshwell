@@ -125,9 +125,8 @@ def decompose_cohorts(
             for sub_poly in inside:
                 owner = _owner_slab(sub_poly, candidate_slabs)
                 if owner is None:
-                    # The representative point falls inside a void with
-                    # higher priority than any solid here, or outside all
-                    # candidate footprints — no SubPiece to emit.
+                    # The representative point is outside all candidate
+                    # footprints — no SubPiece to emit.
                     continue
                 cohort_subs.append(
                     SubPiece(
@@ -207,15 +206,16 @@ def _owner_slab(
 
     Take the sub_polygon's representative_point, find every candidate
     whose footprint contains it (solids and voids), then resolve the
-    same way `zinterval_footprint` does:
+    same way `zinterval_footprint` does: sort by (mesh_order, source_index)
+    ascending and the first wins.
 
-      - Sort by (mesh_order, source_index) ascending.
-      - The first slab in that order wins the point.
-      - If that winner is a void (mesh_bool=False), return None — the
-        sub-piece is carved away and no SubPiece should be emitted.
+    Voids return their own source_index now — they become first-class
+    sub-pieces in the cohort compound, marked keep=False at post-pass
+    time so the XAO writer's existing keep=False semantics produce
+    `neighbour___void` interface tags.
 
     Returns the winning slab's source_index, or None if the point is
-    void-carved or outside every candidate's footprint.
+    outside every candidate's footprint.
     """
     pt = sub_polygon.representative_point()
     here = [s for s in candidate_slabs if s.footprint.contains(pt)]
@@ -229,6 +229,4 @@ def _owner_slab(
         ),
     )
     winner = ordered[0]
-    if not winner.mesh_bool:
-        return None
     return winner.source_index
