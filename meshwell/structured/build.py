@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 from OCP.BRep import BRep_Builder
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
@@ -31,6 +30,7 @@ from OCP.TopoDS import (
     TopoDS_Vertex,
 )
 
+from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.types import (
     Cohort,
     ShapeKey,
@@ -148,20 +148,71 @@ class EdgeRegistry:
     ) -> list[TopoDS_Edge]:
         """Return the list of edges (lines and/or arcs) covering coords.
 
-        Uses the same arc-detection as GeometryEntity.decompose_vertices
-        but inlined to avoid pulling that dep just for the 2D case.
+        Uses ``meshwell.geometry_entity.decompose_vertices_2d`` as the
+        canonical arc detector so the structured cohort builder and the
+        legacy ``PolyPrism``/``PolySurface`` paths agree on segmentation.
+        Both paths feeding into the same BOP fragment pass produces the
+        same OCC edges, so coincident-but-topologically-distinct curves
+        no longer fragment shared faces.
         """
-        segments = polyline_segments(
-            coords, identify_arcs, min_arc_points, arc_tolerance, self.point_tolerance
+        segments = decompose_vertices_2d(
+            coords,
+            z=z,
+            point_tolerance=self.point_tolerance,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
         )
         edges: list[TopoDS_Edge] = []
         for seg in segments:
-            if seg.kind == "line":
-                edges.append(
-                    self.line_xy(seg.start[0], seg.start[1], seg.end[0], seg.end[1], z)
-                )
+            pts = seg.points
+            if seg.is_arc:
+                start = pts[0]
+                end = pts[-1]
+                is_closed = self.vertices._key(
+                    start[0], start[1], z
+                ) == self.vertices._key(end[0], end[1], z)
+                if is_closed:
+                    # Full-circle: GC_MakeArcOfCircle can't build start==end.
+                    # Split into two half-arcs using the points at indices
+                    # 1/4, 1/2, 3/4 of the run as the parametric anchors.
+                    mid_idx = len(pts) // 2
+                    quarter_idx = len(pts) // 4
+                    three_quarter_idx = (len(pts) * 3) // 4
+                    edges.append(
+                        self.arc_xy(
+                            (pts[0][0], pts[0][1]),
+                            (pts[quarter_idx][0], pts[quarter_idx][1]),
+                            (pts[mid_idx][0], pts[mid_idx][1]),
+                            z,
+                        )
+                    )
+                    edges.append(
+                        self.arc_xy(
+                            (pts[mid_idx][0], pts[mid_idx][1]),
+                            (pts[three_quarter_idx][0], pts[three_quarter_idx][1]),
+                            (pts[-1][0], pts[-1][1]),
+                            z,
+                        )
+                    )
+                else:
+                    mid_idx = len(pts) // 2
+                    edges.append(
+                        self.arc_xy(
+                            (pts[0][0], pts[0][1]),
+                            (pts[mid_idx][0], pts[mid_idx][1]),
+                            (pts[-1][0], pts[-1][1]),
+                            z,
+                        )
+                    )
             else:
-                edges.append(self.arc_xy(seg.start, seg.mid, seg.end, z))
+                # ``_decompose_vertices_3d`` always emits straight runs as
+                # individual two-point segments, but tolerate longer runs
+                # defensively by stitching consecutive pairs into edges.
+                edges.extend(
+                    self.line_xy(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], z)
+                    for i in range(len(pts) - 1)
+                )
         return edges
 
 
@@ -171,6 +222,11 @@ class _PolylineSegment:
 
     ``kind`` is either ``"line"`` (mid is unused) or ``"arc"`` (mid is
     a point lying on the arc between start and end).
+
+    This is the lateral-face-builder's local view of a polyline segment;
+    ``polyline_segments`` adapts the canonical ``DecompositionSegment``
+    output of ``decompose_vertices_2d`` into this 2D-flat form so that
+    the lateral builder code can stay simple.
     """
 
     kind: str
@@ -188,84 +244,72 @@ def polyline_segments(
 ) -> list[_PolylineSegment]:
     """Decompose a 2D polyline into line and arc segments.
 
-    This is the canonical decomposition used by both horizontal-face
-    construction (``EdgeRegistry.polyline_xy``) and lateral-face
-    construction (so that the bot/top boundary of every lateral matches
-    a single edge of the adjacent horizontal face).
+    Thin adapter over ``meshwell.geometry_entity.decompose_vertices_2d``
+    that flattens the canonical 3D ``DecompositionSegment`` form into the
+    lateral-builder's ``_PolylineSegment`` form. Routing both the
+    horizontal-face (``polyline_xy``) and lateral-face callers through
+    the same canonical detector keeps the bot/top boundary of every
+    lateral matching the adjacent horizontal face's edge by construction.
     """
-    if not identify_arcs or len(coords) < min_arc_points:
-        return [
-            _PolylineSegment(kind="line", start=coords[i], end=coords[i + 1])
-            for i in range(len(coords) - 1)
-        ]
-    segments: list[_PolylineSegment] = []
-    i, n = 0, len(coords)
-    while i < n - 1:
-        best = None
-        best_j = i + 1
-        for j in range(i + min_arc_points, n + 1):
-            pts = np.array(coords[i:j])
-            cx, cy, r, residual = _fit_circle_2d(pts)
-            if residual <= arc_tolerance and r < 1e6:
-                best = (cx, cy, r)
-                best_j = j
-            else:
-                break
-        if best is not None:
-            seg_start = coords[i]
-            seg_end = coords[best_j - 1]
-            mid_idx = (i + best_j - 1) // 2
+    raw = decompose_vertices_2d(
+        coords,
+        z=0.0,  # z is irrelevant — we only need (x, y) downstream
+        point_tolerance=point_tolerance,
+        identify_arcs=identify_arcs,
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
+    )
+    out: list[_PolylineSegment] = []
+    for seg in raw:
+        pts = seg.points
+        if seg.is_arc:
+            start_xy = (pts[0][0], pts[0][1])
+            end_xy = (pts[-1][0], pts[-1][1])
+            mid_idx = len(pts) // 2
+            # Full-circle: split into two half-arcs so each maps to a
+            # well-defined ``GC_MakeArcOfCircle`` build downstream.
             if (
-                abs(seg_start[0] - seg_end[0]) < point_tolerance
-                and abs(seg_start[1] - seg_end[1]) < point_tolerance
+                abs(start_xy[0] - end_xy[0]) < point_tolerance
+                and abs(start_xy[1] - end_xy[1]) < point_tolerance
             ):
-                # Full-circle: split into two half-arcs.
-                q1_idx = (i + mid_idx) // 2
-                q3_idx = (mid_idx + best_j - 1) // 2
-                segments.append(
+                q1_idx = mid_idx // 2
+                q3_idx = (mid_idx + len(pts) - 1) // 2
+                mid_xy = (pts[mid_idx][0], pts[mid_idx][1])
+                out.append(
                     _PolylineSegment(
                         kind="arc",
-                        start=seg_start,
-                        end=coords[mid_idx],
-                        mid=coords[q1_idx],
+                        start=start_xy,
+                        end=mid_xy,
+                        mid=(pts[q1_idx][0], pts[q1_idx][1]),
                     )
                 )
-                segments.append(
+                out.append(
                     _PolylineSegment(
                         kind="arc",
-                        start=coords[mid_idx],
-                        end=seg_end,
-                        mid=coords[q3_idx],
+                        start=mid_xy,
+                        end=end_xy,
+                        mid=(pts[q3_idx][0], pts[q3_idx][1]),
                     )
                 )
             else:
-                segments.append(
+                out.append(
                     _PolylineSegment(
                         kind="arc",
-                        start=seg_start,
-                        end=seg_end,
-                        mid=coords[mid_idx],
+                        start=start_xy,
+                        end=end_xy,
+                        mid=(pts[mid_idx][0], pts[mid_idx][1]),
                     )
                 )
-            i = best_j - 1
         else:
-            segments.append(
-                _PolylineSegment(kind="line", start=coords[i], end=coords[i + 1])
+            out.extend(
+                _PolylineSegment(
+                    kind="line",
+                    start=(pts[i][0], pts[i][1]),
+                    end=(pts[i + 1][0], pts[i + 1][1]),
+                )
+                for i in range(len(pts) - 1)
             )
-            i += 1
-    return segments
-
-
-def _fit_circle_2d(pts: np.ndarray) -> tuple[float, float, float, float]:
-    """Algebraic circle fit. Returns (cx, cy, r, residual)."""
-    x, y = pts[:, 0], pts[:, 1]
-    A = np.column_stack([2 * x, 2 * y, np.ones_like(x)])
-    b = x * x + y * y
-    sol, *_ = np.linalg.lstsq(A, b, rcond=None)
-    cx, cy, c = sol
-    r = float(np.sqrt(c + cx * cx + cy * cy))
-    residual = float(np.std(np.hypot(x - cx, y - cy) - r))
-    return float(cx), float(cy), r, residual
+    return out
 
 
 # ---------------------------------------------------------------------------
