@@ -360,3 +360,107 @@ def test_void_square_no_arcs(tmp_path: Path):
     assert _has_interface(
         names, "bg", "hole"
     ), f"missing bg___hole (square void); groups: {sorted(names)}"
+
+
+def test_two_separate_voids_policy_b(tmp_path: Path):
+    """Two separate voids side by side in the same solid: each gets its own interface.
+
+    void_a is at x<0 and void_b is at x>0; they do not overlap.
+    Both should produce bg___void_a and bg___void_b interfaces.
+    Neither void should appear as a 3D group.
+    """
+    bg = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=3.0,
+    )
+    # Void A: disc centred at (-1.5, 0).
+    void_a = PolyPrism(
+        _disc(-1.5, 0, 0.8),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="void_a",
+        structured=True,
+        mesh_order=2.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    # Void B: disc centred at (+1.5, 0).
+    void_b = PolyPrism(
+        _disc(1.5, 0, 0.8),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="void_b",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [bg, void_a, void_b],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("bg"),
+    )
+    m = meshio.read(msh)
+    names = _physical_names(msh)
+    # Neither void appears as a 3D group.
+    assert "void_a" not in m.cell_sets
+    assert "void_b" not in m.cell_sets
+    # Both voids interface with bg.
+    assert _has_interface(
+        names, "bg", "void_a"
+    ), f"void_a boundary bg___void_a missing; groups: {sorted(names)}"
+    assert _has_interface(
+        names, "bg", "void_b"
+    ), f"void_b boundary bg___void_b missing; groups: {sorted(names)}"
+
+
+def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
+    """A void with an arc-bearing disc cap above.
+
+    The bidirectional pre-cut + unified arc detection should make both sides
+    have matching OCC arc edges so BOP merges the shared disc face at z=1.
+    """
+    bg = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=2.0,
+    )
+    hole = PolyPrism(
+        _disc(0, 0, 1.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    # Arc-bearing cap (a larger disc) above. Pre-cut splits it into
+    # disc-over-hole + annular-ring-over-bg.
+    cap = PolyPrism(
+        _disc(0, 0, 2.5),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        mesh_order=3.0,
+        identify_arcs=True,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [bg, hole, cap],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("bg"),
+    )
+    names = _physical_names(msh)
+    assert _has_interface(
+        names, "bg", "hole"
+    ), f"missing bg___hole lateral; groups: {sorted(names)}"
+    assert _has_interface(
+        names, "cap", "hole"
+    ), f"missing cap___hole (arc-vs-arc); groups: {sorted(names)}"
