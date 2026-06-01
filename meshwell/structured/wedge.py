@@ -229,6 +229,21 @@ def _stamp_one(
     gmsh.model.mesh.addElementsByType(top_tag, 2, [], top_tri_nodes)
 
     # 4) Intermediate layer nodes (for n_layers > 1).
+    #
+    # Boundary nodes of the bot face are shared with the lateral faces of
+    # this sub-solid.  After generate(2), those lateral faces already have
+    # transfinite-placed nodes at every intermediate z (z_layer).  Creating
+    # brand-new intermediate nodes for boundary bot positions would produce
+    # duplicate positions that removeDuplicateNodes() must merge — and that
+    # merge is non-deterministic, sometimes corrupting adjacent-volume
+    # boundary meshes and causing generate(3) to silently skip them.
+    #
+    # Fix: build a rounded-position → existing_node_tag lookup from the
+    # current global model state at the start of each intermediate layer.
+    # Reuse an existing node whenever one is within point_tolerance at the
+    # target (x, y, z_layer) position; create a new node only when no
+    # existing node is close enough (i.e. for interior bot positions that
+    # have no pre-existing lateral-face node at z_layer).
     bot_idx_by_tag = {int(t): i for i, t in enumerate(bot_node_tags)}
     layer_maps: list[dict[int, int]] = [
         {i: int(bot_node_tags[i]) for i in range(len(bot_node_tags))}
@@ -236,16 +251,31 @@ def _stamp_one(
     if n_layers > 1:
         for layer in range(1, n_layers):
             z_layer = bot_z + dz * layer
+            # Snapshot all current model nodes to look up existing z_layer nodes.
+            all_model_tags, all_model_coord, _ = gmsh.model.mesh.getNodes()
+            all_model_pts = np.array(all_model_coord).reshape(-1, 3)
+            # Filter to nodes near z_layer for efficiency.
+            z_mask = np.abs(all_model_pts[:, 2] - z_layer) < point_tolerance
+            zlayer_tags = all_model_tags[z_mask]
+            zlayer_pts = all_model_pts[z_mask]
+
             this_map: dict[int, int] = {}
             for i, bpt in enumerate(bot_pts):
-                tag = gmsh.model.mesh.getMaxNodeTag() + 1
+                if len(zlayer_tags):
+                    d = np.linalg.norm(zlayer_pts[:, :2] - bpt[:2], axis=1)
+                    if d.min() < point_tolerance:
+                        # Reuse the existing node at this z_layer position.
+                        this_map[i] = int(zlayer_tags[int(np.argmin(d))])
+                        continue
+                # No existing node close enough — create a fresh one.
+                new_tag = gmsh.model.mesh.getMaxNodeTag() + 1
                 gmsh.model.mesh.addNodes(
                     3,
                     vol_tag,
-                    [tag],
+                    [new_tag],
                     [float(bpt[0]), float(bpt[1]), float(z_layer)],
                 )
-                this_map[i] = tag
+                this_map[i] = new_tag
             layer_maps.append(this_map)
     layer_maps.append(
         {i: bot_to_top[int(bot_node_tags[i])] for i in range(len(bot_node_tags))}

@@ -193,13 +193,41 @@ def generate_mesh(
             # tell gmsh's tet algorithm to only fill the remaining
             # unstructured volumes.
             gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
-            gmsh.model.mesh.removeDuplicateNodes()
+            # Deduplicate nodes only within the structured sub-solid volumes.
+            # A global removeDuplicateNodes() can corrupt boundary meshes of
+            # adjacent unstructured volumes: BOP sometimes produces duplicate
+            # topological curves/faces at the interface between structured and
+            # unstructured regions.  The duplicate curves have their own node
+            # sets; after global dedup one curve's nodes survive and the other
+            # curve's elements reference those surviving nodes, which may be
+            # classified on the wrong topological entity, causing generate(3)
+            # to fail for the unstructured volume.
+            #
+            # Scoping dedup to the structured volumes is safe because the
+            # intermediate-layer duplicate nodes (z_layer from stamp_wedges vs
+            # lateral transfinite edge nodes) are eliminated upstream in
+            # _stamp_one (step 4 reuses existing nodes instead of creating new
+            # ones).  No genuine duplicates remain within the structured volumes
+            # after stamp_wedges; the scoped call is a safe no-op for them
+            # while leaving the unstructured boundary mesh untouched.
+            structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
+            gmsh.model.mesh.removeDuplicateNodes(structured_vol_dimtags)
         if user_pre_3d is not None:
             user_pre_3d()
+
+    def _structured_post_3d() -> None:
+        if state.slab_meta and face_tag_by_key and sub_solid_tag_by_key:
+            # After generate(3) has filled all unstructured volumes, perform a
+            # global removeDuplicateNodes() to clean up the z-interface dups
+            # that were intentionally left by the scoped pre-3D dedup.  At
+            # this point all volumes are fully meshed, so the dedup cannot
+            # corrupt any pending generate() pass.
+            gmsh.model.mesh.removeDuplicateNodes()
 
     has_structured = bool(state.slab_meta)
     pre_2d_hook = _structured_pre_2d if (has_structured or user_pre_2d) else None
     pre_3d_hook = _structured_pre_3d if (has_structured or user_pre_3d) else None
+    post_3d_hook = _structured_post_3d if has_structured else None
 
     # --- Stage 3: mesh. -------------------------------------------------
     return mesh(
@@ -208,6 +236,7 @@ def generate_mesh(
         output_file=Path(output_mesh) if output_mesh else None,
         pre_2d_hook=pre_2d_hook,
         pre_3d_hook=pre_3d_hook,
+        post_3d_hook=post_3d_hook,
         **mesh_kwargs,
     )
 

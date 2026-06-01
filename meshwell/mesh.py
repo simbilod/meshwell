@@ -406,6 +406,7 @@ class Mesh:
         optimization_flags: tuple[tuple[str, int]] | None,
         pre_2d_hook: callable | None = None,
         pre_3d_hook: callable | None = None,
+        post_3d_hook: callable | None = None,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -432,6 +433,8 @@ class Mesh:
                 if pre_3d_hook is not None:
                     pre_3d_hook()
                 self.model_manager.model.mesh.generate(3)
+                if post_3d_hook is not None:
+                    post_3d_hook()
         else:
             self.model_manager.model.mesh.generate(dim)
 
@@ -507,6 +510,7 @@ class Mesh:
         interface_delimiter: str = "___",
         pre_2d_hook: callable | None = None,
         pre_3d_hook: callable | None = None,
+        post_3d_hook: callable | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -530,6 +534,7 @@ class Mesh:
             interface_delimiter: String used to separate names in an interface
             pre_2d_hook: Optional callable invoked immediately before generate(2)
             pre_3d_hook: Optional callable invoked immediately before generate(3)
+            post_3d_hook: Optional callable invoked immediately after generate(3)
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -565,6 +570,7 @@ class Mesh:
                 optimization_flags=optimization_flags,
                 pre_2d_hook=pre_2d_hook,
                 pre_3d_hook=pre_3d_hook,
+                post_3d_hook=post_3d_hook,
             )
 
         if len(attempts) == 1:
@@ -620,6 +626,7 @@ def mesh(
     interface_delimiter: str = "___",
     pre_2d_hook: callable | None = None,
     pre_3d_hook: callable | None = None,
+    post_3d_hook: callable | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -648,6 +655,7 @@ def mesh(
         interface_delimiter: String used to separate names in an interface
         pre_2d_hook: Optional callable invoked immediately before generate(2)
         pre_3d_hook: Optional callable invoked immediately before generate(3)
+        post_3d_hook: Optional callable invoked immediately after generate(3)
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -686,6 +694,7 @@ def mesh(
             interface_delimiter=interface_delimiter,
             pre_2d_hook=pre_2d_hook,
             pre_3d_hook=pre_3d_hook,
+            post_3d_hook=post_3d_hook,
         )
 
         # Save to file if output file provided
