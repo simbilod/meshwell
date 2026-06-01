@@ -782,29 +782,36 @@ def build_cohort_compound(
         )
 
     lateral_faces: dict[int, list[TopoDS_Face]] = {i: [] for i in range(len(subpieces))}
-    for i, sp in enumerate(subpieces):
-        zlo, zhi = sp.z_interval
-        coords = _ring_coords(sp.sub_polygon.exterior)
-        # When arc-detection is active for either z-plane of this sub-piece,
-        # decompose the polygon boundary into the same arc/line segments
-        # used by the horizontal faces above and below.  This makes each
-        # lateral face's bot/top boundary edge be the SAME shared TShape
-        # already used by the horizontal face, so the shell is closed and
-        # BOP doesn't need to re-discover the arc topology.
-        id_arcs_lo, min_p_lo, arc_tol_lo = arc_params_for_z(zlo, i)
-        id_arcs_hi, min_p_hi, arc_tol_hi = arc_params_for_z(zhi, i)
-        # Cohort-wide arc propagation guarantees both planes agree on
-        # whether identify_arcs is in effect; we just need to detect the
-        # segmentation once.
-        use_arcs = id_arcs_lo or id_arcs_hi
+
+    def _build_laterals_for_ring(
+        ring_coords: list[tuple[float, float]],
+        zlo: float,
+        zhi: float,
+        use_arcs: bool,
+        min_arc_points: int,
+        arc_tolerance: float,
+    ) -> list[TopoDS_Face]:
+        """Build (or fetch cached) lateral faces walking one closed XY ring.
+
+        Used for both the exterior ring and each interior (hole) ring of a
+        sub-polygon. Interior rings produce inner-cylindrical lateral walls
+        which were previously absent — see the regression test
+        ``test_annulus_inner_lateral.py``.
+
+        The lateral-face cache (``_lateral_key``) handles shared TShapes
+        across ring origins: if two cohort sub-solids share the same XY edge
+        at the same z-interval (whether the edge is on an outer or inner
+        ring), they receive the same TShape and the cohort shell remains
+        conformal.
+        """
         segments = polyline_segments(
-            coords,
+            ring_coords,
             identify_arcs=use_arcs,
-            min_arc_points=max(min_p_lo, min_p_hi),
-            arc_tolerance=min(arc_tol_lo, arc_tol_hi),
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
             point_tolerance=point_tolerance,
         )
-
+        out_faces: list[TopoDS_Face] = []
         for seg in segments:
             a, b = seg.start, seg.end
             if seg.kind == "arc":
@@ -818,9 +825,61 @@ def build_cohort_compound(
             cache_key = _lateral_key(seg, zlo, zhi)
             face = lateral_face_cache.get(cache_key)
             if face is None:
+                # ``_build_lateral_face`` (and its arc variant) already tries
+                # both wire orientations and falls back to a ruled surface,
+                # so interior rings (which carry the reverse XY orientation
+                # of an exterior ring around the same arc geometry) reuse
+                # the same code path without a dedicated ``_inner_lateral``
+                # flag — the orientation discovery happens in ``_try_wire``.
                 face = _build_lateral_face(e_lo, e_hi, v_left, v_right)
                 lateral_face_cache[cache_key] = face
-            lateral_faces[i].append(face)
+            out_faces.append(face)
+        return out_faces
+
+    for i, sp in enumerate(subpieces):
+        zlo, zhi = sp.z_interval
+        # When arc-detection is active for either z-plane of this sub-piece,
+        # decompose the polygon boundary into the same arc/line segments
+        # used by the horizontal faces above and below.  This makes each
+        # lateral face's bot/top boundary edge be the SAME shared TShape
+        # already used by the horizontal face, so the shell is closed and
+        # BOP doesn't need to re-discover the arc topology.
+        id_arcs_lo, min_p_lo, arc_tol_lo = arc_params_for_z(zlo, i)
+        id_arcs_hi, min_p_hi, arc_tol_hi = arc_params_for_z(zhi, i)
+        # Cohort-wide arc propagation guarantees both planes agree on
+        # whether identify_arcs is in effect; we just need to detect the
+        # segmentation once.
+        use_arcs = id_arcs_lo or id_arcs_hi
+        min_arc_points = max(min_p_lo, min_p_hi)
+        arc_tolerance = min(arc_tol_lo, arc_tol_hi)
+
+        # Exterior ring: outer lateral walls.
+        lateral_faces[i].extend(
+            _build_laterals_for_ring(
+                _ring_coords(sp.sub_polygon.exterior),
+                zlo,
+                zhi,
+                use_arcs,
+                min_arc_points,
+                arc_tolerance,
+            )
+        )
+
+        # Interior rings (holes): inner-cylindrical / inner lateral walls.
+        # Previously these were silently skipped, so any structured PolyPrism
+        # whose footprint has holes (e.g. an annulus) was missing the
+        # inner radial boundary surface in the final mesh.
+        for interior_ring in sp.sub_polygon.interiors:
+            lateral_faces[i].extend(
+                _build_laterals_for_ring(
+                    _ring_coords(interior_ring),
+                    zlo,
+                    zhi,
+                    use_arcs,
+                    min_arc_points,
+                    arc_tolerance,
+                )
+            )
 
     # Build each sub-solid.
     builder = BRep_Builder()
