@@ -224,3 +224,139 @@ def test_void_sandwiched_between_unstructured(tmp_path: Path):
     assert _has_interface(names, "bg", "hole"), "lateral"
     assert _has_interface(names, "base", "hole"), "void bot"
     assert _has_interface(names, "cap", "hole"), "void top"
+
+
+def test_void_through_stacked_cohort(tmp_path: Path):
+    """A void appearing in two stacked slabs (one void per slab).
+
+    Each slab has its own co-planar void. Lateral interface expected on BOTH.
+    The void must be split to match each slab's z-interval — a single void
+    spanning both slabs would violate the z-stack constraint because the
+    surrounding stack introduces z=1 as an interior plane of the hole cohort.
+    """
+    lower = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="lower",
+        structured=True,
+        mesh_order=2.0,
+    )
+    upper = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="upper",
+        structured=True,
+        mesh_order=2.0,
+    )
+    # Two voids, one per slab, with the same disc footprint.
+    hole_lower = PolyPrism(
+        _disc(0, 0, 1.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    hole_upper = PolyPrism(
+        _disc(0, 0, 1.0),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [lower, upper, hole_lower, hole_upper],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("lower", "upper"),
+    )
+    names = _physical_names(msh)
+    assert _has_interface(
+        names, "lower", "hole"
+    ), f"missing lower___hole; groups: {sorted(names)}"
+    assert _has_interface(
+        names, "upper", "hole"
+    ), f"missing upper___hole; groups: {sorted(names)}"
+
+
+def test_void_below_structured_cohort_slab(tmp_path: Path):
+    """Lower has a void; upper is solid above.
+
+    Expected: lower___hole (lateral) + upper___hole (void top at z=1 touching
+    upper's bot).
+    """
+    lower = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="lower",
+        structured=True,
+        mesh_order=2.0,
+    )
+    upper = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="upper",
+        structured=True,
+        mesh_order=2.0,
+    )
+    hole = PolyPrism(
+        _disc(0, 0, 1.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+        identify_arcs=True,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [lower, upper, hole],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("lower", "upper"),
+    )
+    names = _physical_names(msh)
+    assert _has_interface(names, "lower", "hole"), "lateral"
+    assert _has_interface(
+        names, "upper", "hole"
+    ), f"void top at z=1 should touch upper's bot; got: {sorted(names)}"
+
+
+def test_void_square_no_arcs(tmp_path: Path):
+    """Square void (polyline only).
+
+    Expected: lateral walls bg___hole.
+    """
+    bg = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=2.0,
+    )
+    hole = PolyPrism(
+        _square(-0.5, -0.5, 1, 1),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="hole",
+        structured=True,
+        mesh_order=1.0,
+        mesh_bool=False,
+    )
+    msh = tmp_path / "out.msh"
+    generate_mesh(
+        [bg, hole],
+        dim=3,
+        output_mesh=msh,
+        default_characteristic_length=0.4,
+        resolution_specs=_structured_spec("bg"),
+    )
+    names = _physical_names(msh)
+    assert _has_interface(
+        names, "bg", "hole"
+    ), f"missing bg___hole (square void); groups: {sorted(names)}"
