@@ -905,5 +905,6 @@ def build_cohort_compound(
             bot_face_key=_shape_key(bot),
             top_face_key=_shape_key(top),
             lateral_face_keys=tuple(_shape_key(f) for f in laterals),
+            keep=source_slab.mesh_bool,
         )
     return compound, slab_meta
