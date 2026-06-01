@@ -143,7 +143,7 @@ class EdgeRegistry:
         coords: list[tuple[float, float]],
         z: float,
         identify_arcs: bool,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> list[TopoDS_Edge]:
         """Return the list of edges (lines and/or arcs) covering coords.

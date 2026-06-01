@@ -252,7 +252,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> int:
         """Create a GMSH surface from vertex coordinates with optional arc identification."""
@@ -343,7 +343,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> list[DecompositionSegment]:
         """Decompose a sequence of vertices into line segments and circular arcs.
@@ -451,7 +451,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> TopoDS_Wire:
         """Create an OCC wire from vertex coordinates with optional arc identification.
@@ -570,7 +570,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> TopoDS_Face:
         """Create an OCC face from a wire built from the given vertices."""
@@ -592,7 +592,7 @@ class GeometryEntity:
         arc_color: str = "red",
         show_centers: bool = True,
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
         **kwargs,
     ):

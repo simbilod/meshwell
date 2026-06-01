@@ -38,7 +38,7 @@ class PolyPrism(GeometryEntity):
         subdivision: tuple[int, int, int] | None = None,
         point_tolerance: float = 1e-3,
         identify_arcs: bool | None = None,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
