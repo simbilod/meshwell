@@ -67,6 +67,10 @@ def apply_lateral_transfinite_hints(
     # n_layers consistency check.
     owners_per_face: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for meta in slab_meta.values():
+        if not meta.keep:
+            # Voids don't dictate vertical resolution; skip them so the
+            # n_layers consistency check ignores keep=False owners.
+            continue
         n_layers = resolve_n_layers(meta.physical_name, resolution_specs)
         for fk in meta.lateral_face_keys:
             tag = face_tag_by_key.get(fk)
@@ -142,6 +146,11 @@ def stamp_wedges(
     # Order sub-solids by zlo via their bot face z.
     order: list[tuple[float, ShapeKey, SlabMeta]] = []
     for k, meta in slab_meta.items():
+        if not meta.keep:
+            # Voids: their bodies are excluded from BREP by the XAO writer
+            # (keep=False), so they have no gmsh volume tag and no faces to
+            # stamp. Skip them outright.
+            continue
         bot_tag = face_tag_by_key.get(meta.bot_face_key)
         if bot_tag is None:
             continue
