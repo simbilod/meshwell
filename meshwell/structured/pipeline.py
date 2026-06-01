@@ -212,7 +212,7 @@ def structured_post_pass(
                     shapes=[shape],
                     physical_name=names,
                     index=next_index,
-                    keep=True,
+                    keep=meta.keep,
                     dim=3,
                     mesh_order=ent.mesh_order,
                 )
