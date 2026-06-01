@@ -7,6 +7,7 @@ from typing import Any
 
 import gmsh
 
+from meshwell.cad_common import prepare_entities
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
@@ -86,18 +87,34 @@ def generate_mesh(
         cad_kwargs["fragment_fuzzy_value"] = mesh_kwargs.pop("fragment_fuzzy_value")
     if "canonicalize_topology" in mesh_kwargs:
         cad_kwargs["canonicalize_topology"] = mesh_kwargs.pop("canonicalize_topology")
+    if "perturbation" in mesh_kwargs:
+        cad_kwargs["perturbation"] = mesh_kwargs.pop("perturbation")
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     cad_kwargs["progress_bars"] = progress_bars
 
     point_tolerance = cad_kwargs.get(
         "point_tolerance", mesh_kwargs.get("point_tolerance", 1e-3)
     )
+    # Default mirrors ``CAD_OCC.__init__`` (perturbation=1e-5 when None).
+    perturbation = cad_kwargs.get("perturbation") or 1e-5
 
-    # --- Stage 1a: structured pre-pass. ---------------------------------
+    # --- Stage 1a: shapely intake pre-pass. -----------------------------
+    # Apply the polygon-buffer + InterfaceTag resolve BEFORE the
+    # structured pre-pass so the cohort compound is built from the same
+    # perturbed XY that unstructured neighbours see at BOP time.
+    # ``prepare_entities`` is NOT idempotent; cad_occ is invoked with
+    # ``prepared=True`` below to skip the duplicate buffer.
+    prepare_entities(
+        entities,
+        perturbation=perturbation,
+        resolve_snap=max(perturbation, point_tolerance),
+    )
+
+    # --- Stage 1b: structured pre-pass. ---------------------------------
     state = structured_pre_pass(entities, point_tolerance=point_tolerance)
 
     occ_entities_raw, _cad_processor = cad_occ(
-        state.entities_out, return_processor=True, **cad_kwargs
+        state.entities_out, return_processor=True, prepared=True, **cad_kwargs
     )
 
     # Diagnostic: confirm BOP didn't subdivide any pre-baked cohort

@@ -9,8 +9,11 @@ entities + record post-BOP face ShapeKeys.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any
+
+import shapely
 
 from meshwell.structured.build import build_cohort_compound
 from meshwell.structured.cohort import build_cohorts
@@ -55,6 +58,24 @@ def structured_pre_pass(
     structured_slabs, unstructured = collect_structured_slabs(entities)
     if not structured_slabs:
         return StructuredState(entities_out=entities)
+    # Snap every structured slab footprint to the point_tolerance grid.
+    # Without this, the cad_common.prepare_entities intake perturbation
+    # (default 1e-5 outward buffer applied BEFORE this pre-pass) turns
+    # laterally-touching polygons into polygons that overlap by ~2e-5.
+    # The cohort decomposition then produces sliver subpieces whose
+    # endpoints all dedupe to the same vertex (point_tolerance ~ 1e-3),
+    # which makes BRepBuilderAPI_MakeEdge raise StdFail_NotDone. Snap
+    # restores the original touch geometry while keeping the buffered
+    # XY available to cad_occ for the BOP step.
+    structured_slabs = [
+        dataclasses.replace(
+            s,
+            footprint=shapely.set_precision(
+                s.footprint, grid_size=point_tolerance, mode="valid_output"
+            ),
+        )
+        for s in structured_slabs
+    ]
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
     validate_arc_consistency(cohorts)

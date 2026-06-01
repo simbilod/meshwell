@@ -396,6 +396,7 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        prepared: bool = False,
     ) -> list[OCCLabeledEntity]:
         """Run the OCP-side prepare + sort + instantiate + sequential-cut phase.
 
@@ -403,21 +404,28 @@ class CAD_OCC:
         post-cut shapes but no piece-ownership reassignment has happened.
         This is the bridge point used by the gmsh-fragment hand-off, where
         gmsh re-fragments the cut shapes and runs its own tagging pipeline.
+
+        When ``prepared=True`` the caller has already invoked
+        :func:`meshwell.cad_common.prepare_entities` on the list (e.g. the
+        orchestrator runs it BEFORE the structured pre-pass so the
+        cohort compound is built from perturbed XY). In that case the
+        internal call is skipped; ``prepare_entities`` is NOT idempotent.
         """
         if not entities_list:
             return []
 
-        # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
-        # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
-        # resolved strip is wide enough for non-degenerate panels (at
-        # least 2*point_tolerance per side). Without this override OCC
-        # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
-        # produce zero-area panels at user scale.
-        prepare_entities(
-            entities_list,
-            perturbation=self.perturbation,
-            resolve_snap=max(self.perturbation, self.point_tolerance),
-        )
+        if not prepared:
+            # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
+            # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
+            # resolved strip is wide enough for non-degenerate panels (at
+            # least 2*point_tolerance per side). Without this override OCC
+            # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
+            # produce zero-area panels at user scale.
+            prepare_entities(
+                entities_list,
+                perturbation=self.perturbation,
+                resolve_snap=max(self.perturbation, self.point_tolerance),
+            )
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))
@@ -519,6 +527,7 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        prepared: bool = False,
     ) -> list[OCCLabeledEntity]:
         """Instantiate, sequentially cut, then fragment all entities.
 
@@ -541,7 +550,7 @@ class CAD_OCC:
         from the emitted BREP.
         """
         labeled_entities = self.process_entities_cut_only(
-            entities_list, progress_bars=progress_bars
+            entities_list, progress_bars=progress_bars, prepared=prepared
         )
         if not labeled_entities:
             return []
@@ -557,6 +566,7 @@ def cad_occ(
     fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
     return_processor: bool = False,
+    prepared: bool = False,
 ) -> list[OCCLabeledEntity]:
     """Utility function for OCC-based CAD processing.
 
@@ -578,7 +588,9 @@ def cad_occ(
         fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
-    out = processor.process_entities(entities_list, progress_bars=progress_bars)
+    out = processor.process_entities(
+        entities_list, progress_bars=progress_bars, prepared=prepared
+    )
     if return_processor:
         return out, processor
     return out

@@ -101,12 +101,7 @@ def decompose_cohorts(
                     # so all contributions for the same plane share one dict entry.
                     existing = approx_key(z, cut_sources)
                     key = existing if existing is not None else z
-                    # Use only the exterior ring of the unstructured entity's
-                    # polygon.  Including hole boundaries would propagate an
-                    # entity's internal holes into structured subpieces at a
-                    # z-plane where those holes do not physically exist.  The
-                    # BOP fragmentation later handles the actual hole geometry.
-                    cut_sources.setdefault(key, []).append(ent.polygons.exterior)
+                    cut_sources.setdefault(key, []).append(ent.polygons.boundary)
 
     cut_unions = {z: unary_union(lines) for z, lines in cut_sources.items()}
 
