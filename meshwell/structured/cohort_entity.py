@@ -30,6 +30,7 @@ class _CohortEntity:
 
     dimension: int = field(init=False, default=3)
     mesh_bool: bool = field(init=False, default=True)
+    is_cohort: bool = field(init=False, default=True)
 
     @property
     def mesh_order(self) -> float:

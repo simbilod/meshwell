@@ -23,6 +23,7 @@ from meshwell.structured.decompose import decompose_cohorts
 from meshwell.structured.types import ShapeKey, SlabMeta
 from meshwell.structured.validators import (
     validate_arc_consistency,
+    validate_no_volumetric_cohort_overlap,
     validate_z_stacks,
 )
 
@@ -78,6 +79,7 @@ def structured_pre_pass(
     ]
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
+    validate_no_volumetric_cohort_overlap(cohorts, entities)
     validate_arc_consistency(cohorts)
     subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(cohorts, unstructured)
 

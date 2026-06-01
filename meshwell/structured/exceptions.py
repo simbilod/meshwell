@@ -49,6 +49,26 @@ class StructuredZStackError(StructuredError):
         )
 
 
+class StructuredVolumetricOverlapError(StructuredError):
+    """Unstructured entity volumetrically overlaps a cohort.
+
+    v1 requires cohorts and unstructured entities to live in disjoint
+    3D volumes (sharing only z-plane boundaries). Place the entity
+    above, below, or to the side of the cohort, or split the cohort.
+    """
+
+    def __init__(self, entity_index, cohort_index, z_overlap):
+        self.entity_index = entity_index
+        self.cohort_index = cohort_index
+        self.z_overlap = z_overlap
+        super().__init__(
+            f"Entity #{entity_index} has volumetric overlap (Δz={z_overlap:.4g}) "
+            f"with cohort #{cohort_index} AND XY-intersection in the overlap. "
+            "v1 does not support unstructured material occupying cohort space. "
+            "Restructure so the entity sits above, below, or laterally outside the cohort."
+        )
+
+
 class UnstructuredImprintRequiresPolyPrismError(StructuredError):
     """Raised when an unstructured entity at a structured z-plane is not a PolyPrism."""
 

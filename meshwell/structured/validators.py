@@ -13,6 +13,7 @@ from meshwell.polyprism import PolyPrism
 from meshwell.structured._zmath import approx_in
 from meshwell.structured.exceptions import (
     ArcIdentifyConflictError,
+    StructuredVolumetricOverlapError,
     StructuredZStackError,
 )
 from meshwell.structured.types import Cohort
@@ -74,6 +75,59 @@ def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
                     raise StructuredZStackError(
                         entity_index=ent_idx, z=z, cohort_index=cohort_idx
                     )
+
+
+def validate_no_volumetric_cohort_overlap(
+    cohorts: list[Cohort], entities: list[Any], tol: float = 1e-9
+) -> None:
+    """Raise if a non-cohort entity shares a 3D interior with a cohort.
+
+    For each cohort, for each non-cohort entity: compute the strict
+    z-overlap and, if positive, sample a representative z inside the
+    open overlap interval and test XY-intersection. If the entity's
+    XY at that z intersects the cohort's XY at that z, raise.
+
+    Cohorts and unstructured entities must live in disjoint 3D volumes
+    (touching only at z-planes). The cad_occ cut cascade is skipped
+    between cohorts and non-cohorts (cohort sub-solids are OCC-invalid
+    bottom-up builds), so any genuine 3D overlap would corrupt the
+    fragment pass.
+    """
+    for cohort_idx, cohort in enumerate(cohorts):
+        for ent_idx, ent in enumerate(entities):
+            # Skip cohort entities themselves and non-extruded primitives
+            # that have no z-extent we can reason about.
+            if not isinstance(ent, PolyPrism) or not ent.extrude:
+                continue
+            ent_zmin = ent.zmin
+            ent_zmax = ent.zmax
+            z_overlap = min(cohort.zmax, ent_zmax) - max(cohort.zmin, ent_zmin)
+            if z_overlap <= tol:
+                continue
+            # Skip if this entity IS one of the cohort's source slabs
+            # (a structured slab); we only care about unstructured
+            # entities that share cohort z-interior. A structured slab
+            # whose source_index matches ent_idx is part of the cohort.
+            if any(s.source_index == ent_idx for s in cohort.slabs):
+                continue
+            # Sample a z strictly inside the open overlap interval.
+            z_mid = 0.5 * (max(cohort.zmin, ent_zmin) + min(cohort.zmax, ent_zmax))
+            ent_xy = _entity_xy_at(ent, z_mid)
+            if ent_xy is None:
+                continue
+            cohort_xy = _cohort_xy_at(cohort, z_mid)
+            if cohort_xy.is_empty:
+                continue
+            if cohort_xy.intersects(ent_xy):
+                inter = cohort_xy.intersection(ent_xy)
+                # Skip zero-area boundary touches (lines/points only)
+                if hasattr(inter, "area") and inter.area <= tol:
+                    continue
+                raise StructuredVolumetricOverlapError(
+                    entity_index=ent_idx,
+                    cohort_index=cohort_idx,
+                    z_overlap=z_overlap,
+                )
 
 
 def validate_arc_consistency(cohorts: list[Cohort]) -> None:

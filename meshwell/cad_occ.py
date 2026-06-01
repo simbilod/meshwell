@@ -70,6 +70,7 @@ class OCCLabeledEntity:
     keep: bool
     dim: int
     mesh_order: float | None = None
+    _is_cohort: bool = False
 
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
@@ -305,6 +306,7 @@ class CAD_OCC:
             keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
+            _is_cohort=getattr(entity_obj, "is_cohort", False),
         )
 
     def _fragment_all(
@@ -465,6 +467,18 @@ class CAD_OCC:
                     continue
                 p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
                 if p_ord >= l_ord:
+                    continue
+                # SKIP: if either side is a cohort, the cut is unsafe and
+                # unnecessary. Cohort sub-solids are OCC-invalid (built
+                # bottom-up with shared TShapes); BRepAlgoAPI_Cut silently
+                # produces empty results on them. By design cohorts are
+                # disjoint in 3D from non-cohorts (enforced by
+                # validate_no_volumetric_cohort_overlap), so the cut would
+                # be a no-op in volume but corrupts via fuzzy. fragment_all
+                # handles their boundary-plane merging cleanly.
+                if getattr(prev, "_is_cohort", False) or getattr(
+                    labeled, "_is_cohort", False
+                ):
                     continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
