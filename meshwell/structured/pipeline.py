@@ -189,9 +189,10 @@ def structured_post_pass(
                     # Fall back to spatial fingerprint matching.
                     meta = _match_by_bbox(shape, slab_fp_by_key, state.slab_meta)
                 if meta is None:
-                    # Sub-solid has no matching slab (e.g. a void or leftover
-                    # fragment from a BOP boundary split). Represent it as-is
-                    # under the cohort name so it still gets meshed.
+                    # Leftover fragment from a BOP boundary split with no
+                    # matching slab. Represent it as-is under the cohort name
+                    # so it still gets meshed. (Voids ARE matched here — they
+                    # are first-class slab_meta entries with keep=False.)
                     expanded.append(_copy_with(ent, [shape], next_index))
                     next_index += 1
                     continue
