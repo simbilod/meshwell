@@ -10,7 +10,6 @@ is what makes cohort internal interfaces conformal without BOP.
 """
 from __future__ import annotations
 
-import itertools
 from dataclasses import dataclass
 
 import numpy as np
@@ -152,59 +151,109 @@ class EdgeRegistry:
         Uses the same arc-detection as GeometryEntity.decompose_vertices
         but inlined to avoid pulling that dep just for the 2D case.
         """
-        if not identify_arcs or len(coords) < min_arc_points:
-            return [
-                self.line_xy(
-                    coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1], z
-                )
-                for i in range(len(coords) - 1)
-            ]
+        segments = polyline_segments(
+            coords, identify_arcs, min_arc_points, arc_tolerance, self.point_tolerance
+        )
         edges: list[TopoDS_Edge] = []
-        i, n = 0, len(coords)
-        while i < n - 1:
-            best = None
-            best_j = i + 1
-            for j in range(i + min_arc_points, n + 1):
-                pts = np.array(coords[i:j])
-                cx, cy, r, residual = _fit_circle_2d(pts)
-                if residual <= arc_tolerance and r < 1e6:
-                    best = (cx, cy, r)
-                    best_j = j
-                else:
-                    break
-            if best is not None:
-                seg_start = coords[i]
-                seg_end = coords[best_j - 1]
-                mid_idx = (i + best_j - 1) // 2
-                # Full-circle: start and end coincide → split into two half-arcs.
-                tol = self.point_tolerance
-                if (
-                    abs(seg_start[0] - seg_end[0]) < tol
-                    and abs(seg_start[1] - seg_end[1]) < tol
-                ):
-                    q1_idx = (i + mid_idx) // 2
-                    q3_idx = (mid_idx + best_j - 1) // 2
-                    edges.append(
-                        self.arc_xy(seg_start, coords[q1_idx], coords[mid_idx], z)
-                    )
-                    edges.append(
-                        self.arc_xy(coords[mid_idx], coords[q3_idx], seg_end, z)
-                    )
-                else:
-                    edges.append(self.arc_xy(seg_start, coords[mid_idx], seg_end, z))
-                i = best_j - 1
-            else:
+        for seg in segments:
+            if seg.kind == "line":
                 edges.append(
-                    self.line_xy(
-                        coords[i][0],
-                        coords[i][1],
-                        coords[i + 1][0],
-                        coords[i + 1][1],
-                        z,
+                    self.line_xy(seg.start[0], seg.start[1], seg.end[0], seg.end[1], z)
+                )
+            else:
+                edges.append(self.arc_xy(seg.start, seg.mid, seg.end, z))
+        return edges
+
+
+@dataclass(frozen=True)
+class _PolylineSegment:
+    """One segment of a 2D polyline: a straight line or a circular arc.
+
+    ``kind`` is either ``"line"`` (mid is unused) or ``"arc"`` (mid is
+    a point lying on the arc between start and end).
+    """
+
+    kind: str
+    start: tuple[float, float]
+    end: tuple[float, float]
+    mid: tuple[float, float] | None = None
+
+
+def polyline_segments(
+    coords: list[tuple[float, float]],
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+    point_tolerance: float,
+) -> list[_PolylineSegment]:
+    """Decompose a 2D polyline into line and arc segments.
+
+    This is the canonical decomposition used by both horizontal-face
+    construction (``EdgeRegistry.polyline_xy``) and lateral-face
+    construction (so that the bot/top boundary of every lateral matches
+    a single edge of the adjacent horizontal face).
+    """
+    if not identify_arcs or len(coords) < min_arc_points:
+        return [
+            _PolylineSegment(kind="line", start=coords[i], end=coords[i + 1])
+            for i in range(len(coords) - 1)
+        ]
+    segments: list[_PolylineSegment] = []
+    i, n = 0, len(coords)
+    while i < n - 1:
+        best = None
+        best_j = i + 1
+        for j in range(i + min_arc_points, n + 1):
+            pts = np.array(coords[i:j])
+            cx, cy, r, residual = _fit_circle_2d(pts)
+            if residual <= arc_tolerance and r < 1e6:
+                best = (cx, cy, r)
+                best_j = j
+            else:
+                break
+        if best is not None:
+            seg_start = coords[i]
+            seg_end = coords[best_j - 1]
+            mid_idx = (i + best_j - 1) // 2
+            if (
+                abs(seg_start[0] - seg_end[0]) < point_tolerance
+                and abs(seg_start[1] - seg_end[1]) < point_tolerance
+            ):
+                # Full-circle: split into two half-arcs.
+                q1_idx = (i + mid_idx) // 2
+                q3_idx = (mid_idx + best_j - 1) // 2
+                segments.append(
+                    _PolylineSegment(
+                        kind="arc",
+                        start=seg_start,
+                        end=coords[mid_idx],
+                        mid=coords[q1_idx],
                     )
                 )
-                i += 1
-        return edges
+                segments.append(
+                    _PolylineSegment(
+                        kind="arc",
+                        start=coords[mid_idx],
+                        end=seg_end,
+                        mid=coords[q3_idx],
+                    )
+                )
+            else:
+                segments.append(
+                    _PolylineSegment(
+                        kind="arc",
+                        start=seg_start,
+                        end=seg_end,
+                        mid=coords[mid_idx],
+                    )
+                )
+            i = best_j - 1
+        else:
+            segments.append(
+                _PolylineSegment(kind="line", start=coords[i], end=coords[i + 1])
+            )
+            i += 1
+    return segments
 
 
 def _fit_circle_2d(pts: np.ndarray) -> tuple[float, float, float, float]:
@@ -357,28 +406,47 @@ def _build_cylindrical_lateral_face(
     v_left: "TopoDS_Edge",
     v_right: "TopoDS_Edge",
 ) -> "TopoDS_Face":
-    """Build a ruled cylindrical lateral face between two arc edges.
+    """Build a cylindrical lateral face on an explicit ``Geom_CylindricalSurface``.
 
-    Uses ``BRepOffsetAPI_ThruSections`` (ruled=True) to produce a face
-    whose parametric domain lives on the cylinder, then extracts the
-    single face from the resulting shell.
+    The four input edges (two arc XY edges at z=z_low/z_high plus two
+    vertical edges at the arc endpoints) are reused as-is — their TShapes
+    remain shared with neighbouring sub-pieces and with the horizontal
+    faces above/below. We construct a cylinder whose axis is vertical
+    through the arc's circle center and whose radius matches the arc's,
+    build a wire from the four edges, then build the face on that surface
+    with parametric (PCurve) representations added for every edge.
+
+    Building the face on an explicit canonical surface (rather than letting
+    ``BRepOffsetAPI_ThruSections`` infer a ruled surface from the wire)
+    prevents ``BOPAlgo_Builder`` from later splitting the face into multiple
+    fragments at the seam line on the cylinder, which is what caused the
+    "5 boundary edges" failure for the structured transfinite hint.
     """
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-    from OCP.TopAbs import TopAbs_FACE
-    from OCP.TopExp import TopExp_Explorer
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.GeomAdaptor import GeomAdaptor_Curve
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+    from OCP.ShapeFix import ShapeFix_Edge
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
 
-    mw_lo = BRepBuilderAPI_MakeWire()
-    mw_lo.Add(edge_low)
-    mw_hi = BRepBuilderAPI_MakeWire()
-    mw_hi.Add(edge_high)
-
-    tss = BRepOffsetAPI_ThruSections(False, True)  # solid=False, ruled=True
-    tss.AddWire(mw_lo.Wire())
-    tss.AddWire(mw_hi.Wire())
-    tss.Build()
-    if not tss.IsDone():
-        # Fallback: planar face (may be invalid for large arcs but avoids crash)
+    def _ruled_fallback() -> "TopoDS_Face":
+        mw_lo = BRepBuilderAPI_MakeWire()
+        mw_lo.Add(edge_low)
+        mw_hi = BRepBuilderAPI_MakeWire()
+        mw_hi.Add(edge_high)
+        tss = BRepOffsetAPI_ThruSections(False, True)
+        tss.AddWire(mw_lo.Wire())
+        tss.AddWire(mw_hi.Wire())
+        tss.Build()
+        if tss.IsDone():
+            exp = TopExp_Explorer(tss.Shape(), TopAbs_FACE)
+            if exp.More():
+                return TopoDS.Face_s(exp.Current())
         mw = BRepBuilderAPI_MakeWire()
         mw.Add(edge_low)
         mw.Add(v_right)
@@ -386,21 +454,79 @@ def _build_cylindrical_lateral_face(
         mw.Add(v_left)
         return BRepBuilderAPI_MakeFace(mw.Wire()).Face()
 
-    shell = tss.Shape()
-    # ThruSections returns a Shell; extract the single Face.
-    exp = TopExp_Explorer(shell, TopAbs_FACE)
-    if exp.More():
-        face_raw = exp.Current()
-        from OCP.TopoDS import TopoDS
+    # Extract the underlying gp_Circ from the low arc edge.
+    fp, lp = 0.0, 1.0
+    curv_handle = BRep_Tool.Curve_s(edge_low, fp, lp)
+    if curv_handle is None:
+        return _ruled_fallback()
+    try:
+        adaptor = GeomAdaptor_Curve(curv_handle)
+        if adaptor.GetType() != GeomAbs_Circle:
+            return _ruled_fallback()
+        gp_circ = adaptor.Circle()
+    except Exception:
+        return _ruled_fallback()
 
-        return TopoDS.Face_s(face_raw)
-    # Fallback
-    mw = BRepBuilderAPI_MakeWire()
-    mw.Add(edge_low)
-    mw.Add(v_right)
-    mw.Add(edge_high)
-    mw.Add(v_left)
-    return BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+    # z of the bot edge (vertical cylinder origin).
+    v_bot_first = TopExp.FirstVertex_s(edge_low)
+    bot_z = BRep_Tool.Pnt_s(v_bot_first).Z()
+
+    # Construct a canonical vertical cylindrical surface through the arc's
+    # axis location with the arc's radius. The cylinder's axis sense is +Z
+    # (matches gp_Circ.Axis() for arcs that lie in a z-plane traversed CCW).
+    center = gp_circ.Location()
+    cyl_axis = gp_Ax3(gp_Pnt(center.X(), center.Y(), bot_z), gp_Dir(0, 0, 1))
+    radius = gp_circ.Radius()
+    surf = Geom_CylindricalSurface(cyl_axis, radius)
+
+    # Build the closing wire from the 4 existing edges, traversing CCW in the
+    # face's UV space. For both arc orientations (CCW outer, CW hole) we try
+    # one orientation first and fall back to the reverse if BRepBuilderAPI
+    # complains.
+    def _try_wire(wire_edges) -> "TopoDS_Face | None":
+        mw = BRepBuilderAPI_MakeWire()
+        for e in wire_edges:
+            mw.Add(e)
+        if not mw.IsDone():
+            return None
+        wire = mw.Wire()
+        mf = BRepBuilderAPI_MakeFace(surf, wire, True)
+        if not mf.IsDone():
+            return None
+        face = mf.Face()
+        # Build PCurves for every edge on the cylindrical surface.
+        sfe = ShapeFix_Edge()
+        exp = TopExp_Explorer(face, TopAbs_EDGE)
+        while exp.More():
+            e = TopoDS.Edge_s(exp.Current())
+            # FixAddPCurve returning False is non-fatal: a PCurve may
+            # already exist on the edge for this face.
+            sfe.FixAddPCurve(e, face, False, 1e-7)
+            exp.Next()
+        return face
+
+    # Order 1: bot forward, right up, top reversed, left down.
+    face = _try_wire(
+        [
+            edge_low,
+            v_right,
+            TopoDS.Edge_s(edge_high.Reversed()),
+            TopoDS.Edge_s(v_left.Reversed()),
+        ]
+    )
+    if face is None:
+        # Order 2: bot reversed, left up, top forward, right down.
+        face = _try_wire(
+            [
+                TopoDS.Edge_s(edge_low.Reversed()),
+                v_left,
+                edge_high,
+                TopoDS.Edge_s(v_right.Reversed()),
+            ]
+        )
+    if face is None:
+        return _ruled_fallback()
+    return face
 
 
 def build_cohort_compound(
@@ -563,9 +689,34 @@ def build_cohort_compound(
     for i, sp in enumerate(subpieces):
         zlo, zhi = sp.z_interval
         coords = _ring_coords(sp.sub_polygon.exterior)
-        for a, b in itertools.pairwise(coords):
-            e_lo = ereg.line_xy(a[0], a[1], b[0], b[1], zlo)
-            e_hi = ereg.line_xy(a[0], a[1], b[0], b[1], zhi)
+        # When arc-detection is active for either z-plane of this sub-piece,
+        # decompose the polygon boundary into the same arc/line segments
+        # used by the horizontal faces above and below.  This makes each
+        # lateral face's bot/top boundary edge be the SAME shared TShape
+        # already used by the horizontal face, so the shell is closed and
+        # BOP doesn't need to re-discover the arc topology.
+        id_arcs_lo, min_p_lo, arc_tol_lo = arc_params_for_z(zlo, i)
+        id_arcs_hi, min_p_hi, arc_tol_hi = arc_params_for_z(zhi, i)
+        # Cohort-wide arc propagation guarantees both planes agree on
+        # whether identify_arcs is in effect; we just need to detect the
+        # segmentation once.
+        use_arcs = id_arcs_lo or id_arcs_hi
+        segments = polyline_segments(
+            coords,
+            identify_arcs=use_arcs,
+            min_arc_points=max(min_p_lo, min_p_hi),
+            arc_tolerance=min(arc_tol_lo, arc_tol_hi),
+            point_tolerance=point_tolerance,
+        )
+
+        for seg in segments:
+            a, b = seg.start, seg.end
+            if seg.kind == "arc":
+                e_lo = ereg.arc_xy(a, seg.mid, b, zlo)
+                e_hi = ereg.arc_xy(a, seg.mid, b, zhi)
+            else:
+                e_lo = ereg.line_xy(a[0], a[1], b[0], b[1], zlo)
+                e_hi = ereg.line_xy(a[0], a[1], b[0], b[1], zhi)
             v_left = ereg.vertical(a[0], a[1], zlo, zhi)
             v_right = ereg.vertical(b[0], b[1], zlo, zhi)
             cache_key = _lateral_key(a, b, zlo, zhi)
