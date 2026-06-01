@@ -87,6 +87,10 @@ class SlabMeta:
     Lookup happens by post-BOP ShapeKey of the sub-solid in the
     OCCLabeledEntity's shapes list. n_layers is NOT here — wedge.py
     resolves it from the resolution_specs dict via physical_name.
+
+    `keep` mirrors the source slab's mesh_bool: True for solids whose
+    wedges should be stamped, False for voids whose body must be excluded
+    from BREP serialization (XAO writer keep=False path).
     """
 
     slab_index: int
@@ -94,3 +98,4 @@ class SlabMeta:
     bot_face_key: ShapeKey
     top_face_key: ShapeKey
     lateral_face_keys: tuple[ShapeKey, ...]
+    keep: bool = True
