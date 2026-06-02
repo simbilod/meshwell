@@ -50,6 +50,7 @@ from itertools import combinations, product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np  # noqa: F401  -- used in upcoming AABB vectorization
 from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Builder
 from OCP.BRepBndLib import BRepBndLib
