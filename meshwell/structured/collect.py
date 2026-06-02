@@ -11,6 +11,7 @@ from typing import Any
 
 from meshwell.polyprism import PolyPrism
 from meshwell.structured.exceptions import (
+    MixedIdentifyArcsError,
     StructuredEntityTypeError,
     StructuredExtrudeRequiredError,
     StructuredVoidMeshOrderRequiredError,
@@ -29,6 +30,21 @@ def collect_structured_slabs(
         Original PolyPrism source_index is preserved on every slab
         derived from it.
     """
+    # If any PolyPrism opts into arc detection and ANY structured entity
+    # is present, every PolyPrism must opt in. Mixing arc and polyline
+    # representations on a shared cohort pre-cut boundary produces OCC
+    # edges that BOP cannot merge within fragment_fuzzy_value.
+    if any(getattr(e, "structured", False) for e in entities):
+        arcs_true: list[tuple[int, tuple[str, ...] | str]] = []
+        arcs_false: list[tuple[int, tuple[str, ...] | str]] = []
+        for i, e in enumerate(entities):
+            if not isinstance(e, PolyPrism):
+                continue
+            target = arcs_true if e.identify_arcs else arcs_false
+            target.append((i, e.physical_name))
+        if arcs_true and arcs_false:
+            raise MixedIdentifyArcsError(arcs_true=arcs_true, arcs_false=arcs_false)
+
     structured: list[StructuredSlab] = []
     unstructured: list[Any] = []
     for idx, ent in enumerate(entities):

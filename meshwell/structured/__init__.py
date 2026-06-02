@@ -8,9 +8,9 @@ surrounding unstructured regions remain tet-meshed and interfaces
 are conformal by construction.
 """
 from meshwell.structured.exceptions import (
-    ArcIdentifyConflictError,
     CohortNonManifoldError,
     CohortShellModifiedError,
+    MixedIdentifyArcsError,
     StructuredEntityTypeError,
     StructuredError,
     StructuredExtrudeRequiredError,
@@ -24,9 +24,9 @@ from meshwell.structured.exceptions import (
 )
 
 __all__ = [
-    "ArcIdentifyConflictError",
     "CohortNonManifoldError",
     "CohortShellModifiedError",
+    "MixedIdentifyArcsError",
     "StructuredEntityTypeError",
     "StructuredError",
     "StructuredExtrudeRequiredError",

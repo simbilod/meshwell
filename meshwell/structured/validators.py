@@ -12,7 +12,6 @@ from typing import Any
 from meshwell.polyprism import PolyPrism
 from meshwell.structured._zmath import approx_in
 from meshwell.structured.exceptions import (
-    ArcIdentifyConflictError,
     StructuredVolumetricOverlapError,
     StructuredZStackError,
 )
@@ -128,42 +127,6 @@ def validate_no_volumetric_cohort_overlap(
                     cohort_index=cohort_idx,
                     z_overlap=z_overlap,
                 )
-
-
-def validate_arc_consistency(cohorts: list[Cohort]) -> None:
-    """Raise on identify_arcs disagreement between slabs sharing XY curves.
-
-    "Overlapping XY curves" means: the shapely intersection of slab A's
-    polygon.boundary with slab B's polygon.boundary is a non-empty
-    LineString or MultiLineString (not just a point).
-    """
-    from shapely.geometry import LineString, MultiLineString
-
-    for cohort in cohorts:
-        slabs = list(cohort.slabs)
-        for i in range(len(slabs)):
-            for j in range(i + 1, len(slabs)):
-                a, b = slabs[i], slabs[j]
-                if a.identify_arcs == b.identify_arcs:
-                    continue
-                # Only check pairs with same z-interval or shared z-plane.
-                same_z = (a.zlo == b.zlo and a.zhi == b.zhi) or (
-                    a.zhi == b.zlo or b.zhi == a.zlo
-                )
-                if not same_z:
-                    continue
-                inter = a.footprint.boundary.intersection(b.footprint.boundary)
-                if inter.is_empty:
-                    continue
-                if isinstance(inter, (LineString, MultiLineString)):
-                    name_a = a.physical_name[0] if a.physical_name else "?"
-                    name_b = b.physical_name[0] if b.physical_name else "?"
-                    raise ArcIdentifyConflictError(
-                        slab_a=a.source_index,
-                        slab_b=b.source_index,
-                        name_a=name_a,
-                        name_b=name_b,
-                    )
 
 
 from typing import TYPE_CHECKING, Iterable  # noqa: E402

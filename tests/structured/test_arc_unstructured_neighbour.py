@@ -40,7 +40,12 @@ def test_disc_cohort_with_square_cap_above(tmp_path):
         structured=True,
         identify_arcs=True,
     )
-    cap = PolyPrism(_square(-3, -3, 6, 6), {1.0: 0.0, 2.0: 0.0}, physical_name="cap")
+    cap = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        identify_arcs=True,
+    )
     msh = tmp_path / "x.msh"
     generate_mesh(
         [disc, cap],

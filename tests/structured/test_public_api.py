@@ -1,6 +1,6 @@
 def test_public_imports():
     from meshwell.structured import (
-        ArcIdentifyConflictError,
+        MixedIdentifyArcsError,
         StructuredError,
         StructuredZStackError,
         WedgeCountMismatchError,
@@ -8,4 +8,4 @@ def test_public_imports():
 
     assert issubclass(StructuredZStackError, StructuredError)
     assert issubclass(WedgeCountMismatchError, StructuredError)
-    assert issubclass(ArcIdentifyConflictError, StructuredError)
+    assert issubclass(MixedIdentifyArcsError, StructuredError)

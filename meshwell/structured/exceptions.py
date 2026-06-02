@@ -189,22 +189,6 @@ class WedgeBotNodeMismatchError(StructuredError):
         )
 
 
-class ArcIdentifyConflictError(StructuredError):
-    """Two slabs sharing XY curves disagree on identify_arcs."""
-
-    def __init__(self, slab_a: int, slab_b: int, name_a: str, name_b: str):
-        self.slab_a = slab_a
-        self.slab_b = slab_b
-        self.name_a = name_a
-        self.name_b = name_b
-        super().__init__(
-            f"Structured slabs #{slab_a} ({name_a}) and #{slab_b} ({name_b}) "
-            "have overlapping XY curves but disagree on identify_arcs. "
-            "Either set both True or both False — mixing them on shared "
-            "edges leads to inconsistent OCC edge geometry."
-        )
-
-
 class StructuredVoidMeshOrderRequiredError(StructuredError):
     """A structured void (mesh_bool=False) must declare mesh_order.
 
@@ -222,4 +206,34 @@ class StructuredVoidMeshOrderRequiredError(StructuredError):
             f"(physical_name={physical_name!r}) has mesh_bool=False but no "
             "mesh_order. Voids must declare an explicit mesh_order so "
             "Policy B can resolve them against neighbouring solids."
+        )
+
+
+class MixedIdentifyArcsError(StructuredError):
+    """Some PolyPrisms have identify_arcs=True and others False.
+
+    When structured entities are present and any PolyPrism opts into
+    arc detection, ALL PolyPrisms must opt in. Otherwise an arc-bearing
+    boundary can be shared with a polyline-bearing one through the
+    cohort pre-cut, producing geometrically-coincident but topologically
+    distinct OCC edges that BOP cannot merge.
+    """
+
+    def __init__(
+        self,
+        arcs_true: list[tuple[int, tuple[str, ...] | str]],
+        arcs_false: list[tuple[int, tuple[str, ...] | str]],
+    ):
+        self.arcs_true = arcs_true
+        self.arcs_false = arcs_false
+        true_desc = ", ".join(f"#{i} ({n!r})" for i, n in arcs_true)
+        false_desc = ", ".join(f"#{i} ({n!r})" for i, n in arcs_false)
+        super().__init__(
+            "Mixed identify_arcs across PolyPrisms with structured entities "
+            "present.\n"
+            f"  identify_arcs=True : {true_desc}\n"
+            f"  identify_arcs=False: {false_desc}\n"
+            "Set identify_arcs=True on every PolyPrism, or remove it from "
+            "all of them. Mixing leads to inconsistent OCC edges where "
+            "shared boundaries are pre-cut by Stage 3d."
         )

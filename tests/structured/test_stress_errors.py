@@ -10,7 +10,7 @@ from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import StructuredExtrusionResolutionSpec
 from meshwell.structured.exceptions import (
-    ArcIdentifyConflictError,
+    MixedIdentifyArcsError,
     StructuredEntityTypeError,
     StructuredExtrudeRequiredError,
     StructuredLateralNLayersMismatchError,
@@ -72,8 +72,8 @@ def test_n_layers_mismatch_lateral_touch_raises(tmp_path):
         )
 
 
-def test_arc_identify_conflict_raises(tmp_path):
-    """Two laterally-touching structured slabs with different identify_arcs values must raise."""
+def test_mixed_identify_arcs_raises(tmp_path):
+    """When structured entities exist and any PolyPrism opts into arcs, all must."""
     a = PolyPrism(
         SQ, {0.0: 0.0, 1.0: 0.0}, physical_name="a", structured=True, identify_arcs=True
     )
@@ -84,7 +84,7 @@ def test_arc_identify_conflict_raises(tmp_path):
         structured=True,
         identify_arcs=False,
     )
-    with pytest.raises(ArcIdentifyConflictError):
+    with pytest.raises(MixedIdentifyArcsError):
         generate_mesh(
             [a, b],
             dim=3,
