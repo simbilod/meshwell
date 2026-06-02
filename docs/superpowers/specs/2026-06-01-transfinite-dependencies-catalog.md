@@ -491,6 +491,183 @@ Any replacement for `apply_lateral_transfinite_hints` must:
 
 ---
 
+## 6b. Alternative architectures we should weigh against
+
+Two directions worth thinking through before committing to a
+manual-quad-construction replacement.
+
+### Alt A — Built-in gmsh extrusion APIs
+
+gmsh exposes prism extrusion at the geometry level:
+
+- `gmsh.model.geo.extrude(dimTags, dx, dy, dz, numElements=[...],
+  heights=[...], recombine=True)` — geo kernel
+- `gmsh.model.occ.extrude(dimTags, dx, dy, dz, numElements=[...],
+  heights=[...], recombine=True)` — occ kernel
+
+Both take a 2D face, extrude it by (dx, dy, dz), and produce a
+structured prism mesh when `recombine=True`. This is *exactly* what
+we want logically.
+
+**Why it doesn't drop in cleanly:**
+
+1. **Geo/OCC kernels don't mix.** Our pipeline is all OCC: the
+   cohort compound is an OCC `TopoDS_Compound` imported into gmsh
+   via XAO. We can't combine occ-imported geometry with geo-extruded
+   geometry in the same model. So `geo.extrude` is out unless we
+   abandon the OCC kernel entirely (loses BOP, EdgeRegistry, etc.).
+2. **`occ.extrude` creates *new* geometry.** The cohort sub-solids
+   already exist in our imported compound as TopoDS_Solid entities.
+   Calling `occ.extrude` on a bot face wouldn't *mesh* the existing
+   solid — it would create a *new* prism solid coincident with the
+   existing one. Topology mismatch with our compound; downstream
+   physical-group assignment breaks.
+3. **Vertex-exact requirement.** Even if we could splice occ.extrude
+   into our pipeline, the bot and top faces in our cohort are
+   *already* meshed (or about to be) by gmsh's free 2D mesher.
+   extrude assumes the bot face mesh is what gets swept up — so we'd
+   have to ensure the bot face is meshed *first* and that the mesh
+   nodes are positioned exactly where extrude expects (no
+   re-meshing once extruded).
+
+**What we'd gain if we made it work:** the extrude path is what gmsh
+itself supports natively. We'd get fewer custom code paths, fewer
+chances for our wedge stamping to disagree with gmsh's expectations.
+
+**What we'd give up:** geometry construction control. OCC's
+EdgeRegistry, arc unification, void-as-keep=False, multi-cohort
+stacking — all of it lives upstream of gmsh, where we have full
+control. Switching to gmsh-side extrude pushes that control into
+gmsh's geometry kernel, where we have less.
+
+**Tentative verdict:** not viable for the cohort body in our
+architecture. The constraint of "must reuse existing OCC compound
+topology" eliminates both extrude APIs. The manual-quad approach
+remains the better fit because it works *with* our existing topology
+rather than replacing it.
+
+### Alt B — Freeze the cohort mesh first, conform tets around it
+
+Both transfinite and the manual spike interleave with gmsh's normal
+meshing pipeline:
+
+```
+generate(1)  ← edges
+[pre_2d_hook: transfinite set OR no-op]
+generate(2)  ← 2D faces (cohort laterals + horizontals + neighbours)
+[pre_3d_hook: stamp_wedges, possibly construct_lateral_quads first]
+generate(3)  ← tet volumes
+```
+
+The user's preferred shape:
+
+```
+[pre_2d_hook: do nothing on cohort lateral faces]
+generate(1)
+generate(2) for HORIZONTAL faces only (we control what gets meshed)
+[pre_3d_hook BEFORE generate(2) on cohort laterals:]
+  - construct lateral quads explicitly from bot face mesh
+  - emit wedge elements directly
+  - this "freezes" the cohort mesh
+generate(2) for cohort lateral faces (skip — frozen)
+generate(2) for neighbour faces (gmsh meshes them, conforming to
+  the cohort's boundary)
+generate(3) for unstructured volumes (gmsh tets them, conforming to
+  the cohort's lateral quad boundary)
+```
+
+The key insight: **the cohort is small and fully-known; the
+unstructured neighbours are large and gmsh-meshed. The natural order
+is "fix the small known thing first, fit the large unknown thing
+around it."** Currently we do the opposite — let gmsh free-mesh
+*everything* in 2D and then stitch wedges into the cohort.
+
+**Why this is cleaner:**
+
+- The cohort's 2D mesh (lateral quads + horizontal tris) becomes a
+  hard constraint for the tet mesher. Conformity is automatic.
+- No periodic-surface concerns: by the time gmsh's 2D mesher *would*
+  encounter a cohort cylinder, the lateral mesh is already there as
+  fixed elements. gmsh's periodic-surface logic (and its known
+  failure modes around seam topology) doesn't run on cohort faces.
+- No "free-mesh then clear" cycle: today the manual spike lets gmsh
+  mesh lateral faces, then clears them and rebuilds. Wasted work,
+  and a race where the cleared mesh's nodes might still be
+  referenced.
+- Wedge stamping integrates naturally: lateral quads + wedges are
+  emitted together, in one pre-2D pass, before gmsh's free mesher
+  is loose.
+
+**What we'd need to figure out:**
+
+1. **gmsh hook ordering.** `pre_2d_hook` currently fires before
+   `generate(2)`. We'd need a way to perform 2D mesh emission
+   *during* the pre_2d phase such that subsequent `generate(2)`
+   does not re-mesh the cohort laterals. Likely via
+   `gmsh.model.mesh.setMeshSize`, mesh-already-present detection,
+   or explicit per-face mesh algorithm settings.
+2. **Cohort bot face mesh availability.** If we want to build
+   lateral quads from the bot face mesh, the bot face must be
+   meshed first. So bot face 2D meshing happens — then lateral
+   construction — then everything else. This is a sub-ordering
+   within pre_2d.
+3. **Periodic surface avoidance.** Even if we explicitly skip cohort
+   laterals in `generate(2)`, gmsh might still try to "use" them as
+   periodic surfaces during its 1D periodic edge processing. Worth
+   investigating whether `setTransfinite*(face, "Quadrangle")` or
+   similar marker tells gmsh to leave the face alone.
+4. **Tet conformity verification.** A tet boundary must precisely
+   match the cohort's lateral quads. Mixed tri/quad boundary is
+   supported by tet meshers in general, but worth confirming for
+   gmsh's specific algorithms (`Mesh.Algorithm3D = 1` (Delaunay),
+   `7` (HXT), `9` (R-tree), etc.) and that conformity holds at the
+   interface.
+
+**Tentative verdict:** this is the architecturally cleanest answer
+and resolves several pain points at once (periodic surfaces, free-
+mesh-then-clear waste, ordering ambiguity). The path involves
+working out exactly how to disable gmsh 2D meshing of specific
+faces, which is the unknown.
+
+The manual-quad spike is a step in this direction (we already emit
+the lateral quads ourselves), but it still pays the cost of letting
+gmsh mesh-then-clear those faces. The truly clean version skips
+gmsh's 2D mesher entirely for cohort lateral faces — and that's
+worth a separate spike before promoting the manual path.
+
+### Periodic-boundary concerns specifically
+
+Cylindrical lateral faces in OCC are intrinsically periodic in θ.
+The cohort builder splits closed circles into two half-cylinder
+faces (each with 4 edges, no periodic seam at the face level),
+which sidesteps gmsh's periodic-surface handling for the *face*.
+But two failure modes remain:
+
+- **Vertical seam edge duplication.** Two adjacent lateral faces
+  share a vertical seam (e.g. half-circle 1 ends at theta=0, half-
+  circle 2 starts at theta=0). If their seams are co-linear but
+  separate edges (different TShape IDs), gmsh treats them as
+  distinct and tries to mesh them twice — the segfault we hit in
+  the earlier investigation. **Mitigated** by the EdgeRegistry
+  direction-invariant arc cache (commit 4ae762f). Worth confirming
+  the manual lateral path doesn't reintroduce it.
+- **Cohort top/bot face periodic-vertex collision.** A full circle
+  bot face has a single vertex per half-circle endpoint (theta=0
+  vertex and theta=π vertex). Both half-cylinder lateral faces
+  touch the bot face's theta=0 vertex. The bot face's *parametric*
+  representation in OCC may also be periodic (if it's a face on
+  Geom_PlaneSurface trimmed to a circular wire, no periodic; if
+  it's a face on a disc-like surface, possibly). Worth a small
+  test that a full-circle cohort's bot/top faces don't bring their
+  own periodic concerns.
+
+If we adopt Alt B (freeze cohort mesh first), the periodic surface
+mesher never runs on cohort laterals at all — periodic concerns
+become irrelevant for cohort topology. They'd only matter at the
+*neighbour* side, where gmsh's mesher still runs.
+
+---
+
 ## 7. Recommended next steps
 
 1. **Write the missing tests** (S3, S5, S9 specifically) so the
@@ -499,11 +676,15 @@ Any replacement for `apply_lateral_transfinite_hints` must:
    if the manual path is faster, slower, or same as transfinite.
 3. **Decide on the discretization knob** (Q4) — even a "follow the
    bot face" default is fine if explicit.
-4. **Promote the spike module to a `wedge_manual.py` (no longer
-   "spike")**, with the validators added and dependencies addressed
-   per the contract in §5.
-5. **Run the replacement against the test suite and demos.** If
+4. **Spike Alt B: freeze-cohort-first ordering.** Before promoting
+   the current manual-spike module, prototype the "skip gmsh's 2D
+   mesh on cohort laterals entirely" path. Confirm it works on the
+   complex stress scene and avoids the free-mesh-then-clear waste.
+5. **Promote whichever variant won §4** (current spike or Alt B
+   spike) to a `wedge_manual.py` module, with the validators added
+   and dependencies addressed per the contract in §5.
+6. **Run the replacement against the test suite and demos.** If
    green, switch the orchestrator default to the new path. Keep
    the old transfinite path under a flag for one release as a
    safety hatch.
-6. **Then remove the transfinite path** when no one's complaining.
+7. **Then remove the transfinite path** when no one's complaining.
