@@ -1,4 +1,4 @@
-"""Tests for meshwell.structured.wedge — pre_2d transfinite hints."""
+"""Tests for meshwell.structured.wedge — pre_2d freeze_lateral_mesh hook."""
 import pytest
 from shapely.geometry import Polygon
 
@@ -7,7 +7,7 @@ from meshwell.resolution import StructuredExtrusionResolutionSpec
 SQ = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
 
 
-def test_transfinite_hints_produce_quad_laterals(tmp_path):
+def test_lateral_face_quads(tmp_path):
     from meshwell.orchestrator import generate_mesh
     from meshwell.polyprism import PolyPrism
 
