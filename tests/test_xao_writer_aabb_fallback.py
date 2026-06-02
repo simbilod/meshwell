@@ -81,6 +81,68 @@ def test_aabb_fallback_finds_shared_horizontal_interface(tmp_path):
     ), f"interface group {iface_name} should contain >= 1 face"
 
 
+def test_aabb_match_face_excluded_from_neighbour_none_group(tmp_path):
+    """Regression: AABB-matched faces excluded from both ___None groups.
+
+    Bug history: when the fallback matched sid1 (cohort side) with
+    sid2 (neighbour side) where sid1 != sid2 (because BOP produced
+    distinct TShapes), the writer added sid1 to both sides'
+    ``entity_interface_ids``. But the neighbour's boundary IDs
+    contain sid2, not sid1 — so the exclusion step did not remove
+    the matched face, and it appeared in BOTH ``bg___base`` and
+    ``base___None``. Faces in the interface MUST NOT appear in the
+    neighbour's ``___None`` group.
+    """
+    bg = PolyPrism(
+        _rect(-5, -5, 5, 5),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="bg",
+        structured=True,
+        mesh_order=2.0,
+    )
+    base = PolyPrism(
+        _rect(-10, -10, 10, 10),
+        {-2.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        mesh_order=3.0,
+    )
+
+    state = structured_pre_pass([bg, base], point_tolerance=1e-3)
+    occ_entities = cad_occ(state.entities_out, prepared=True)
+    final = structured_post_pass(occ_entities, state)
+
+    xao = tmp_path / "scene.xao"
+    write_xao(final, xao)
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("aabb_none_test")
+        gmsh.merge(str(xao))
+        gmsh.model.occ.synchronize()
+        groups = {
+            gmsh.model.getPhysicalName(d, t): set(
+                gmsh.model.getEntitiesForPhysicalGroup(d, t)
+            )
+            for d, t in gmsh.model.getPhysicalGroups()
+        }
+    finally:
+        gmsh.finalize()
+
+    iface = groups.get("bg___base", set()) | groups.get("base___bg", set())
+    base_none = groups.get("base___None", set())
+    bg_none = groups.get("bg___None", set())
+
+    overlap_base = iface & base_none
+    overlap_bg = iface & bg_none
+    assert (
+        not overlap_base
+    ), f"bg___base interface faces appear in base___None: {overlap_base}"
+    assert (
+        not overlap_bg
+    ), f"bg___base interface faces appear in bg___None: {overlap_bg}"
+
+
 def test_aabbs_close_helper():
     """Unit-test the _aabbs_close primitive directly."""
     b1 = (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)

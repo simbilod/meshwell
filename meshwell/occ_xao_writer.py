@@ -264,6 +264,13 @@ def _compute_physical_groups(
         # with numpy: for each face on entity 1, compute the L_inf
         # per-corner distance to every face on entity 2 in one shot,
         # then pick the first index whose distance is within tolerance.
+        # When an AABB match is found, sid1 (entity 1's id) and sid2
+        # (entity 2's id) are distinct because BOP produced separate
+        # TShapes for the coincident faces. ``common`` carries sid1 so
+        # downstream interface assembly works on entity 1's leaves;
+        # ``i2_matched_sids`` tracks sid2 so entity 2's exterior pass
+        # correctly excludes the matched face from its ``___None`` group.
+        i2_matched_sids: set[int] = set()
         if not common and entity_aabbs[i1] and entity_aabbs[i2]:
             arr2 = entity_aabb_arr[i2]
             sids2 = entity_sids[i2]
@@ -278,6 +285,7 @@ def _compute_physical_groups(
                 # for determinism.
                 sid2 = sids2[int(matches[0])]
                 common.add(sid1)
+                i2_matched_sids.add(sid2)
                 entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
 
         if not common:
@@ -299,7 +307,12 @@ def _compute_physical_groups(
         if _is_purely_synthetic(ent1) or _is_purely_synthetic(ent2):
             continue
         entity_interface_ids[i1].update(common)
+        # For TShape-identity matches, ``common`` ⊆ entity 2's bids
+        # (it's ``bid1 & bid2``) so adding it covers entity 2. For
+        # AABB-resolved matches, the entity 2-side sids live in
+        # ``i2_matched_sids`` because sid1 != sid2 there.
         entity_interface_ids[i2].update(common)
+        entity_interface_ids[i2].update(i2_matched_sids)
         if not (ent1.keep or ent2.keep):
             continue
         # Skip synthetic names from the cross product: a cohort sub-solid
