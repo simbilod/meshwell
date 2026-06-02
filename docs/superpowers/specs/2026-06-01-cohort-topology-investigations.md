@@ -126,6 +126,22 @@ the fast path never misses, the fallback becomes dead code.
    currently need), fall back to Option B for a tactical speedup
    and Option C for the structural fix.
 
+### Status — 2026-06-01
+
+- ❌ **Option A** (gmsh-side adjacency lookup): spike showed it
+  catches only 8/14 kept-vs-kept interfaces. Misses every interface
+  where BOP produced coincident-but-separate TShapes — precisely
+  what the AABB fallback exists to rescue. Not a viable replacement.
+  See spike commit 04a9ceb.
+- ❌ **Option C** (`SetGlue` to force TShape sharing): spike showed
+  Glue mode does not reduce AABB fallback need; invocation count
+  actually grows under GlueShift/GlueFull. Output is identical
+  across all three Glue modes. Not a fix. See spike commit 04a9ceb.
+- ✅ **Option B** (numpy-vectorized inner loop + per-entity AABB
+  cache): promoted. ~2.3x speedup on the complex stress scene
+  (131.8ms → 58.3ms). See implementation plan
+  [docs/superpowers/plans/2026-06-01-aabb-fallback-speedup.md](../plans/2026-06-01-aabb-fallback-speedup.md).
+
 ---
 
 ## Investigation 2: Why transfinite hints are needed
