@@ -167,7 +167,7 @@ def freeze_lateral_mesh(
          faces that already have a mesh.
 
     The result is identical in physical-group output to the old
-    apply_lateral_transfinite_hints path but never invokes gmsh's
+    freeze_lateral_mesh path but never invokes gmsh's
     2D mesher or its periodic-surface mesher on cohort lateral
     faces — both sources of past failures.
     """

@@ -741,7 +741,7 @@ def build_cohort_compound(
     # (keep_compound_for_bop=True) so it does NOT fragment internal
     # coincident-but-distinct-TShape faces. Without this cache the
     # n_layers-mismatch lateral-touch detection in
-    # ``apply_lateral_transfinite_hints`` cannot see that two adjacent
+    # ``freeze_lateral_mesh`` cannot see that two adjacent
     # slabs share a lateral face.
     lateral_face_cache: dict[tuple, TopoDS_Face] = {}
 
@@ -764,7 +764,7 @@ def build_cohort_compound(
         For straight-line segments shared by two side-by-side subpieces
         (e.g., two squares touching at x=10) the key is endpoint-order-
         invariant so the same face is shared between subpieces. That
-        sharing is what lets ``apply_lateral_transfinite_hints`` detect
+        sharing is what lets ``freeze_lateral_mesh`` detect
         n_layers mismatches and lets two adjacent solids hold the same
         TShape.
         """
