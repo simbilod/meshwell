@@ -18,7 +18,7 @@ from meshwell.structured.pipeline import (
 )
 from meshwell.structured.types import ShapeKey
 from meshwell.structured.wedge import (
-    apply_lateral_transfinite_hints,
+    freeze_lateral_mesh,
     stamp_wedges,
 )
 from meshwell.utils import deserialize
@@ -165,7 +165,7 @@ def generate_mesh(
 
     def _structured_pre_2d() -> None:
         if state.slab_meta and face_tag_by_key:
-            apply_lateral_transfinite_hints(
+            freeze_lateral_mesh(
                 state.slab_meta,
                 face_tag_by_key,
                 resolution_specs=resolution_specs_for_wedge,
