@@ -95,3 +95,34 @@ def test_resolve_n_layers_multiple_raises():
     }
     with pytest.raises(StructuredError):
         resolve_n_layers(("x",), rs)
+
+
+def test_n_layers_1_meshes_cleanly(tmp_path):
+    """S3: degenerate n_layers=1 — one wedge per bot triangle, no intermediate-layer nodes needed."""
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+
+    p = PolyPrism(
+        polygons=SQ,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="s",
+        structured=True,
+    )
+    generate_mesh(
+        entities=[p],
+        dim=3,
+        output_mesh=tmp_path / "out.msh",
+        default_characteristic_length=0.5,
+        resolution_specs={
+            "s": [StructuredExtrusionResolutionSpec(n_layers=1)],
+        },
+    )
+    import meshio
+
+    m = meshio.read(tmp_path / "out.msh")
+    wedges = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
+    # SQ has 4 vertices, characteristic_length=0.5 -> ~4 bot triangles
+    # n_layers=1 -> ~4 wedges
+    assert wedges >= 2, f"expected >=2 wedges, got {wedges}"
+    # No 3D group named "s" should be missing wedges.
+    assert "s" in m.cell_sets
