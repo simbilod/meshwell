@@ -2,8 +2,11 @@
 
 **Date:** 2026-06-01
 **Branch:** `feat/structured_discrete`
-**Status:** investigation — input to a potential replacement design
+**Status:** PROMOTED 2026-06-01 — Alt B is now the production path
+  (see `meshwell/structured/wedge.py::freeze_lateral_mesh`).
+  Catalog kept as historical reference and future-replacement spec.
 **Sister doc:** [2026-06-01-cohort-topology-investigations.md](2026-06-01-cohort-topology-investigations.md)
+**Promotion plan:** [docs/superpowers/plans/2026-06-01-alt-b-promotion.md](../plans/2026-06-01-alt-b-promotion.md)
 
 ## Why this document exists
 
@@ -688,3 +691,25 @@ become irrelevant for cohort topology. They'd only matter at the
    the old transfinite path under a flag for one release as a
    safety hatch.
 7. **Then remove the transfinite path** when no one's complaining.
+
+---
+
+## 8. Status after promotion (2026-06-01)
+
+- ✅ Step 1 (missing tests): S3 added as
+  `test_n_layers_1_meshes_cleanly`; S5 added as
+  `test_shared_lateral_between_two_subsolids` in
+  `tests/structured/test_wedge_pre2d.py`. S9 (void / keep=False) is
+  covered by the existing `tests/structured/test_void_tagging_e2e.py`
+  suite, which now exercises Alt B post-orchestrator switch.
+- ⏸ Step 2 (timings instrumentation): deferred. Spike showed Alt B
+  is ~15% slower than the old transfinite path on the complex scene
+  (4.39s vs 4.15s). Acceptable for determinism trade. Re-visit if
+  perf becomes a bottleneck.
+- ⏸ Step 3 (discretization knob, Q4): deferred. Alt B currently
+  inherits lateral discretization from bot-edge mesh density. Add a
+  `lateral_discretization` parameter when a user requests it.
+- ✅ Step 4 (Alt B spike): completed; see prior commits.
+- ✅ Steps 5-7 (promotion, suite/demos green, transfinite path
+  removed): done in
+  [docs/superpowers/plans/2026-06-01-alt-b-promotion.md](../plans/2026-06-01-alt-b-promotion.md).
