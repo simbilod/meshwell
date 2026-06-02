@@ -50,7 +50,7 @@ from itertools import combinations, product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np  # noqa: F401  -- used in upcoming AABB vectorization
+import numpy as np
 from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Builder
 from OCP.BRepBndLib import BRepBndLib
@@ -224,6 +224,32 @@ def _compute_physical_groups(
     #    so kept neighbours can name boundaries shared with helper
     #    (keep=False) entities. Pairs where both sides are keep=False have
     #    no shape in the emitted BREP and would reference phantom topology.
+
+    # Pre-compute AABBs once per entity (was recomputed per pair before).
+    # Keyed by tshape_id; None when the shape's bbox is void.
+    entity_aabbs: list[dict[int, tuple[float, ...]]] = []
+    for i in range(len(entities)):
+        boxes: dict[int, tuple[float, ...]] = {}
+        for sid, face in entity_boundary[i].items():
+            box = _shape_aabb(face)
+            if box is not None:
+                boxes[sid] = box
+        entity_aabbs.append(boxes)
+
+    # Pre-stack each entity's AABBs into a numpy array for vectorized
+    # proximity matching in the fallback below. ``entity_sids[i]`` is
+    # the sid-in-array-order list; entity_aabb_arr[i] is the (F, 6) array.
+    entity_sids: list[list[int]] = []
+    entity_aabb_arr: list[np.ndarray] = []
+    for boxes in entity_aabbs:
+        sids = list(boxes.keys())
+        entity_sids.append(sids)
+        entity_aabb_arr.append(
+            np.array([boxes[s] for s in sids], dtype=float)
+            if sids
+            else np.zeros((0, 6), dtype=float)
+        )
+
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
     for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
         if ent1.dim <= 0 or ent2.dim <= 0:
@@ -234,22 +260,25 @@ def _compute_physical_groups(
 
         # Spatial AABB fallback: cut faces that drifted apart in
         # TShape identity but still occupy the same region. Only runs
-        # when identity-based matching produced nothing.
-        if not common and entity_boundary[i1] and entity_boundary[i2]:
-            b2_boxes: dict[int, tuple[float, ...]] = {}
-            for sid2, f2 in entity_boundary[i2].items():
-                box = _shape_aabb(f2)
-                if box is not None:
-                    b2_boxes[sid2] = box
-            for sid1, f1 in entity_boundary[i1].items():
-                box1 = _shape_aabb(f1)
-                if box1 is None:
+        # when identity-based matching produced nothing. Vectorized
+        # with numpy: for each face on entity 1, compute the L_inf
+        # per-corner distance to every face on entity 2 in one shot,
+        # then pick the first index whose distance is within tolerance.
+        if not common and entity_aabbs[i1] and entity_aabbs[i2]:
+            arr2 = entity_aabb_arr[i2]
+            sids2 = entity_sids[i2]
+            for sid1, b1 in entity_aabbs[i1].items():
+                b1_arr = np.asarray(b1, dtype=float)
+                # Per-row L_inf corner distance to b1 across all of entity 2.
+                dists = np.abs(arr2 - b1_arr).max(axis=1)
+                matches = np.where(dists < _AABB_INTERFACE_TOL)[0]
+                if matches.size == 0:
                     continue
-                for sid2, b2 in b2_boxes.items():
-                    if _aabbs_close(box1, b2, _AABB_INTERFACE_TOL):
-                        common.add(sid1)
-                        entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
-                        break
+                # Preserve "pick first match by sid-array order" semantics
+                # for determinism.
+                sid2 = sids2[int(matches[0])]
+                common.add(sid1)
+                entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
 
         if not common:
             continue
