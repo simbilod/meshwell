@@ -147,15 +147,6 @@ def _resolution_specs():
     }
 
 
-_COMPLEX_SCENE_SKIP_REASON = (
-    "Full complex scene triggers an OCC/gmsh segfault (core dump) when arc "
-    "detection is enabled on every PolyPrism. Separate from the asymmetric "
-    "arc state bug fixed by MixedIdentifyArcsError; root cause not yet "
-    "isolated. The simpler sub-scenes pass cleanly."
-)
-
-
-@pytest.mark.skip(reason=_COMPLEX_SCENE_SKIP_REASON)
 def test_complex_scene_meshes_without_error(complex_scene_entities, tmp_path):
     generate_mesh(
         complex_scene_entities,
@@ -171,7 +162,6 @@ def test_complex_scene_meshes_without_error(complex_scene_entities, tmp_path):
     assert tets > 0, "expected tet elements in unstructured regions"
 
 
-@pytest.mark.skip(reason=_COMPLEX_SCENE_SKIP_REASON)
 def test_complex_scene_all_physical_groups_present(complex_scene_entities, tmp_path):
     generate_mesh(
         complex_scene_entities,

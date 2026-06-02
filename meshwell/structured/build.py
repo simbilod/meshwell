@@ -116,13 +116,22 @@ class EdgeRegistry:
         end: tuple[float, float],
         z: float,
     ) -> TopoDS_Edge:
-        """Return a unique arc edge through start, mid, end at height z."""
+        """Return a unique arc edge through start, mid, end at height z.
+
+        The cache key is direction-invariant on (start, end): an arc
+        traversed V_a→mid→V_b and one traversed V_b→mid→V_a share an
+        underlying TShape. ``mid`` distinguishes physically distinct
+        arcs that share endpoints (e.g. top vs bottom half of a closed
+        circle). Without this, CCW (exterior) and CW (interior) shapely
+        orientations of the same circle produce duplicate OCC edges,
+        which breaks gmsh's periodic-cylinder mesher.
+        """
         sv = self.vertices.get_or_create(*start, z)
         ev = self.vertices.get_or_create(*end, z)
         k_s = self.vertices._key(*start, z)
         k_m = self.vertices._key(*mid, z)
         k_e = self.vertices._key(*end, z)
-        key = ("A", k_s, k_m, k_e)
+        key = ("A", tuple(sorted([k_s, k_e])), k_m)
         if key not in self._store:
             # Guard: GC_MakeArcOfCircle cannot handle a full circle (start==end).
             # Caller should split the circle into sub-arcs before calling here.
