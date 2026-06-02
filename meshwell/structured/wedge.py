@@ -129,20 +129,25 @@ def _align_top_to_bot(
 def _vertical_edge_layer_nodes(vertical_edge_tag: int) -> list[int]:
     """Return the vertical edge's nodes ordered z_low -> z_high.
 
-    Assumes ``setTransfiniteCurve(vertical_edge_tag, n_layers + 1)``
-    was called before ``generate(1)`` so there are exactly
-    ``n_layers + 1`` nodes spaced uniformly along the edge. The
-    returned list has length ``n_layers + 1`` with index 0 at z_low
-    and index n_layers at z_high.
+    Sorts by the actual z-coordinate of each node rather than the
+    edge's parametric coordinate. Robust to OCC/BOP orientation
+    flips that would reverse the parametric direction. Assumes
+    ``setTransfiniteCurve(vertical_edge_tag, n_layers + 1)`` was
+    called before ``generate(1)`` so there are exactly
+    ``n_layers + 1`` uniformly-spaced nodes.
     """
-    tags, _coord, param = gmsh.model.mesh.getNodes(
+    tags, coord, _param = gmsh.model.mesh.getNodes(
         1,
         vertical_edge_tag,
         includeBoundary=True,
         returnParametricCoord=True,
     )
-    items = sorted(zip(tags, param), key=lambda x: x[1])
-    return [int(t) for t, _p in items]
+    # coord is flat [x0,y0,z0, x1,y1,z1, ...]; sort by z (index 2 of each triple)
+    items = sorted(
+        ((int(t), float(coord[3 * i + 2])) for i, t in enumerate(tags)),
+        key=lambda r: r[1],
+    )
+    return [t for t, _z in items]
 
 
 def freeze_lateral_mesh(
