@@ -640,11 +640,27 @@ def build_cohort_compound(
             (existing behavior).
     """
     # Use injected registries when provided; otherwise create fresh ones
-    # so existing callers see no behavior change.
+    # so existing callers see no behavior change. When both are provided
+    # they must be consistent (the edge_registry's vertex store IS the
+    # vertex_registry) or vertex dedup and edge dedup operate on
+    # mismatched key spaces and downstream edge construction breaks.
+    if (
+        edge_registry is not None
+        and vertex_registry is not None
+        and edge_registry.vertices is not vertex_registry
+    ):
+        raise ValueError(
+            "edge_registry.vertices must be the same VertexRegistry as "
+            "vertex_registry when both are injected"
+        )
     vreg = (
         vertex_registry
         if vertex_registry is not None
-        else VertexRegistry(point_tolerance=point_tolerance)
+        else (
+            edge_registry.vertices
+            if edge_registry is not None
+            else VertexRegistry(point_tolerance=point_tolerance)
+        )
     )
     ereg = (
         edge_registry
