@@ -610,6 +610,8 @@ def build_cohort_compound(
     cohort: Cohort,
     subpieces: list[SubPiece],
     point_tolerance: float,
+    vertex_registry: "VertexRegistry | None" = None,
+    edge_registry: "EdgeRegistry | None" = None,
 ) -> tuple[TopoDS_Compound, dict[ShapeKey, SlabMeta]]:
     """Stage 4 driver — assemble compound + slab_meta.
 
@@ -623,9 +625,32 @@ def build_cohort_compound(
     the other does not.  We propagate ``identify_arcs=True`` across shared
     z-planes so that BOTH faces at the interface use the same arc
     representation.
+
+    Args:
+        cohort: The Cohort whose slabs define z-intervals and arc settings.
+        subpieces: Flat list of SubPiece records (one per z-interval x sub-polygon).
+        point_tolerance: Snap tolerance for vertex deduplication.
+        vertex_registry: Optional pre-created VertexRegistry to use instead
+            of creating a fresh one. When provided, vertices are shared with
+            the caller's registry. When None, a fresh registry is created
+            (existing behavior).
+        edge_registry: Optional pre-created EdgeRegistry to use instead of
+            creating a fresh one. When provided, edges are shared with the
+            caller's registry. When None, a fresh registry is created
+            (existing behavior).
     """
-    vreg = VertexRegistry(point_tolerance=point_tolerance)
-    ereg = EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
+    # Use injected registries when provided; otherwise create fresh ones
+    # so existing callers see no behavior change.
+    vreg = (
+        vertex_registry
+        if vertex_registry is not None
+        else VertexRegistry(point_tolerance=point_tolerance)
+    )
+    ereg = (
+        edge_registry
+        if edge_registry is not None
+        else EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
+    )
 
     slab_by_source: dict[int, StructuredSlab] = {
         s.source_index: s for s in cohort.slabs
