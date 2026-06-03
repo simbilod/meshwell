@@ -75,11 +75,15 @@ _DIM_TO_TOPABS = {
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 
-# Used by the spatial fallback in ``_compute_physical_groups`` when
-# TShape-identity matching fails to pair a cut face with its
-# coincident neighbour. Picks up cut faces drifted by ~mm at user
-# scale; only kicks in when identity matching produced no commons.
-_AABB_INTERFACE_TOL = 1e-2
+# Default tolerance for the spatial fallback in
+# ``_compute_physical_groups`` when TShape-identity matching fails to
+# pair a cut face with its coincident neighbour. Picks up cut faces
+# whose coords drifted apart during BOP fragmenting (bounded above by
+# fragment_fuzzy_value, which defaults to point_tolerance=1e-3). The
+# 10x multiplier provides safety margin for combined shapely + BOP
+# drift. Callers should pass ``interface_aabb_tolerance`` to ``write_xao``
+# explicitly when their point_tolerance differs from the default.
+_DEFAULT_AABB_INTERFACE_TOL = 1e-2
 
 # ---------------------------------------------------------------------------
 # OCP-level helpers
@@ -162,6 +166,7 @@ def _compute_physical_groups(
     entities: list[OCCLabeledEntity],
     interface_delimiter: str,
     boundary_delimiter: str,
+    interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
 ) -> dict[tuple[int, str], list]:
     """OCP reconstruction of ``tag_entities``/``tag_interfaces``/``tag_boundaries``.
 
@@ -278,7 +283,7 @@ def _compute_physical_groups(
                 b1_arr = np.asarray(b1, dtype=float)
                 # Per-row L_inf corner distance to b1 across all of entity 2.
                 dists = np.abs(arr2 - b1_arr).max(axis=1)
-                matches = np.where(dists < _AABB_INTERFACE_TOL)[0]
+                matches = np.where(dists < interface_aabb_tolerance)[0]
                 if matches.size == 0:
                     continue
                 # Preserve "pick first match by sid-array order" semantics
@@ -385,6 +390,7 @@ def write_xao(
     model_name: str = "meshwell",
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
+    interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
 ) -> None:
     """Serialize ``entities`` into a self-contained XAO file.
 
@@ -394,6 +400,11 @@ def write_xao(
         model_name: XAO ``<geometry name=>`` value.
         interface_delimiter: Separator for ``A___B`` interface group names.
         boundary_delimiter: Stand-in for "no neighbour" in ``A___None``.
+        interface_aabb_tolerance: L_inf per-corner distance threshold used
+            by the spatial fallback when TShape-identity matching produces
+            no shared boundaries. Should be at least the BOP
+            ``fragment_fuzzy_value``; recommended ``10 * point_tolerance``
+            for safety against combined shapely + BOP drift.
 
     keep=False entities are **not** serialized into the BREP -- only
     their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
@@ -439,7 +450,10 @@ def write_xao(
     TopExp.MapShapes_s(brep_compound, shape_reference_map)
 
     physical_groups = _compute_physical_groups(
-        entities, interface_delimiter, boundary_delimiter
+        entities,
+        interface_delimiter,
+        boundary_delimiter,
+        interface_aabb_tolerance=interface_aabb_tolerance,
     )
 
     # Build per-dim topology index covering every shape any group references.

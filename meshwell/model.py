@@ -177,6 +177,16 @@ class ModelManager:
 
         from meshwell.occ_xao_writer import write_xao
 
+        # Derive AABB interface tolerance from point_tolerance unless the
+        # caller already supplied one. 10x is the safety margin against
+        # combined shapely + BOP drift (BOP fragmenting can move coincident
+        # face coords by up to fragment_fuzzy_value).
+        if (
+            "interface_aabb_tolerance" not in write_xao_kwargs
+            and self.point_tolerance is not None
+        ):
+            write_xao_kwargs["interface_aabb_tolerance"] = 10 * self.point_tolerance
+
         self.ensure_initialized("temp")
         with tempfile.TemporaryDirectory() as tmpdir:
             xao_path = Path(tmpdir) / "cad.xao"

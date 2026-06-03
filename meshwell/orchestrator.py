@@ -147,6 +147,7 @@ def generate_mesh(
         remove_all_duplicates=remove_all_duplicates,
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
+        interface_aabb_tolerance=10 * point_tolerance,
     )
 
     if checkpoint_cad:
