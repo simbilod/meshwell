@@ -188,6 +188,20 @@ def decompose_cohorts(
             new_ent.identify_arcs = True
             new_ent.arc_tolerance = max(s.arc_tolerance for s in arc_bearing_slabs)
             new_ent.min_arc_points = min(s.min_arc_points for s in arc_bearing_slabs)
+        # Tag the pre-cut entity with the cohorts it touches and the
+        # shared z-plane for each. Consumed by PolyPrism.instanciate_occ
+        # to route the boundary wire at z=z_shared through the cohort's
+        # EdgeRegistry, so cohort/neighbour arc/line TShapes match by
+        # construction (not by BOP fuzzy detection).
+        cohort_adjacency: list[tuple[int, float]] = []
+        for ci, c in enumerate(cohorts):
+            for z_check in (ent.zmin, ent.zmax):
+                if not approx_in(z_check, c.z_planes):
+                    continue
+                if _cohort_xy_at(c, z_check).intersects(ent.polygons):
+                    cohort_adjacency.append((ci, z_check))
+                    break
+        new_ent._cohort_adjacency = cohort_adjacency
         pre_cut.append(new_ent)
 
     return subpieces_per_cohort, pre_cut
