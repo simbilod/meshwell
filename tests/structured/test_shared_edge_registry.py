@@ -119,3 +119,108 @@ def test_polyline_cohort_meets_unstructured_neighbour(tmp_path):
     assert (
         iface is not None
     ), f"expected bg___base interface; groups: {sorted(m.cell_sets)}"
+
+
+def test_aabb_rescue_count_reduced_under_sharing(tmp_path):
+    """Assert zero AABB rescues under shared EdgeRegistry.
+
+    Under the refactor, a minimal arc cohort + unstructured base scene
+    should produce ZERO AABB rescues — the cohort↔neighbour shared edges
+    have identical TShapes by construction. Before the refactor this case
+    needed at least one rescue.
+    """
+    from itertools import combinations
+
+    import meshwell.occ_xao_writer as xao_mod
+
+    rescues: list[tuple[str, str]] = []
+    original = xao_mod._compute_physical_groups
+
+    def instrumented(
+        entities,
+        interface_delimiter,
+        boundary_delimiter,
+        interface_aabb_tolerance=xao_mod._DEFAULT_AABB_INTERFACE_TOL,
+    ):
+        max_dim = max((e.dim for e in entities if e.shapes), default=0)
+        ebs = []
+        for ent in entities:
+            b = {}
+            if ent.dim == max_dim and ent.dim > 0:
+                for s in ent.shapes:
+                    for sub, sid in xao_mod._leaf_subshapes(s, ent.dim - 1):
+                        b.setdefault(sid, sub)
+            elif ent.dim == max_dim - 1 and ent.dim > 0:
+                for s in ent.shapes:
+                    for sub, sid in xao_mod._leaf_subshapes(s, ent.dim):
+                        b.setdefault(sid, sub)
+            ebs.append(b)
+        eas = []
+        for i in range(len(entities)):
+            d = {}
+            for sid, face in ebs[i].items():
+                box = xao_mod._shape_aabb(face)
+                if box is not None:
+                    d[sid] = box
+            eas.append(d)
+        for (i1, e1), (i2, e2) in combinations(enumerate(entities), 2):
+            if e1.dim <= 0 or e2.dim <= 0:
+                continue
+            if set(ebs[i1].keys()) & set(ebs[i2].keys()):
+                continue
+            if not eas[i1] or not eas[i2]:
+                continue
+            arr2 = np.array(list(eas[i2].values()), dtype=float)
+            for b1 in eas[i1].values():
+                b1_arr = np.asarray(b1, dtype=float)
+                if np.any(
+                    np.abs(arr2 - b1_arr).max(axis=1) < interface_aabb_tolerance
+                ) and not (
+                    xao_mod._is_purely_synthetic(e1) or xao_mod._is_purely_synthetic(e2)
+                ):
+                    n1 = (
+                        xao_mod._filter_real_names(e1.physical_name) or e1.physical_name
+                    )
+                    n2 = (
+                        xao_mod._filter_real_names(e2.physical_name) or e2.physical_name
+                    )
+                    rescues.append((n1[0], n2[0]))
+        return original(
+            entities,
+            interface_delimiter,
+            boundary_delimiter,
+            interface_aabb_tolerance=interface_aabb_tolerance,
+        )
+
+    xao_mod._compute_physical_groups = instrumented
+    try:
+        bg = PolyPrism(
+            _circle(0, 0, 2),
+            {0.0: 0.0, 1.0: 0.0},
+            physical_name="bg",
+            structured=True,
+            mesh_order=2.0,
+            identify_arcs=True,
+        )
+        base = PolyPrism(
+            _rect(-5, -5, 5, 5),
+            {-2.0: 0.0, 0.0: 0.0},
+            physical_name="base",
+            mesh_order=3.0,
+            identify_arcs=True,
+        )
+        generate_mesh(
+            [bg, base],
+            dim=3,
+            output_mesh=tmp_path / "out.msh",
+            default_characteristic_length=0.5,
+            resolution_specs={
+                "bg": [StructuredExtrusionResolutionSpec(n_layers=2)],
+            },
+        )
+    finally:
+        xao_mod._compute_physical_groups = original
+
+    assert (
+        len(rescues) == 0
+    ), f"expected 0 AABB rescues with registry sharing; got {rescues}"
