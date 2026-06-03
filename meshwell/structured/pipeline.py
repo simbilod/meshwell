@@ -45,6 +45,11 @@ class StructuredState:
     face_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
     sub_solid_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
 
+    # Per-cohort (VertexRegistry, EdgeRegistry) pairs, indexed by
+    # cohort_index. Used by adjacent unstructured neighbours during
+    # OCC construction to share boundary edges with the cohort.
+    cohort_registries: list = field(default_factory=list)
+
 
 def structured_pre_pass(
     entities: list[Any],
@@ -81,12 +86,24 @@ def structured_pre_pass(
     validate_no_volumetric_cohort_overlap(cohorts, entities)
     subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(cohorts, unstructured)
 
+    from meshwell.structured.build import EdgeRegistry, VertexRegistry
+
     cohort_entities: list[_CohortEntity] = []
     all_slab_meta: dict[ShapeKey, SlabMeta] = {}
     face_name_by_key: dict[ShapeKey, str] = {}
     sub_solid_name_by_key: dict[ShapeKey, str] = {}
+    cohort_registries: list[tuple[VertexRegistry, EdgeRegistry]] = []
     for ci, (cohort, subs) in enumerate(zip(cohorts, subpieces_per_cohort)):
-        compound, slab_meta = build_cohort_compound(cohort, subs, point_tolerance)
+        vreg = VertexRegistry(point_tolerance=point_tolerance)
+        ereg = EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
+        cohort_registries.append((vreg, ereg))
+        compound, slab_meta = build_cohort_compound(
+            cohort,
+            subs,
+            point_tolerance,
+            vertex_registry=vreg,
+            edge_registry=ereg,
+        )
         ce = _CohortEntity(
             compound=compound,
             slab_meta=slab_meta,
@@ -113,6 +130,7 @@ def structured_pre_pass(
         cohort_entities=cohort_entities,
         face_name_by_key=face_name_by_key,
         sub_solid_name_by_key=sub_solid_name_by_key,
+        cohort_registries=cohort_registries,
     )
 
 
