@@ -142,6 +142,27 @@ the fast path never misses, the fallback becomes dead code.
   (131.8ms → 58.3ms). See implementation plan
   [docs/superpowers/plans/2026-06-01-aabb-fallback-speedup.md](../plans/2026-06-01-aabb-fallback-speedup.md).
 
+### Update — 2026-06-02 — shared EdgeRegistry refactor
+
+- ✅ **Cohort↔neighbour shared registry**: shipped. Each cohort's
+  `EdgeRegistry` is exposed via `StructuredState.cohort_registries`.
+  Pre-cut unstructured entities are tagged in `decompose_cohorts`
+  with their adjacent cohorts. `PolyPrism.instanciate_occ` routes
+  the shared boundary wire through the cohort's registry when the
+  tag is present, building the polygon face at the z-plane shared
+  with the cohort and extruding in the appropriate direction so the
+  user-built face IS the shared face. Result: cohort↔neighbour
+  arc/line edges share `TopoDS_Edge` TShapes **by construction**;
+  BOP fuzzy detection is no longer load-bearing for edges. On the
+  focused arc + base test, AABB rescue count drops from "needed at
+  least one" to **zero**. See implementation plan
+  [docs/superpowers/plans/2026-06-02-shared-edge-registry.md](../plans/2026-06-02-shared-edge-registry.md).
+- ⏸ **Face-level sharing (Sketch B)**: deferred. Face TShape
+  matching at structured↔unstructured horizontal interfaces still
+  goes through BOP + AABB rescue for the residual cases. If needed,
+  build the interface face once in the cohort and reuse the
+  `TopoDS_Face` in the neighbour's polyprism construction.
+
 ---
 
 ## Investigation 2: Why transfinite hints are needed
