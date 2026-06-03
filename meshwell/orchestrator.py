@@ -113,9 +113,23 @@ def generate_mesh(
     # --- Stage 1b: structured pre-pass. ---------------------------------
     state = structured_pre_pass(entities, point_tolerance=point_tolerance)
 
-    occ_entities_raw, _cad_processor = cad_occ(
-        state.entities_out, return_processor=True, prepared=True, **cad_kwargs
-    )
+    from meshwell.polyprism import PolyPrism
+
+    # Install per-cohort EdgeRegistries so pre-cut unstructured neighbours
+    # build their boundary wires through the SAME registry as the cohort.
+    # This makes the cohort↔neighbour shared edges literally the same
+    # TopoDS_Edge object — no BOP fuzzy detection needed for edges, just
+    # for face-level coincidence (which the AABB fallback still handles).
+    cohort_registry_map = {
+        ci: ereg for ci, (_vreg, ereg) in enumerate(state.cohort_registries or [])
+    }
+    PolyPrism._set_cohort_edge_registries(cohort_registry_map)
+    try:
+        occ_entities_raw, _cad_processor = cad_occ(
+            state.entities_out, return_processor=True, prepared=True, **cad_kwargs
+        )
+    finally:
+        PolyPrism._set_cohort_edge_registries({})
 
     # Diagnostic: confirm BOP didn't subdivide any pre-baked cohort
     # shell face. Walks every cohort compound, collects the original
