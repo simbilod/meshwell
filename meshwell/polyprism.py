@@ -1,7 +1,7 @@
 """Gmsh polyprism definitions."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import gmsh
 import shapely
@@ -26,6 +26,21 @@ class PolyPrism(GeometryEntity):
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
 
     """
+
+    # Per-process registry of cohort-index -> EdgeRegistry, populated by
+    # the cad_occ entry point in the structured pipeline. Cleared after
+    # each cad_occ() invocation so cross-test contamination cannot occur.
+    _cohort_edge_registries: ClassVar[dict] = {}
+
+    @classmethod
+    def _set_cohort_edge_registries(cls, registries):
+        """Install a mapping from cohort_index -> EdgeRegistry.
+
+        Called by structured_pre_pass's caller (cad_occ wrapper) before
+        building polyprism OCC representations. Pass an empty dict to
+        clear.
+        """
+        cls._cohort_edge_registries = dict(registries) if registries else {}
 
     def __init__(
         self,
@@ -532,7 +547,6 @@ class PolyPrism(GeometryEntity):
                 if hasattr(self.polygons, "geoms")
                 else [self.polygons]
             )
-            vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
                 # For polygons with holes, canonicalize to OGC convention
                 # (CCW exterior + CW interiors) so OCC's face-with-hole
@@ -547,26 +561,58 @@ class PolyPrism(GeometryEntity):
                 # no-hole case.
                 if poly.interiors:
                     poly = orient(poly, sign=1.0)
-                exterior_vertices = [(x, y, self.zmin) for x, y in poly.exterior.coords]
+
+                # Determine whether to use a cohort's EdgeRegistry for
+                # this polygon's boundary wire, and at which z to build
+                # the polygon face. BRepPrimAPI_MakePrism builds the
+                # face at the user-supplied z and extrudes it along the
+                # supplied vector. If the cohort touches at our zmin,
+                # build at zmin and extrude up: the bot face IS the
+                # shared face. If the cohort touches at our zmax, build
+                # at zmax and extrude DOWN: the top face IS the shared
+                # face. Either way the "user-built" face's edges go
+                # through the shared registry.
+                adjacency = getattr(self, "_cohort_adjacency", None) or []
+                shared_registry = None
+                build_z = self.zmin
+                build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
+                for ci, z_shared in adjacency:
+                    reg = PolyPrism._cohort_edge_registries.get(ci)
+                    if reg is None:
+                        continue
+                    if z_shared == self.zmin:
+                        shared_registry = reg
+                        build_z = self.zmin
+                        build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
+                        break
+                    if z_shared == self.zmax:
+                        shared_registry = reg
+                        build_z = self.zmax
+                        build_vec = gp_Vec(0, 0, self.zmin - self.zmax)
+                        break
+
+                exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
                 outer_wire = self._make_occ_wire_from_vertices(
                     exterior_vertices,
                     identify_arcs=self.identify_arcs,
                     min_arc_points=self.min_arc_points,
                     arc_tolerance=self.arc_tolerance,
+                    edge_registry=shared_registry,
                 )
                 mf = BRepBuilderAPI_MakeFace(outer_wire)
                 for interior in poly.interiors:
-                    hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
+                    hole_vertices = [(x, y, build_z) for x, y in interior.coords]
                     hole_wire = self._make_occ_wire_from_vertices(
                         hole_vertices,
                         identify_arcs=self.identify_arcs,
                         min_arc_points=self.min_arc_points,
                         arc_tolerance=self.arc_tolerance,
+                        edge_registry=shared_registry,
                     )
                     mf.Add(hole_wire)
                 face = mf.Face()
 
-                volumes.append(BRepPrimAPI_MakePrism(face, vec).Shape())
+                volumes.append(BRepPrimAPI_MakePrism(face, build_vec).Shape())
         else:
             volumes.extend(
                 [
