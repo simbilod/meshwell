@@ -170,3 +170,43 @@ def test_pre_cut_returns_entity_unchanged_when_no_polygons_inside():
     far_neighbour = _rect(100, 100, 110, 110)
     out = arrangement_pre_cut_for_entity(arr, far_neighbour)
     assert out is far_neighbour
+
+
+def test_decompose_cohorts_returns_identity_polygons_across_cohort_and_unstructured():
+    """End-to-end identity contract for cohort/unstructured polygons.
+
+    Cohort sub-piece polygon IS the same object as the unstructured pre-cut
+    polygon for the same XY region.
+
+    This is the core invariant the refactor establishes. Before, cohort
+    sub-pieces and unstructured pre-cuts came from independent polygonize
+    calls and were never the same Python object even when geometrically
+    identical.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.decompose import decompose_cohorts
+
+    # Cohort: structured slab at z∈[0,1].
+    slab_poly = _rect(0, 0, 10, 10)
+    cohort = Cohort(
+        slabs=(_slab(0, slab_poly, mesh_order=3.0),),
+        z_planes=(0.0, 1.0),
+    )
+    # Unstructured neighbour at z∈[-1,0] sharing z=0 with cohort, same XY.
+    neighbour = PolyPrism(
+        polygons=_rect(0, 0, 10, 10),
+        buffers={-1.0: 0.0, 0.0: 0.0},
+        physical_name="neighbour",
+        mesh_order=5.0,
+    )
+    subs_list, pre_cut = decompose_cohorts([cohort], [neighbour])
+    cohort_subs = subs_list[0]
+    assert len(cohort_subs) == 1
+    sub_poly = cohort_subs[0].sub_polygon
+
+    # Unstructured pre-cut: same geometry as cohort sub-piece.
+    pre_cut_neighbour = pre_cut[0]
+    assert pre_cut_neighbour.polygons is sub_poly, (
+        "pre-cut polygon must be the SAME Python object as the cohort "
+        "sub-piece polygon (identity, not just equality)"
+    )
