@@ -15,7 +15,7 @@ from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
 from meshwell.structured._zmath import approx_in, approx_key
-from meshwell.structured.types import Cohort, StructuredSlab, SubPiece
+from meshwell.structured.types import Arrangement, Cohort, StructuredSlab, SubPiece
 
 
 def zinterval_footprint(slabs_here: list[StructuredSlab]) -> Polygon:
@@ -40,6 +40,31 @@ def zinterval_footprint(slabs_here: list[StructuredSlab]) -> Polygon:
         else:
             acc = acc.difference(s.footprint)
     return acc
+
+
+def build_cohort_arrangement(
+    cohort_index: int,
+    cohort: Cohort,
+    adjacent_unstructured: list,
+) -> Arrangement:
+    """One shapely polygonize over the union of all relevant boundaries.
+
+    `adjacent_unstructured` is a list of shapely line geometries
+    (typically `ent.polygons.boundary` for each unstructured PolyPrism
+    whose top/bottom z-plane coincides with one of `cohort.z_planes`
+    AND whose XY intersects the cohort footprint).
+
+    The returned `Arrangement.polygons` tile the union of all those
+    polygons' interiors. Downstream extractors filter this list by
+    z-interval (cohort sub-pieces) or by entity footprint (unstructured
+    pre-cut). All filters return the exact same Polygon objects.
+    """
+    linework = [s.footprint.boundary for s in cohort.slabs] + list(
+        adjacent_unstructured
+    )
+    merged = unary_union(linework)
+    pieces = tuple(polygonize(merged))
+    return Arrangement(cohort_index=cohort_index, polygons=pieces)
 
 
 def decompose_cohorts(
