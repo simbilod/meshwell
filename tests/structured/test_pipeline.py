@@ -13,9 +13,10 @@ def test_pre_pass_replaces_structured_with_cohort_entity():
     b = PolyPrism(
         polygons=SQ, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="b", structured=True
     )
+    below = PolyPrism(polygons=SQ, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below")
     cap = PolyPrism(polygons=SQ, buffers={2.0: 0.0, 3.0: 0.0}, physical_name="cap")
-    state = structured_pre_pass([a, b, cap], point_tolerance=1e-3)
-    assert len(state.entities_out) == 2  # one cohort + cap
+    state = structured_pre_pass([a, b, below, cap], point_tolerance=1e-3)
+    assert len(state.entities_out) == 3  # one cohort + below + cap
     from meshwell.structured.cohort_entity import _CohortEntity
 
     cohort_count = sum(isinstance(e, _CohortEntity) for e in state.entities_out)

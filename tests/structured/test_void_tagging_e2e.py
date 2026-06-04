@@ -72,9 +72,23 @@ def test_void_inside_single_structured_slab(tmp_path: Path):
         mesh_bool=False,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    above = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [bg, hole],
+        [bg, hole, below, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -119,9 +133,16 @@ def test_void_below_unstructured_cap(tmp_path: Path):
         mesh_order=3.0,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [bg, hole, cap],
+        [bg, hole, cap, below],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -169,9 +190,16 @@ def test_void_above_unstructured_base(tmp_path: Path):
         mesh_bool=False,
         identify_arcs=True,
     )
+    above = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [base, bg, hole],
+        [base, bg, hole, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -277,9 +305,23 @@ def test_void_through_stacked_cohort(tmp_path: Path):
         mesh_bool=False,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    above = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [lower, upper, hole_lower, hole_upper],
+        [lower, upper, hole_lower, hole_upper, below, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -325,9 +367,23 @@ def test_void_below_structured_cohort_slab(tmp_path: Path):
         mesh_bool=False,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    above = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [lower, upper, hole],
+        [lower, upper, hole, below, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -362,9 +418,23 @@ def test_void_square_no_arcs(tmp_path: Path):
         mesh_bool=False,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    above = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [bg, hole],
+        [bg, hole, below, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -411,9 +481,23 @@ def test_two_separate_voids_policy_b(tmp_path: Path):
         mesh_bool=False,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    above = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [bg, void_a, void_b],
+        [bg, void_a, void_b, below, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,
@@ -465,9 +549,26 @@ def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
         mesh_order=3.0,
         identify_arcs=True,
     )
+    below = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    # Second above-cladding covering the bg corners that the disc cap doesn't
+    # cover. Together with `cap` the union spans the bg footprint, satisfying
+    # the wrapping invariant.
+    above_corners = PolyPrism(
+        _square(-3, -3, 6, 6),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above_corners",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "out.msh"
     generate_mesh(
-        [bg, hole, cap],
+        [bg, hole, cap, below, above_corners],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,

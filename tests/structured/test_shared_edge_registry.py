@@ -58,8 +58,15 @@ def test_arc_cohort_meets_unstructured_base_produces_interface(tmp_path):
         mesh_order=3.0,
         identify_arcs=True,
     )
+    cap = PolyPrism(
+        _rect(-5, -5, 5, 5),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        mesh_order=3.0,
+        identify_arcs=True,
+    )
     generate_mesh(
-        [bg, base],
+        [bg, base, cap],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -103,8 +110,14 @@ def test_polyline_cohort_meets_unstructured_neighbour(tmp_path):
         physical_name="base",
         mesh_order=3.0,
     )
+    cap = PolyPrism(
+        _rect(-5, -5, 5, 5),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        mesh_order=3.0,
+    )
     generate_mesh(
-        [bg, base],
+        [bg, base, cap],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -209,8 +222,15 @@ def test_aabb_rescue_count_reduced_under_sharing(tmp_path):
             mesh_order=3.0,
             identify_arcs=True,
         )
+        cap = PolyPrism(
+            _rect(-5, -5, 5, 5),
+            {1.0: 0.0, 2.0: 0.0},
+            physical_name="cap",
+            mesh_order=3.0,
+            identify_arcs=True,
+        )
         generate_mesh(
-            [bg, base],
+            [bg, base, cap],
             dim=3,
             output_mesh=tmp_path / "out.msh",
             default_characteristic_length=0.5,

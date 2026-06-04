@@ -17,8 +17,18 @@ def test_lateral_face_quads(tmp_path):
         physical_name="s",
         structured=True,
     )
+    below = PolyPrism(
+        polygons=SQ,
+        buffers={-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+    )
+    above = PolyPrism(
+        polygons=SQ,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+    )
     generate_mesh(
-        entities=[p],
+        entities=[p, below, above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -51,9 +61,16 @@ def test_n_layers_mismatch_raises(tmp_path):
         physical_name="b",
         structured=True,
     )
+    union = Polygon([(0, 0), (2, 0), (2, 1), (0, 1)])
+    below = PolyPrism(
+        polygons=union, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below"
+    )
+    above = PolyPrism(
+        polygons=union, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="above"
+    )
     with pytest.raises(StructuredLateralNLayersMismatchError):
         generate_mesh(
-            entities=[A, B],
+            entities=[A, B, below, above],
             dim=3,
             output_mesh=tmp_path / "out.msh",
             default_characteristic_length=0.5,
@@ -108,8 +125,18 @@ def test_n_layers_1_meshes_cleanly(tmp_path):
         physical_name="s",
         structured=True,
     )
+    below = PolyPrism(
+        polygons=SQ,
+        buffers={-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+    )
+    above = PolyPrism(
+        polygons=SQ,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+    )
     generate_mesh(
-        entities=[p],
+        entities=[p, below, above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -153,8 +180,15 @@ def test_shared_lateral_between_two_subsolids(tmp_path):
         physical_name="b",
         structured=True,
     )
+    union = Polygon([(0, 0), (2, 0), (2, 1), (0, 1)])
+    below = PolyPrism(
+        polygons=union, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below"
+    )
+    above = PolyPrism(
+        polygons=union, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="above"
+    )
     generate_mesh(
-        entities=[a, b],
+        entities=[a, b, below, above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,

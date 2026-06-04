@@ -25,7 +25,19 @@ def test_void_sub_solid_marked_keep_false():
         mesh_order=1.0,
         mesh_bool=False,
     )
-    state = structured_pre_pass([bg, hole], point_tolerance=1e-3)
+    below = PolyPrism(
+        SQ_BIG,
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+    )
+    above = PolyPrism(
+        SQ_BIG,
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+    )
+    state = structured_pre_pass([bg, hole, below, above], point_tolerance=1e-3)
     occ_entities = cad_occ(state.entities_out)
     final = structured_post_pass(occ_entities, state)
     keep_by_name = {}

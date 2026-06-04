@@ -14,7 +14,9 @@ def test_cohort_expands_to_per_slab_entities():
     b = PolyPrism(
         polygons=SQ, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="b", structured=True
     )
-    state = structured_pre_pass([a, b], point_tolerance=1e-3)
+    below = PolyPrism(polygons=SQ, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below")
+    above = PolyPrism(polygons=SQ, buffers={2.0: 0.0, 3.0: 0.0}, physical_name="above")
+    state = structured_pre_pass([a, b, below, above], point_tolerance=1e-3)
     occ_entities = cad_occ(state.entities_out)
     final = structured_post_pass(occ_entities, state)
 

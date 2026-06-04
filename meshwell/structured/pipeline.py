@@ -84,6 +84,9 @@ def structured_pre_pass(
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
     validate_no_volumetric_cohort_overlap(cohorts, entities)
+    from meshwell.structured.validators import validate_cohort_wrapping
+
+    validate_cohort_wrapping(cohorts, unstructured, point_tolerance=point_tolerance)
     subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(
         cohorts, unstructured, point_tolerance=point_tolerance
     )

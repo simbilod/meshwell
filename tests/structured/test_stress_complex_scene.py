@@ -109,10 +109,25 @@ def complex_scene_entities():
             mesh_bool=False,
             identify_arcs=True,
         ),
+        # Note: solid base (no hole). The cohort wrapping invariant requires
+        # the neighbour union at z=0 to cover every cohort sub-piece footprint;
+        # introducing a hole in the base would leave a sub-piece uncovered.
         PolyPrism(
-            Polygon(BIG_BASE.exterior.coords, holes=[HOLE_BASE.exterior.coords]),
+            BIG_BASE,
             {-2.0: 0.0, 0.0: 0.0},
             physical_name="base",
+            mesh_order=5.0,
+            identify_arcs=True,
+        ),
+        # Cladding above the A_circle / B_annulus cohort, which ends at z=2
+        # (its outer cohort z-plane). Without this, the wrapping invariant
+        # would not be satisfied for that cohort at z=2. Restrict to a
+        # footprint that doesn't overlap cohort 0 (which lives near origin
+        # and includes C_hex/C_void at z=[2,3]).
+        PolyPrism(
+            _rect(-5, 5, 5, 15),
+            {2.0: 0.0, 3.0: 0.0},
+            physical_name="mid_cladding",
             mesh_order=5.0,
             identify_arcs=True,
         ),

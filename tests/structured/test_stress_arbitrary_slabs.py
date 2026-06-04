@@ -93,9 +93,19 @@ def test_two_overlapping_slabs_both_meshed(tmp_path):
         structured=True,
         mesh_order=1.0,
     )
+    base = PolyPrism(
+        square(0, 0, 2, 2),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+    )
+    top = PolyPrism(
+        square(0, 0, 2, 2),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="top",
+    )
 
     generate_mesh(
-        [a1, a2, b],
+        [a1, a2, b, base, top],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -182,9 +192,19 @@ def test_three_nested_slabs_mesh_order_decides(tmp_path):
         structured=True,
         mesh_order=1.0,
     )
+    base = PolyPrism(
+        square(0, 0, 4, 4),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+    )
+    top = PolyPrism(
+        square(0, 0, 4, 4),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="top",
+    )
 
     generate_mesh(
-        [outer, mid, inner, cap],
+        [outer, mid, inner, cap, base, top],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -262,9 +282,19 @@ def test_void_carves_solid(tmp_path):
         structured=True,
         mesh_order=1.0,
     )
+    base = PolyPrism(
+        square(0, 0, 4, 4),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+    )
+    top = PolyPrism(
+        square(0, 0, 4, 4),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="top",
+    )
 
     generate_mesh(
-        [solid, void, cap],
+        [solid, void, cap, base, top],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -367,9 +397,19 @@ def test_multi_z_interval_mixed_overlaps(tmp_path):
         structured=True,
         mesh_order=1.0,
     )
+    base = PolyPrism(
+        square(0, 0, 4, 4),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+    )
+    top = PolyPrism(
+        square(0, 0, 4, 4),
+        {3.0: 0.0, 4.0: 0.0},
+        physical_name="top",
+    )
 
     generate_mesh(
-        [outer3, mid2, inn1, s_left, s_right, cap],
+        [outer3, mid2, inn1, s_left, s_right, cap, base, top],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,

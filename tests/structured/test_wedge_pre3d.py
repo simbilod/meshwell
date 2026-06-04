@@ -11,8 +11,10 @@ def test_wedge_count_matches_bot_triangles_times_n_layers(tmp_path):
     p = PolyPrism(
         polygons=SQ, buffers={0.0: 0.0, 1.0: 0.0}, physical_name="s", structured=True
     )
+    below = PolyPrism(polygons=SQ, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below")
+    above = PolyPrism(polygons=SQ, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="above")
     generate_mesh(
-        entities=[p],
+        entities=[p, below, above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
@@ -23,10 +25,16 @@ def test_wedge_count_matches_bot_triangles_times_n_layers(tmp_path):
     import meshio
 
     m = meshio.read(tmp_path / "out.msh")
-    wedges = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
-    tets = sum(cb.data.shape[0] for cb in m.cells if cb.type == "tetra")
-    assert wedges > 0
-    assert tets == 0
+    # Restrict wedge/tet counts to the structured slab via cell_sets.
+    s_sets = m.cell_sets["s"]
+    s_wedges = sum(
+        len(s) for s, b in zip(s_sets, m.cells) if b.type == "wedge" and s is not None
+    )
+    s_tets = sum(
+        len(s) for s, b in zip(s_sets, m.cells) if b.type == "tetra" and s is not None
+    )
+    assert s_wedges > 0
+    assert s_tets == 0
 
 
 def test_stacked_cohort_wedges_conformal(tmp_path):
@@ -36,8 +44,10 @@ def test_stacked_cohort_wedges_conformal(tmp_path):
     b = PolyPrism(
         polygons=SQ, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="b", structured=True
     )
+    below = PolyPrism(polygons=SQ, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below")
+    above = PolyPrism(polygons=SQ, buffers={2.0: 0.0, 3.0: 0.0}, physical_name="above")
     generate_mesh(
-        entities=[a, b],
+        entities=[a, b, below, above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,

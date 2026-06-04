@@ -35,9 +35,27 @@ def test_structured_annulus_has_inner_lateral(tmp_path):
         structured=True,
         identify_arcs=True,
     )
+    # Cladding to satisfy wrapping invariant. Use a square cover that
+    # spans the annulus footprint; the inner hole is intentionally NOT
+    # covered (the cohort wrapping check covers the slab footprint
+    # which has a hole, so we use the same annulus shape for cladding).
+    below = PolyPrism(
+        _annulus(2.0, 0.8),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
+    above = PolyPrism(
+        _annulus(2.0, 0.8),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+        identify_arcs=True,
+    )
     msh = tmp_path / "x.msh"
     generate_mesh(
-        [annulus],
+        [annulus, below, above],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.3,

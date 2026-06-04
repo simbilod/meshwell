@@ -121,3 +121,18 @@ def test_validator_passes_when_multiple_neighbours_together_cover():
     cohorts, unstructured = _build([cohort_ent, below_left, below_right, above])
     # Should not raise — together they cover.
     validate_cohort_wrapping(cohorts, unstructured)
+
+
+def test_structured_pre_pass_raises_on_unwrapped_cohort():
+    from meshwell.structured.pipeline import structured_pre_pass
+
+    cohort_ent = PolyPrism(
+        _rect(0, 0, 10, 10),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="cohort",
+        structured=True,
+        mesh_order=3.0,
+    )
+    # Missing both above and below.
+    with pytest.raises(CohortNotWrappedError):
+        structured_pre_pass([cohort_ent], point_tolerance=1e-3)

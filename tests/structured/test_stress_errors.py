@@ -59,9 +59,13 @@ def test_zstack_violation_raises(tmp_path):
 def test_n_layers_mismatch_lateral_touch_raises(tmp_path):
     a = PolyPrism(SQ, {0.0: 0.0, 1.0: 0.0}, physical_name="a", structured=True)
     b = PolyPrism(SQ2, {0.0: 0.0, 1.0: 0.0}, physical_name="b", structured=True)
+    # Cladding to satisfy wrapping; spans the union of a + b footprints.
+    union = Polygon([(0, 0), (20, 0), (20, 10), (0, 10)])
+    below = PolyPrism(union, {-1.0: 0.0, 0.0: 0.0}, physical_name="below")
+    above = PolyPrism(union, {1.0: 0.0, 2.0: 0.0}, physical_name="above")
     with pytest.raises(StructuredLateralNLayersMismatchError):
         generate_mesh(
-            [a, b],
+            [a, b, below, above],
             dim=3,
             output_mesh=tmp_path / "x.msh",
             default_characteristic_length=1.0,

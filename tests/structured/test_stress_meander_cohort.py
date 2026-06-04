@@ -216,12 +216,19 @@ def test_meander_minimal(tmp_path):
         mesh_order=20.0,
         identify_arcs=True,
     )
+    clad_above = PolyPrism(
+        _rect(-3.0, -2.0, L + 4.0, 6.0),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cladding_above",
+        mesh_order=20.0,
+        identify_arcs=True,
+    )
     specs = {
         n: [StructuredExtrusionResolutionSpec(n_layers=2)]
         for n in ("meander_A", "meander_B")
     }
     generate_mesh(
-        [A, B, clad],
+        [A, B, clad, clad_above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,

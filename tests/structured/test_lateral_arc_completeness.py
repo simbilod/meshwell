@@ -31,8 +31,20 @@ def test_full_circle_lateral_wall_coverage(tmp_path):
         structured=True,
         identify_arcs=True,
     )
+    base = PolyPrism(
+        _disc(1.0),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        identify_arcs=True,
+    )
+    cap = PolyPrism(
+        _disc(1.0),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        identify_arcs=True,
+    )
     generate_mesh(
-        [disc],
+        [disc, base, cap],
         dim=3,
         output_mesh=tmp_path / "x.msh",
         default_characteristic_length=0.3,

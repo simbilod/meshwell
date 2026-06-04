@@ -25,8 +25,20 @@ def test_lower_mesh_order_void_carves_structured(tmp_path):
         mesh_order=1.0,
         mesh_bool=False,
     )
+    below = PolyPrism(
+        polygons=SQ_BIG,
+        buffers={-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+    )
+    above = PolyPrism(
+        polygons=SQ_BIG,
+        buffers={1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+    )
     generate_mesh(
-        [big, void],
+        [big, void, below, above],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,

@@ -74,9 +74,21 @@ def test_stacked_discs_share_interface_group(tmp_path):
         structured=True,
         identify_arcs=True,
     )
+    base = PolyPrism(
+        _disc(1.0),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        identify_arcs=True,
+    )
+    cap = PolyPrism(
+        _disc(1.0),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="cap",
+        identify_arcs=True,
+    )
     msh = tmp_path / "x.msh"
     generate_mesh(
-        [lower, upper],
+        [lower, upper, base, cap],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.3,
@@ -117,9 +129,21 @@ def test_annulus_on_disc_partial_interface(tmp_path):
         structured=True,
         identify_arcs=True,
     )
+    base = PolyPrism(
+        _disc(2.0),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        identify_arcs=True,
+    )
+    cap = PolyPrism(
+        _annulus(r_out=2.0, r_in=0.8),
+        {2.0: 0.0, 3.0: 0.0},
+        physical_name="cap",
+        identify_arcs=True,
+    )
     msh = tmp_path / "x.msh"
     generate_mesh(
-        [disc, annulus],
+        [disc, annulus, base, cap],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.3,
@@ -149,9 +173,21 @@ def test_single_disc_only_boundary(tmp_path):
         structured=True,
         identify_arcs=True,
     )
+    base = PolyPrism(
+        _disc(1.0),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+        identify_arcs=True,
+    )
+    cap = PolyPrism(
+        _disc(1.0),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cap",
+        identify_arcs=True,
+    )
     msh = tmp_path / "x.msh"
     generate_mesh(
-        [disc],
+        [disc, base, cap],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.3,
@@ -159,9 +195,23 @@ def test_single_disc_only_boundary(tmp_path):
     )
     names = _physical_names(msh)
     assert "disc___None" in names
-    # No spurious ``disc___X`` interface groups.
+    # Spurious ``disc___X`` interface checks limited to disc-vs-disc; base+cap
+    # are expected to share interfaces with disc.
     spurious = [
-        n for n in names if "___" in n and not n.endswith("___None") and n != "disc"
+        n
+        for n in names
+        if "___" in n
+        and not n.endswith("___None")
+        and n
+        not in (
+            "disc",
+            "base",
+            "cap",
+            "disc___base",
+            "base___disc",
+            "disc___cap",
+            "cap___disc",
+        )
     ]
     assert not spurious, f"unexpected interface groups: {spurious}"
     assert not any(n.startswith("__cohort_") for n in names)
@@ -180,10 +230,12 @@ def test_overlapping_squares_share_interface(tmp_path):
         SQa2, {0.0: 0.0, 1.0: 0.0}, physical_name="a2", structured=True, mesh_order=2
     )
     b = PolyPrism(SQb, {1.0: 0.0, 2.0: 0.0}, physical_name="b", structured=True)
+    base = PolyPrism(SQa2, {-1.0: 0.0, 0.0: 0.0}, physical_name="base")
+    cap = PolyPrism(SQb, {2.0: 0.0, 3.0: 0.0}, physical_name="cap")
 
     msh = tmp_path / "x.msh"
     generate_mesh(
-        entities=[a1, a2, b],
+        entities=[a1, a2, b, base, cap],
         dim=3,
         output_mesh=msh,
         default_characteristic_length=0.4,

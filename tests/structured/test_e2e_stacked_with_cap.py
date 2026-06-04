@@ -28,8 +28,13 @@ def test_stacked_with_unstructured_cap_conformal(tmp_path):
         buffers={2.0: 0.0, 3.0: 0.0},
         physical_name="cap",
     )
+    base = PolyPrism(
+        polygons=SQ_BIG,
+        buffers={-1.0: 0.0, 0.0: 0.0},
+        physical_name="base",
+    )
     generate_mesh(
-        [a, b, cap],
+        [a, b, cap, base],
         dim=3,
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,

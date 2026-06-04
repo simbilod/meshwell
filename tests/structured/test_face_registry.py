@@ -219,7 +219,19 @@ def test_structured_pre_pass_stores_face_registry_per_cohort():
         structured=True,
         mesh_order=3.0,
     )
-    state = structured_pre_pass([A], point_tolerance=1e-3)
+    below = PolyPrism(
+        _square(side=10.0),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+    )
+    above = PolyPrism(
+        _square(side=10.0),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+    )
+    state = structured_pre_pass([A, below, above], point_tolerance=1e-3)
     assert len(state.cohort_registries) == 1
     entry = state.cohort_registries[0]
     assert len(entry) == 3
@@ -273,7 +285,14 @@ def test_polyprism_uses_cohort_face_registry_for_touched_plane():
         physical_name="cladding",
         mesh_order=5.0,
     )
-    state = structured_pre_pass([A, cladding], point_tolerance=1e-3)
+    # Cladding above: unstructured, touches A at z=1 with same XY.
+    cladding_above = PolyPrism(
+        _square(side=10.0),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="cladding_above",
+        mesh_order=5.0,
+    )
+    state = structured_pre_pass([A, cladding, cladding_above], point_tolerance=1e-3)
     # cohort_registries[0] = (vreg, ereg, freg) for cohort 0
     _vreg, _ereg, freg = state.cohort_registries[0]
     # The cohort's z=0 face for the square is cached in the registry.
