@@ -245,18 +245,33 @@ def decompose_cohorts(
             cohort = cohorts[ci]
             arc_bearing_slabs.extend(s for s in cohort.slabs if s.identify_arcs)
 
-        new_ent = copy(ent)
-        # Only replace polygons if the arrangement carved them.
-        # _cohort_adjacency must be set regardless so the cohort's
-        # FaceRegistry is consulted when this entity's touched-plane
-        # face is built — adjacency is about contact, not carving.
-        if new_polys is not ent.polygons:
-            new_ent.polygons = new_polys
+        from meshwell.structured.cohort_neighbour import (
+            CohortNeighbourUnstructured,
+        )
+
+        # Extract tile polygons from new_polys for the typed constructor.
+        if hasattr(new_polys, "geoms"):
+            tile_polygons = tuple(new_polys.geoms)
+        else:
+            tile_polygons = (new_polys,)
+
+        # Arc-detection overrides (computed above as arc_bearing_slabs)
+        # apply to the original entity before upgrading. Mutate a shallow
+        # copy first so the user's original instance is untouched.
+        upgraded_source = copy(ent)
         if arc_bearing_slabs:
-            new_ent.identify_arcs = True
-            new_ent.arc_tolerance = max(s.arc_tolerance for s in arc_bearing_slabs)
-            new_ent.min_arc_points = min(s.min_arc_points for s in arc_bearing_slabs)
-        new_ent._cohort_adjacency = touched
+            upgraded_source.identify_arcs = True
+            upgraded_source.arc_tolerance = max(
+                s.arc_tolerance for s in arc_bearing_slabs
+            )
+            upgraded_source.min_arc_points = min(
+                s.min_arc_points for s in arc_bearing_slabs
+            )
+        new_ent = CohortNeighbourUnstructured.from_polyprism(
+            original=upgraded_source,
+            cohort_adjacency=touched,
+            tile_polygons=tile_polygons,
+        )
         pre_cut.append(new_ent)
 
     return subpieces_per_cohort, pre_cut

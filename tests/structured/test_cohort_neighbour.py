@@ -74,3 +74,37 @@ def test_cohort_neighbour_inherits_instanciate_occ_until_overridden():
     # PolyPrism.instanciate_occ should still work because we inherit it.
     shape = nbr.instanciate_occ()
     assert shape is not None
+
+
+def test_decompose_cohorts_upgrades_touching_polyprism_to_neighbour():
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.cohort_neighbour import CohortNeighbourUnstructured
+    from meshwell.structured.pipeline import structured_pre_pass
+
+    cohort = PolyPrism(
+        _rect(0, 0, 10, 10),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="cohort",
+        structured=True,
+        mesh_order=3.0,
+    )
+    below = PolyPrism(
+        _rect(0, 0, 10, 10),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="below",
+        mesh_order=5.0,
+    )
+    above = PolyPrism(
+        _rect(0, 0, 10, 10),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="above",
+        mesh_order=5.0,
+    )
+    state = structured_pre_pass([cohort, below, above], point_tolerance=1e-3)
+    by_name = {
+        e.physical_name: e for e in state.entities_out if hasattr(e, "physical_name")
+    }
+    assert isinstance(by_name[("below",)], CohortNeighbourUnstructured)
+    assert isinstance(by_name[("above",)], CohortNeighbourUnstructured)
+    assert by_name[("below",)].cohort_adjacency == [(0, 0.0)]
+    assert by_name[("above",)].cohort_adjacency == [(0, 1.0)]

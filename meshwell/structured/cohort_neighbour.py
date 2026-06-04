@@ -67,5 +67,8 @@ class CohortNeighbourUnstructured(PolyPrism):
         else:
             nbr.polygons = MultiPolygon(list(tile_polygons))
         nbr.cohort_adjacency = list(cohort_adjacency)
+        nbr._cohort_adjacency = list(
+            cohort_adjacency
+        )  # back-compat alias for PolyPrism.instanciate_occ
         nbr.tile_polygons = tuple(tile_polygons)
         return nbr
