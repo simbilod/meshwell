@@ -348,3 +348,41 @@ boundary between meshwell and gmsh.
 
 Each spike is bounded — half a day each. After we have data, we can
 decide whether either becomes a real design and implementation plan.
+
+---
+
+## 2026-06-04 — Cohort-global arrangement outcome
+
+After the cohort-global arrangement refactor (plan
+[`docs/superpowers/plans/2026-06-04-cohort-global-arrangement.md`](../plans/2026-06-04-cohort-global-arrangement.md))
+landed, the parallel-decomposition divergence between cohort and
+adjacent unstructured polygonize passes is gone: both consume one
+canonical `Arrangement.polygons` tuple per cohort.
+
+Concrete outcomes:
+
+- **Meander stress test** ([`tests/structured/test_stress_meander_cohort.py`](../../../tests/structured/test_stress_meander_cohort.py))
+  now passes cleanly (was 2 xfails reproducing `CohortShellModifiedError`
+  on the full {A, B, void_B, embed, both claddings} scene).
+
+- **AABB-rescue breakdown — `tests/structured/test_stress_complex_scene.py`:**
+  total **0** rescues (was 3 pre-refactor: 1 cohort-internal between
+  stacked sub-pieces, 2 cohort-unstr between cohort and `base`). The
+  shared arrangement plus shared edges through the EdgeRegistry let
+  BOP fuse all interfaces by TShape identity; no fallback fires.
+
+- **AABB-rescue breakdown — meander stress scene:** total **6** rescues,
+  all cohort↔unstructured pairs at z=0 and z=1
+  (`cladding_{below,above}` vs `meander_A`, `void_A`, `embed`). The
+  cohort and cladding sides build their *faces* by independent OCC
+  constructors even though they share the same shapely arrangement;
+  AABB fallback bridges them. Mesh validity is preserved — BOP +
+  fallback produce correct interfaces — but the residual fallback is
+  a signal that face-level TShape sharing is the next bottleneck.
+
+- **Remaining cohort-internal stacking rescues:** none observed in the
+  scenes available. Prismatic-column OCC face stitching (the original
+  Sketch B follow-up) would eliminate cohort-internal stacking rescues
+  *if* they appear in future stress scenes, and is also the natural
+  fix for the cohort↔unstructured face TShape mismatch surfaced by the
+  meander probe.
