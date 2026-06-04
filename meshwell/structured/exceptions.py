@@ -237,3 +237,30 @@ class MixedIdentifyArcsError(StructuredError):
             "all of them. Mixing leads to inconsistent OCC edges where "
             "shared boundaries are pre-cut by Stage 3d."
         )
+
+
+class CohortNotWrappedError(StructuredError):
+    """Raised when a cohort sub-piece has no covering unstructured neighbour.
+
+    The cohort-adjacent code path requires every cohort sub-piece at
+    cohort.zmin / cohort.zmax to be covered by exactly one adjacent
+    unstructured PolyPrism. This invariant lets ``instanciate_occ``
+    safely build a custom shell that references the cohort's cached
+    ``TopoDS_Face`` for each tile.
+    """
+
+    def __init__(
+        self,
+        cohort_index: int,
+        z_plane: float,
+        sub_piece_index: int,
+        reason: str,
+    ):
+        self.cohort_index = cohort_index
+        self.z_plane = z_plane
+        self.sub_piece_index = sub_piece_index
+        self.reason = reason
+        super().__init__(
+            f"cohort {cohort_index} z={z_plane} sub-piece {sub_piece_index}: "
+            f"{reason}"
+        )
