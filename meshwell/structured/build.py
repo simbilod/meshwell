@@ -704,6 +704,7 @@ def build_cohort_compound(
     point_tolerance: float,
     vertex_registry: "VertexRegistry | None" = None,
     edge_registry: "EdgeRegistry | None" = None,
+    face_registry: "FaceRegistry | None" = None,
 ) -> tuple[TopoDS_Compound, dict[ShapeKey, SlabMeta]]:
     """Stage 4 driver — assemble compound + slab_meta.
 
@@ -730,6 +731,10 @@ def build_cohort_compound(
             creating a fresh one. When provided, edges are shared with the
             caller's registry. When None, a fresh registry is created
             (existing behavior).
+        face_registry: Optional pre-created FaceRegistry to use instead of
+            creating a fresh one. When provided, faces are shared with the
+            caller's registry. When None, a fresh registry is created
+            (existing behavior).
     """
     # Use injected registries when provided; otherwise create fresh ones
     # so existing callers see no behavior change. When both are provided
@@ -745,6 +750,15 @@ def build_cohort_compound(
             "edge_registry.vertices must be the same VertexRegistry as "
             "vertex_registry when both are injected"
         )
+    if (
+        face_registry is not None
+        and edge_registry is not None
+        and face_registry.edges is not edge_registry
+    ):
+        raise ValueError(
+            "face_registry.edges must be the same EdgeRegistry as "
+            "edge_registry when both are injected"
+        )
     vreg = (
         vertex_registry
         if vertex_registry is not None
@@ -758,6 +772,11 @@ def build_cohort_compound(
         edge_registry
         if edge_registry is not None
         else EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
+    )
+    freg = (
+        face_registry
+        if face_registry is not None
+        else FaceRegistry(edges=ereg, point_tolerance=point_tolerance)
     )
 
     slab_by_source: dict[int, StructuredSlab] = {
@@ -833,7 +852,9 @@ def build_cohort_compound(
         area_tol = 1e-8
         below_full = abs(inter_poly.area - subpieces[b].sub_polygon.area) < area_tol
         above_full = abs(inter_poly.area - subpieces[a].sub_polygon.area) < area_tol
-        face = _build_horizontal_face(inter_poly, z, ereg, id_arcs, min_p, arc_tol)
+        face = _build_horizontal_face(
+            inter_poly, z, ereg, id_arcs, min_p, arc_tol, face_registry=freg
+        )
         if below_full:
             horiz_faces[(b, "top")] = face
         if above_full:
@@ -850,6 +871,7 @@ def build_cohort_compound(
                 id_arcs,
                 min_p,
                 arc_tol,
+                face_registry=freg,
             )
         if (i, "top") not in horiz_faces:
             id_arcs, min_p, arc_tol = arc_params_for_z(sp.z_interval[1], i)
@@ -860,6 +882,7 @@ def build_cohort_compound(
                 id_arcs,
                 min_p,
                 arc_tol,
+                face_registry=freg,
             )
 
     # Build lateral faces per subpiece. Each polygon-edge of the

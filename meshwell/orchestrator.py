@@ -121,7 +121,8 @@ def generate_mesh(
     # TopoDS_Edge object — no BOP fuzzy detection needed for edges, just
     # for face-level coincidence (which the AABB fallback still handles).
     cohort_registry_map = {
-        ci: ereg for ci, (_vreg, ereg) in enumerate(state.cohort_registries or [])
+        ci: ereg
+        for ci, (_vreg, ereg, _freg) in enumerate(state.cohort_registries or [])
     }
     PolyPrism._set_cohort_edge_registries(cohort_registry_map)
     try:

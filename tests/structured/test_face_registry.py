@@ -200,3 +200,29 @@ def test_build_horizontal_face_without_registry_works_unchanged():
     )
     # Without registry, two calls produce DIFFERENT TShapes.
     assert not f1.IsSame(f2)
+
+
+def test_structured_pre_pass_stores_face_registry_per_cohort():
+    """Per-cohort 3-tuple registry entry.
+
+    StructuredState.cohort_registries should contain a 3-tuple
+    (vertex_registry, edge_registry, face_registry) per cohort.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.build import FaceRegistry
+    from meshwell.structured.pipeline import structured_pre_pass
+
+    A = PolyPrism(
+        _square(side=10.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        structured=True,
+        mesh_order=3.0,
+    )
+    state = structured_pre_pass([A], point_tolerance=1e-3)
+    assert len(state.cohort_registries) == 1
+    entry = state.cohort_registries[0]
+    assert len(entry) == 3
+    _vreg, ereg, freg = entry
+    assert isinstance(freg, FaceRegistry)
+    assert freg.edges is ereg

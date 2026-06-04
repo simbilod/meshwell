@@ -86,23 +86,25 @@ def structured_pre_pass(
     validate_no_volumetric_cohort_overlap(cohorts, entities)
     subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(cohorts, unstructured)
 
-    from meshwell.structured.build import EdgeRegistry, VertexRegistry
+    from meshwell.structured.build import EdgeRegistry, FaceRegistry, VertexRegistry
 
     cohort_entities: list[_CohortEntity] = []
     all_slab_meta: dict[ShapeKey, SlabMeta] = {}
     face_name_by_key: dict[ShapeKey, str] = {}
     sub_solid_name_by_key: dict[ShapeKey, str] = {}
-    cohort_registries: list[tuple[VertexRegistry, EdgeRegistry]] = []
+    cohort_registries: list[tuple[VertexRegistry, EdgeRegistry, FaceRegistry]] = []
     for ci, (cohort, subs) in enumerate(zip(cohorts, subpieces_per_cohort)):
         vreg = VertexRegistry(point_tolerance=point_tolerance)
         ereg = EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
-        cohort_registries.append((vreg, ereg))
+        freg = FaceRegistry(edges=ereg, point_tolerance=point_tolerance)
+        cohort_registries.append((vreg, ereg, freg))
         compound, slab_meta = build_cohort_compound(
             cohort,
             subs,
             point_tolerance,
             vertex_registry=vreg,
             edge_registry=ereg,
+            face_registry=freg,
         )
         ce = _CohortEntity(
             compound=compound,
