@@ -42,21 +42,6 @@ class PolyPrism(GeometryEntity):
         """
         cls._cohort_edge_registries = dict(registries) if registries else {}
 
-    # Per-process registry of cohort-index -> FaceRegistry, populated by
-    # the cad_occ entry point in the structured pipeline. Cleared after
-    # each cad_occ() invocation so cross-test contamination cannot occur.
-    _cohort_face_registries: ClassVar[dict] = {}
-
-    @classmethod
-    def _set_cohort_face_registries(cls, registries):
-        """Install a mapping from cohort_index -> FaceRegistry.
-
-        Called by structured_pre_pass's caller (cad_occ wrapper) before
-        building polyprism OCC representations. Pass an empty dict to
-        clear.
-        """
-        cls._cohort_face_registries = dict(registries) if registries else {}
-
     def __init__(
         self,
         polygons: Polygon | list[Polygon] | MultiPolygon | list[MultiPolygon],

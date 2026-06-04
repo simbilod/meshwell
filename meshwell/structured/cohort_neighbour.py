@@ -72,3 +72,31 @@ class CohortNeighbourUnstructured(PolyPrism):
         )  # back-compat alias for PolyPrism.instanciate_occ
         nbr.tile_polygons = tuple(tile_polygons)
         return nbr
+
+    def instanciate_occ(self):
+        """Build OCC volume with FaceRegistry-shared touched-plane faces.
+
+        Transitional implementation (Task 6): temporarily mirrors this
+        class's registries onto PolyPrism (which still hosts the routing
+        logic in its ``instanciate_occ``) for the duration of the call.
+        Task 7 inlines the routing here and removes the indirection.
+        """
+        from meshwell.polyprism import PolyPrism
+
+        # PolyPrism.instanciate_occ reads `_cohort_face_registries` via
+        # `PolyPrism._cohort_face_registries.get(ci)`. PolyPrism no
+        # longer has that attribute (Task 6 removed it). Install ours
+        # for the duration of the call.
+        had_face = hasattr(PolyPrism, "_cohort_face_registries")
+        old_face = getattr(PolyPrism, "_cohort_face_registries", None)
+        PolyPrism._cohort_face_registries = type(self)._cohort_face_registries
+        # `_cohort_adjacency` alias is already set by `from_polyprism`,
+        # but in case a subclass overrides we re-mirror it here too.
+        self._cohort_adjacency = self.cohort_adjacency
+        try:
+            return super().instanciate_occ()
+        finally:
+            if had_face:
+                PolyPrism._cohort_face_registries = old_face
+            elif hasattr(PolyPrism, "_cohort_face_registries"):
+                del PolyPrism._cohort_face_registries

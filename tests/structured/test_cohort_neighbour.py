@@ -108,3 +108,17 @@ def test_decompose_cohorts_upgrades_touching_polyprism_to_neighbour():
     assert isinstance(by_name[("above",)], CohortNeighbourUnstructured)
     assert by_name[("below",)].cohort_adjacency == [(0, 0.0)]
     assert by_name[("above",)].cohort_adjacency == [(0, 1.0)]
+
+
+def test_cohort_neighbour_overrides_instanciate_occ_to_use_registries():
+    """The face-registry branch lives on the subclass, not PolyPrism."""
+    # Verify PolyPrism no longer has the class-level FACE registry.
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.cohort_neighbour import CohortNeighbourUnstructured
+
+    assert not hasattr(PolyPrism, "_cohort_face_registries")
+    assert not hasattr(PolyPrism, "_set_cohort_face_registries")
+
+    # CohortNeighbourUnstructured does.
+    assert hasattr(CohortNeighbourUnstructured, "_cohort_face_registries")
+    assert hasattr(CohortNeighbourUnstructured, "_set_cohort_face_registries")

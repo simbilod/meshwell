@@ -241,23 +241,24 @@ def test_structured_pre_pass_stores_face_registry_per_cohort():
 
 
 def test_polyprism_face_registry_install_and_clear():
-    """`PolyPrism._set_cohort_face_registries({0: freg})` populates the class attribute.
+    """`CohortNeighbourUnstructured._set_cohort_face_registries({0: freg})` populates the class attribute.
 
-    Passing an empty mapping clears it.
+    Passing an empty mapping clears it. (Moved from PolyPrism in Task 6
+    of the cohort-neighbour-unstructured refactor.)
     """
-    from meshwell.polyprism import PolyPrism
     from meshwell.structured.build import FaceRegistry
+    from meshwell.structured.cohort_neighbour import CohortNeighbourUnstructured
 
     vreg = VertexRegistry(point_tolerance=1e-3)
     ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
     freg = FaceRegistry(edges=ereg, point_tolerance=1e-3)
 
-    PolyPrism._set_cohort_face_registries({0: freg})
+    CohortNeighbourUnstructured._set_cohort_face_registries({0: freg})
     try:
-        assert PolyPrism._cohort_face_registries == {0: freg}
+        assert CohortNeighbourUnstructured._cohort_face_registries == {0: freg}
     finally:
-        PolyPrism._set_cohort_face_registries({})
-    assert PolyPrism._cohort_face_registries == {}
+        CohortNeighbourUnstructured._set_cohort_face_registries({})
+    assert CohortNeighbourUnstructured._cohort_face_registries == {}
 
 
 def test_polyprism_uses_cohort_face_registry_for_touched_plane():
@@ -305,10 +306,13 @@ def test_polyprism_uses_cohort_face_registry_for_touched_plane():
     )
 
     # Install registries so the cladding PolyPrism reuses the cohort face.
+    # After Task 6, FaceRegistry installs on CohortNeighbourUnstructured.
+    from meshwell.structured.cohort_neighbour import CohortNeighbourUnstructured
+
     edge_regs = {ci: ereg for ci, (_v, ereg, _f) in enumerate(state.cohort_registries)}
     face_regs = {ci: f for ci, (_v, _e, f) in enumerate(state.cohort_registries)}
     PolyPrism._set_cohort_edge_registries(edge_regs)
-    PolyPrism._set_cohort_face_registries(face_regs)
+    CohortNeighbourUnstructured._set_cohort_face_registries(face_regs)
     try:
         # Find the pre-cut cladding in state.entities_out and instanciate it.
         cladding_out = next(
@@ -319,7 +323,7 @@ def test_polyprism_uses_cohort_face_registry_for_touched_plane():
         prism_shape = cladding_out.instanciate_occ()
     finally:
         PolyPrism._set_cohort_edge_registries({})
-        PolyPrism._set_cohort_face_registries({})
+        CohortNeighbourUnstructured._set_cohort_face_registries({})
 
     # The cladding's top face (z=0) must be IsSame as cohort's z=0 face.
     from OCP.TopAbs import TopAbs_FACE

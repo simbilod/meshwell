@@ -120,6 +120,8 @@ def generate_mesh(
     # This makes the cohort↔neighbour shared edges literally the same
     # TopoDS_Edge object — no BOP fuzzy detection needed for edges, just
     # for face-level coincidence (which the AABB fallback still handles).
+    from meshwell.structured.cohort_neighbour import CohortNeighbourUnstructured
+
     cohort_registry_map = {
         ci: ereg
         for ci, (_vreg, ereg, _freg) in enumerate(state.cohort_registries or [])
@@ -129,14 +131,14 @@ def generate_mesh(
         for ci, (_vreg, _ereg, freg) in enumerate(state.cohort_registries or [])
     }
     PolyPrism._set_cohort_edge_registries(cohort_registry_map)
-    PolyPrism._set_cohort_face_registries(face_regs)
+    CohortNeighbourUnstructured._set_cohort_face_registries(face_regs)
     try:
         occ_entities_raw, _cad_processor = cad_occ(
             state.entities_out, return_processor=True, prepared=True, **cad_kwargs
         )
     finally:
         PolyPrism._set_cohort_edge_registries({})
-        PolyPrism._set_cohort_face_registries({})
+        CohortNeighbourUnstructured._set_cohort_face_registries({})
 
     # Diagnostic: confirm BOP didn't subdivide any pre-baked cohort
     # shell face. Walks every cohort compound, collects the original
