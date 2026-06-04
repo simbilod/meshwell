@@ -124,13 +124,19 @@ def generate_mesh(
         ci: ereg
         for ci, (_vreg, ereg, _freg) in enumerate(state.cohort_registries or [])
     }
+    face_regs = {
+        ci: freg
+        for ci, (_vreg, _ereg, freg) in enumerate(state.cohort_registries or [])
+    }
     PolyPrism._set_cohort_edge_registries(cohort_registry_map)
+    PolyPrism._set_cohort_face_registries(face_regs)
     try:
         occ_entities_raw, _cad_processor = cad_occ(
             state.entities_out, return_processor=True, prepared=True, **cad_kwargs
         )
     finally:
         PolyPrism._set_cohort_edge_registries({})
+        PolyPrism._set_cohort_face_registries({})
 
     # Diagnostic: confirm BOP didn't subdivide any pre-baked cohort
     # shell face. Walks every cohort compound, collects the original
