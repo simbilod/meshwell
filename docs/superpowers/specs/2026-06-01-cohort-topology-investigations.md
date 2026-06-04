@@ -386,3 +386,40 @@ Concrete outcomes:
   *if* they appear in future stress scenes, and is also the natural
   fix for the cohort↔unstructured face TShape mismatch surfaced by the
   meander probe.
+
+---
+
+## 2026-06-04 — Cohort face registry outcome
+
+After the FaceRegistry refactor (plan
+[`docs/superpowers/plans/2026-06-04-cohort-face-registry.md`](../plans/2026-06-04-cohort-face-registry.md)):
+
+- **Pre-BOP TShape sharing**: every cohort-adjacent cladding tile's
+  touched-plane face now references the cohort sub-piece's bot/top
+  `TopoDS_Face` by TShape identity. Verified by the new test
+  `test_meander_face_registry_pre_bop_sharing` in
+  [`tests/structured/test_stress_meander_cohort.py`](../../../tests/structured/test_stress_meander_cohort.py)
+  — every `PolyPrism.instanciate_occ` call to `face_xy` hits the
+  cohort-cached face (12/12 on the meander scene).
+- **Snap-to-grid fix**: `decompose_cohorts` now applies
+  `shapely.set_precision(boundary, grid_size=point_tolerance)` to
+  adjacent unstructured boundaries before adding them to the
+  arrangement linework. Without it, the `prepare_entities` 1e-5 buffer
+  leaves cladding and embed boundaries on slightly different grids,
+  polygonize emits a thin annulus, and one cohort sub-piece face
+  fails to match its cladding tile.
+- **Residual AABB rescues unchanged**: `BRepAlgoAPI_Fuse` inside
+  `PolyPrism.instanciate_occ` rebuilds the geometry of multi-tile
+  PolyPrisms, discarding the FaceRegistry-installed TShapes downstream.
+  As a result, the cohort↔unstructured AABB rescue count on the
+  meander scene remains 6 (same as pre-refactor baseline). The
+  refactor establishes the right invariants pre-BOP but the downstream
+  `Fuse` undoes them.
+- **Next refactor**: replace `Fuse` in
+  [`meshwell/polyprism.py`](../../../meshwell/polyprism.py)
+  `instanciate_occ` with a TShape-preserving combiner when the prisms
+  are known to be non-overlapping (i.e. when `_cohort_adjacency` is
+  set and the polygons come from `arrangement_pre_cut_for_entity`).
+  Naive `TopoDS_Compound` failed because BOP's solid-vs-solid
+  fragmentation treats each compound sub-solid as a separate argument
+  and ends up fragmenting the shared face.
