@@ -226,3 +226,23 @@ def test_structured_pre_pass_stores_face_registry_per_cohort():
     _vreg, ereg, freg = entry
     assert isinstance(freg, FaceRegistry)
     assert freg.edges is ereg
+
+
+def test_polyprism_face_registry_install_and_clear():
+    """`PolyPrism._set_cohort_face_registries({0: freg})` populates the class attribute.
+
+    Passing an empty mapping clears it.
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.build import FaceRegistry
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+    freg = FaceRegistry(edges=ereg, point_tolerance=1e-3)
+
+    PolyPrism._set_cohort_face_registries({0: freg})
+    try:
+        assert PolyPrism._cohort_face_registries == {0: freg}
+    finally:
+        PolyPrism._set_cohort_face_registries({})
+    assert PolyPrism._cohort_face_registries == {}
