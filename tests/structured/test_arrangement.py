@@ -103,3 +103,70 @@ def test_subpieces_filtered_out_when_owner_is_none():
     # Only one piece survives the owner filter (y∈[0,5]).
     assert len(subs) == 1
     assert subs[0].sub_polygon.representative_point().y < 5.0
+
+
+def test_pre_cut_returns_polygons_by_identity():
+    from shapely import equals_exact
+    from shapely.geometry import MultiPolygon
+
+    from meshwell.structured.decompose import arrangement_pre_cut_for_entity
+
+    cohort = Cohort(slabs=(_slab(0, _rect(0, 0, 6, 10)),), z_planes=(0.0, 1.0))
+    neighbour_poly = _rect(0, 0, 10, 10)
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[neighbour_poly.boundary],
+    )
+    out = arrangement_pre_cut_for_entity(arr, neighbour_poly)
+    # neighbour footprint covers both arrangement polygons (left half x∈[0,6]
+    # and right half x∈[6,10]). Both must be present in the MultiPolygon.
+    # Shapely 2.x's MultiPolygon.geoms returns fresh Polygon wrappers, so we
+    # check bit-exact geometric equality (tolerance=0) rather than Python
+    # `is` identity. The underlying GEOS coordinate sequences are shared
+    # by reference, so vertex coordinates match exactly.
+    assert isinstance(out, MultiPolygon)
+    members = list(out.geoms)
+    assert len(members) == 2
+    for m in members:
+        assert any(
+            equals_exact(m, p, tolerance=0.0) for p in arr.polygons
+        ), "pre-cut member must be bit-exactly equal to an arrangement polygon"
+
+
+def test_pre_cut_returns_single_polygon_when_only_one_inside():
+    from meshwell.structured.decompose import arrangement_pre_cut_for_entity
+
+    cohort = Cohort(slabs=(_slab(0, _rect(0, 0, 10, 10)),), z_planes=(0.0, 1.0))
+    # neighbour fits inside cohort entirely — no extra arrangement linework
+    # from neighbour; arrangement has one polygon, all inside neighbour.
+    neighbour_poly = _rect(2, 2, 8, 8)
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[neighbour_poly.boundary],
+    )
+    out = arrangement_pre_cut_for_entity(arr, neighbour_poly)
+    # Inside neighbour, only the middle piece (2..8 x 2..8) belongs.
+    # The arrangement has 9 pieces (3x3 grid via the 2,8 cuts).
+    # arrangement_pre_cut returns the one whose centroid is inside neighbour.
+    from shapely.geometry import Polygon as P
+
+    assert isinstance(out, P)
+    assert out.representative_point().within(neighbour_poly)
+    # Single-Polygon return path preserves Python `is` identity (no
+    # MultiPolygon wrapping). Verify the contract holds where possible.
+    assert any(out is p for p in arr.polygons)
+
+
+def test_pre_cut_returns_entity_unchanged_when_no_polygons_inside():
+    from meshwell.structured.decompose import arrangement_pre_cut_for_entity
+
+    cohort = Cohort(slabs=(_slab(0, _rect(0, 0, 10, 10)),), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0, cohort=cohort, adjacent_unstructured=[]
+    )
+    # neighbour is far away — arrangement has no polygons inside it.
+    far_neighbour = _rect(100, 100, 110, 110)
+    out = arrangement_pre_cut_for_entity(arr, far_neighbour)
+    assert out is far_neighbour

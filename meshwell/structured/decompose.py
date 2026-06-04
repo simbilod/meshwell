@@ -104,6 +104,38 @@ def arrangement_subpieces_for_interval(
     return subs
 
 
+def arrangement_pre_cut_for_entity(
+    arrangement: Arrangement,
+    entity_polygons,
+):
+    """Project arrangement polygons through one unstructured entity's footprint.
+
+    Returns:
+        - the original `entity_polygons` if no arrangement polygon's
+          representative point falls inside it (entity is untouched).
+        - the single arrangement Polygon (by Python `is` identity) if
+          exactly one matches.
+        - a `MultiPolygon` whose members are bit-exactly equal to
+          arrangement polygons when multiple match. Shapely 2.x's
+          `.geoms` accessor returns fresh wrapper objects each access,
+          so Python `is` is NOT preserved through MultiPolygon. The
+          underlying GEOS coordinate sequences are shared by reference;
+          members satisfy `equals_exact(member, arrangement_poly,
+          tolerance=0.0)`. See `Arrangement` docstring for the full
+          identity contract.
+    """
+    inside = [
+        p
+        for p in arrangement.polygons
+        if entity_polygons.contains(p.representative_point())
+    ]
+    if not inside:
+        return entity_polygons
+    if len(inside) == 1:
+        return inside[0]
+    return MultiPolygon(inside)
+
+
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],

@@ -112,11 +112,19 @@ class Arrangement:
         shared z-planes.
 
     Both cohort sub-piece extraction and adjacent unstructured pre-cut
-    consume this same tuple. The Python identity (`is`) of each polygon
-    is the contract: when a cohort sub-piece's `sub_polygon` is `p`, the
-    corresponding unstructured pre-cut MultiPolygon contains `p` itself.
-    Downstream OCC builders can use this identity to deduplicate face
-    construction in a future refactor.
+    consume this same tuple.
+
+    Identity contract:
+    - When a downstream consumer receives a single Polygon (e.g., a
+      SubPiece's `sub_polygon` field), it is the SAME Python object
+      (`is`) as the matching entry in `polygons`.
+    - When the consumer receives a `MultiPolygon`, Shapely 2.x's
+      `.geoms` accessor returns fresh Polygon wrappers each access, so
+      Python `is` is NOT preserved. However, the underlying GEOS
+      coordinate sequences are shared by reference: vertex coordinates
+      are bit-exactly equal (`equals_exact(member, arrangement_poly,
+      tolerance=0.0)`). Downstream OCC builders that key polygons by
+      coordinate hash get identical hashes from both consumers.
     """
 
     cohort_index: int
