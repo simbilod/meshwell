@@ -589,6 +589,7 @@ class PolyPrism(GeometryEntity):
                 # through the shared registry.
                 adjacency = getattr(self, "_cohort_adjacency", None) or []
                 shared_registry = None
+                shared_ci: int | None = None
                 build_z = self.zmin
                 build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
                 for ci, z_shared in adjacency:
@@ -597,35 +598,59 @@ class PolyPrism(GeometryEntity):
                         continue
                     if z_shared == self.zmin:
                         shared_registry = reg
+                        shared_ci = ci
                         build_z = self.zmin
                         build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
                         break
                     if z_shared == self.zmax:
                         shared_registry = reg
+                        shared_ci = ci
                         build_z = self.zmax
                         build_vec = gp_Vec(0, 0, self.zmin - self.zmax)
                         break
 
-                exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
-                outer_wire = self._make_occ_wire_from_vertices(
-                    exterior_vertices,
-                    identify_arcs=self.identify_arcs,
-                    min_arc_points=self.min_arc_points,
-                    arc_tolerance=self.arc_tolerance,
-                    edge_registry=shared_registry,
+                # Look up the face registry for the SAME cohort the edge-registry
+                # loop selected — guarantees both registries refer to the same
+                # cohort, even if multiple cohorts share a z-plane.
+                shared_face_registry = (
+                    PolyPrism._cohort_face_registries.get(shared_ci)
+                    if shared_ci is not None
+                    else None
                 )
-                mf = BRepBuilderAPI_MakeFace(outer_wire)
-                for interior in poly.interiors:
-                    hole_vertices = [(x, y, build_z) for x, y in interior.coords]
-                    hole_wire = self._make_occ_wire_from_vertices(
-                        hole_vertices,
+
+                if shared_face_registry is not None:
+                    # Route the face through the shared registry so cohort
+                    # and cladding reference the same TopoDS_Face TShape.
+                    face = shared_face_registry.face_xy(
+                        poly,
+                        build_z,
+                        self.identify_arcs,
+                        self.min_arc_points,
+                        self.arc_tolerance,
+                    )
+                else:
+                    exterior_vertices = [
+                        (x, y, build_z) for x, y in poly.exterior.coords
+                    ]
+                    outer_wire = self._make_occ_wire_from_vertices(
+                        exterior_vertices,
                         identify_arcs=self.identify_arcs,
                         min_arc_points=self.min_arc_points,
                         arc_tolerance=self.arc_tolerance,
                         edge_registry=shared_registry,
                     )
-                    mf.Add(hole_wire)
-                face = mf.Face()
+                    mf = BRepBuilderAPI_MakeFace(outer_wire)
+                    for interior in poly.interiors:
+                        hole_vertices = [(x, y, build_z) for x, y in interior.coords]
+                        hole_wire = self._make_occ_wire_from_vertices(
+                            hole_vertices,
+                            identify_arcs=self.identify_arcs,
+                            min_arc_points=self.min_arc_points,
+                            arc_tolerance=self.arc_tolerance,
+                            edge_registry=shared_registry,
+                        )
+                        mf.Add(hole_wire)
+                    face = mf.Face()
 
                 volumes.append(BRepPrimAPI_MakePrism(face, build_vec).Shape())
         else:

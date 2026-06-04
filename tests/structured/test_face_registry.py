@@ -246,3 +246,73 @@ def test_polyprism_face_registry_install_and_clear():
     finally:
         PolyPrism._set_cohort_face_registries({})
     assert PolyPrism._cohort_face_registries == {}
+
+
+def test_polyprism_uses_cohort_face_registry_for_touched_plane():
+    """Cohort and adjacent cladding reference the SAME TShape at shared z-plane.
+
+    When a PolyPrism is adjacent to a cohort at a shared z-plane,
+    the touched-plane face is the SAME TShape as the cohort sub-piece's
+    matching horizontal face (no separate BOP fragmentation needed).
+    """
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.pipeline import structured_pre_pass
+
+    # Cohort: a single structured slab at z∈[0,1].
+    A = PolyPrism(
+        _square(side=10.0),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="A",
+        structured=True,
+        mesh_order=3.0,
+    )
+    # Cladding below: unstructured, touches A at z=0 with same XY.
+    cladding = PolyPrism(
+        _square(side=10.0),
+        {-1.0: 0.0, 0.0: 0.0},
+        physical_name="cladding",
+        mesh_order=5.0,
+    )
+    state = structured_pre_pass([A, cladding], point_tolerance=1e-3)
+    # cohort_registries[0] = (vreg, ereg, freg) for cohort 0
+    _vreg, _ereg, freg = state.cohort_registries[0]
+    # The cohort's z=0 face for the square is cached in the registry.
+    cohort_face = freg.face_xy(
+        _square(side=10.0),
+        z=0.0,
+        identify_arcs=False,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+    )
+
+    # Install registries so the cladding PolyPrism reuses the cohort face.
+    edge_regs = {ci: ereg for ci, (_v, ereg, _f) in enumerate(state.cohort_registries)}
+    face_regs = {ci: f for ci, (_v, _e, f) in enumerate(state.cohort_registries)}
+    PolyPrism._set_cohort_edge_registries(edge_regs)
+    PolyPrism._set_cohort_face_registries(face_regs)
+    try:
+        # Find the pre-cut cladding in state.entities_out and instanciate it.
+        cladding_out = next(
+            e
+            for e in state.entities_out
+            if hasattr(e, "physical_name") and "cladding" in e.physical_name
+        )
+        prism_shape = cladding_out.instanciate_occ()
+    finally:
+        PolyPrism._set_cohort_edge_registries({})
+        PolyPrism._set_cohort_face_registries({})
+
+    # The cladding's top face (z=0) must be IsSame as cohort's z=0 face.
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    cladding_faces = []
+    exp = TopExp_Explorer(prism_shape, TopAbs_FACE)
+    while exp.More():
+        cladding_faces.append(exp.Current())
+        exp.Next()
+    matches = [f for f in cladding_faces if f.IsSame(cohort_face)]
+    assert len(matches) == 1, (
+        f"expected exactly one cladding face IsSame as cohort z=0 face, "
+        f"got {len(matches)} out of {len(cladding_faces)} cladding faces"
+    )
