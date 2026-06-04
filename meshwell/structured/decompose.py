@@ -224,9 +224,6 @@ def decompose_cohorts(
         new_polys = arrangement_pre_cut_for_entity(
             arrangements[primary_ci], ent.polygons
         )
-        if new_polys is ent.polygons:
-            pre_cut.append(ent)
-            continue
         # Arc-detection propagation: unchanged from previous logic.
         arc_bearing_slabs: list[StructuredSlab] = []
         for ci, _ in touched:
@@ -234,7 +231,12 @@ def decompose_cohorts(
             arc_bearing_slabs.extend(s for s in cohort.slabs if s.identify_arcs)
 
         new_ent = copy(ent)
-        new_ent.polygons = new_polys
+        # Only replace polygons if the arrangement carved them.
+        # _cohort_adjacency must be set regardless so the cohort's
+        # FaceRegistry is consulted when this entity's touched-plane
+        # face is built — adjacency is about contact, not carving.
+        if new_polys is not ent.polygons:
+            new_ent.polygons = new_polys
         if arc_bearing_slabs:
             new_ent.identify_arcs = True
             new_ent.arc_tolerance = max(s.arc_tolerance for s in arc_bearing_slabs)

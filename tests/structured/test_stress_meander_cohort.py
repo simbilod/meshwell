@@ -83,9 +83,7 @@ def meander_A_polygon():
 
 
 def outer_U_polygon():
-    """B wraps A from outside. Strip B1 [y=-1..0], Strip B2 [y=3..4],
-    U-turn around (L, 1.5) inner=1.5 outer=2.5 (+x side).
-    """
+    """B wraps A from outside. Strip B1 [y=-1..0], Strip B2 [y=3..4], U-turn around (L, 1.5) inner=1.5 outer=2.5 (+x side)."""
     pts: list[tuple[float, float]] = [(0.0, -1.0)]
     # Outer arc: (L, -1) -> (L, 4) CCW around (L, 1.5), r=2.5
     pts.extend(_arc_pts(L, 1.5, 2.5, -np.pi / 2, np.pi / 2, N_ARC))
@@ -256,3 +254,90 @@ def test_meander_physical_groups_present(meander_entities, tmp_path):
     assert not missing, f"missing physical groups: {missing}"
     assert "void_A" not in field, "void_A should be carved away"
     assert "void_B" not in field, "void_B should be carved away"
+
+
+def test_meander_zero_cohort_unstructured_aabb_rescues(meander_entities, tmp_path):
+    """Check zero AABB rescues when cladding touches structured cohorts.
+
+    Under the FaceRegistry refactor, cohort sub-piece bot/top faces
+    and adjacent unstructured PolyPrism touched-plane faces share the
+    same TopoDS_Face TShape by construction. BOP merges them by identity;
+    the AABB fallback in _compute_physical_groups never fires for
+    cohort↔unstructured face pairs.
+    """
+    from collections import Counter
+    from itertools import combinations
+
+    import numpy as np
+
+    import meshwell.occ_xao_writer as xao_mod
+    from meshwell.orchestrator import generate_mesh
+
+    rescues: Counter[str] = Counter()
+    original = xao_mod._compute_physical_groups
+
+    def instrumented(
+        entities,
+        interface_delimiter,
+        boundary_delimiter,
+        interface_aabb_tolerance=xao_mod._DEFAULT_AABB_INTERFACE_TOL,
+    ):
+        max_dim = max((e.dim for e in entities if e.shapes), default=0)
+        ebs = []
+        for ent in entities:
+            b = {}
+            if ent.dim == max_dim and ent.dim > 0:
+                for s in ent.shapes:
+                    for sub, sid in xao_mod._leaf_subshapes(s, ent.dim - 1):
+                        b.setdefault(sid, sub)
+            ebs.append(b)
+        eas = []
+        for i in range(len(entities)):
+            d = {}
+            for sid, face in ebs[i].items():
+                box = xao_mod._shape_aabb(face)
+                if box is not None:
+                    d[sid] = box
+            eas.append(d)
+        for (i1, e1), (i2, e2) in combinations(enumerate(entities), 2):
+            if e1.dim <= 0 or e2.dim <= 0:
+                continue
+            if set(ebs[i1].keys()) & set(ebs[i2].keys()):
+                continue
+            if not eas[i1] or not eas[i2]:
+                continue
+            if xao_mod._is_purely_synthetic(e1) or xao_mod._is_purely_synthetic(e2):
+                continue
+            arr2 = np.array(list(eas[i2].values()), dtype=float)
+            for b1 in eas[i1].values():
+                b1_arr = np.asarray(b1, dtype=float)
+                if np.any(np.abs(arr2 - b1_arr).max(axis=1) < interface_aabb_tolerance):
+                    n1 = (
+                        xao_mod._filter_real_names(e1.physical_name) or e1.physical_name
+                    )
+                    n2 = (
+                        xao_mod._filter_real_names(e2.physical_name) or e2.physical_name
+                    )
+                    rescues["___".join(sorted((n1[0], n2[0])))] += 1
+        return original(
+            entities,
+            interface_delimiter,
+            boundary_delimiter,
+            interface_aabb_tolerance=interface_aabb_tolerance,
+        )
+
+    xao_mod._compute_physical_groups = instrumented
+    try:
+        generate_mesh(
+            meander_entities,
+            dim=3,
+            output_mesh=tmp_path / "out.msh",
+            default_characteristic_length=0.5,
+            resolution_specs=_resolution_specs(),
+        )
+    finally:
+        xao_mod._compute_physical_groups = original
+
+    assert (
+        sum(rescues.values()) == 0
+    ), f"expected zero AABB rescues with FaceRegistry; got {dict(rescues)}"
