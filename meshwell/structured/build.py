@@ -225,6 +225,59 @@ class EdgeRegistry:
         return edges
 
 
+@dataclass
+class FaceRegistry:
+    """Cohort-global TopoDS_Face cache, deduplicated by canonical polygon key.
+
+    Faces are keyed by ``(z_quantized, exterior_canonical, frozenset(interior_canonical))``
+    where ``*_canonical`` is the polygon ring's vertex_key sequence normalized
+    to start at the lexicographically minimum vertex_key and traversed in the
+    direction that visits the next-minimum vertex_key first. This makes the
+    key invariant under ring rotation and reversal so the same polygon built
+    by two callers (cohort sub-piece bot/top face + adjacent unstructured
+    touched-plane face) collides in the registry.
+    """
+
+    edges: "EdgeRegistry"
+    point_tolerance: float
+
+    def __post_init__(self):
+        """Initialise the internal face store."""
+        self._store: dict[tuple, "TopoDS_Face"] = {}
+
+    def _canonical_ring(
+        self, ring_coords: list[tuple[float, float]], z: float
+    ) -> tuple[tuple[int, int, int], ...]:
+        """Quantize ring vertices and normalise rotation + direction.
+
+        Shapely closes its rings (first == last), so drop the trailing repeat
+        before normalising.
+        """
+        coords = list(ring_coords)
+        if coords and coords[0] == coords[-1]:
+            coords = coords[:-1]
+        keys = [self.edges.vertices._key(x, y, z) for x, y in coords]
+        if not keys:
+            return ()
+        # Rotate to start at the minimum vertex_key.
+        i_min = min(range(len(keys)), key=lambda i: keys[i])
+        rotated = keys[i_min:] + keys[:i_min]
+        # Force a canonical direction: visit the next-minimum vertex_key first.
+        if len(rotated) >= 2 and rotated[-1] < rotated[1]:
+            rotated = [rotated[0], *list(reversed(rotated[1:]))]
+        return tuple(rotated)
+
+    def key_for_polygon(self, polygon, z: float) -> tuple[int, tuple, frozenset]:
+        """Return the cache key for a shapely Polygon at height z."""
+        z_q = round(z / self.point_tolerance)
+        exterior = self._canonical_ring(list(polygon.exterior.coords), z)
+        interiors = frozenset(
+            self._canonical_ring(list(interior.coords), z)
+            for interior in polygon.interiors
+        )
+        return (z_q, exterior, interiors)
+
+
 @dataclass(frozen=True)
 class _PolylineSegment:
     """One segment of a 2D polyline: a straight line or a circular arc.
