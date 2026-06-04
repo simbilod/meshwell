@@ -56,3 +56,20 @@ def test_subpiece_carries_source_indices():
 def test_shape_key_is_hashable():
     k = ShapeKey(tshape_id=12345, orientation=0)
     {k: "value"}  # noqa: B018 — must be hashable
+
+
+def test_arrangement_is_hashable_and_holds_polygons():
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.types import Arrangement
+
+    p1 = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    p2 = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
+    arr = Arrangement(cohort_index=0, polygons=(p1, p2))
+    assert arr.cohort_index == 0
+    assert len(arr.polygons) == 2
+    # frozen → hashable, usable as dict key
+    {arr: 1}  # noqa: B018 — must be hashable
+    # identity contract: the polygons stored are the exact objects passed in
+    assert arr.polygons[0] is p1
+    assert arr.polygons[1] is p2

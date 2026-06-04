@@ -99,3 +99,25 @@ class SlabMeta:
     top_face_key: ShapeKey
     lateral_face_keys: tuple[ShapeKey, ...]
     keep: bool = True
+
+
+@dataclass(frozen=True)
+class Arrangement:
+    """Cohort-global polygon arrangement.
+
+    `polygons` is the canonical, ordered tuple of shapely.Polygon objects
+    produced by one polygonize call over the union of:
+      - every cohort slab boundary, and
+      - every adjacent unstructured PolyPrism boundary projected to the
+        shared z-planes.
+
+    Both cohort sub-piece extraction and adjacent unstructured pre-cut
+    consume this same tuple. The Python identity (`is`) of each polygon
+    is the contract: when a cohort sub-piece's `sub_polygon` is `p`, the
+    corresponding unstructured pre-cut MultiPolygon contains `p` itself.
+    Downstream OCC builders can use this identity to deduplicate face
+    construction in a future refactor.
+    """
+
+    cohort_index: int
+    polygons: tuple["Polygon", ...]
