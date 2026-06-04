@@ -458,3 +458,44 @@ After the FaceRegistry refactor (plan
   cohort shell validator + arc handling. Out of scope for the
   2026-06-04 FaceRegistry plan, queued as the next investigation if
   the residual 6 rescues become a bottleneck.
+
+---
+
+## 2026-06-04 — CohortNeighbourUnstructured + custom-shell-helper outcome
+
+After the CohortNeighbourUnstructured refactor (plan
+[`docs/superpowers/plans/2026-06-04-cohort-neighbour-unstructured.md`](../plans/2026-06-04-cohort-neighbour-unstructured.md)):
+
+**Architectural wins delivered:**
+- New `validate_cohort_wrapping` enforces at CAD stage that every cohort
+  z-plane is covered by adjacent unstructured PolyPrisms. Raises
+  `CohortNotWrappedError` with cohort/z-plane/sub-piece detail.
+- `PolyPrism` reverts to pre-cohort-coupling shape: no class-level
+  cohort registries, no special-case branches in `instanciate_occ`.
+  All cohort-adjacency routing lives in a new `CohortNeighbourUnstructured`
+  subclass produced by `decompose_cohorts`.
+- `CohortNeighbourUnstructured.instanciate_occ` delegates to a new
+  helper `build_neighbour_shell(tiles, z_touched, z_far, ...)` in
+  [`meshwell/structured/cohort_neighbour_shell.py`](../../../meshwell/structured/cohort_neighbour_shell.py).
+  The helper has a stable signature with `face_registry` + `edge_registry`
+  parameters so a future swap to direct `BRep_Builder` shell assembly
+  can land without touching call sites.
+- Existing tests updated to add cladding entities; demos updated; suite
+  is 153/153 green.
+
+**Shell-assembly body NOT delivered (residual):**
+- The helper's BODY still does `BRepPrimAPI_MakePrism` per tile +
+  `BRepAlgoAPI_Fuse` for multi-tile. Two technical blockers documented
+  in the section above:
+  1. Arc-bearing cohort outer boundaries (disc cohorts) → gmsh PLC
+     errors when assembled via direct `BRep_Builder` shell.
+  2. Multi-tile claddings assembled via `TopoDS_Compound` (no Fuse)
+     → BOP fragments cohort sub-piece faces (validator: `fragment_count = 3`).
+- Single-tile cohort neighbours DO benefit: `MakePrism` preserves the
+  cached cohort face's TShape; no Fuse runs.
+- Multi-tile (meander scene) AABB rescue count unchanged from baseline (6).
+
+**Next investigation:** Resolve the arc-cohort gmsh PLC error and the
+multi-tile BOP fragmentation independently, then swap
+`build_neighbour_shell`'s body for direct `BRep_Builder` shell assembly.
+The signature already accepts the registries needed.
