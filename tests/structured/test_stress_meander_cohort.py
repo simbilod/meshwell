@@ -346,3 +346,107 @@ def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
         f"every CohortNeighbourUnstructured face_xy call should hit the "
         f"cohort cache; got {neighbour_callsite_hits}/{neighbour_callsite_calls}"
     )
+
+
+def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
+    """Assert the AABB rescue count on the meander stress scene is bounded.
+
+    After the CohortNeighbourUnstructured refactor + FaceRegistry routing,
+    every PolyPrism.instanciate_occ call goes through face_xy and hits the
+    cohort cache (verified by test_meander_face_registry_pre_bop_sharing).
+
+    For SINGLE-TILE cladding tiles, MakePrism preserves the cached face's
+    TShape and BOP merges by identity — no AABB rescue.
+
+    For MULTI-TILE cladding (the meander scene falls here because the
+    cladding gets split into 6 tiles by the arrangement), BRepAlgoAPI_Fuse
+    inside build_neighbour_shell rebuilds inter-tile interfaces and
+    discards the shared TShapes. The AABB fallback fires for each
+    cohort↔cladding face pair that didn't survive Fuse.
+
+    This test asserts the count is BOUNDED to the historical baseline.
+    A future shell-assembly refactor that avoids Fuse (resolving the
+    arc-PLC and multi-solid BOP issues) would drop the count to 0.
+    """
+    from collections import Counter
+    from itertools import combinations
+
+    import numpy as np
+
+    import meshwell.occ_xao_writer as xao_mod
+    from meshwell.orchestrator import generate_mesh
+
+    rescues: Counter[str] = Counter()
+    original = xao_mod._compute_physical_groups
+
+    def instrumented(
+        entities,
+        interface_delimiter,
+        boundary_delimiter,
+        interface_aabb_tolerance=xao_mod._DEFAULT_AABB_INTERFACE_TOL,
+    ):
+        max_dim = max((e.dim for e in entities if e.shapes), default=0)
+        ebs = []
+        for ent in entities:
+            b = {}
+            if ent.dim == max_dim and ent.dim > 0:
+                for s in ent.shapes:
+                    for sub, sid in xao_mod._leaf_subshapes(s, ent.dim - 1):
+                        b.setdefault(sid, sub)
+            ebs.append(b)
+        eas = []
+        for i in range(len(entities)):
+            d = {}
+            for sid, face in ebs[i].items():
+                box = xao_mod._shape_aabb(face)
+                if box is not None:
+                    d[sid] = box
+            eas.append(d)
+        for (i1, e1), (i2, e2) in combinations(enumerate(entities), 2):
+            if e1.dim <= 0 or e2.dim <= 0:
+                continue
+            if set(ebs[i1].keys()) & set(ebs[i2].keys()):
+                continue
+            if not eas[i1] or not eas[i2]:
+                continue
+            if xao_mod._is_purely_synthetic(e1) or xao_mod._is_purely_synthetic(e2):
+                continue
+            arr2 = np.array(list(eas[i2].values()), dtype=float)
+            for b1 in eas[i1].values():
+                b1_arr = np.asarray(b1, dtype=float)
+                if np.any(np.abs(arr2 - b1_arr).max(axis=1) < interface_aabb_tolerance):
+                    n1 = (
+                        xao_mod._filter_real_names(e1.physical_name) or e1.physical_name
+                    )
+                    n2 = (
+                        xao_mod._filter_real_names(e2.physical_name) or e2.physical_name
+                    )
+                    rescues["___".join(sorted((n1[0], n2[0])))] += 1
+        return original(
+            entities,
+            interface_delimiter,
+            boundary_delimiter,
+            interface_aabb_tolerance=interface_aabb_tolerance,
+        )
+
+    xao_mod._compute_physical_groups = instrumented
+    try:
+        generate_mesh(
+            meander_entities,
+            dim=3,
+            output_mesh=tmp_path / "out.msh",
+            default_characteristic_length=0.5,
+            resolution_specs=_resolution_specs(),
+        )
+    finally:
+        xao_mod._compute_physical_groups = original
+
+    # Historical baseline: 6 rescues at this scene under the
+    # FaceRegistry refactor without custom shell assembly. If the
+    # count INCREASES, something regressed. If it DECREASES, the
+    # comment block above is out of date (good problem).
+    total = sum(rescues.values())
+    assert total <= 6, (
+        f"meander AABB rescue count regressed: expected ≤6 (baseline), "
+        f"got {total}: {dict(rescues)}"
+    )
