@@ -460,8 +460,19 @@ def _build_horizontal_face(
     identify_arcs: bool,
     min_arc_points: int,
     arc_tolerance: float,
+    face_registry: "FaceRegistry | None" = None,
 ) -> TopoDS_Face:
-    """Build a horizontal TopoDS_Face for a polygon at fixed z."""
+    """Build a horizontal TopoDS_Face for a polygon at fixed z.
+
+    When ``face_registry`` is provided, returns a cached face for the
+    polygon's canonical key, sharing TShape across callers. When None,
+    constructs a fresh TopoDS_Face each call (legacy behaviour for tests
+    and call sites that don't have a registry threaded through).
+    """
+    if face_registry is not None:
+        return face_registry.face_xy(
+            polygon, z, identify_arcs, min_arc_points, arc_tolerance
+        )
     outer_coords = _ring_coords(polygon.exterior)
     outer_edges = ereg.polyline_xy(
         outer_coords,

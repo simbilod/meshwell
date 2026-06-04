@@ -133,3 +133,70 @@ def test_face_xy_handles_polygon_with_hole():
         wires.append(exp.Current())
         exp.Next()
     assert len(wires) == 2
+
+
+def test_build_horizontal_face_uses_registry_when_provided():
+    """Test caching behavior when FaceRegistry is provided.
+
+    When `_build_horizontal_face` is called twice with the same polygon
+    and the SAME FaceRegistry, the second call returns the cached face
+    rather than constructing a new one.
+    """
+    from meshwell.structured.build import _build_horizontal_face
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+    freg = FaceRegistry(edges=ereg, point_tolerance=1e-3)
+    p = _square()
+    f1 = _build_horizontal_face(
+        p,
+        z=0.0,
+        ereg=ereg,
+        identify_arcs=False,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        face_registry=freg,
+    )
+    f2 = _build_horizontal_face(
+        p,
+        z=0.0,
+        ereg=ereg,
+        identify_arcs=False,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        face_registry=freg,
+    )
+    assert f1.IsSame(f2)
+
+
+def test_build_horizontal_face_without_registry_works_unchanged():
+    """Test backward compatibility when face_registry is None.
+
+    When `face_registry=None`, behaviour is identical to the
+    pre-refactor signature (no caching, fresh TShape each call).
+    """
+    from meshwell.structured.build import _build_horizontal_face
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+    p = _square()
+    f1 = _build_horizontal_face(
+        p,
+        z=0.0,
+        ereg=ereg,
+        identify_arcs=False,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        face_registry=None,
+    )
+    f2 = _build_horizontal_face(
+        p,
+        z=0.0,
+        ereg=ereg,
+        identify_arcs=False,
+        min_arc_points=4,
+        arc_tolerance=1e-3,
+        face_registry=None,
+    )
+    # Without registry, two calls produce DIFFERENT TShapes.
+    assert not f1.IsSame(f2)
