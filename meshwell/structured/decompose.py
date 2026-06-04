@@ -67,6 +67,43 @@ def build_cohort_arrangement(
     return Arrangement(cohort_index=cohort_index, polygons=pieces)
 
 
+def arrangement_subpieces_for_interval(
+    arrangement: Arrangement,
+    cohort: Cohort,
+    zlo: float,
+    zhi: float,
+) -> list[SubPiece]:
+    """Project arrangement polygons to one z-interval's SubPieces.
+
+    For each polygon in the arrangement:
+    1. Compute owner via the cohort's slabs spanning this interval.
+    2. If owner is None (polygon is in the arrangement but no slab here
+       contains its representative point), drop.
+    3. Otherwise emit one SubPiece referencing the polygon by identity.
+    """
+    candidate_slabs = [s for s in cohort.slabs if s.zlo <= zlo and s.zhi >= zhi]
+    if not candidate_slabs:
+        return []
+    fp = zinterval_footprint(candidate_slabs)
+    subs: list[SubPiece] = []
+    for p in arrangement.polygons:
+        pt = p.representative_point()
+        if not fp.contains(pt):
+            continue
+        owner = _owner_slab(p, candidate_slabs)
+        if owner is None:
+            continue
+        subs.append(
+            SubPiece(
+                cohort_index=arrangement.cohort_index,
+                z_interval=(zlo, zhi),
+                sub_polygon=p,
+                source_slab_indices=(owner,),
+            )
+        )
+    return subs
+
+
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],

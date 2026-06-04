@@ -68,3 +68,38 @@ def test_arrangement_includes_adjacent_unstructured_cuts():
         p for p in arr.polygons if p.representative_point().within(_rect(0, 0, 10, 10))
     ]
     assert len(cohort_pieces) == 2
+
+
+def test_subpieces_for_interval_emits_one_per_owned_polygon():
+    from meshwell.structured.decompose import arrangement_subpieces_for_interval
+
+    cohort = Cohort(slabs=(_slab(0, _rect(0, 0, 10, 10)),), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0, cohort=cohort, adjacent_unstructured=[]
+    )
+    subs = arrangement_subpieces_for_interval(arr, cohort, 0.0, 1.0)
+    assert len(subs) == 1
+    assert subs[0].cohort_index == 0
+    assert subs[0].z_interval == (0.0, 1.0)
+    assert subs[0].source_slab_indices == (0,)
+    # IDENTITY contract: subpiece's polygon IS arrangement's polygon
+    assert subs[0].sub_polygon is arr.polygons[0]
+
+
+def test_subpieces_filtered_out_when_owner_is_none():
+    # Cohort has slab S at y∈[0,5]. Arrangement also contains a piece at
+    # y∈[5,10] (introduced by adjacent unstructured cut) which has no owner
+    # in this cohort. That piece must be dropped from sub-pieces.
+    from meshwell.structured.decompose import arrangement_subpieces_for_interval
+
+    cohort = Cohort(slabs=(_slab(0, _rect(0, 0, 10, 5)),), z_planes=(0.0, 1.0))
+    neighbour = _rect(0, 0, 10, 10).boundary
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[neighbour],
+    )
+    subs = arrangement_subpieces_for_interval(arr, cohort, 0.0, 1.0)
+    # Only one piece survives the owner filter (y∈[0,5]).
+    assert len(subs) == 1
+    assert subs[0].sub_polygon.representative_point().y < 5.0
