@@ -71,98 +71,61 @@ class CohortNeighbourUnstructured(PolyPrism):
         return nbr
 
     def instanciate_occ(self):
-        """Build OCC volume with cohort-cached touched-plane face.
+        """Build OCC volume via cohort-shell construction.
 
-        For each tile polygon, look up the cached cohort TopoDS_Face for
-        the touched z-plane and use it as the prism's base. Build via
-        BRepPrimAPI_MakePrism (preserves input face TShape). Combine
-        multi-tile prisms via BRepAlgoAPI_Fuse — Task 8 replaces this
-        with custom shell construction.
+        Looks up the cohort whose touched plane matches our zmin or zmax,
+        then delegates to ``build_neighbour_shell``. The latter constructs
+        per-tile prisms via ``BRepPrimAPI_MakePrism`` on the cached cohort
+        top face for each tile (preserving the TShape) and Fuses them when
+        there are multiple tiles. The cohort-cached top face survives by
+        TShape identity into the result, so the cohort sub-piece's bot/top
+        face and this neighbour's prism share one ``TopoDS_Face`` and BOP
+        does not re-fragment it.
+
+        When no cohort registry is available (e.g. in isolated unit tests
+        that do not install the registries), falls back to PolyPrism's
+        legacy MakePrism + Fuse path.
         """
-        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
-        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
-        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
-        from OCP.gp import gp_Vec
-        from shapely.geometry.polygon import orient
+        from meshwell.structured.cohort_neighbour_shell import (
+            build_neighbour_shell,
+        )
 
         cls = type(self)
-        adjacency = self.cohort_adjacency
-        polys = (
-            self.polygons.geoms if hasattr(self.polygons, "geoms") else [self.polygons]
+        # Pick the cohort whose touched plane matches our zmin or zmax.
+        z_touched: float | None = None
+        z_far: float | None = None
+        shared_ci: int | None = None
+        for ci, z_shared in self.cohort_adjacency:
+            if cls._cohort_face_registries.get(ci) is None:
+                continue
+            if z_shared == self.zmin:
+                shared_ci = ci
+                z_touched = self.zmin
+                z_far = self.zmax
+                break
+            if z_shared == self.zmax:
+                shared_ci = ci
+                z_touched = self.zmax
+                z_far = self.zmin
+                break
+
+        if shared_ci is None:
+            # No cohort registry available — fall back to PolyPrism's
+            # legacy path. Can happen during isolated unit tests that
+            # don't install the registries.
+            return super().instanciate_occ()
+
+        face_registry = cls._cohort_face_registries[shared_ci]
+        edge_registry = cls._cohort_edge_registries[shared_ci]
+        solid = build_neighbour_shell(
+            tiles=self.tile_polygons,
+            z_touched=z_touched,
+            z_far=z_far,
+            face_registry=face_registry,
+            edge_registry=edge_registry,
+            identify_arcs=self.identify_arcs,
+            min_arc_points=self.min_arc_points,
+            arc_tolerance=self.arc_tolerance,
         )
-        volumes = []
-        for poly in polys:
-            if poly.interiors:
-                poly = orient(poly, sign=1.0)
-
-            shared_ci: int | None = None
-            build_z = self.zmin
-            build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
-            for ci, z_shared in adjacency:
-                if cls._cohort_edge_registries.get(ci) is None:
-                    continue
-                if z_shared == self.zmin:
-                    shared_ci = ci
-                    build_z = self.zmin
-                    build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
-                    break
-                if z_shared == self.zmax:
-                    shared_ci = ci
-                    build_z = self.zmax
-                    build_vec = gp_Vec(0, 0, self.zmin - self.zmax)
-                    break
-
-            shared_face_registry = (
-                cls._cohort_face_registries.get(shared_ci)
-                if shared_ci is not None
-                else None
-            )
-            shared_edge_registry = (
-                cls._cohort_edge_registries.get(shared_ci)
-                if shared_ci is not None
-                else None
-            )
-
-            if shared_face_registry is not None:
-                face = shared_face_registry.face_xy(
-                    poly,
-                    build_z,
-                    self.identify_arcs,
-                    self.min_arc_points,
-                    self.arc_tolerance,
-                )
-            else:
-                exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
-                outer_wire = self._make_occ_wire_from_vertices(
-                    exterior_vertices,
-                    identify_arcs=self.identify_arcs,
-                    min_arc_points=self.min_arc_points,
-                    arc_tolerance=self.arc_tolerance,
-                    edge_registry=shared_edge_registry,
-                )
-                mf = BRepBuilderAPI_MakeFace(outer_wire)
-                for interior in poly.interiors:
-                    hole_vertices = [(x, y, build_z) for x, y in interior.coords]
-                    hole_wire = self._make_occ_wire_from_vertices(
-                        hole_vertices,
-                        identify_arcs=self.identify_arcs,
-                        min_arc_points=self.min_arc_points,
-                        arc_tolerance=self.arc_tolerance,
-                        edge_registry=shared_edge_registry,
-                    )
-                    mf.Add(hole_wire)
-                face = mf.Face()
-
-            volumes.append(BRepPrimAPI_MakePrism(face, build_vec).Shape())
-
-        if not volumes:
-            return None
-
-        result = volumes[0]
-        for v in volumes[1:]:
-            fuse_api = BRepAlgoAPI_Fuse(result, v)
-            fuse_api.Build()
-            result = fuse_api.Shape()
-
         rotation_point = self._get_rotation_point(self.polygons)
-        return self._apply_transformation_occ(result, rotation_point)
+        return self._apply_transformation_occ(solid, rotation_point)
