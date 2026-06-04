@@ -277,6 +277,34 @@ class FaceRegistry:
         )
         return (z_q, exterior, interiors)
 
+    def face_xy(
+        self,
+        polygon,
+        z: float,
+        identify_arcs: bool,
+        min_arc_points: int,
+        arc_tolerance: float,
+    ) -> "TopoDS_Face":
+        """Return a unique TopoDS_Face for ``polygon`` at height ``z``.
+
+        Builds the face on first call via the existing
+        ``_build_horizontal_face`` helper (so arc detection / edge sharing
+        through the EdgeRegistry are honoured). Subsequent calls with a
+        polygon that produces the same canonical key return the cached
+        face by TShape identity.
+        """
+        key = self.key_for_polygon(polygon, z)
+        if key not in self._store:
+            self._store[key] = _build_horizontal_face(
+                polygon,
+                z,
+                self.edges,
+                identify_arcs,
+                min_arc_points,
+                arc_tolerance,
+            )
+        return self._store[key]
+
 
 @dataclass(frozen=True)
 class _PolylineSegment:
