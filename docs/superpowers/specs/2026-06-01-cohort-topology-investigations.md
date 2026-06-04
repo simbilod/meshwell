@@ -420,6 +420,41 @@ After the FaceRegistry refactor (plan
   `instanciate_occ` with a TShape-preserving combiner when the prisms
   are known to be non-overlapping (i.e. when `_cohort_adjacency` is
   set and the polygons come from `arrangement_pre_cut_for_entity`).
-  Naive `TopoDS_Compound` failed because BOP's solid-vs-solid
-  fragmentation treats each compound sub-solid as a separate argument
-  and ends up fragmenting the shared face.
+
+  **Approaches tried (2026-06-04 spike) — all fail:**
+  - `TopoDS_Compound` + per-prism solid: BOP fragments the cohort's
+    embed bot face (validator: `CohortShellModifiedError` slab #4,
+    fragment count = 3). Multiple cladding sub-solids sharing the same
+    cohort face triggers BOP to fragment the face along the per-tile
+    boundaries.
+  - `TopoDS_Compound` + `keep_compound_for_bop=True`: same
+    fragmentation. Marking the compound as one BOP argument doesn't
+    prevent BOP from fragmenting an internal face that's also referenced
+    by a different argument's compound.
+  - `BRepAlgoAPI_Fuse` + `SetGlue(GlueFull)`: `Fuse` rebuilds the
+    output geometry regardless of glue mode — drops the shared
+    `TopoDS_Face` TShape.
+  - `BRepBuilderAPI_Sewing` (default tolerance): doesn't merge
+    coincident lateral faces from different prisms — produces 2 shells
+    instead of 1.
+  - `BRepBuilderAPI_Sewing` (with `analyze=True, fix=True, fixshape=True`
+    options): merges into 1 shell but rebuilds the shared face.
+
+  **What would actually work:** construct the cohort-adjacent cladding
+  shell directly via `BRep_Builder` (mirroring how `build_cohort_compound`
+  assembles a custom shell from cached faces + lateral faces). Steps:
+  1. Pull cached `TopoDS_Face` for each tile at the touched z-plane
+     from the cohort's `FaceRegistry`.
+  2. Build a single bot/top face at the far plane covering the
+     cladding's full footprint.
+  3. Build lateral faces around the cladding's outer boundary only
+     (one per outer-edge segment, using the `EdgeRegistry` for edge
+     sharing with neighbouring entities).
+  4. Assemble the shell + solid manually — no `Fuse`, no `Sewing`.
+
+  This is a deeper refactor: it replaces `BRepPrimAPI_MakePrism` for
+  cohort-adjacent claddings with a custom shell-construction path.
+  Estimated 3-5 days of focused work plus a careful TDD pass on
+  cohort shell validator + arc handling. Out of scope for the
+  2026-06-04 FaceRegistry plan, queued as the next investigation if
+  the residual 6 rescues become a bottleneck.
