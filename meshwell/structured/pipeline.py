@@ -84,7 +84,9 @@ def structured_pre_pass(
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
     validate_no_volumetric_cohort_overlap(cohorts, entities)
-    subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(cohorts, unstructured)
+    subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(
+        cohorts, unstructured, point_tolerance=point_tolerance
+    )
 
     from meshwell.structured.build import EdgeRegistry, FaceRegistry, VertexRegistry
 

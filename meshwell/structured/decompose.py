@@ -11,6 +11,7 @@ from __future__ import annotations
 from copy import copy
 from typing import Any
 
+import shapely
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
@@ -138,6 +139,7 @@ def arrangement_pre_cut_for_entity(
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],
+    point_tolerance: float = 1e-3,
 ) -> tuple[list[list[SubPiece]], list[Any]]:
     """Stage 3 driver — cohort-global arrangement edition.
 
@@ -172,7 +174,20 @@ def decompose_cohorts(
                     touches = True
                     break
             if touches:
-                lines.append(ent.polygons.boundary)
+                # Snap to the same grid the cohort slab footprints were
+                # snapped to in structured_pre_pass. Without this, the
+                # 1e-5 perturbation from prepare_entities makes the
+                # cladding boundary live on a different grid than the
+                # cohort, and polygonize produces a thin annulus that
+                # no cohort sub-piece covers — breaking face-registry
+                # sharing for the embed sub-piece.
+                lines.append(
+                    shapely.set_precision(
+                        ent.polygons.boundary,
+                        grid_size=point_tolerance,
+                        mode="valid_output",
+                    )
+                )
         adjacency_lines_per_cohort.append(lines)
 
     # 2. Build one arrangement per cohort.

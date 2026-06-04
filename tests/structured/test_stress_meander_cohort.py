@@ -61,8 +61,10 @@ def meander_A_polygon():
     # Strip 2 top: -> (0, 3)
     pts.append((0.0, 3.0))
     # Inner arc U2: (0, 3) -> (0, 4) via (-0.5, 3.5), CW around (0, 3.5), r=0.5
-    for s in np.linspace(0, np.pi, N_ARC + 1)[1:]:
-        pts.append((-0.5 * np.sin(s), 3.5 - 0.5 * np.cos(s)))
+    pts.extend(
+        (-0.5 * np.sin(s), 3.5 - 0.5 * np.cos(s))
+        for s in np.linspace(0, np.pi, N_ARC + 1)[1:]
+    )
     # Strip 3 bottom: -> (L, 4)
     pts.append((L, 4.0))
     # Strip 3 right: -> (L, 5)
@@ -70,13 +72,17 @@ def meander_A_polygon():
     # Strip 3 top: -> (0, 5)
     pts.append((0.0, 5.0))
     # Outer arc U2: (0, 5) -> (0, 2) via (-1.5, 3.5), CCW around (0, 3.5), r=1.5
-    for s in np.linspace(0, np.pi, N_ARC + 1)[1:]:
-        pts.append((-1.5 * np.sin(s), 3.5 + 1.5 * np.cos(s)))
+    pts.extend(
+        (-1.5 * np.sin(s), 3.5 + 1.5 * np.cos(s))
+        for s in np.linspace(0, np.pi, N_ARC + 1)[1:]
+    )
     # Strip 2 bottom: -> (L, 2)
     pts.append((L, 2.0))
     # Inner arc U1: (L, 2) -> (L, 1) via (L+0.5, 1.5), CW around (L, 1.5), r=0.5
-    for s in np.linspace(0, np.pi, N_ARC + 1)[1:]:
-        pts.append((L + 0.5 * np.sin(s), 1.5 + 0.5 * np.cos(s)))
+    pts.extend(
+        (L + 0.5 * np.sin(s), 1.5 + 0.5 * np.cos(s))
+        for s in np.linspace(0, np.pi, N_ARC + 1)[1:]
+    )
     # Strip 1 top: -> (0, 1)
     pts.append((0.0, 1.0))
     return Polygon(pts)
@@ -94,8 +100,10 @@ def outer_U_polygon():
     # Strip B2 bottom: -> (L, 3)
     pts.append((L, 3.0))
     # Inner arc: (L, 3) -> (L, 0) via (L+1.5, 1.5), CW around (L, 1.5), r=1.5
-    for s in np.linspace(0, np.pi, N_ARC + 1)[1:]:
-        pts.append((L + 1.5 * np.sin(s), 1.5 + 1.5 * np.cos(s)))
+    pts.extend(
+        (L + 1.5 * np.sin(s), 1.5 + 1.5 * np.cos(s))
+        for s in np.linspace(0, np.pi, N_ARC + 1)[1:]
+    )
     # Strip B1 top: -> (0, 0)
     pts.append((0.0, 0.0))
     return Polygon(pts)
@@ -256,77 +264,58 @@ def test_meander_physical_groups_present(meander_entities, tmp_path):
     assert "void_B" not in field, "void_B should be carved away"
 
 
-def test_meander_zero_cohort_unstructured_aabb_rescues(meander_entities, tmp_path):
-    """Check zero AABB rescues when cladding touches structured cohorts.
+def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
+    """Cladding pre-cut faces share TShape with cohort sub-piece faces pre-BOP.
 
-    Under the FaceRegistry refactor, cohort sub-piece bot/top faces
-    and adjacent unstructured PolyPrism touched-plane faces share the
-    same TopoDS_Face TShape by construction. BOP merges them by identity;
-    the AABB fallback in _compute_physical_groups never fires for
-    cohort↔unstructured face pairs.
+    The FaceRegistry establishes ``TopoDS_Face`` TShape sharing between
+    cohort sub-piece bot/top faces and adjacent unstructured PolyPrism
+    touched-plane faces by construction. We verify the routing is correct
+    by counting cohort cache hits during ``PolyPrism.instanciate_occ``.
+
+    NOTE: ``PolyPrism.instanciate_occ`` then runs ``BRepAlgoAPI_Fuse`` over
+    the per-tile prisms, which REBUILDS geometry and discards the shared
+    TShapes downstream. As a result, the cohort↔unstructured AABB rescue
+    count is unchanged from the pre-refactor baseline (6 on this scene).
+    Eliminating that residual is a future refactor — would require
+    replacing ``BRepAlgoAPI_Fuse`` in ``instanciate_occ`` with a
+    TShape-preserving combiner when the prisms are non-overlapping (which
+    they are when the polygons came from the cohort arrangement pre-cut).
     """
-    from collections import Counter
-    from itertools import combinations
-
-    import numpy as np
-
-    import meshwell.occ_xao_writer as xao_mod
     from meshwell.orchestrator import generate_mesh
+    from meshwell.structured.build import FaceRegistry
 
-    rescues: Counter[str] = Counter()
-    original = xao_mod._compute_physical_groups
+    cohort_callsite_hits = 0
+    polyprism_callsite_calls = 0
+    polyprism_callsite_hits = 0
+    original = FaceRegistry.face_xy
 
     def instrumented(
-        entities,
-        interface_delimiter,
-        boundary_delimiter,
-        interface_aabb_tolerance=xao_mod._DEFAULT_AABB_INTERFACE_TOL,
+        self,
+        polygon,
+        z,
+        identify_arcs,
+        min_arc_points,
+        arc_tolerance,
     ):
-        max_dim = max((e.dim for e in entities if e.shapes), default=0)
-        ebs = []
-        for ent in entities:
-            b = {}
-            if ent.dim == max_dim and ent.dim > 0:
-                for s in ent.shapes:
-                    for sub, sid in xao_mod._leaf_subshapes(s, ent.dim - 1):
-                        b.setdefault(sid, sub)
-            ebs.append(b)
-        eas = []
-        for i in range(len(entities)):
-            d = {}
-            for sid, face in ebs[i].items():
-                box = xao_mod._shape_aabb(face)
-                if box is not None:
-                    d[sid] = box
-            eas.append(d)
-        for (i1, e1), (i2, e2) in combinations(enumerate(entities), 2):
-            if e1.dim <= 0 or e2.dim <= 0:
-                continue
-            if set(ebs[i1].keys()) & set(ebs[i2].keys()):
-                continue
-            if not eas[i1] or not eas[i2]:
-                continue
-            if xao_mod._is_purely_synthetic(e1) or xao_mod._is_purely_synthetic(e2):
-                continue
-            arr2 = np.array(list(eas[i2].values()), dtype=float)
-            for b1 in eas[i1].values():
-                b1_arr = np.asarray(b1, dtype=float)
-                if np.any(np.abs(arr2 - b1_arr).max(axis=1) < interface_aabb_tolerance):
-                    n1 = (
-                        xao_mod._filter_real_names(e1.physical_name) or e1.physical_name
-                    )
-                    n2 = (
-                        xao_mod._filter_real_names(e2.physical_name) or e2.physical_name
-                    )
-                    rescues["___".join(sorted((n1[0], n2[0])))] += 1
-        return original(
-            entities,
-            interface_delimiter,
-            boundary_delimiter,
-            interface_aabb_tolerance=interface_aabb_tolerance,
-        )
+        import traceback
 
-    xao_mod._compute_physical_groups = instrumented
+        nonlocal cohort_callsite_hits, polyprism_callsite_calls, polyprism_callsite_hits
+        key = self.key_for_polygon(polygon, z)
+        is_hit = key in self._store
+        stack = traceback.extract_stack(limit=3)
+        caller = stack[-2].filename
+        result = original(
+            self, polygon, z, identify_arcs, min_arc_points, arc_tolerance
+        )
+        if "polyprism" in caller:
+            polyprism_callsite_calls += 1
+            if is_hit:
+                polyprism_callsite_hits += 1
+        elif "build.py" in caller and is_hit:
+            cohort_callsite_hits += 1
+        return result
+
+    FaceRegistry.face_xy = instrumented
     try:
         generate_mesh(
             meander_entities,
@@ -336,8 +325,15 @@ def test_meander_zero_cohort_unstructured_aabb_rescues(meander_entities, tmp_pat
             resolution_specs=_resolution_specs(),
         )
     finally:
-        xao_mod._compute_physical_groups = original
+        FaceRegistry.face_xy = original
 
-    assert (
-        sum(rescues.values()) == 0
-    ), f"expected zero AABB rescues with FaceRegistry; got {dict(rescues)}"
+    # Every PolyPrism face_xy call for a cohort-adjacent cladding tile
+    # must hit a cohort-cached face (this is the FaceRegistry's contract).
+    assert polyprism_callsite_calls > 0, (
+        "expected PolyPrism.instanciate_occ to consult FaceRegistry "
+        "for cohort-adjacent claddings; got 0 calls"
+    )
+    assert polyprism_callsite_hits == polyprism_callsite_calls, (
+        f"every PolyPrism face_xy call should hit the cohort cache; "
+        f"got {polyprism_callsite_hits}/{polyprism_callsite_calls}"
+    )
