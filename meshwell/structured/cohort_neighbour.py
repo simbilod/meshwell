@@ -67,36 +67,102 @@ class CohortNeighbourUnstructured(PolyPrism):
         else:
             nbr.polygons = MultiPolygon(list(tile_polygons))
         nbr.cohort_adjacency = list(cohort_adjacency)
-        nbr._cohort_adjacency = list(
-            cohort_adjacency
-        )  # back-compat alias for PolyPrism.instanciate_occ
         nbr.tile_polygons = tuple(tile_polygons)
         return nbr
 
     def instanciate_occ(self):
-        """Build OCC volume with FaceRegistry-shared touched-plane faces.
+        """Build OCC volume with cohort-cached touched-plane face.
 
-        Transitional implementation (Task 6): temporarily mirrors this
-        class's registries onto PolyPrism (which still hosts the routing
-        logic in its ``instanciate_occ``) for the duration of the call.
-        Task 7 inlines the routing here and removes the indirection.
+        For each tile polygon, look up the cached cohort TopoDS_Face for
+        the touched z-plane and use it as the prism's base. Build via
+        BRepPrimAPI_MakePrism (preserves input face TShape). Combine
+        multi-tile prisms via BRepAlgoAPI_Fuse — Task 8 replaces this
+        with custom shell construction.
         """
-        from meshwell.polyprism import PolyPrism
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+        from OCP.gp import gp_Vec
+        from shapely.geometry.polygon import orient
 
-        # PolyPrism.instanciate_occ reads `_cohort_face_registries` via
-        # `PolyPrism._cohort_face_registries.get(ci)`. PolyPrism no
-        # longer has that attribute (Task 6 removed it). Install ours
-        # for the duration of the call.
-        had_face = hasattr(PolyPrism, "_cohort_face_registries")
-        old_face = getattr(PolyPrism, "_cohort_face_registries", None)
-        PolyPrism._cohort_face_registries = type(self)._cohort_face_registries
-        # `_cohort_adjacency` alias is already set by `from_polyprism`,
-        # but in case a subclass overrides we re-mirror it here too.
-        self._cohort_adjacency = self.cohort_adjacency
-        try:
-            return super().instanciate_occ()
-        finally:
-            if had_face:
-                PolyPrism._cohort_face_registries = old_face
-            elif hasattr(PolyPrism, "_cohort_face_registries"):
-                del PolyPrism._cohort_face_registries
+        cls = type(self)
+        adjacency = self.cohort_adjacency
+        polys = (
+            self.polygons.geoms if hasattr(self.polygons, "geoms") else [self.polygons]
+        )
+        volumes = []
+        for poly in polys:
+            if poly.interiors:
+                poly = orient(poly, sign=1.0)
+
+            shared_ci: int | None = None
+            build_z = self.zmin
+            build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
+            for ci, z_shared in adjacency:
+                if cls._cohort_edge_registries.get(ci) is None:
+                    continue
+                if z_shared == self.zmin:
+                    shared_ci = ci
+                    build_z = self.zmin
+                    build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
+                    break
+                if z_shared == self.zmax:
+                    shared_ci = ci
+                    build_z = self.zmax
+                    build_vec = gp_Vec(0, 0, self.zmin - self.zmax)
+                    break
+
+            shared_face_registry = (
+                cls._cohort_face_registries.get(shared_ci)
+                if shared_ci is not None
+                else None
+            )
+            shared_edge_registry = (
+                cls._cohort_edge_registries.get(shared_ci)
+                if shared_ci is not None
+                else None
+            )
+
+            if shared_face_registry is not None:
+                face = shared_face_registry.face_xy(
+                    poly,
+                    build_z,
+                    self.identify_arcs,
+                    self.min_arc_points,
+                    self.arc_tolerance,
+                )
+            else:
+                exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
+                outer_wire = self._make_occ_wire_from_vertices(
+                    exterior_vertices,
+                    identify_arcs=self.identify_arcs,
+                    min_arc_points=self.min_arc_points,
+                    arc_tolerance=self.arc_tolerance,
+                    edge_registry=shared_edge_registry,
+                )
+                mf = BRepBuilderAPI_MakeFace(outer_wire)
+                for interior in poly.interiors:
+                    hole_vertices = [(x, y, build_z) for x, y in interior.coords]
+                    hole_wire = self._make_occ_wire_from_vertices(
+                        hole_vertices,
+                        identify_arcs=self.identify_arcs,
+                        min_arc_points=self.min_arc_points,
+                        arc_tolerance=self.arc_tolerance,
+                        edge_registry=shared_edge_registry,
+                    )
+                    mf.Add(hole_wire)
+                face = mf.Face()
+
+            volumes.append(BRepPrimAPI_MakePrism(face, build_vec).Shape())
+
+        if not volumes:
+            return None
+
+        result = volumes[0]
+        for v in volumes[1:]:
+            fuse_api = BRepAlgoAPI_Fuse(result, v)
+            fuse_api.Build()
+            result = fuse_api.Shape()
+
+        rotation_point = self._get_rotation_point(self.polygons)
+        return self._apply_transformation_occ(result, rotation_point)

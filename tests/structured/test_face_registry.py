@@ -311,7 +311,7 @@ def test_polyprism_uses_cohort_face_registry_for_touched_plane():
 
     edge_regs = {ci: ereg for ci, (_v, ereg, _f) in enumerate(state.cohort_registries)}
     face_regs = {ci: f for ci, (_v, _e, f) in enumerate(state.cohort_registries)}
-    PolyPrism._set_cohort_edge_registries(edge_regs)
+    CohortNeighbourUnstructured._set_cohort_edge_registries(edge_regs)
     CohortNeighbourUnstructured._set_cohort_face_registries(face_regs)
     try:
         # Find the pre-cut cladding in state.entities_out and instanciate it.
@@ -322,7 +322,7 @@ def test_polyprism_uses_cohort_face_registry_for_touched_plane():
         )
         prism_shape = cladding_out.instanciate_occ()
     finally:
-        PolyPrism._set_cohort_edge_registries({})
+        CohortNeighbourUnstructured._set_cohort_edge_registries({})
         CohortNeighbourUnstructured._set_cohort_face_registries({})
 
     # The cladding's top face (z=0) must be IsSame as cohort's z=0 face.

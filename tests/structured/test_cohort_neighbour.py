@@ -122,3 +122,19 @@ def test_cohort_neighbour_overrides_instanciate_occ_to_use_registries():
     # CohortNeighbourUnstructured does.
     assert hasattr(CohortNeighbourUnstructured, "_cohort_face_registries")
     assert hasattr(CohortNeighbourUnstructured, "_set_cohort_face_registries")
+
+
+def test_polyprism_instanciate_occ_no_longer_reads_cohort_adjacency():
+    """PolyPrism.instanciate_occ has no special-case for cohort adjacency.
+
+    After the cleanup, the face-registry routing lives entirely in
+    CohortNeighbourUnstructured.instanciate_occ.
+    """
+    import inspect
+
+    from meshwell.polyprism import PolyPrism
+
+    src = inspect.getsource(PolyPrism.instanciate_occ)
+    # No reference to _cohort_adjacency or _cohort_face_registries.
+    assert "_cohort_adjacency" not in src
+    assert "_cohort_face_registries" not in src

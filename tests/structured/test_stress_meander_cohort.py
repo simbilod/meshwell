@@ -277,23 +277,25 @@ def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
     The FaceRegistry establishes ``TopoDS_Face`` TShape sharing between
     cohort sub-piece bot/top faces and adjacent unstructured PolyPrism
     touched-plane faces by construction. We verify the routing is correct
-    by counting cohort cache hits during ``PolyPrism.instanciate_occ``.
+    by counting cohort cache hits during
+    ``CohortNeighbourUnstructured.instanciate_occ``.
 
-    NOTE: ``PolyPrism.instanciate_occ`` then runs ``BRepAlgoAPI_Fuse`` over
-    the per-tile prisms, which REBUILDS geometry and discards the shared
-    TShapes downstream. As a result, the cohort↔unstructured AABB rescue
-    count is unchanged from the pre-refactor baseline (6 on this scene).
-    Eliminating that residual is a future refactor — would require
-    replacing ``BRepAlgoAPI_Fuse`` in ``instanciate_occ`` with a
-    TShape-preserving combiner when the prisms are non-overlapping (which
-    they are when the polygons came from the cohort arrangement pre-cut).
+    NOTE: ``CohortNeighbourUnstructured.instanciate_occ`` then runs
+    ``BRepAlgoAPI_Fuse`` over the per-tile prisms, which REBUILDS
+    geometry and discards the shared TShapes downstream. As a result,
+    the cohort↔unstructured AABB rescue count is unchanged from the
+    pre-refactor baseline (6 on this scene). Eliminating that residual
+    is a future refactor — would require replacing ``BRepAlgoAPI_Fuse``
+    in ``instanciate_occ`` with a TShape-preserving combiner when the
+    prisms are non-overlapping (which they are when the polygons came
+    from the cohort arrangement pre-cut).
     """
     from meshwell.orchestrator import generate_mesh
     from meshwell.structured.build import FaceRegistry
 
     cohort_callsite_hits = 0
-    polyprism_callsite_calls = 0
-    polyprism_callsite_hits = 0
+    neighbour_callsite_calls = 0
+    neighbour_callsite_hits = 0
     original = FaceRegistry.face_xy
 
     def instrumented(
@@ -306,7 +308,7 @@ def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
     ):
         import traceback
 
-        nonlocal cohort_callsite_hits, polyprism_callsite_calls, polyprism_callsite_hits
+        nonlocal cohort_callsite_hits, neighbour_callsite_calls, neighbour_callsite_hits
         key = self.key_for_polygon(polygon, z)
         is_hit = key in self._store
         stack = traceback.extract_stack(limit=3)
@@ -314,10 +316,10 @@ def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
         result = original(
             self, polygon, z, identify_arcs, min_arc_points, arc_tolerance
         )
-        if "polyprism" in caller:
-            polyprism_callsite_calls += 1
+        if "cohort_neighbour" in caller:
+            neighbour_callsite_calls += 1
             if is_hit:
-                polyprism_callsite_hits += 1
+                neighbour_callsite_hits += 1
         elif "build.py" in caller and is_hit:
             cohort_callsite_hits += 1
         return result
@@ -334,13 +336,13 @@ def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
     finally:
         FaceRegistry.face_xy = original
 
-    # Every PolyPrism face_xy call for a cohort-adjacent cladding tile
-    # must hit a cohort-cached face (this is the FaceRegistry's contract).
-    assert polyprism_callsite_calls > 0, (
-        "expected PolyPrism.instanciate_occ to consult FaceRegistry "
-        "for cohort-adjacent claddings; got 0 calls"
+    # Every CohortNeighbourUnstructured face_xy call for a cohort-adjacent
+    # cladding tile must hit a cohort-cached face (FaceRegistry's contract).
+    assert neighbour_callsite_calls > 0, (
+        "expected CohortNeighbourUnstructured.instanciate_occ to consult "
+        "FaceRegistry for cohort-adjacent claddings; got 0 calls"
     )
-    assert polyprism_callsite_hits == polyprism_callsite_calls, (
-        f"every PolyPrism face_xy call should hit the cohort cache; "
-        f"got {polyprism_callsite_hits}/{polyprism_callsite_calls}"
+    assert neighbour_callsite_hits == neighbour_callsite_calls, (
+        f"every CohortNeighbourUnstructured face_xy call should hit the "
+        f"cohort cache; got {neighbour_callsite_hits}/{neighbour_callsite_calls}"
     )
