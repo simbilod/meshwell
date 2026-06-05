@@ -557,3 +557,113 @@ PLC. Options:
    edge via mesh size hints, ensuring both faces see the same nodes.
 
 None of these are quick fixes; left as a tracked follow-up.
+
+## 2026-06-05 — Deeper PLC investigation: surface-type loss, not shared discretisation
+
+Followed up on the arc-cohort PLC blocker with a spike chain. Result:
+the framing in the previous section ("share enough geometric information
+... so gmsh sees a consistent PLC") was wrong. The actual root cause is
+simpler and more invasive to fix.
+
+**Real root cause: our cylindrical laterals reach gmsh as `Unknown`
+surfaces, not `Cylinder`.**
+
+Empirical chain:
+- Pure-gmsh build (`gmsh.model.occ.addCylinder` + `fragment`) of three
+  stacked cylinders meshes cleanly at `cl` down to 0.05.
+- Structured pipeline on the same scene (forced direct shell) FAILS PLC
+  at `cl ≤ 0.4`.
+- `gmsh.merge(BREP)` directly on our BREP export: surfaces = `{Cylinder:
+  6, Plane: 4}`. Canonical types preserved through BREP.
+- `gmsh.merge(XAO)` (production path): surfaces = `{Unknown: 12, Plane: 8}`.
+  Cylinders LOST and face count DOUBLED.
+- OCP inspection after `structured_post_pass`: 8 `Geom_Plane` + 8
+  `Geom_RectangularTrimmedSurface` wrapping `Geom_CylindricalSurface`.
+  After plain `cad_occ` on raw PolyPrism entities (no structured): 6
+  `Geom_Plane` + 6 `Geom_CylindricalSurface` (no wrap).
+
+The wrap is introduced by
+[`_build_cylindrical_lateral_face`](../../../meshwell/structured/build.py#L548)
+specifically. Its `BRepBuilderAPI_MakeFace(surf, wire, True)` call
+auto-trims the infinite cylinder against the wire's parametric bounds
+and stores the result as `Geom_RectangularTrimmedSurface`. gmsh's
+XAO/BREP reader doesn't unwrap this — it falls back to a generic
+("Unknown") surface mesher, which then produces facet meshes that
+violate gmsh's PLC checker at fine cl.
+
+PolyPrism's path (`BRepPrimAPI_MakePrism` from a planar face) does NOT
+trigger the wrap — the cylindrical lateral comes out clean. That's why
+non-structured arc geometry meshes fine.
+
+**Spike options tried (2026-06-05) — all insufficient:**
+
+- **gmsh `Mesh.setCompound(2, [tags])`** to group cylindrical patches.
+  Counter-result: applying compound to the pure-gmsh build (which
+  already passes at cl=0.05) INTRODUCES the same PLC error even at
+  cl=0.5. `setCompound` reparametrizes patches into one surface, which
+  is the wrong operation when the patches are already topologically
+  consistent. **`setCompound` is not the right tool here.**
+- **Shared `Geom_CylindricalSurface` (SurfaceRegistry-style)**: every
+  cylindrical lateral references one canonical surface instance,
+  axis-aligned to global +X. Pushes PLC threshold from `cl=0.4` to
+  `cl=0.3` (one notch of improvement) but still fails at finer cl.
+  Necessary but not sufficient.
+- **Pre-BOP unwrap** (`BRep_Builder.UpdateFace` to swap
+  `RectangularTrimmedSurface` -> `BasisSurface`): causes BOP to
+  fragment the cohort shell. The trimmed wrap is load-bearing for
+  BOP's bounded-patch handling.
+- **Post-BOP unwrap** (after `cad_occ`, before `write_xao`): produces a
+  BREP that gmsh fails to read (face/PCurve state inconsistent — PCurves
+  were computed on the trimmed parametric domain, unwrapping the
+  underlying surface invalidates them).
+- **`BRep_Builder.MakeFace` + `Add(wire)` (Method D)**: bypasses
+  `BRepBuilderAPI_MakeFace`'s auto-trim in isolated tests, but inside
+  the pipeline (with `EdgeRegistry`-shared, topologically-closed wires)
+  it still produces wrapped surfaces. The wrap depends on wire
+  topology, not on the constructor call site.
+- **Edge construction via `Geom_Circle` directly** (path 1: replace
+  [`EdgeRegistry.arc_xy`](../../../meshwell/structured/build.py#L112)'s
+  `GC_MakeArcOfCircle`-produced `Geom_TrimmedCurve` wrapper with a raw
+  `Geom_Circle` + parametric range). Hypothesis was that the trimmed
+  edge curve forced the trimmed surface. Result: edge curve type does
+  NOT influence the surface wrap. PLC threshold unchanged.
+
+**Why no quick fix.** Every spike that produced an unwrapped
+`Geom_CylindricalSurface` either:
+1. broke BOP fragmentation (BOP wants bounded patches), or
+2. broke face validity (PCurves stale on the new surface), or
+3. didn't actually unwrap once the wire was topologically closed via
+   shared vertices in `VertexRegistry`.
+
+The cleanest architectural fix is to **build cohort laterals via
+`BRepPrimAPI_MakePrism` from the planar top/bot face**, the way
+PolyPrism does, instead of from-scratch wire-on-cylinder assembly.
+That keeps the cylinder surface unwrapped (PolyPrism path was verified
+clean in this spike) and avoids the manual PCurve fixup that currently
+forces the wrap. The catch: `MakePrism` produces a whole new TShape
+graph that doesn't reuse `EdgeRegistry`/`VertexRegistry` entries, so
+cohort↔cladding TShape sharing has to be recovered via a separate
+post-pass (sew shared edges by geometry, then BOP-fuse). This is the
+inverse of the current architecture and a real refactor — not a spike.
+
+**Status.** Production keeps the conditional dispatch: rectangular
+cohort scenes get direct-shell + 0 rescues; arc-bearing cohort scenes
+fall back to MakePrism+Fuse + retained AABB rescues. Meander stress
+scene stays at 6 cohort↔unstructured rescues. Disc-cohort scenes mesh
+correctly at `cl ≥ 0.5`. The `cl ≤ 0.4` failure mode for arc cohorts
+with direct shell remains a future-investigation blocker.
+
+**Scope for any future fix attempt.** Touches `_build_cylindrical_lateral_face`,
+all callers of it, the cohort shell builder, and the cohort/cladding
+TShape-sharing contract. Plan should:
+1. Decide whether to invert architecture (MakePrism-first, sew TShapes
+   after) or to find a non-wrapping wire-on-cylinder constructor we
+   haven't tried (e.g. building face on a *partial* cylindrical
+   surface, not the infinite one).
+2. Verify shared edges survive the new path so cohort↔cladding face
+   sharing (FaceRegistry) still works.
+3. Verify BOP doesn't fragment the unwrapped patches.
+4. Pass disc-cohort at `cl=0.05` AND meander stress with 0 residual
+   rescues.
+
+Spike scripts archived in `/tmp/spike_*.py` (transient — not committed).
