@@ -499,3 +499,61 @@ After the CohortNeighbourUnstructured refactor (plan
 multi-tile BOP fragmentation independently, then swap
 `build_neighbour_shell`'s body for direct `BRep_Builder` shell assembly.
 The signature already accepts the registries needed.
+
+---
+
+## 2026-06-04 — Arc-cohort PLC investigation outcome
+
+Followed up on the arc-cohort gmsh PLC error blocker. Verified
+empirically that direct `BRep_Builder` shell assembly DOES work and
+DOES eliminate AABB rescues when the cohort outer + tile boundaries
+contain no arc edges. The meander stress scene under forced direct
+assembly drops from 6 → 0 rescues.
+
+**Root cause confirmed (PLC error):** at shared arc edges between
+cohort cylindrical lateral faces (built via
+`_build_cylindrical_lateral_face`) and the neighbour's planar bot face
+(built freshly at `z_far`), the cylindrical surface's mesh
+discretisation doesn't align with the planar surface's. gmsh's PLC
+checker reports "a segment and a facet intersect at point" at
+`default_characteristic_length ≤ ~0.4` on a unit disc. Coarser meshes
+pass (`cl ≥ 0.5`) because fewer interior nodes are placed near the
+shared edge.
+
+**What was tried and didn't work:**
+- Reversing face orientations for the inverted bot-z prism direction.
+- Deriving lateral verticals from actual edge endpoints (instead of
+  per-polygon-vertex indexing). The verticals indexing IS a real bug
+  for arc-collapsed edges, but fixing it doesn't unblock the PLC error.
+
+**What works (now in production, commit
+[`53b9e99`](../../../meshwell/structured/cohort_neighbour_shell.py)):**
+
+```
+if any_tile_or_outer_has_arcs:
+    fall back to MakePrism + multi-tile Fuse   # Task 7 behaviour
+else:
+    direct BRep_Builder shell assembly         # TShape-preserving
+```
+
+Real-world impact:
+- Scenes with rectangular cohort + rectangular tile boundaries
+  (substrate/superstrate stacks, side cladding etc.) now use the
+  direct shell path and have 0 cohort↔neighbour AABB rescues.
+- Scenes with any arc edges anywhere on cohort sub-piece boundaries
+  fall back to the legacy path and retain residual rescues.
+- Meander stress scene still 6 rescues (its tiles have arcs).
+
+**Genuine remaining blocker (for a future investigation):** make the
+cohort's cylindrical lateral surface and the neighbour's bot+lateral
+surfaces share enough geometric information that gmsh sees a consistent
+PLC. Options:
+1. Build the neighbour's bot face on a non-planar surface that matches
+   the cohort cylinder's discretisation at the shared arc edge.
+2. Share the cohort cylindrical lateral surface TShape with the
+   neighbour as a "wall" between cohort and neighbour, so gmsh's
+   discretisation is forced to be consistent.
+3. Force gmsh to use a specific node distribution on the shared arc
+   edge via mesh size hints, ensuring both faces see the same nodes.
+
+None of these are quick fixes; left as a tracked follow-up.
