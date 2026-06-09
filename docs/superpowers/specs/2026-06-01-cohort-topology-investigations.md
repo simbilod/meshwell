@@ -667,3 +667,56 @@ TShape-sharing contract. Plan should:
    rescues.
 
 Spike scripts archived in `/tmp/spike_*.py` (transient — not committed).
+
+## 2026-06-09 — Arc-cohort PLC blocker resolved by removing pre-cut
+
+The 2026-06-05 deep-dive concluded the arc-cohort PLC error required an
+architectural refactor (`MakePrism`-first with TShape sharing recovered
+post-hoc). The actual resolution was simpler and the opposite of what
+the previous sections recommended: **delete the cladding pre-cut
+machinery entirely**.
+
+Spike (2026-06-09): monkey-patched `decompose_cohorts` to return
+unstructured entities unchanged. Measured:
+
+- Disc-cohort + base + cap at cl ∈ {0.5, 0.4, 0.3, 0.2, 0.1}: ALL PASS
+  (vs production: PASS only at cl ≥ 0.5; FAIL with PLC error at cl ≤ 0.4).
+- Meander stress scene: PASS at cl=0.4 and cl=0.8 with **2 AABB rescues**
+  (vs production: PASS with 6 rescues). Same 18 interface physical groups,
+  same 686 wedge elements — cohort decomposition behaviour identical.
+- Full structured test suite: 147/153 pass. The 6 failures are all
+  explicit tests of the deleted machinery (pre-cut upgrade,
+  `CohortNeighbourUnstructured` class, FaceRegistry cross-installation
+  on the cladding side). No correctness regressions.
+
+**Why this works.** The cladding-side `CohortNeighbourUnstructured` +
+custom shell builder was meant to drive cohort↔cladding rescue count to
+0 by pre-baking shared `TopoDS_Face` TShapes between cohort sub-pieces
+and cladding tiles. In practice it produced wrapped-cylinder faces
+(`Geom_RectangularTrimmedSurface`) that gmsh sees as `Unknown` and
+that BOP's TShape-identity matching couldn't preserve through the Fuse
+step. Plain BOP fragment on uncut PolyPrisms produces canonical
+`Geom_CylindricalSurface` faces (via `BRepPrimAPI_MakePrism`), which
+gmsh handles cleanly at fine cl, AND finds shared boundaries with one
+clean TShape per coincident face. The pre-cut machinery was solving a
+problem BOP already handles and introducing new failure modes in the
+process.
+
+**What survives.** Cohort sub-piece decomposition, cohort-internal
+TShape sharing via `FaceRegistry`/`EdgeRegistry`/`VertexRegistry`, wedge
+stamping, transfinite hints, structured z-interval carving. Those are
+the irreplaceable structured-meshing value props.
+
+**What was deleted** (see plan
+[`docs/superpowers/plans/2026-06-09-drop-cohort-neighbour-precut.md`](../plans/2026-06-09-drop-cohort-neighbour-precut.md)):
+
+- `meshwell/structured/cohort_neighbour.py` — `CohortNeighbourUnstructured` class.
+- `meshwell/structured/cohort_neighbour_shell.py` — custom shell builder.
+- `decompose_cohorts`'s unstructured upgrade block.
+- Orchestrator's `FaceRegistry` cross-installation block.
+- 7 tests of the deleted mechanism (3 whole files + 4 individual tests).
+- `test_meander_aabb_rescue_count_bounded` baseline tightened 6 → 2.
+
+The earlier "Options 1/2/3" in the 2026-06-04 section and the
+`Geom_RectangularTrimmedSurface` deep-dive in 2026-06-05 are now
+historical — superseded by removing the pre-cut entirely.
