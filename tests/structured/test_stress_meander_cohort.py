@@ -271,102 +271,17 @@ def test_meander_physical_groups_present(meander_entities, tmp_path):
     assert "void_B" not in field, "void_B should be carved away"
 
 
-def test_meander_face_registry_pre_bop_sharing(meander_entities, tmp_path):
-    """Cladding pre-cut faces share TShape with cohort sub-piece faces pre-BOP.
-
-    The FaceRegistry establishes ``TopoDS_Face`` TShape sharing between
-    cohort sub-piece bot/top faces and adjacent unstructured PolyPrism
-    touched-plane faces by construction. We verify the routing is correct
-    by counting cohort cache hits during
-    ``CohortNeighbourUnstructured.instanciate_occ``.
-
-    NOTE: ``CohortNeighbourUnstructured.instanciate_occ`` then runs
-    ``BRepAlgoAPI_Fuse`` over the per-tile prisms, which REBUILDS
-    geometry and discards the shared TShapes downstream. As a result,
-    the cohort↔unstructured AABB rescue count is unchanged from the
-    pre-refactor baseline (6 on this scene). Eliminating that residual
-    is a future refactor — would require replacing ``BRepAlgoAPI_Fuse``
-    in ``instanciate_occ`` with a TShape-preserving combiner when the
-    prisms are non-overlapping (which they are when the polygons came
-    from the cohort arrangement pre-cut).
-    """
-    from meshwell.orchestrator import generate_mesh
-    from meshwell.structured.build import FaceRegistry
-
-    cohort_callsite_hits = 0
-    neighbour_callsite_calls = 0
-    neighbour_callsite_hits = 0
-    original = FaceRegistry.face_xy
-
-    def instrumented(
-        self,
-        polygon,
-        z,
-        identify_arcs,
-        min_arc_points,
-        arc_tolerance,
-    ):
-        import traceback
-
-        nonlocal cohort_callsite_hits, neighbour_callsite_calls, neighbour_callsite_hits
-        key = self.key_for_polygon(polygon, z)
-        is_hit = key in self._store
-        stack = traceback.extract_stack(limit=3)
-        caller = stack[-2].filename
-        result = original(
-            self, polygon, z, identify_arcs, min_arc_points, arc_tolerance
-        )
-        if "cohort_neighbour" in caller:
-            neighbour_callsite_calls += 1
-            if is_hit:
-                neighbour_callsite_hits += 1
-        elif "build.py" in caller and is_hit:
-            cohort_callsite_hits += 1
-        return result
-
-    FaceRegistry.face_xy = instrumented
-    try:
-        generate_mesh(
-            meander_entities,
-            dim=3,
-            output_mesh=tmp_path / "out.msh",
-            default_characteristic_length=0.5,
-            resolution_specs=_resolution_specs(),
-        )
-    finally:
-        FaceRegistry.face_xy = original
-
-    # Every CohortNeighbourUnstructured face_xy call for a cohort-adjacent
-    # cladding tile must hit a cohort-cached face (FaceRegistry's contract).
-    assert neighbour_callsite_calls > 0, (
-        "expected CohortNeighbourUnstructured.instanciate_occ to consult "
-        "FaceRegistry for cohort-adjacent claddings; got 0 calls"
-    )
-    assert neighbour_callsite_hits == neighbour_callsite_calls, (
-        f"every CohortNeighbourUnstructured face_xy call should hit the "
-        f"cohort cache; got {neighbour_callsite_hits}/{neighbour_callsite_calls}"
-    )
-
-
 def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
     """Assert the AABB rescue count on the meander stress scene is bounded.
 
-    After the CohortNeighbourUnstructured refactor + FaceRegistry routing,
-    every PolyPrism.instanciate_occ call goes through face_xy and hits the
-    cohort cache (verified by test_meander_face_registry_pre_bop_sharing).
-
-    For SINGLE-TILE cladding tiles, MakePrism preserves the cached face's
-    TShape and BOP merges by identity — no AABB rescue.
-
-    For MULTI-TILE cladding (the meander scene falls here because the
-    cladding gets split into 6 tiles by the arrangement), BRepAlgoAPI_Fuse
-    inside build_neighbour_shell rebuilds inter-tile interfaces and
-    discards the shared TShapes. The AABB fallback fires for each
-    cohort↔cladding face pair that didn't survive Fuse.
-
-    This test asserts the count is BOUNDED to the historical baseline.
-    A future shell-assembly refactor that avoids Fuse (resolving the
-    arc-PLC and multi-solid BOP issues) would drop the count to 0.
+    Post-simplification (2026-06-09) baseline: 2 rescues. BOP fragment
+    discovers most cohort↔cladding face pairs by TShape identity; the
+    AABB fallback handles the residue. Previously the dedicated
+    CohortNeighbourUnstructured custom shell built pre-baked TShape
+    sharing that was supposed to drive this to 0 but actually drove it
+    to 6 because the custom-shell wrapped-cylinder faces created TShape
+    mismatches BOP then had to recover. See
+    docs/superpowers/specs/2026-06-01-cohort-topology-investigations.md.
     """
     from collections import Counter
     from itertools import combinations
@@ -441,12 +356,12 @@ def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
     finally:
         xao_mod._compute_physical_groups = original
 
-    # Historical baseline: 6 rescues at this scene under the
-    # FaceRegistry refactor without custom shell assembly. If the
-    # count INCREASES, something regressed. If it DECREASES, the
-    # comment block above is out of date (good problem).
+    # New baseline after dropping CohortNeighbourUnstructured pre-cut
+    # (2026-06-09): rescue count drops from 6 -> 2 because plain BOP
+    # fragment shares cohort↔cladding face TShapes more cleanly than
+    # the pre-baked direct-shell path did.
     total = sum(rescues.values())
-    assert total <= 6, (
-        f"meander AABB rescue count regressed: expected ≤6 (baseline), "
-        f"got {total}: {dict(rescues)}"
+    assert total <= 2, (
+        f"meander AABB rescue count regressed: expected <= 2 (post-simplification "
+        f"baseline), got {total}: {dict(rescues)}"
     )
