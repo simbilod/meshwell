@@ -1,18 +1,16 @@
 """Stage 3 — cohort decomposition in shapely.
 
-Stage 3b: collect z-planes (just the cohort's own slab boundaries
-after the 3a validator ran).
-Stage 3c: per-z-interval footprint with Policy B carving (this task).
-Stage 3d: bidirectional pre-cut at shared z-planes (Task 7).
+Stage 3b: collect z-planes (the cohort's slab boundaries after the 3a
+validator ran).
+Stage 3c: per-z-interval footprint with Policy B carving.
 """
 
 from __future__ import annotations
 
-from copy import copy
 from typing import Any
 
 import shapely
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import Polygon
 from shapely.ops import polygonize, unary_union
 
 from meshwell.structured.types import Arrangement, Cohort, StructuredSlab, SubPiece
@@ -55,9 +53,9 @@ def build_cohort_arrangement(
     AND whose XY intersects the cohort footprint).
 
     The returned `Arrangement.polygons` tile the union of all those
-    polygons' interiors. Downstream extractors filter this list by
-    z-interval (cohort sub-pieces) or by entity footprint (unstructured
-    pre-cut). All filters return the exact same Polygon objects.
+    polygons' interiors. The cohort sub-piece extractor
+    (``arrangement_subpieces_for_interval``) filters this list by
+    z-interval to produce per-interval SubPieces.
     """
     linework = [s.footprint.boundary for s in cohort.slabs] + list(
         adjacent_unstructured
@@ -104,38 +102,6 @@ def arrangement_subpieces_for_interval(
     return subs
 
 
-def arrangement_pre_cut_for_entity(
-    arrangement: Arrangement,
-    entity_polygons,
-):
-    """Project arrangement polygons through one unstructured entity's footprint.
-
-    Returns:
-        - the original `entity_polygons` if no arrangement polygon's
-          representative point falls inside it (entity is untouched).
-        - the single arrangement Polygon (by Python `is` identity) if
-          exactly one matches.
-        - a `MultiPolygon` whose members are bit-exactly equal to
-          arrangement polygons when multiple match. Shapely 2.x's
-          `.geoms` accessor returns fresh wrapper objects each access,
-          so Python `is` is NOT preserved through MultiPolygon. The
-          underlying GEOS coordinate sequences are shared by reference;
-          members satisfy `equals_exact(member, arrangement_poly,
-          tolerance=0.0)`. See `Arrangement` docstring for the full
-          identity contract.
-    """
-    inside = [
-        p
-        for p in arrangement.polygons
-        if entity_polygons.contains(p.representative_point())
-    ]
-    if not inside:
-        return entity_polygons
-    if len(inside) == 1:
-        return inside[0]
-    return MultiPolygon(inside)
-
-
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],
@@ -144,15 +110,18 @@ def decompose_cohorts(
     """Stage 3 driver — cohort-global arrangement edition.
 
     Returns:
-        - subpieces_per_cohort: parallel to `cohorts`. Each cohort gets
+        - subpieces_per_cohort: parallel to ``cohorts``. Each cohort gets
           a flat list of SubPiece records (one per z-interval x sub-polygon).
-        - pre_cut_unstructured: same order as input. PolyPrisms that
-          share a z-plane with any cohort are returned as shallow
-          copies with their `polygons` replaced by a Polygon (or
-          MultiPolygon) drawn FROM the cohort's arrangement, by Python
-          identity (single-Polygon case) or bit-exact geometric equality
-          (MultiPolygon case; see `Arrangement` docstring). Non-touching
-          unstructured entities are returned unchanged.
+        - unstructured_entities: returned UNCHANGED (same list, same
+          Python objects). Cohort↔unstructured interfaces are discovered
+          downstream by BOP fragment with AABB-rescue fallback for any
+          face pairs BOP doesn't auto-match by TShape identity. The
+          earlier ``CohortNeighbourUnstructured`` pre-cut machinery was
+          deleted on 2026-06-09 (see
+          docs/superpowers/specs/2026-06-01-cohort-topology-investigations.md):
+          spike evidence showed it INCREASED rescue count on the meander
+          stress scene and BLOCKED arc-cohort scenes at fine cl due to
+          wrapped-cylinder surface types reaching gmsh as ``Unknown``.
     """
     from meshwell.polyprism import PolyPrism
 
@@ -178,9 +147,8 @@ def decompose_cohorts(
                 # snapped to in structured_pre_pass. Without this, the
                 # 1e-5 perturbation from prepare_entities makes the
                 # cladding boundary live on a different grid than the
-                # cohort, and polygonize produces a thin annulus that
-                # no cohort sub-piece covers — breaking face-registry
-                # sharing for the embed sub-piece.
+                # cohort, and polygonize produces a thin annulus that no
+                # cohort sub-piece covers.
                 lines.append(
                     shapely.set_precision(
                         ent.polygons.boundary,
@@ -211,70 +179,9 @@ def decompose_cohorts(
             )
         subpieces_per_cohort.append(cohort_subs)
 
-    # 4. Unstructured pre-cut: each touching entity picks up arrangement
-    # polygons by identity. Find each entity's touched cohorts/planes and
-    # apply pre-cut from the arrangement(s).
-    pre_cut: list[Any] = []
-    for ent in unstructured_entities:
-        if not isinstance(ent, PolyPrism) or not ent.extrude:
-            pre_cut.append(ent)
-            continue
-        touched: list[tuple[int, float]] = []
-        for ci, cohort in enumerate(cohorts):
-            for z in (ent.zmin, ent.zmax):
-                z_snap = _snap_to_cohort_plane(z, cohort)
-                if z_snap is None:
-                    continue
-                if _cohort_xy_at(cohort, z_snap).intersects(ent.polygons):
-                    touched.append((ci, z_snap))
-                    break
-        if not touched:
-            pre_cut.append(ent)
-            continue
-        # Use the first touched cohort's arrangement as the source of
-        # polygons. (Multi-cohort touch is rare; if it happens, the first
-        # cohort's arrangement wins. This matches the previous behaviour
-        # of merging cut_unions at the entity's touched planes.)
-        primary_ci = touched[0][0]
-        new_polys = arrangement_pre_cut_for_entity(
-            arrangements[primary_ci], ent.polygons
-        )
-        # Arc-detection propagation: unchanged from previous logic.
-        arc_bearing_slabs: list[StructuredSlab] = []
-        for ci, _ in touched:
-            cohort = cohorts[ci]
-            arc_bearing_slabs.extend(s for s in cohort.slabs if s.identify_arcs)
-
-        from meshwell.structured.cohort_neighbour import (
-            CohortNeighbourUnstructured,
-        )
-
-        # Extract tile polygons from new_polys for the typed constructor.
-        if hasattr(new_polys, "geoms"):
-            tile_polygons = tuple(new_polys.geoms)
-        else:
-            tile_polygons = (new_polys,)
-
-        # Arc-detection overrides (computed above as arc_bearing_slabs)
-        # apply to the original entity before upgrading. Mutate a shallow
-        # copy first so the user's original instance is untouched.
-        upgraded_source = copy(ent)
-        if arc_bearing_slabs:
-            upgraded_source.identify_arcs = True
-            upgraded_source.arc_tolerance = max(
-                s.arc_tolerance for s in arc_bearing_slabs
-            )
-            upgraded_source.min_arc_points = min(
-                s.min_arc_points for s in arc_bearing_slabs
-            )
-        new_ent = CohortNeighbourUnstructured.from_polyprism(
-            original=upgraded_source,
-            cohort_adjacency=touched,
-            tile_polygons=tile_polygons,
-        )
-        pre_cut.append(new_ent)
-
-    return subpieces_per_cohort, pre_cut
+    # 4. Unstructured entities: returned unchanged. BOP + AABB rescue
+    # handle interface detection downstream.
+    return subpieces_per_cohort, list(unstructured_entities)
 
 
 def _cohort_xy_at(cohort: Cohort, z: float):
