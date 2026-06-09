@@ -45,9 +45,12 @@ class StructuredState:
     face_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
     sub_solid_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
 
-    # Per-cohort (VertexRegistry, EdgeRegistry) pairs, indexed by
-    # cohort_index. Used by adjacent unstructured neighbours during
-    # OCC construction to share boundary edges with the cohort.
+    # Per-cohort (VertexRegistry, EdgeRegistry, FaceRegistry) triples,
+    # indexed by cohort_index. Constructed in structured_pre_pass and
+    # threaded into build_cohort_compound so the cohort's pre-baked TShapes
+    # (sub-piece bot/top faces, lateral edges) are shared by identity within
+    # each cohort. Aggregated here for diagnostic access; no downstream
+    # stage reads this field directly.
     cohort_registries: list = field(default_factory=list)
 
 
