@@ -413,14 +413,18 @@ class FaceRegistry:
         identify_arcs: bool,
         min_arc_points: int,
         arc_tolerance: float,
+        arrangement: "Arrangement | None" = None,
     ) -> "TopoDS_Face":
         """Return a unique TopoDS_Face for ``polygon`` at height ``z``.
 
-        Builds the face on first call via the existing
-        ``_build_horizontal_face`` helper (so arc detection / edge sharing
-        through the EdgeRegistry are honoured). Subsequent calls with a
-        polygon that produces the same canonical key return the cached
-        face by TShape identity.
+        Builds the face on first call via ``_build_horizontal_face`` (so
+        arc detection / edge sharing through the EdgeRegistry are
+        honoured). Subsequent calls with a polygon that produces the
+        same canonical key return the cached face by TShape identity.
+
+        When ``arrangement`` is provided, the build path uses canonical
+        arrangement edges so sub-pieces sharing a boundary subset emit
+        the same OCC TShape on first construction.
         """
         key = self.key_for_polygon(polygon, z)
         if key not in self._store:
@@ -431,6 +435,7 @@ class FaceRegistry:
                 identify_arcs,
                 min_arc_points,
                 arc_tolerance,
+                arrangement=arrangement,
             )
         return self._store[key]
 
@@ -590,6 +595,7 @@ def _build_horizontal_face(
     min_arc_points: int,
     arc_tolerance: float,
     face_registry: "FaceRegistry | None" = None,
+    arrangement: "Arrangement | None" = None,
 ) -> TopoDS_Face:
     """Build a horizontal TopoDS_Face for a polygon at fixed z.
 
@@ -597,10 +603,19 @@ def _build_horizontal_face(
     polygon's canonical key, sharing TShape across callers. When None,
     constructs a fresh TopoDS_Face each call (legacy behaviour for tests
     and call sites that don't have a registry threaded through).
+
+    When ``arrangement`` is provided, the underlying ``polyline_xy``
+    call uses canonical arrangement edges so sub-pieces sharing a
+    boundary subset emit the same OCC TShape by construction.
     """
     if face_registry is not None:
         return face_registry.face_xy(
-            polygon, z, identify_arcs, min_arc_points, arc_tolerance
+            polygon,
+            z,
+            identify_arcs,
+            min_arc_points,
+            arc_tolerance,
+            arrangement=arrangement,
         )
     outer_coords = _ring_coords(polygon.exterior)
     outer_edges = ereg.polyline_xy(
@@ -609,6 +624,7 @@ def _build_horizontal_face(
         identify_arcs,
         min_arc_points,
         arc_tolerance,
+        arrangement=arrangement,
     )
     mw = BRepBuilderAPI_MakeWire()
     for e in outer_edges:
@@ -623,6 +639,7 @@ def _build_horizontal_face(
             identify_arcs,
             min_arc_points,
             arc_tolerance,
+            arrangement=arrangement,
         )
         mw_h = BRepBuilderAPI_MakeWire()
         for e in hole_edges:

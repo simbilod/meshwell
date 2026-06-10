@@ -293,3 +293,92 @@ def test_parallel_edges_between_same_nodes_raise():
             min_arc_points=5,
             arc_tolerance=1e-3,
         )
+
+
+def test_face_xy_passes_arrangement_to_polyline_xy():
+    """FaceRegistry.face_xy forwards the arrangement.
+
+    The underlying _build_horizontal_face / polyline_xy use canonical
+    edges. Two distinct sub-pieces sharing a boundary edge then
+    yield faces whose shared OCC edge is the same TShape.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.build import (
+        EdgeRegistry,
+        FaceRegistry,
+        VertexRegistry,
+        _build_horizontal_face,
+    )
+    from meshwell.structured.decompose import build_cohort_arrangement
+    from meshwell.structured.types import Cohort, StructuredSlab
+
+    def _slab(idx, poly):
+        return StructuredSlab(
+            source_index=idx,
+            footprint=poly,
+            zlo=0.0,
+            zhi=1.0,
+            mesh_order=1.0,
+            mesh_bool=True,
+            physical_name=("x",),
+            identify_arcs=False,
+            arc_tolerance=1e-3,
+            min_arc_points=4,
+        )
+
+    left = _slab(0, Polygon([(0, 0), (6, 0), (6, 10), (0, 10)]))
+    right = _slab(1, Polygon([(4, 0), (10, 0), (10, 10), (4, 10)]))
+    cohort = Cohort(slabs=(left, right), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+    freg = FaceRegistry(edges=ereg, point_tolerance=1e-3)
+
+    # Two distinct sub-pieces from the arrangement -> two faces.
+    # Their shared edge MUST be the same TShape.
+    polys = list(arr.polygons)
+    face1 = _build_horizontal_face(
+        polys[0],
+        0.0,
+        ereg,
+        identify_arcs=False,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+        face_registry=freg,
+        arrangement=arr,
+    )
+    face2 = _build_horizontal_face(
+        polys[1],
+        0.0,
+        ereg,
+        identify_arcs=False,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+        face_registry=freg,
+        arrangement=arr,
+    )
+    # If both faces share at least one edge TShape, the canonical
+    # replay worked.
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopTools import TopTools_ShapeMapHasher
+
+    def _edge_ids(face):
+        hasher = TopTools_ShapeMapHasher()
+        out = set()
+        exp = TopExp_Explorer(face, TopAbs_EDGE)
+        while exp.More():
+            out.add(hasher(exp.Current()))
+            exp.Next()
+        return out
+
+    assert _edge_ids(face1) & _edge_ids(
+        face2
+    ), "expected at least one shared edge TShape between adjacent faces"
