@@ -130,7 +130,7 @@ class ArrangementEdge:
     is_closed: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(eq=False)
 class Arrangement:
     """Cohort-global polygon arrangement.
 
@@ -161,6 +161,12 @@ class Arrangement:
       are bit-exactly equal (`equals_exact(member, arrangement_poly,
       tolerance=0.0)`). Downstream OCC builders that key polygons by
       coordinate hash get identical hashes from both consumers.
+
+    Note: ``edge_by_vertex_pair`` is a mutable dict, so this dataclass
+    uses ``eq=False`` rather than ``frozen=True``. That inherits both
+    identity-based equality and identity-based hashing from ``object``,
+    keeping ``Arrangement`` usable as a dict key without violating
+    Python's ``a == b → hash(a) == hash(b)`` contract.
     """
 
     cohort_index: int

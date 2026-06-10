@@ -124,3 +124,29 @@ def test_arrangement_edge_defaults_to_empty():
     )
     assert edge.vertex_keys[0] != edge.vertex_keys[-1]
     assert edge.is_closed is False
+
+
+def test_build_cohort_arrangement_populates_canonical_edges():
+    """build_cohort_arrangement now produces an Arrangement whose canonical_edges tuple is populated.
+
+    ``edge_by_vertex_pair`` indexes every open-edge consecutive vertex pair.
+    """
+    cohort = Cohort(
+        slabs=(
+            _slab(0, _rect(0, 0, 6, 10)),
+            _slab(1, _rect(4, 0, 10, 10)),
+        ),
+        z_planes=(0.0, 1.0),
+    )
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+    assert len(arr.canonical_edges) > 0
+    # Lookup non-empty (rectangles have no closed standalone components).
+    assert len(arr.edge_by_vertex_pair) > 0
+    # Each registered pair points to an existing canonical edge index.
+    for ei in arr.edge_by_vertex_pair.values():
+        assert 0 <= ei < len(arr.canonical_edges)

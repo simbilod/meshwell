@@ -206,6 +206,7 @@ def build_cohort_arrangement(
     cohort_index: int,
     cohort: Cohort,
     adjacent_unstructured: list,
+    point_tolerance: float = 1e-3,
 ) -> Arrangement:
     """One shapely polygonize over the union of all relevant boundaries.
 
@@ -218,13 +219,63 @@ def build_cohort_arrangement(
     polygons' interiors. The cohort sub-piece extractor
     (``arrangement_subpieces_for_interval``) filters this list by
     z-interval to produce per-interval SubPieces.
+
+    `Arrangement.canonical_edges` and `edge_by_vertex_pair` carry the
+    arrangement's unique boundary edges with arcs fit ONCE per edge.
+    Sub-piece wire builders look up each consecutive vertex pair in
+    `edge_by_vertex_pair` and replay the stored segments, so two
+    sub-pieces sharing an arc boundary subset emit the SAME OCC
+    TShape by construction.
+
+    `identify_arcs` for the canonical fit is the OR of all
+    `StructuredSlab.identify_arcs` flags in the cohort. The arc
+    parameters use the strictest (largest `min_arc_points`, smallest
+    `arc_tolerance`) across the cohort's slabs.
     """
     linework = [s.footprint.boundary for s in cohort.slabs] + list(
         adjacent_unstructured
     )
     merged = unary_union(linework)
     pieces = tuple(polygonize(merged))
-    return Arrangement(cohort_index=cohort_index, polygons=pieces)
+
+    # OR identify_arcs across the cohort's slabs; pick strictest arc
+    # params so the canonical fit never violates any contributor's
+    # preference.
+    identify_arcs = any(s.identify_arcs for s in cohort.slabs)
+    min_arc_points = max(
+        (s.min_arc_points for s in cohort.slabs if s.identify_arcs),
+        default=5,
+    )
+    arc_tolerance = min(
+        (s.arc_tolerance for s in cohort.slabs if s.identify_arcs),
+        default=1e-3,
+    )
+    # Canonical edges live at the cohort's z-planes; use the first plane
+    # as a representative z for vertex-key quantization (all linework is
+    # 2D and z is just the quantization Z-bucket).
+    z = cohort.z_planes[0] if cohort.z_planes else 0.0
+
+    try:
+        canonical_edges, edge_by_vertex_pair = _build_canonical_edges(
+            merged,
+            z=z,
+            point_tolerance=point_tolerance,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+    except CanonicalArrangementError as e:
+        # Re-raise with the correct cohort index.
+        raise CanonicalArrangementError(
+            cohort_index=cohort_index, reason=e.reason
+        ) from None
+
+    return Arrangement(
+        cohort_index=cohort_index,
+        polygons=pieces,
+        canonical_edges=canonical_edges,
+        edge_by_vertex_pair=edge_by_vertex_pair,
+    )
 
 
 def arrangement_subpieces_for_interval(
@@ -328,6 +379,7 @@ def decompose_cohorts(
                 cohort_index=ci,
                 cohort=cohort,
                 adjacent_unstructured=adjacency_lines_per_cohort[ci],
+                point_tolerance=point_tolerance,
             )
         )
 
