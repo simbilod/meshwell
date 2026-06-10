@@ -55,3 +55,19 @@ def test_cohort_not_wrapped_error_message():
     assert "z=0.0" in msg
     assert "sub-piece 2" in msg
     assert "no neighbour covers this sub-piece" in msg
+
+
+def test_canonical_arrangement_error_message():
+    from meshwell.structured.exceptions import (
+        CanonicalArrangementError,
+        StructuredError,
+    )
+
+    err = CanonicalArrangementError(
+        cohort_index=3,
+        reason="vertex pair ((0,0,0),(1,1,0)) not in canonical edge lookup",
+    )
+    assert isinstance(err, StructuredError)
+    assert err.cohort_index == 3
+    assert "cohort 3" in str(err)
+    assert "vertex pair" in str(err)

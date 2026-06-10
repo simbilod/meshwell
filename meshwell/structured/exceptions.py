@@ -264,3 +264,23 @@ class CohortNotWrappedError(StructuredError):
             f"cohort {cohort_index} z={z_plane} sub-piece {sub_piece_index}: "
             f"{reason}"
         )
+
+
+class CanonicalArrangementError(StructuredError):
+    """Cohort arrangement's canonical-edge invariant was violated.
+
+    Raised by ``meshwell.structured.decompose._build_canonical_edges``
+    when two distinct canonical edges share an unordered vertex pair
+    (i.e., parallel edges between the same arrangement nodes — should
+    be impossible from ``unary_union + polygonize``), or by
+    ``validate_canonical_edge_coverage`` when a sub-piece ring has
+    MIXED coverage in ``Arrangement.edge_by_vertex_pair`` (some pairs
+    found, some missing) — indicating a coverage bug in the
+    canonicaliser, since each ring should be either fully covered by
+    open canonical edges OR fully on a single closed standalone edge.
+    """
+
+    def __init__(self, cohort_index: int, reason: str):
+        self.cohort_index = cohort_index
+        self.reason = reason
+        super().__init__(f"cohort {cohort_index}: {reason}")
