@@ -465,16 +465,38 @@ def polyline_segments(
     min_arc_points: int,
     arc_tolerance: float,
     point_tolerance: float,
+    arrangement: "Arrangement | None" = None,
+    z: float | None = None,
 ) -> list[_PolylineSegment]:
     """Decompose a 2D polyline into line and arc segments.
 
-    Thin adapter over ``meshwell.geometry_entity.decompose_vertices_2d``
-    that flattens the canonical 3D ``DecompositionSegment`` form into the
-    lateral-builder's ``_PolylineSegment`` form. Routing both the
-    horizontal-face (``polyline_xy``) and lateral-face callers through
-    the same canonical detector keeps the bot/top boundary of every
-    lateral matching the adjacent horizontal face's edge by construction.
+    When ``arrangement`` is provided AND every consecutive vertex pair
+    in ``coords`` is registered in ``arrangement.edge_by_vertex_pair``,
+    the canonical pre-fit segments are replayed (forward or reverse
+    per traversal direction) so lateral faces match horizontal faces
+    on every shared boundary edge. ``z`` must be provided in that case
+    (used for vertex-key quantization).
+
+    Falls back to ``decompose_vertices_2d`` on the input ring when no
+    arrangement is provided, or when the ring has NO arrangement-edge
+    coverage (closed-standalone ring), preserving today's behaviour.
+    Raises ``CanonicalArrangementError`` on mixed coverage.
     """
+    if arrangement is not None and arrangement.canonical_edges:
+        if z is None:
+            raise ValueError(
+                "polyline_segments requires z= when arrangement is provided"
+            )
+        segs = _polyline_segments_canonical(
+            coords,
+            z,
+            arrangement,
+            point_tolerance,
+        )
+        if segs is not None:
+            return segs
+        # else: fall through to greedy fitter (closed-standalone case)
+
     raw = decompose_vertices_2d(
         coords,
         z=0.0,  # z is irrelevant — we only need (x, y) downstream
@@ -483,6 +505,18 @@ def polyline_segments(
         min_arc_points=min_arc_points,
         arc_tolerance=arc_tolerance,
     )
+    return _flatten_decomposition_to_polyline_segments(raw, point_tolerance)
+
+
+def _flatten_decomposition_to_polyline_segments(
+    raw, point_tolerance: float
+) -> list[_PolylineSegment]:
+    """Convert DecompositionSegment list to _PolylineSegment list.
+
+    Extracted from polyline_segments' legacy body so the canonical
+    and greedy paths share the same DecompositionSegment -> _PolylineSegment
+    conversion.
+    """
     out: list[_PolylineSegment] = []
     for seg in raw:
         pts = seg.points
@@ -490,12 +524,12 @@ def polyline_segments(
             start_xy = (pts[0][0], pts[0][1])
             end_xy = (pts[-1][0], pts[-1][1])
             mid_idx = len(pts) // 2
-            # Full-circle: split into two half-arcs so each maps to a
-            # well-defined ``GC_MakeArcOfCircle`` build downstream.
             if (
                 abs(start_xy[0] - end_xy[0]) < point_tolerance
                 and abs(start_xy[1] - end_xy[1]) < point_tolerance
             ):
+                # Full-circle: split into two half-arcs so each maps to a
+                # well-defined ``GC_MakeArcOfCircle`` build downstream.
                 q1_idx = mid_idx // 2
                 q3_idx = (mid_idx + len(pts) - 1) // 2
                 mid_xy = (pts[mid_idx][0], pts[mid_idx][1])
@@ -533,6 +567,102 @@ def polyline_segments(
                 )
                 for i in range(len(pts) - 1)
             )
+    return out
+
+
+def _polyline_segments_canonical(
+    coords: list[tuple[float, float]],
+    z: float,
+    arrangement: "Arrangement",
+    point_tolerance: float,
+) -> "list[_PolylineSegment] | None":
+    """Replay canonical arrangement edges' segments for a ring.
+
+    Returns the list when every pair is covered; None when NO pairs
+    match (closed-standalone fallback); raises on mixed coverage.
+
+    Note: like ``EdgeRegistry._polyline_xy_canonical``, this routine
+    reverses the SEGMENT LIST ORDER for reverse traversal but never
+    reverses each segment's internal point sequence — that would
+    break the even-length-arc mid-point symmetry. See the comments in
+    ``_polyline_xy_canonical`` for the same reasoning.
+    """
+    from meshwell.structured.exceptions import CanonicalArrangementError
+
+    def _key(x, y):
+        s = point_tolerance
+        return (round(x / s), round(y / s), round(z / s))
+
+    keys = [_key(x, y) for x, y in coords]
+    if len(keys) >= 2 and keys[0] == keys[-1]:
+        inner_keys = keys[:-1]
+        ring_is_closed = True
+    else:
+        inner_keys = list(keys)
+        ring_is_closed = False
+    # Drop consecutive duplicate keys arising from floating-point near-
+    # identical vertices that quantize to the same key. Same dedup as
+    # in EdgeRegistry._polyline_xy_canonical.
+    deduped: list = [inner_keys[0]] if inner_keys else []
+    for k in inner_keys[1:]:
+        if k != deduped[-1]:
+            deduped.append(k)
+    if ring_is_closed and len(deduped) >= 2 and deduped[-1] == deduped[0]:
+        deduped = deduped[:-1]
+    inner_keys = deduped
+    n = len(inner_keys)
+    if n < 2:
+        return []
+
+    pair_count = n if ring_is_closed else n - 1
+    hits = 0
+    for i in range(pair_count):
+        a = inner_keys[i]
+        b = inner_keys[(i + 1) % n] if ring_is_closed else inner_keys[i + 1]
+        if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
+            hits += 1
+    if hits == 0:
+        return None
+    if hits != pair_count:
+        raise CanonicalArrangementError(
+            cohort_index=arrangement.cohort_index,
+            reason=(
+                f"lateral ring has mixed canonical coverage "
+                f"({hits}/{pair_count} pairs in lookup) — coverage bug"
+            ),
+        )
+
+    out: list[_PolylineSegment] = []
+    consumed = 0
+    i = 0
+    while consumed < pair_count:
+        a_key = inner_keys[i % n]
+        b_key = inner_keys[(i + 1) % n]
+        edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
+        canon = arrangement.canonical_edges[edge_idx]
+        if canon.vertex_keys[0] == a_key:
+            forward = True
+        elif canon.vertex_keys[-1] == a_key:
+            forward = False
+        else:
+            raise CanonicalArrangementError(
+                cohort_index=arrangement.cohort_index,
+                reason=(
+                    f"vertex {a_key} is interior to canonical edge "
+                    f"{edge_idx} but the lateral ring is entering here"
+                ),
+            )
+        segments = list(canon.segments)
+        if not forward:
+            # Reverse segment ORDER only (see _polyline_xy_canonical
+            # for the even-L arc rationale).
+            segments = list(reversed(segments))
+        out.extend(
+            _flatten_decomposition_to_polyline_segments(segments, point_tolerance)
+        )
+        step = len(canon.vertex_keys) - 1
+        i += step
+        consumed += step
     return out
 
 

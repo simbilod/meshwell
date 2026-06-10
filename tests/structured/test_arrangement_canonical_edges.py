@@ -382,3 +382,55 @@ def test_face_xy_passes_arrangement_to_polyline_xy():
     assert _edge_ids(face1) & _edge_ids(
         face2
     ), "expected at least one shared edge TShape between adjacent faces"
+
+
+def test_polyline_segments_uses_arrangement_when_provided():
+    """polyline_segments with arrangement produces canonical segments.
+
+    Ensures lateral faces' bot/top boundaries match the horizontal faces'
+    TShapes when an arrangement is provided.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.build import polyline_segments
+    from meshwell.structured.decompose import build_cohort_arrangement
+    from meshwell.structured.types import Cohort, StructuredSlab
+
+    def _slab(idx, poly):
+        return StructuredSlab(
+            source_index=idx,
+            footprint=poly,
+            zlo=0.0,
+            zhi=1.0,
+            mesh_order=1.0,
+            mesh_bool=True,
+            physical_name=("x",),
+            identify_arcs=False,
+            arc_tolerance=1e-3,
+            min_arc_points=4,
+        )
+
+    left = _slab(0, Polygon([(0, 0), (6, 0), (6, 10), (0, 10)]))
+    right = _slab(1, Polygon([(4, 0), (10, 0), (10, 10), (4, 10)]))
+    cohort = Cohort(slabs=(left, right), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+
+    overlap_coords = [(4.0, 0.0), (6.0, 0.0), (6.0, 10.0), (4.0, 10.0), (4.0, 0.0)]
+    # Both with and without arrangement should yield consistent segments
+    # for a rectangle (only lines).
+    segs_canon = polyline_segments(
+        overlap_coords,
+        identify_arcs=False,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+        point_tolerance=1e-3,
+        arrangement=arr,
+        z=0.0,
+    )
+    assert all(s.kind == "line" for s in segs_canon)
+    assert len(segs_canon) == 4
