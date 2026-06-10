@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import tempfile
 import xml.etree.ElementTree as ET
-from itertools import combinations, product
+from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -329,7 +329,17 @@ def _compute_physical_groups(
         )
 
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
-    for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
+    # Prune pairs whose entity-level AABBs cannot overlap.
+    # See docs/superpowers/specs/2026-06-09-aabb-candidate-pair-prune-design.md.
+    _union_aabbs, _valid_mask = _entity_union_aabbs(entity_aabbs)
+    _candidate_pairs = _candidate_pair_mask(
+        _union_aabbs, _valid_mask, interface_aabb_tolerance
+    )
+    for i1, i2 in _candidate_pairs:
+        i1 = int(i1)
+        i2 = int(i2)
+        ent1 = entities[i1]
+        ent2 = entities[i2]
         if ent1.dim <= 0 or ent2.dim <= 0:
             continue
         bid1 = set(entity_boundary[i1].keys())
