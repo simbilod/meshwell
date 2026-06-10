@@ -6,7 +6,7 @@ the pipeline immutably.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -101,6 +101,35 @@ class SlabMeta:
     keep: bool = True
 
 
+# Quantized vertex key as used by VertexRegistry._key.
+VertexKey = tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class ArrangementEdge:
+    """Canonical curve between two arrangement nodes.
+
+    Arc/line decomposition is fit ONCE on this edge's coords via
+    ``meshwell.geometry_entity.decompose_vertices_2d`` and stored in
+    ``segments``. Every sub-piece whose ring traverses this edge
+    replays these segments instead of running the greedy fitter on its
+    own ring — eliminating the seam-dependent mismatches.
+
+    ``vertex_keys`` is stored OPEN even when ``is_closed=True``
+    (``vertex_keys[0] != vertex_keys[-1]``); the implicit closing pair
+    is registered in ``Arrangement.edge_by_vertex_pair`` only for
+    OPEN edges. Closed standalone edges (e.g., a lone disc boundary
+    with no other arrangement nodes) are NOT indexed — sub-pieces
+    traversing them fall back to the per-ring greedy fit, which is
+    already deterministic for a single closed ring.
+    """
+
+    vertex_keys: tuple["VertexKey", ...]
+    z: float
+    segments: tuple = ()  # tuple[DecompositionSegment, ...] — runtime import
+    is_closed: bool = False
+
+
 @dataclass(frozen=True)
 class Arrangement:
     """Cohort-global polygon arrangement.
@@ -110,6 +139,13 @@ class Arrangement:
       - every cohort slab boundary, and
       - every adjacent unstructured PolyPrism boundary projected to the
         shared z-planes.
+
+    `canonical_edges` and `edge_by_vertex_pair` carry the arrangement's
+    unique boundary edges with arcs fit ONCE per edge. Sub-piece wire
+    builders look up each consecutive vertex pair in
+    `edge_by_vertex_pair` and replay the stored `segments` so two
+    sub-pieces sharing an arc-shaped boundary subset emit the same
+    OCC TShape by construction.
 
     Both cohort sub-piece extraction and adjacent unstructured pre-cut
     consume this same tuple.
@@ -129,3 +165,5 @@ class Arrangement:
 
     cohort_index: int
     polygons: tuple["Polygon", ...]
+    canonical_edges: tuple[ArrangementEdge, ...] = ()
+    edge_by_vertex_pair: dict[frozenset["VertexKey"], int] = field(default_factory=dict)

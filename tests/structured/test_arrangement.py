@@ -103,3 +103,24 @@ def test_subpieces_filtered_out_when_owner_is_none():
     # Only one piece survives the owner filter (y∈[0,5]).
     assert len(subs) == 1
     assert subs[0].sub_polygon.representative_point().y < 5.0
+
+
+def test_arrangement_edge_defaults_to_empty():
+    """New canonical_edges / edge_by_vertex_pair default fields exist.
+
+    Both fields start empty so existing callers / tests are unaffected.
+    """
+    from meshwell.structured.types import Arrangement, ArrangementEdge
+
+    arr = Arrangement(cohort_index=0, polygons=())
+    assert arr.canonical_edges == ()
+    assert arr.edge_by_vertex_pair == {}
+
+    edge = ArrangementEdge(
+        vertex_keys=((0, 0, 0), (1, 0, 0)),
+        z=0.0,
+        segments=(),
+        is_closed=False,
+    )
+    assert edge.vertex_keys[0] != edge.vertex_keys[-1]
+    assert edge.is_closed is False
