@@ -175,3 +175,89 @@ def test_candidate_pair_mask_empty_input():
     valid = np.zeros(0, dtype=bool)
     pairs = _candidate_pair_mask(union, valid, tol=1e-2)
     assert pairs.shape == (0, 2)
+
+
+def _rect(x1, y1, x2, y2):
+    from shapely.geometry import Polygon
+
+    return Polygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+
+
+def test_compute_physical_groups_two_stacked_prisms_has_expected_interface():
+    """Two prisms sharing a face at z=1 — output has the right interface group.
+
+    This is a regression test that pins the current behaviour of
+    ``_compute_physical_groups`` on a tiny scene. It will catch any
+    refactor that breaks the output contract (key set, shape counts).
+    """
+    from meshwell.cad_occ import cad_occ
+    from meshwell.occ_xao_writer import _compute_physical_groups
+    from meshwell.polyprism import PolyPrism
+
+    p1 = PolyPrism(
+        _rect(0, 0, 1, 1),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="a",
+        mesh_order=3.0,
+    )
+    p2 = PolyPrism(
+        _rect(0, 0, 1, 1),
+        {1.0: 0.0, 2.0: 0.0},
+        physical_name="b",
+        mesh_order=3.0,
+    )
+    occ_entities = cad_occ([p1, p2])
+    groups = _compute_physical_groups(
+        occ_entities,
+        interface_delimiter="___",
+        boundary_delimiter="None",
+        interface_aabb_tolerance=1e-2,
+    )
+    # Entity groups.
+    assert (3, "a") in groups
+    assert (3, "b") in groups
+    # Shared interface.
+    assert (2, "a___b") in groups
+    assert len(groups[(2, "a___b")]) >= 1
+    # Exterior boundary groups (___None) for each entity.
+    assert (2, "a___None") in groups
+    assert (2, "b___None") in groups
+
+
+def test_compute_physical_groups_two_disjoint_prisms_no_interface():
+    """Two prisms far apart — no shared interface group.
+
+    With candidate-pair pruning, this pair should be skipped entirely
+    in the outer loop. Output must match the current implementation
+    (no ``a___b`` group, just entity + exterior groups).
+    """
+    from meshwell.cad_occ import cad_occ
+    from meshwell.occ_xao_writer import _compute_physical_groups
+    from meshwell.polyprism import PolyPrism
+
+    p1 = PolyPrism(
+        _rect(0, 0, 1, 1),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="a",
+        mesh_order=3.0,
+    )
+    p2 = PolyPrism(
+        _rect(100, 100, 101, 101),
+        {0.0: 0.0, 1.0: 0.0},
+        physical_name="b",
+        mesh_order=3.0,
+    )
+    occ_entities = cad_occ([p1, p2])
+    groups = _compute_physical_groups(
+        occ_entities,
+        interface_delimiter="___",
+        boundary_delimiter="None",
+        interface_aabb_tolerance=1e-2,
+    )
+    assert (3, "a") in groups
+    assert (3, "b") in groups
+    # No shared interface.
+    assert (2, "a___b") not in groups
+    # Both entities have full exterior groups.
+    assert (2, "a___None") in groups
+    assert (2, "b___None") in groups
