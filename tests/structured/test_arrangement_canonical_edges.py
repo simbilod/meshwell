@@ -106,6 +106,166 @@ def test_two_overlapping_discs_produce_shared_arc_edges():
     assert len(lookup) == n_pairs
 
 
+def test_polyline_xy_with_arrangement_replays_canonical_segments():
+    """Calling polyline_xy with arrangement replays canonical segments.
+
+    Two sub-pieces sharing a boundary edge get the SAME TShape.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.build import EdgeRegistry, VertexRegistry
+    from meshwell.structured.decompose import build_cohort_arrangement
+    from meshwell.structured.types import Cohort, StructuredSlab
+
+    # Two overlapping rectangles -> 3 sub-pieces, the middle of which
+    # shares one cut edge with each side.
+    def _slab(idx, poly):
+        return StructuredSlab(
+            source_index=idx,
+            footprint=poly,
+            zlo=0.0,
+            zhi=1.0,
+            mesh_order=1.0,
+            mesh_bool=True,
+            physical_name=("x",),
+            identify_arcs=False,
+            arc_tolerance=1e-3,
+            min_arc_points=4,
+        )
+
+    left = _slab(0, Polygon([(0, 0), (6, 0), (6, 10), (0, 10)]))
+    right = _slab(1, Polygon([(4, 0), (10, 0), (10, 10), (4, 10)]))
+    cohort = Cohort(slabs=(left, right), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+
+    # Build the middle (overlap) sub-piece's exterior ring through both
+    # forward and reversed traversal. They must emit the SAME OCC TShapes.
+    overlap = Polygon([(4, 0), (6, 0), (6, 10), (4, 10), (4, 0)])
+    coords = list(overlap.exterior.coords)
+    edges_fwd = ereg.polyline_xy(
+        [(x, y) for x, y in coords],
+        z=0.0,
+        identify_arcs=False,
+        arrangement=arr,
+    )
+    edges_rev = ereg.polyline_xy(
+        [(x, y) for x, y in reversed(coords)],
+        z=0.0,
+        identify_arcs=False,
+        arrangement=arr,
+    )
+
+    from OCP.TopTools import TopTools_ShapeMapHasher
+
+    hasher = TopTools_ShapeMapHasher()
+    fwd_ids = sorted(hasher(e) for e in edges_fwd)
+    rev_ids = sorted(hasher(e) for e in edges_rev)
+    assert fwd_ids == rev_ids
+
+
+def test_polyline_xy_falls_back_when_arrangement_none():
+    """When arrangement=None, polyline_xy preserves today's behavior."""
+    from meshwell.structured.build import EdgeRegistry, VertexRegistry
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+    coords = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+    edges = ereg.polyline_xy(coords, z=0.0, identify_arcs=False)
+    assert len(edges) == 4
+
+
+def test_polyline_xy_arc_direction_invariant_tshape():
+    """Two-overlapping-discs arc edges: same OCC TShapes forward and reverse.
+
+    This is the arc-path counterpart to
+    test_polyline_xy_with_arrangement_replays_canonical_segments,
+    which only exercised line segments. The arc_xy cache key is
+    endpoint-direction-invariant on the sorted endpoint keys, so
+    canonical-edge replay MUST emit segments in canonical order
+    (not reverse each segment's points) for TShape sharing to hold
+    on arc geometry as well as line geometry.
+    """
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.build import EdgeRegistry, VertexRegistry
+    from meshwell.structured.decompose import build_cohort_arrangement
+    from meshwell.structured.types import Cohort, StructuredSlab
+
+    def _circle_local(cx, cy, r, n=48):
+        a = np.linspace(0, 2 * np.pi, n + 1)[:-1]
+        return Polygon([(cx + r * np.cos(t), cy + r * np.sin(t)) for t in a])
+
+    def _slab(idx, poly):
+        return StructuredSlab(
+            source_index=idx,
+            footprint=poly,
+            zlo=0.0,
+            zhi=1.0,
+            mesh_order=1.0,
+            mesh_bool=True,
+            physical_name=("x",),
+            identify_arcs=True,
+            arc_tolerance=1e-3,
+            min_arc_points=5,
+        )
+
+    left = _slab(0, _circle_local(0, 0, 1.0))
+    right = _slab(1, _circle_local(1.0, 0, 1.0))
+    cohort = Cohort(slabs=(left, right), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+    # Get one of the lens sub-pieces from the arrangement.
+    sub_polys = list(arr.polygons)
+    # Pick the lens (the smallest-area piece — it lies in BOTH discs).
+    sub_polys.sort(key=lambda p: p.area)
+    lens = sub_polys[0]
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+
+    coords = list(lens.exterior.coords)
+    edges_fwd = ereg.polyline_xy(
+        [(x, y) for x, y in coords],
+        z=0.0,
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+        arrangement=arr,
+    )
+    edges_rev = ereg.polyline_xy(
+        [(x, y) for x, y in reversed(coords)],
+        z=0.0,
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+        arrangement=arr,
+    )
+
+    # TShape identity: same set of TShapes in both directions.
+    from OCP.TopTools import TopTools_ShapeMapHasher
+
+    hasher = TopTools_ShapeMapHasher()
+    fwd_hashes = sorted(hasher(e) for e in edges_fwd)
+    rev_hashes = sorted(hasher(e) for e in edges_rev)
+    assert fwd_hashes == rev_hashes, (
+        "Arc edges built forward vs reverse produced different TShapes — "
+        "_polyline_xy_canonical's even-L arc mid-point asymmetry bug"
+    )
+
+
 def test_parallel_edges_between_same_nodes_raise():
     """Parallel edges between the same arrangement nodes raise CanonicalArrangementError.
 

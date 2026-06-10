@@ -32,6 +32,7 @@ from OCP.TopoDS import (
 
 from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.types import (
+    Arrangement,
     Cohort,
     ShapeKey,
     SlabMeta,
@@ -154,16 +155,34 @@ class EdgeRegistry:
         identify_arcs: bool,
         min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
+        arrangement: "Arrangement | None" = None,
     ) -> list[TopoDS_Edge]:
         """Return the list of edges (lines and/or arcs) covering coords.
 
-        Uses ``meshwell.geometry_entity.decompose_vertices_2d`` as the
-        canonical arc detector so the structured cohort builder and the
-        legacy ``PolyPrism``/``PolySurface`` paths agree on segmentation.
-        Both paths feeding into the same BOP fragment pass produces the
-        same OCC edges, so coincident-but-topologically-distinct curves
-        no longer fragment shared faces.
+        When ``arrangement`` is provided AND every consecutive vertex
+        pair of ``coords`` is found in ``arrangement.edge_by_vertex_pair``,
+        replays each canonical edge's pre-fit segments so two callers
+        traversing the same arrangement edge in opposite directions get
+        the SAME OCC TShape by construction.
+
+        Falls back to per-ring greedy decomposition via
+        ``decompose_vertices_2d`` when arrangement is None, or when the
+        ring has NO pairs in the lookup (closed-standalone case — a
+        single closed canonical edge handles itself deterministically
+        via _find_canonical_seam). Raises ``CanonicalArrangementError``
+        on MIXED coverage (some pairs found, some missing) — that's a
+        canonicaliser bug.
         """
+        if arrangement is not None and arrangement.canonical_edges:
+            edges = self._polyline_xy_canonical(
+                coords,
+                z,
+                arrangement,
+            )
+            if edges is not None:
+                return edges
+            # else: fell through to fallback (closed-standalone ring).
+
         segments = decompose_vertices_2d(
             coords,
             z=z,
@@ -172,6 +191,15 @@ class EdgeRegistry:
             min_arc_points=min_arc_points,
             arc_tolerance=arc_tolerance,
         )
+        return self._emit_edges_for_segments(segments, z)
+
+    def _emit_edges_for_segments(self, segments, z: float) -> list[TopoDS_Edge]:
+        """Emit OCC edges for a list of DecompositionSegment objects.
+
+        Extracted from polyline_xy's legacy body so the canonical-replay
+        path and the greedy-fallback path share the same arc/line/
+        full-circle emission code.
+        """
         edges: list[TopoDS_Edge] = []
         for seg in segments:
             pts = seg.points
@@ -182,9 +210,6 @@ class EdgeRegistry:
                     start[0], start[1], z
                 ) == self.vertices._key(end[0], end[1], z)
                 if is_closed:
-                    # Full-circle: GC_MakeArcOfCircle can't build start==end.
-                    # Split into two half-arcs using the points at indices
-                    # 1/4, 1/2, 3/4 of the run as the parametric anchors.
                     mid_idx = len(pts) // 2
                     quarter_idx = len(pts) // 4
                     three_quarter_idx = (len(pts) * 3) // 4
@@ -215,13 +240,117 @@ class EdgeRegistry:
                         )
                     )
             else:
-                # ``_decompose_vertices_3d`` always emits straight runs as
-                # individual two-point segments, but tolerate longer runs
-                # defensively by stitching consecutive pairs into edges.
                 edges.extend(
                     self.line_xy(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], z)
                     for i in range(len(pts) - 1)
                 )
+        return edges
+
+    def _polyline_xy_canonical(
+        self,
+        coords: list[tuple[float, float]],
+        z: float,
+        arrangement: "Arrangement",
+    ) -> "list[TopoDS_Edge] | None":
+        """Replay canonical arrangement edges for a ring.
+
+        Returns the emitted edge list when every consecutive vertex
+        pair of ``coords`` is in ``arrangement.edge_by_vertex_pair``.
+        Returns None when NO pairs match (closed-standalone fallback).
+        Raises ``CanonicalArrangementError`` on mixed coverage.
+        """
+        from meshwell.structured.exceptions import CanonicalArrangementError
+
+        keys = [self.vertices._key(x, y, z) for x, y in coords]
+        # Tolerate accidental closing duplicate at the tail; planar
+        # rings often include it.
+        if len(keys) >= 2 and keys[0] == keys[-1]:
+            inner_keys = keys[:-1]
+            ring_is_closed = True
+        else:
+            inner_keys = list(keys)
+            ring_is_closed = False
+        # Drop consecutive duplicate keys that arise from floating-point
+        # near-identical vertices (e.g. the two circle-crossing points in a
+        # lens polygon where Shapely emits (0.5, -0.866...) and
+        # (0.4999..., -0.8660...4), both quantizing to the same vertex key).
+        # These degenerate zero-length steps carry no geometry and have no
+        # entry in the arrangement lookup; keeping them causes a spurious
+        # "mixed canonical coverage" error.
+        deduped: list = [inner_keys[0]] if inner_keys else []
+        for k in inner_keys[1:]:
+            if k != deduped[-1]:
+                deduped.append(k)
+        # Also drop a wrap-around duplicate when the ring is closed.
+        if ring_is_closed and len(deduped) >= 2 and deduped[-1] == deduped[0]:
+            deduped = deduped[:-1]
+        inner_keys = deduped
+        n = len(inner_keys)
+        if n < 2:
+            return []
+
+        # Probe coverage: count pair hits/misses.
+        pair_count = n if ring_is_closed else n - 1
+        hits = 0
+        for i in range(pair_count):
+            a = inner_keys[i]
+            b = inner_keys[(i + 1) % n] if ring_is_closed else inner_keys[i + 1]
+            if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
+                hits += 1
+        if hits == 0:
+            return None  # closed-standalone fallback
+        if hits != pair_count:
+            raise CanonicalArrangementError(
+                cohort_index=arrangement.cohort_index,
+                reason=(
+                    f"sub-piece ring has mixed canonical coverage "
+                    f"({hits}/{pair_count} pairs in lookup) — coverage bug"
+                ),
+            )
+
+        # Replay: walk the ring; each pair pins a canonical edge.
+        edges: list[TopoDS_Edge] = []
+        consumed = 0
+        i = 0
+        while consumed < pair_count:
+            a_key = inner_keys[i % n]
+            b_key = inner_keys[(i + 1) % n]
+            edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
+            canon = arrangement.canonical_edges[edge_idx]
+            # Direction: canonical edge's first key == a_key -> forward,
+            # else reverse.
+            if canon.vertex_keys[0] == a_key:
+                forward = True
+            elif canon.vertex_keys[-1] == a_key:
+                forward = False
+            else:
+                # Should not happen: sub-pieces enter canonical edges at
+                # one of the two endpoints (arrangement nodes). If the
+                # entered key is interior, the lookup is mis-built.
+                raise CanonicalArrangementError(
+                    cohort_index=arrangement.cohort_index,
+                    reason=(
+                        f"vertex {a_key} is interior to canonical edge "
+                        f"{edge_idx} but the ring is entering here"
+                    ),
+                )
+            segments = list(canon.segments)
+            if not forward:
+                # Reverse SEGMENT ORDER only, not each segment's points.
+                # arc_xy's cache key is direction-invariant on the sorted
+                # endpoint keys, so emitting the same canonical segment
+                # always returns the same TShape regardless of traversal
+                # direction. Reversing each segment's points would change
+                # the sampled midpoint for even-length arc segments
+                # (mid_idx = L // 2 is not symmetric under reversal for
+                # even L), producing different arc_xy keys forward vs
+                # reverse — silently breaking the TShape-sharing
+                # guarantee.
+                segments = list(reversed(segments))
+            edges.extend(self._emit_edges_for_segments(segments, z))
+            step = len(canon.vertex_keys) - 1
+            i += step
+            consumed += step
         return edges
 
 
