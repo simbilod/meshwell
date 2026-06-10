@@ -85,6 +85,47 @@ _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 # explicitly when their point_tolerance differs from the default.
 _DEFAULT_AABB_INTERFACE_TOL = 1e-2
 
+
+def _entity_union_aabbs(
+    entity_aabbs: list[dict[int, tuple[float, ...]]],
+) -> tuple["np.ndarray", "np.ndarray"]:
+    """Per-entity union of face AABBs.
+
+    Returns:
+        union_aabbs: ``(N, 6)`` numpy array, one row per entity.
+            ``[xmin, ymin, zmin, xmax, ymax, zmax]`` over the entity's
+            face AABBs. Entities with no face AABBs get a row of NaN
+            sentinels (never read directly — gated by ``valid_mask``).
+        valid_mask: ``(N,)`` boolean array. ``False`` for entities with
+            empty face AABB sets. ``_candidate_pair_mask`` treats these
+            entities as "intersects every other entity" so they are
+            never pruned.
+    """
+    n = len(entity_aabbs)
+    union_aabbs = np.full((n, 6), np.nan, dtype=float)
+    valid_mask = np.zeros(n, dtype=bool)
+    for i, boxes in enumerate(entity_aabbs):
+        if not boxes:
+            continue
+        arr = np.array(list(boxes.values()), dtype=float)
+        union_aabbs[i, :3] = arr[:, :3].min(axis=0)
+        union_aabbs[i, 3:] = arr[:, 3:].max(axis=0)
+        valid_mask[i] = True
+    return union_aabbs, valid_mask
+
+
+def _candidate_pair_mask(
+    union_aabbs: "np.ndarray",
+    valid_mask: "np.ndarray",
+    tol: float = _DEFAULT_AABB_INTERFACE_TOL,
+) -> "np.ndarray":
+    """Return a boolean (N, N) mask of entity pairs whose AABBs may overlap.
+
+    Placeholder — full implementation in Task 2.
+    """
+    raise NotImplementedError("_candidate_pair_mask is not yet implemented")
+
+
 # ---------------------------------------------------------------------------
 # OCP-level helpers
 # ---------------------------------------------------------------------------
