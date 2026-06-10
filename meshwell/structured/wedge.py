@@ -394,9 +394,30 @@ def _stamp_one(
     top_z = bbox[5]
     dz = (top_z - bot_z) / n_layers
 
-    # 3) Clear top face mesh & rebuild from bot.
-    gmsh.model.mesh.clear([(2, top_tag)])
-    # Re-fetch top boundary nodes (placed by lateral transfinite mesh).
+    # 3) Snapshot all existing top-face nodes (boundary + interior).
+    #
+    # We ALWAYS snapshot nodes BEFORE modifying the top face so we can
+    # reuse them rather than creating new nodes at the same positions.
+    # Using gmsh.model.mesh.clear([(2, top_tag)]) discards elements but
+    # leaves orphaned interior nodes floating in the global model: those
+    # nodes survive with no element association, get picked up by
+    # generate(3) inside adjacent unstructured volumes (e.g. a cap above
+    # this slab), and produce duplicate node positions in the final mesh.
+    # More critically, a global removeDuplicateNodes() then randomly
+    # resolves which tag "wins" the merge, corrupting the boundary mesh
+    # of the adjacent volume and causing generate(3) to silently skip it
+    # (~40% failure rate when a structured slab is topped by an
+    # unstructured neighbour).
+    #
+    # Instead: remove only the ELEMENTS via removeElements() (which does
+    # not touch nodes), then rebuild with the same node tags matched by
+    # XY proximity.  Any bot node that has no nearby existing top node
+    # gets a fresh tag — but the only case where this happens is the very
+    # first stamp of a top face that has never been meshed, e.g. a slab
+    # top that is in the interior of the cohort and has no generate(2)
+    # mesh yet.  In all other cases (top face is shared with a neighbour
+    # that generate(2) already touched) we reuse existing tags end-to-end,
+    # producing zero orphaned nodes and zero duplicate positions.
     existing_top_nodes, existing_top_coord, _ = gmsh.model.mesh.getNodes(
         2, top_tag, includeBoundary=True
     )
@@ -424,7 +445,10 @@ def _stamp_one(
         )
         bot_to_top[int(bnt)] = int(new_tag)
 
-    # Re-stamp triangulation on top face.
+    # Remove existing top-face elements WITHOUT removing nodes (so we do
+    # not orphan interior nodes that are shared with adjacent volumes).
+    # Then re-stamp with the bot-matched triangulation.
+    gmsh.model.mesh.removeElements(2, top_tag)
     top_tri_nodes: list[int] = []
     for tri in tris:
         top_tri_nodes.extend(bot_to_top[int(t)] for t in tri)
