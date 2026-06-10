@@ -13,7 +13,169 @@ import shapely
 from shapely.geometry import Polygon
 from shapely.ops import polygonize, unary_union
 
-from meshwell.structured.types import Arrangement, Cohort, StructuredSlab, SubPiece
+from meshwell.geometry_entity import decompose_vertices_2d
+from meshwell.structured.exceptions import CanonicalArrangementError
+from meshwell.structured.types import (
+    Arrangement,
+    ArrangementEdge,
+    Cohort,
+    StructuredSlab,
+    SubPiece,
+    VertexKey,
+)
+
+
+def _quantize_key(x: float, y: float, z: float, point_tolerance: float) -> VertexKey:
+    """Match VertexRegistry._key's quantization.
+
+    Ensures canonical edges and runtime EdgeRegistry vertices share the
+    same key space.
+    """
+    s = point_tolerance
+    return (round(x / s), round(y / s), round(z / s))
+
+
+def _build_canonical_edges(
+    merged,
+    z: float,
+    point_tolerance: float,
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+) -> tuple[tuple[ArrangementEdge, ...], dict[frozenset[VertexKey], int]]:
+    """Build canonical arrangement edges from a noded MultiLineString.
+
+    ``merged`` is the output of ``shapely.ops.unary_union`` over the
+    cohort's boundary linework. Each component of ``merged`` becomes
+    one ``ArrangementEdge`` — shapely's union nodes at every line
+    crossing, so each component already spans between two arrangement
+    nodes (or is a closed standalone loop).
+
+    Open edges are stored in a canonical orientation that is invariant
+    under input direction reversal: step 1 places the lex-smaller
+    endpoint at index 0 (reversing if the lex-min endpoint was at
+    index -1); step 2 reverses again if ``keys[-1] < keys[1]``. The
+    net effect is a consistent canonical form for both traversal
+    directions of the same edge — this is what makes the lookup map
+    direction-invariant. (Note: step 2 can land the lex-min endpoint
+    back at index -1; we do NOT guarantee "lex-min start", only
+    "deterministic canonical form".) Their consecutive vertex pairs are
+    registered in ``edge_by_vertex_pair`` for fast O(1) replay lookup.
+
+    Closed standalone edges (single loops with no other arrangement
+    nodes — e.g., a disc boundary alone in a cohort) are stored with
+    ``is_closed=True`` but are NOT pair-indexed; sub-piece consumers
+    detect the missing pairs and fall back to today's greedy per-ring
+    fit, which is deterministic for a single closed ring.
+
+    Raises CanonicalArrangementError if two distinct edges register
+    the same unordered vertex pair (parallel-edge graph violation).
+    """
+    from shapely.geometry import LineString, MultiLineString
+
+    if merged.is_empty:
+        return (), {}
+    if isinstance(merged, LineString):
+        components = [merged]
+    elif isinstance(merged, MultiLineString):
+        components = list(merged.geoms)
+    else:
+        # GeometryCollection or other: extract the LineString members.
+        components = [
+            g for g in getattr(merged, "geoms", []) if isinstance(g, LineString)
+        ]
+
+    canonical_edges: list[ArrangementEdge] = []
+    edge_by_vertex_pair: dict[frozenset[VertexKey], int] = {}
+
+    for component in components:
+        coords = [(c[0], c[1]) for c in component.coords]
+        if len(coords) < 2:
+            continue
+        keys = [_quantize_key(x, y, z, point_tolerance) for x, y in coords]
+        # Collapse runs that quantize to the same key (sub-tolerance jitter).
+        dedup_coords: list[tuple[float, float]] = [coords[0]]
+        dedup_keys: list[VertexKey] = [keys[0]]
+        for c, k in zip(coords[1:], keys[1:]):
+            if k != dedup_keys[-1]:
+                dedup_coords.append(c)
+                dedup_keys.append(k)
+        coords = dedup_coords
+        keys = dedup_keys
+        if len(coords) < 2:
+            continue
+
+        is_closed = keys[0] == keys[-1]
+        if is_closed:
+            # OPEN storage convention: drop the closing duplicate.
+            coords = coords[:-1]
+            keys = keys[:-1]
+            # Closed standalone: fit segments as a closed ring via
+            # decompose_vertices_2d (which seam-canonicalises internally).
+            # We pass closed form (first==last) so its seam logic kicks in.
+            fit_coords = [*coords, coords[0]]
+        else:
+            # Open edge: canonicalise so the orientation is invariant
+            # under input direction reversal. Step 1: if the lex-min
+            # key is at index -1, reverse it to index 0. Step 2: if
+            # keys[-1] < keys[1], reverse again. This gives a
+            # deterministic canonical form (NOT necessarily lex-min
+            # at start) — what matters is consistency across both
+            # traversal directions, which is what the pair lookup
+            # needs.
+            i_min = min(range(len(keys)), key=lambda i: keys[i])
+            # An open edge's start/end vertices SHOULD be at indices 0
+            # and -1 (arrangement nodes); lex-min should be one of them.
+            # If lex-min is interior, the component is mis-noded —
+            # treat as-is in input order (this shouldn't happen for
+            # unary_union output).
+            if i_min != 0 and i_min == len(keys) - 1:
+                coords = list(reversed(coords))
+                keys = list(reversed(keys))
+            # Now ensure direction: if keys[-1] < keys[1] (next vertex
+            # after the start is "later" than the end), reverse the tail.
+            if len(keys) >= 3 and keys[-1] < keys[1]:
+                coords = list(reversed(coords))
+                keys = list(reversed(keys))
+            fit_coords = list(coords)
+
+        segments = decompose_vertices_2d(
+            fit_coords,
+            z=z,
+            point_tolerance=point_tolerance,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+
+        edge = ArrangementEdge(
+            vertex_keys=tuple(keys),
+            z=z,
+            segments=tuple(segments),
+            is_closed=is_closed,
+        )
+        edge_idx = len(canonical_edges)
+        canonical_edges.append(edge)
+
+        # Register vertex pairs in the lookup, but ONLY for open edges.
+        # Closed standalones are not pair-indexed (see docstring).
+        if not is_closed:
+            for i in range(len(keys) - 1):
+                pair = frozenset({keys[i], keys[i + 1]})
+                if pair in edge_by_vertex_pair:
+                    raise CanonicalArrangementError(
+                        cohort_index=-1,
+                        reason=(
+                            f"duplicate vertex pair {tuple(pair)} on edges "
+                            f"{edge_by_vertex_pair[pair]} and {edge_idx} "
+                            "(parallel edges between the same arrangement "
+                            "nodes — unary_union output violates the planar "
+                            "arrangement assumption)"
+                        ),
+                    )
+                edge_by_vertex_pair[pair] = edge_idx
+
+    return tuple(canonical_edges), edge_by_vertex_pair
 
 
 def zinterval_footprint(slabs_here: list[StructuredSlab]) -> Polygon:
