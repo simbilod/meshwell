@@ -119,11 +119,43 @@ def _candidate_pair_mask(
     valid_mask: "np.ndarray",
     tol: float = _DEFAULT_AABB_INTERFACE_TOL,
 ) -> "np.ndarray":
-    """Return a boolean (N, N) mask of entity pairs whose AABBs may overlap.
+    """Return ``(M, 2)`` array of ``(i, j)`` pairs with ``i < j`` whose inflated entity AABBs overlap.
 
-    Placeholder — full implementation in Task 2.
+    Inflation by ``tol`` on each side: two AABBs overlap iff for every
+    axis, ``xmin_i - tol < xmax_j`` AND ``xmin_j - tol < xmax_i``.
+    At ``tol == 0``, AABBs that touch at a face/edge/corner are NOT
+    considered overlapping — overlap requires strictly positive measure
+    on every axis. At ``tol > 0`` (production usage), the inflation makes
+    touching faces overlap as expected.
+
+    Entities with ``valid_mask[i] == False`` (no valid face AABBs)
+    are treated as overlapping every other entity — they appear in
+    every pair.
+
+    Pairs are returned in lexicographic ``(i, j)`` order, matching
+    ``combinations(range(N), 2)`` filtered to overlapping pairs.
     """
-    raise NotImplementedError("_candidate_pair_mask is not yet implemented")
+    n = union_aabbs.shape[0]
+    if n < 2:
+        return np.zeros((0, 2), dtype=int)
+    mins = union_aabbs[:, :3]  # (N, 3)
+    maxs = union_aabbs[:, 3:]  # (N, 3)
+    # overlap[i, j] = True iff inflated AABB i overlaps AABB j on all axes.
+    # Broadcasting: (N, 1, 3) vs (1, N, 3).
+    overlap_axes = (mins[:, None, :] - tol < maxs[None, :, :]) & (
+        mins[None, :, :] - tol < maxs[:, None, :]
+    )
+    overlap = overlap_axes.all(axis=2)  # (N, N)
+    # Degenerate entities (valid=False) override: they overlap everything.
+    # Set their rows AND columns to True.
+    degenerate = ~valid_mask
+    if degenerate.any():
+        overlap[degenerate, :] = True
+        overlap[:, degenerate] = True
+    # Upper triangle (i < j) — NumPy's triu returns row-major order which
+    # is lexicographic (i, j) order. ``np.argwhere`` then preserves it.
+    upper = np.triu(overlap, k=1)
+    return np.argwhere(upper)
 
 
 # ---------------------------------------------------------------------------
