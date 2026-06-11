@@ -434,3 +434,65 @@ def test_polyline_segments_uses_arrangement_when_provided():
     )
     assert all(s.kind == "line" for s in segs_canon)
     assert len(segs_canon) == 4
+
+
+def test_build_cohort_compound_accepts_arrangement():
+    """build_cohort_compound forwards arrangement to _build_horizontal_face.
+
+    Ensures polyline_segments calls so sub-pieces sharing a boundary subset
+    consume canonical edges.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.build import (
+        EdgeRegistry,
+        FaceRegistry,
+        VertexRegistry,
+        build_cohort_compound,
+    )
+    from meshwell.structured.decompose import (
+        arrangement_subpieces_for_interval,
+        build_cohort_arrangement,
+    )
+    from meshwell.structured.types import Cohort, StructuredSlab
+
+    def _slab(idx, poly):
+        return StructuredSlab(
+            source_index=idx,
+            footprint=poly,
+            zlo=0.0,
+            zhi=1.0,
+            mesh_order=1.0,
+            mesh_bool=True,
+            physical_name=("x",),
+            identify_arcs=False,
+            arc_tolerance=1e-3,
+            min_arc_points=4,
+        )
+
+    left = _slab(0, Polygon([(0, 0), (6, 0), (6, 10), (0, 10)]))
+    right = _slab(1, Polygon([(4, 0), (10, 0), (10, 10), (4, 10)]))
+    cohort = Cohort(slabs=(left, right), z_planes=(0.0, 1.0))
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+    subs = arrangement_subpieces_for_interval(arr, cohort, 0.0, 1.0)
+
+    vreg = VertexRegistry(point_tolerance=1e-3)
+    ereg = EdgeRegistry(vertices=vreg, point_tolerance=1e-3)
+    freg = FaceRegistry(edges=ereg, point_tolerance=1e-3)
+
+    compound, slab_meta = build_cohort_compound(
+        cohort,
+        subs,
+        point_tolerance=1e-3,
+        vertex_registry=vreg,
+        edge_registry=ereg,
+        face_registry=freg,
+        arrangement=arr,
+    )
+    assert compound is not None
+    assert len(slab_meta) == len(subs)

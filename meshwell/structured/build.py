@@ -981,6 +981,7 @@ def build_cohort_compound(
     vertex_registry: "VertexRegistry | None" = None,
     edge_registry: "EdgeRegistry | None" = None,
     face_registry: "FaceRegistry | None" = None,
+    arrangement: "Arrangement | None" = None,
 ) -> tuple[TopoDS_Compound, dict[ShapeKey, SlabMeta]]:
     """Stage 4 driver — assemble compound + slab_meta.
 
@@ -1011,6 +1012,11 @@ def build_cohort_compound(
             creating a fresh one. When provided, faces are shared with the
             caller's registry. When None, a fresh registry is created
             (existing behavior).
+        arrangement: Optional Arrangement (planar graph of all cohort
+            boundaries). When provided, forwarded to every
+            ``_build_horizontal_face`` and ``polyline_segments`` call so
+            sub-pieces sharing a boundary edge consume canonical OCC
+            TShapes by construction.
     """
     # Use injected registries when provided; otherwise create fresh ones
     # so existing callers see no behavior change. When both are provided
@@ -1129,7 +1135,14 @@ def build_cohort_compound(
         below_full = abs(inter_poly.area - subpieces[b].sub_polygon.area) < area_tol
         above_full = abs(inter_poly.area - subpieces[a].sub_polygon.area) < area_tol
         face = _build_horizontal_face(
-            inter_poly, z, ereg, id_arcs, min_p, arc_tol, face_registry=freg
+            inter_poly,
+            z,
+            ereg,
+            id_arcs,
+            min_p,
+            arc_tol,
+            face_registry=freg,
+            arrangement=arrangement,
         )
         if below_full:
             horiz_faces[(b, "top")] = face
@@ -1148,6 +1161,7 @@ def build_cohort_compound(
                 min_p,
                 arc_tol,
                 face_registry=freg,
+                arrangement=arrangement,
             )
         if (i, "top") not in horiz_faces:
             id_arcs, min_p, arc_tol = arc_params_for_z(sp.z_interval[1], i)
@@ -1159,6 +1173,7 @@ def build_cohort_compound(
                 min_p,
                 arc_tol,
                 face_registry=freg,
+                arrangement=arrangement,
             )
 
     # Build lateral faces per subpiece. Each polygon-edge of the
@@ -1251,6 +1266,8 @@ def build_cohort_compound(
             min_arc_points=min_arc_points,
             arc_tolerance=arc_tolerance,
             point_tolerance=point_tolerance,
+            arrangement=arrangement,
+            z=zlo,
         )
         out_faces: list[TopoDS_Face] = []
         for seg in segments:
