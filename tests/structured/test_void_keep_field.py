@@ -59,7 +59,7 @@ def test_build_populates_keep_from_source_slab():
     )
     slabs, unstr = collect_structured_slabs([bg, hole])
     cohorts = build_cohorts(slabs)
-    subs_per_cohort, _ = decompose_cohorts(cohorts, unstr)
+    subs_per_cohort, _, _arrangements = decompose_cohorts(cohorts, unstr)
     _, slab_meta = build_cohort_compound(
         cohorts[0],
         subs_per_cohort[0],

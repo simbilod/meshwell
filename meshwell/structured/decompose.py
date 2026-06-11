@@ -232,9 +232,48 @@ def build_cohort_arrangement(
     parameters use the strictest (largest `min_arc_points`, smallest
     `arc_tolerance`) across the cohort's slabs.
     """
-    linework = [s.footprint.boundary for s in cohort.slabs] + list(
-        adjacent_unstructured
-    )
+    raw_boundaries = [s.footprint.boundary for s in cohort.slabs]
+    # Deduplicate cohort boundaries progressively so that shared arc
+    # sections (e.g. the outer U-turn arc shared between two adjacent
+    # meander slabs, or a disc boundary duplicated by an adjacent base/
+    # cap slab) appear EXACTLY ONCE in the linework.  If two slab
+    # footprints share a boundary portion, both parameterisations of
+    # that portion are geometrically identical but have different
+    # floating-point representations — GEOS's unary_union nodes at
+    # every shared vertex, shattering the arc into N 2-vertex segments
+    # and destroying arc detection (each segment falls below
+    # min_arc_points).  Replacing subsequent contributions with their
+    # residual (the part not yet covered) keeps the union's topology
+    # intact for polygonize while ensuring each arc is represented by
+    # a single, contiguous coordinate sequence that decompose_vertices_2d
+    # can classify correctly.
+    linework: list = []
+    acc_boundary = None
+    for b in raw_boundaries:
+        if acc_boundary is not None:
+            residual = b.difference(acc_boundary)
+            if residual.is_empty or residual.length < point_tolerance:
+                # Fully covered — skip (e.g. identical disc boundary
+                # contributed by both the disc slab and an adjacent
+                # base/cap slab).
+                continue
+            linework.append(residual)
+        else:
+            linework.append(b)
+        acc_boundary = b if acc_boundary is None else unary_union([acc_boundary, b])
+    cohort_union = acc_boundary  # full geometric union of all slab boundaries
+
+    # Also dedup adjacent_unstructured boundaries against the cohort
+    # union: an adjacent unstructured PolyPrism whose footprint matches
+    # a cohort slab contributes the same LineRing and would cause the
+    # same over-noding.  Only keep adjacent lines that introduce a cut
+    # the cohort doesn't already have.
+    for line in adjacent_unstructured:
+        if cohort_union is not None:
+            residual = line.difference(cohort_union)
+            if residual.is_empty or residual.length < point_tolerance:
+                continue
+        linework.append(line)
     merged = unary_union(linework)
     pieces = tuple(polygonize(merged))
 
@@ -319,7 +358,7 @@ def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],
     point_tolerance: float = 1e-3,
-) -> tuple[list[list[SubPiece]], list[Any]]:
+) -> tuple[list[list[SubPiece]], list[Any], list[Arrangement]]:
     """Stage 3 driver — cohort-global arrangement edition.
 
     Returns:
@@ -335,6 +374,12 @@ def decompose_cohorts(
           spike evidence showed it INCREASED rescue count on the meander
           stress scene and BLOCKED arc-cohort scenes at fine cl due to
           wrapped-cylinder surface types reaching gmsh as ``Unknown``.
+        - arrangements: per-cohort ``Arrangement`` objects (parallel to
+          ``cohorts``). Each Arrangement carries the canonical planar-graph
+          edges and lookup map built once per cohort by
+          ``build_cohort_arrangement``; downstream ``build_cohort_compound``
+          replays these canonical edges so sub-pieces sharing a boundary
+          consume the same OCC TShapes by construction.
     """
     from meshwell.polyprism import PolyPrism
 
@@ -395,7 +440,7 @@ def decompose_cohorts(
 
     # 4. Unstructured entities: returned unchanged. BOP + AABB rescue
     # handle interface detection downstream.
-    return subpieces_per_cohort, list(unstructured_entities)
+    return subpieces_per_cohort, list(unstructured_entities), arrangements
 
 
 def _cohort_xy_at(cohort: Cohort, z: float):

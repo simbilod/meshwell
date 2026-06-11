@@ -50,7 +50,7 @@ def test_single_subpiece_compound_has_one_solid():
     )
     slabs, unstr = collect_structured_slabs([ent])
     cohorts = build_cohorts(slabs)
-    subs_per_cohort, _ = decompose_cohorts(cohorts, unstr)
+    subs_per_cohort, _, _arrangements = decompose_cohorts(cohorts, unstr)
     compound, slab_meta = build_cohort_compound(
         cohorts[0],
         subs_per_cohort[0],
@@ -77,7 +77,7 @@ def test_two_stacked_subpieces_share_interior_face():
     )
     slabs, unstr = collect_structured_slabs([a, b])
     cohorts = build_cohorts(slabs)
-    subs_per_cohort, _ = decompose_cohorts(cohorts, unstr)
+    subs_per_cohort, _, _arrangements = decompose_cohorts(cohorts, unstr)
     compound, slab_meta = build_cohort_compound(
         cohorts[0],
         subs_per_cohort[0],

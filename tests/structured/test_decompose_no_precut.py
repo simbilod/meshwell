@@ -46,7 +46,7 @@ def test_decompose_cohorts_returns_touching_polyprism_unchanged():
         physical_name="neighbour",
         mesh_order=5.0,
     )
-    _subs_list, pre_cut = decompose_cohorts([cohort], [neighbour])
+    _subs_list, pre_cut, _arrangements = decompose_cohorts([cohort], [neighbour])
     assert (
         pre_cut[0] is neighbour
     ), "touching unstructured PolyPrism must pass through unchanged"
@@ -65,7 +65,7 @@ def test_decompose_cohorts_returns_non_touching_polyprism_unchanged():
         physical_name="far",
         mesh_order=5.0,
     )
-    _subs_list, pre_cut = decompose_cohorts([cohort], [far_neighbour])
+    _subs_list, pre_cut, _arrangements = decompose_cohorts([cohort], [far_neighbour])
     assert pre_cut[0] is far_neighbour
 
 
@@ -76,7 +76,7 @@ def test_decompose_cohorts_still_produces_cohort_subpieces():
         slabs=(_slab(0, slab_poly, mesh_order=3.0),),
         z_planes=(0.0, 1.0),
     )
-    subs_list, _ = decompose_cohorts([cohort], [])
+    subs_list, _, _arrangements = decompose_cohorts([cohort], [])
     assert len(subs_list) == 1
     assert len(subs_list[0]) == 1
     assert subs_list[0][0].sub_polygon.equals(slab_poly)

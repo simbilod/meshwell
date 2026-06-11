@@ -27,7 +27,7 @@ def test_cohort_entity_min_mesh_order():
     )
     slabs, unstr = collect_structured_slabs([a, b])
     cohorts = build_cohorts(slabs)
-    subs, _ = decompose_cohorts(cohorts, unstr)
+    subs, _, _arrangements = decompose_cohorts(cohorts, unstr)
     compound, slab_meta = build_cohort_compound(
         cohorts[0],
         subs[0],

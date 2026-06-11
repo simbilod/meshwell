@@ -496,3 +496,51 @@ def test_build_cohort_compound_accepts_arrangement():
     )
     assert compound is not None
     assert len(slab_meta) == len(subs)
+
+
+def test_pre_pass_threads_arrangement_to_cohort_compound():
+    """structured_pre_pass propagates the per-cohort Arrangement to build_cohort_compound.
+
+    The resulting compound's two overlapping rectangles produce three solids.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.polyprism import PolyPrism
+    from meshwell.structured.pipeline import structured_pre_pass
+
+    # Union bbox covering both rectangles, used for wrapping unstructured layers.
+    wrapper_poly = Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+
+    ents = [
+        PolyPrism(
+            Polygon([(0, 0), (6, 0), (6, 10), (0, 10)]),
+            {0.0: 0.0, 1.0: 0.0},
+            physical_name="a",
+            structured=True,
+            mesh_order=1.0,
+        ),
+        PolyPrism(
+            Polygon([(4, 0), (10, 0), (10, 10), (4, 10)]),
+            {0.0: 0.0, 1.0: 0.0},
+            physical_name="b",
+            structured=True,
+            mesh_order=2.0,
+        ),
+        # Wrapping unstructured layers required by validate_cohort_wrapping.
+        PolyPrism(wrapper_poly, {-1.0: 0.0, 0.0: 0.0}, physical_name="below"),
+        PolyPrism(wrapper_poly, {1.0: 0.0, 2.0: 0.0}, physical_name="above"),
+    ]
+    state = structured_pre_pass(ents, point_tolerance=1e-3)
+    # Expect ONE cohort with three sub-pieces (left-only, overlap, right-only).
+    assert len(state.cohort_entities) == 1
+    # The cohort entity's compound should hold three solids.
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    ce = state.cohort_entities[0]
+    exp = TopExp_Explorer(ce.compound, TopAbs_SOLID)
+    n_solids = 0
+    while exp.More():
+        n_solids += 1
+        exp.Next()
+    assert n_solids == 3

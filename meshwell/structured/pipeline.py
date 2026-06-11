@@ -90,7 +90,7 @@ def structured_pre_pass(
     from meshwell.structured.validators import validate_cohort_wrapping
 
     validate_cohort_wrapping(cohorts, unstructured, point_tolerance=point_tolerance)
-    subpieces_per_cohort, pre_cut_unstr = decompose_cohorts(
+    subpieces_per_cohort, pre_cut_unstr, arrangements = decompose_cohorts(
         cohorts, unstructured, point_tolerance=point_tolerance
     )
 
@@ -113,6 +113,7 @@ def structured_pre_pass(
             vertex_registry=vreg,
             edge_registry=ereg,
             face_registry=freg,
+            arrangement=arrangements[ci],
         )
         ce = _CohortEntity(
             compound=compound,

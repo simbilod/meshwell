@@ -32,7 +32,7 @@ def test_void_emits_subpiece():
     )
     slabs, unstr = collect_structured_slabs([bg, hole])
     cohorts = build_cohorts(slabs)
-    subpieces_per_cohort, _ = decompose_cohorts(cohorts, unstr)
+    subpieces_per_cohort, _, _arrangements = decompose_cohorts(cohorts, unstr)
     assert len(subpieces_per_cohort) == 1
     subs = subpieces_per_cohort[0]
     # Expect 2 sub-pieces at z=[0,1]: annular ring + inner disc.
@@ -53,5 +53,5 @@ def test_solid_only_still_one_subpiece():
     )
     slabs, unstr = collect_structured_slabs([bg])
     cohorts = build_cohorts(slabs)
-    subpieces_per_cohort, _ = decompose_cohorts(cohorts, unstr)
+    subpieces_per_cohort, _, _arrangements = decompose_cohorts(cohorts, unstr)
     assert len(subpieces_per_cohort[0]) == 1
