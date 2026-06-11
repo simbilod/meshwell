@@ -461,6 +461,85 @@ def _snap_to_cohort_plane(z: float, cohort: Cohort, tol: float = 1e-9) -> float 
     return None
 
 
+def validate_canonical_edge_coverage(
+    arrangement: Arrangement,
+    sub_polygons: list,
+) -> None:
+    """Assert every sub-piece ring has uniform canonical-edge coverage.
+
+    A ring is uniformly covered when EITHER every consecutive vertex
+    pair lives in ``arrangement.edge_by_vertex_pair`` (open-edge case),
+    OR no pairs do (closed-standalone case). MIXED coverage indicates
+    a canonicaliser bug — some pairs were missed during edge splitting.
+
+    Test-only helper; the production ``structured_pre_pass`` does NOT
+    call it. Tests pass the sub-piece polygons explicitly to catch
+    canonicaliser regressions early.
+
+    Raises:
+        CanonicalArrangementError: when any ring has mixed coverage.
+    """
+    s = _polygon_point_tol(arrangement)
+
+    def _key(x: float, y: float, z: float) -> VertexKey:
+        return (round(x / s), round(y / s), round(z / s))
+
+    def _check(coords, z):
+        keys = [_key(x, y, z) for x, y in coords]
+        if len(keys) >= 2 and keys[0] == keys[-1]:
+            inner = keys[:-1]
+            closed = True
+        else:
+            inner = list(keys)
+            closed = False
+        n = len(inner)
+        if n < 2:
+            return
+        pair_count = n if closed else n - 1
+        hits = 0
+        for i in range(pair_count):
+            a = inner[i]
+            b = inner[(i + 1) % n] if closed else inner[i + 1]
+            if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
+                hits += 1
+        if 0 < hits < pair_count:
+            raise CanonicalArrangementError(
+                cohort_index=arrangement.cohort_index,
+                reason=(
+                    f"sub-piece ring has mixed canonical coverage "
+                    f"({hits}/{pair_count} pairs in lookup)"
+                ),
+            )
+
+    for poly in sub_polygons:
+        # Canonical edges live at the arrangement's z; quantize sub-
+        # piece rings at the same z.
+        z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
+        _check(list(poly.exterior.coords), z)
+        for interior in poly.interiors:
+            _check(list(interior.coords), z)
+
+
+def _polygon_point_tol(arrangement: Arrangement) -> float:
+    """Recover the point_tolerance used to build the arrangement.
+
+    Stored implicitly via the quantization scale: vkey = round(coord / s).
+    For the validator we don't have direct access to s; the caller-
+    facing convention is to use the arrangement's host point_tolerance.
+
+    We derive s from the FIRST canonical edge's z key: vkey_z = round(z / s)
+    -> s = z / vkey_z when both nonzero. Fall back to 1e-3 when z == 0.
+    """
+    if not arrangement.canonical_edges:
+        return 1e-3
+    edge = arrangement.canonical_edges[0]
+    z = edge.z
+    vkey_z = edge.vertex_keys[0][2]
+    if z != 0 and vkey_z != 0:
+        return abs(z / vkey_z)
+    return 1e-3
+
+
 def _owner_slab(
     sub_polygon: Polygon, candidate_slabs: list[StructuredSlab]
 ) -> int | None:

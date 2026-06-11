@@ -498,6 +498,49 @@ def test_build_cohort_compound_accepts_arrangement():
     assert len(slab_meta) == len(subs)
 
 
+def test_validate_canonical_edge_coverage_passes_on_clean_arrangement():
+    """A well-formed arrangement passes the coverage check."""
+    from shapely.geometry import Polygon
+
+    from meshwell.structured.decompose import (
+        arrangement_subpieces_for_interval,
+        build_cohort_arrangement,
+        validate_canonical_edge_coverage,
+    )
+    from meshwell.structured.types import Cohort, StructuredSlab
+
+    def _slab(idx, poly):
+        return StructuredSlab(
+            source_index=idx,
+            footprint=poly,
+            zlo=0.0,
+            zhi=1.0,
+            mesh_order=1.0,
+            mesh_bool=True,
+            physical_name=("x",),
+            identify_arcs=False,
+            arc_tolerance=1e-3,
+            min_arc_points=4,
+        )
+
+    cohort = Cohort(
+        slabs=(
+            _slab(0, Polygon([(0, 0), (6, 0), (6, 10), (0, 10)])),
+            _slab(1, Polygon([(4, 0), (10, 0), (10, 10), (4, 10)])),
+        ),
+        z_planes=(0.0, 1.0),
+    )
+    arr = build_cohort_arrangement(
+        cohort_index=0,
+        cohort=cohort,
+        adjacent_unstructured=[],
+        point_tolerance=1e-3,
+    )
+    subs = arrangement_subpieces_for_interval(arr, cohort, 0.0, 1.0)
+    # Should not raise.
+    validate_canonical_edge_coverage(arr, [s.sub_polygon for s in subs])
+
+
 def test_pre_pass_threads_arrangement_to_cohort_compound():
     """structured_pre_pass propagates the per-cohort Arrangement to build_cohort_compound.
 
