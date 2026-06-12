@@ -515,14 +515,27 @@ def _stamp_one(
         top_map = layer_maps[layer + 1]
         for tri in tris:
             b0, b1, b2 = (bot_idx_by_tag[int(t)] for t in tri)
+            # Ensure positive volume by checking triangle orientation relative to extrusion
+            p0 = bot_pts[b0]
+            p1 = bot_pts[b1]
+            p2 = bot_pts[b2]
+            v1_x = p1[0] - p0[0]
+            v1_y = p1[1] - p0[1]
+            v2_x = p2[0] - p0[0]
+            v2_y = p2[1] - p0[1]
+            cross_z = v1_x * v2_y - v1_y * v2_x
+            if cross_z * dz < 0:
+                b1_p, b2_p = b2, b1
+            else:
+                b1_p, b2_p = b1, b2
             wedge_node_tags.extend(
                 [
                     bot_map[b0],
-                    bot_map[b1],
-                    bot_map[b2],
+                    bot_map[b1_p],
+                    bot_map[b2_p],
                     top_map[b0],
-                    top_map[b1],
-                    top_map[b2],
+                    top_map[b1_p],
+                    top_map[b2_p],
                 ]
             )
             expected += 1
