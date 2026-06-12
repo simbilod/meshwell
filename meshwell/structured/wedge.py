@@ -14,6 +14,7 @@ from collections import defaultdict
 
 import gmsh
 import numpy as np
+from scipy.spatial import KDTree
 
 from meshwell.structured.exceptions import (
     StructuredError,
@@ -178,6 +179,7 @@ def freeze_lateral_mesh(
     """
     # Step 1: per-face n_layers + consistency check.
     owners_per_face: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    # print(f"[Debug] freeze_lateral_mesh: checking lateral faces for {len(slab_meta)} slabs...", flush=True)
     for meta in slab_meta.values():
         if not meta.keep:
             continue
@@ -185,6 +187,7 @@ def freeze_lateral_mesh(
         for fk in meta.lateral_face_keys:
             tag = face_tag_by_key.get(fk)
             if tag is None:
+                print(f"    [Warning] Slab {meta.slab_index} ({meta.physical_name}): lateral face key {fk} NOT found in face_tag_by_key!", flush=True)
                 continue
             owners_per_face[tag].append((meta.slab_index, n_layers))
 
@@ -219,16 +222,33 @@ def freeze_lateral_mesh(
                 continue
             face_z_bounds[tag] = (z_bot, z_top)
 
-    # Step 2: setTransfiniteCurve on vertical edges.
+    # Step 2: setTransfiniteCurve on vertical edges and setPeriodic on top/bot curves.
     vertical_edges_done: set[int] = set()
+    periodic_edges_done: set[int] = set()
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
         n_layers = face_n_layers.get(face_tag, 1)
-        _, _, verticals = _classify_lateral_face_edges(face_tag, z_bot, z_top)
+        bot_edge, top_edge, verticals = _classify_lateral_face_edges(face_tag, z_bot, z_top)
+        
         for ve in verticals:
             if ve in vertical_edges_done:
                 continue
             vertical_edges_done.add(ve)
             gmsh.model.mesh.setTransfiniteCurve(ve, n_layers + 1)
+            
+        if bot_edge is not None and top_edge is not None:
+            if top_edge not in periodic_edges_done:
+                periodic_edges_done.add(top_edge)
+                dz = z_top - z_bot
+                transform = [
+                    1.0, 0.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 1.0, float(dz),
+                    0.0, 0.0, 0.0, 1.0
+                ]
+                try:
+                    gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
+                except Exception as per_err:
+                    print(f"[Warning] Failed to set periodic constraint for top_edge {top_edge} -> bot_edge {bot_edge}: {per_err}", flush=True)
 
     # Step 3: materialise 1D mesh.
     gmsh.model.mesh.generate(1)
@@ -252,6 +272,7 @@ def freeze_lateral_mesh(
         bot_row = _ordered_curve_nodes(bot_edge)
         top_row = _align_top_to_bot(bot_row, _ordered_curve_nodes(top_edge))
         if len(bot_row) < 2 or len(top_row) != len(bot_row):
+            print(f"[Warning] Slab {owners_per_face[face_tag][0][0]}: lateral face {face_tag} skipped because bot_row len ({len(bot_row)}) != top_row len ({len(top_row) if top_row is not None else 0})!", flush=True)
             continue
 
         # Pick left/right vertical edges by (x, y) proximity to bot row endpoints.
@@ -310,6 +331,29 @@ def freeze_lateral_mesh(
         if quad_nodes:
             gmsh.model.mesh.addElementsByType(face_tag, 3, [], quad_nodes)
 
+    # Step 4.5: prevent generate(2) from meshing cohort top faces.
+    # We will mesh them in stamp_wedges. If generate(2) meshes them,
+    # its interior nodes become orphaned when we overwrite the elements,
+    # causing PLC errors in the 3D mesher.
+    for meta in slab_meta.values():
+        if not meta.keep:
+            continue
+        top_tag = face_tag_by_key.get(meta.top_face_key)
+        if top_tag is None:
+            continue
+        elem_types, _, _ = gmsh.model.mesh.getElements(2, top_tag)
+        if len(elem_types) == 0:
+            edges = gmsh.model.getBoundary([(2, top_tag)], oriented=False, recursive=False)
+            boundary_nodes = []
+            for _, etag in edges:
+                tags, _, _ = gmsh.model.mesh.getNodes(1, etag)
+                boundary_nodes.extend(tags)
+            boundary_nodes = list(set(boundary_nodes))
+            if len(boundary_nodes) >= 3:
+                gmsh.model.mesh.addElementsByType(
+                    top_tag, 2, [], [int(boundary_nodes[0]), int(boundary_nodes[1]), int(boundary_nodes[2])]
+                )
+
     # Step 5: tell outer generate(2) to skip already-meshed faces.
     gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
 
@@ -351,12 +395,26 @@ def stamp_wedges(
         order.append((z, k, meta))
     order.sort(key=lambda t: t[0])
 
-    for _, sub_key, meta in order:
+    for idx, (_, sub_key, meta) in enumerate(order):
         bot_tag = face_tag_by_key[meta.bot_face_key]
         top_tag = face_tag_by_key[meta.top_face_key]
         vol_tag = sub_solid_tag_by_key[sub_key]
         n_layers = resolve_n_layers(meta.physical_name, resolution_specs)
-        _stamp_one(bot_tag, top_tag, vol_tag, meta, n_layers, point_tolerance)
+        # print(
+        #     f"[Debug] stamp_wedges: stamping slab {idx+1}/{len(order)} "
+        #     f"(name={meta.physical_name}, n_layers={n_layers}) "
+        #     f"bot_tag={bot_tag}, top_tag={top_tag}, vol_tag={vol_tag}",
+        #     flush=True
+        # )
+        _stamp_one(
+            bot_tag,
+            top_tag,
+            vol_tag,
+            meta,
+            n_layers,
+            point_tolerance,
+            face_tag_by_key,
+        )
 
 
 def _face_centroid_z(face_tag: int) -> float:
@@ -375,8 +433,10 @@ def _stamp_one(
     meta: SlabMeta,
     n_layers: int,
     point_tolerance: float,
+    face_tag_by_key: dict[ShapeKey, int],
 ) -> None:
     """Read bot triangulation, stamp on top, emit wedges into volume."""
+    snap_tolerance = 1e-6
     # 1) Read bot triangulation.
     elem_types, _elem_tags, node_tags = gmsh.model.mesh.getElements(2, bot_tag)
     if 2 not in elem_types:  # type 2 = 3-node triangle
@@ -388,6 +448,15 @@ def _stamp_one(
     )
     bot_pts = np.array(bot_coord).reshape(-1, 3)
     bot_z = bot_pts[:, 2].mean()
+
+    # Get boundary nodes of the bottom face. Only boundary nodes
+    # can snap to the lateral faces or existing top face boundary nodes.
+    edges = gmsh.model.getBoundary([(2, bot_tag)], oriented=False, recursive=False)
+    boundary_node_tags = []
+    for _, etag in edges:
+        tags, _, _ = gmsh.model.mesh.getNodes(1, etag, includeBoundary=True)
+        boundary_node_tags.extend(tags)
+    boundary_node_tags = set(int(t) for t in boundary_node_tags)
 
     # 2) Determine top z from top face bbox.
     bbox = gmsh.model.getBoundingBox(2, top_tag)
@@ -429,21 +498,52 @@ def _stamp_one(
 
     # bot_node_tag -> top_node_tag map.
     bot_to_top: dict[int, int] = {}
+
+    # 3a) Snapping top face nodes.
+    # Match boundary nodes using KDTree against existing top points.
+    matched_top_to_target = {}
+    unmatched_top_indices = []
     mismatched = 0
-    for bnt, bpt in zip(bot_node_tags, bot_pts):
-        if len(existing_top_pts):
-            d = np.linalg.norm(existing_top_pts[:, :2] - bpt[:2], axis=1)
-            if d.min() < point_tolerance:
-                bot_to_top[int(bnt)] = int(existing_top_nodes[int(np.argmin(d))])
-                continue
-        new_tag = gmsh.model.mesh.getMaxNodeTag() + 1
-        gmsh.model.mesh.addNodes(
-            2,
-            top_tag,
-            [new_tag],
-            [float(bpt[0]), float(bpt[1]), float(top_z)],
-        )
-        bot_to_top[int(bnt)] = int(new_tag)
+
+    if len(existing_top_pts):
+        boundary_indices = [i for i, t in enumerate(bot_node_tags) if int(t) in boundary_node_tags]
+        if boundary_indices:
+            boundary_pts = bot_pts[boundary_indices]
+            tree = KDTree(existing_top_pts[:, :2])
+            distances, indices = tree.query(boundary_pts[:, :2], distance_upper_bound=snap_tolerance)
+
+            for b_idx, dist, idx in zip(boundary_indices, distances, indices):
+                if dist < snap_tolerance:
+                    matched_top_to_target[b_idx] = int(existing_top_nodes[idx])
+                else:
+                    unmatched_top_indices.append(b_idx)
+            mismatched = len(unmatched_top_indices)
+            # Interior indices are all other indices.
+            interior_top_indices = [i for i in range(len(bot_pts)) if i not in matched_top_to_target]
+        else:
+            interior_top_indices = list(range(len(bot_pts)))
+    else:
+        interior_top_indices = list(range(len(bot_pts)))
+
+    # Bulk-add unmatched top face nodes.
+    if interior_top_indices:
+        num_new = len(interior_top_indices)
+        max_tag = gmsh.model.mesh.getMaxNodeTag()
+        new_tags = list(range(max_tag + 1, max_tag + 1 + num_new))
+
+        coords = []
+        for idx in interior_top_indices:
+            bpt = bot_pts[idx]
+            coords.extend([float(bpt[0]), float(bpt[1]), float(top_z)])
+
+        gmsh.model.mesh.addNodes(2, top_tag, new_tags, coords)
+
+        for idx, new_tag in zip(interior_top_indices, new_tags):
+            bot_to_top[int(bot_node_tags[idx])] = new_tag
+
+    # Add matched top face nodes.
+    for b_idx, target_tag in matched_top_to_target.items():
+        bot_to_top[int(bot_node_tags[b_idx])] = target_tag
 
     # Remove existing top-face elements WITHOUT removing nodes (so we do
     # not orphan interior nodes that are shared with adjacent volumes).
@@ -475,33 +575,95 @@ def _stamp_one(
         {i: int(bot_node_tags[i]) for i in range(len(bot_node_tags))}
     ]
     if n_layers > 1:
+        # Resolve lateral face tags for this slab.
+        lateral_face_tags = [
+            face_tag_by_key[fk]
+            for fk in meta.lateral_face_keys
+            if fk in face_tag_by_key
+        ]
+
+        # Snapshot ONLY current slab's lateral nodes ONCE outside the loop.
+        all_lateral_tags = []
+        all_lateral_coord = []
+        for lf_tag in lateral_face_tags:
+            tags, coords, _ = gmsh.model.mesh.getNodes(
+                2, lf_tag, includeBoundary=True
+            )
+            all_lateral_tags.extend(tags)
+            all_lateral_coord.extend(coords)
+
+        if all_lateral_tags:
+            # Deduplicate by tag since shared curves return duplicate nodes.
+            unique_indices = []
+            seen = set()
+            for idx, tag in enumerate(all_lateral_tags):
+                if tag not in seen:
+                    seen.add(tag)
+                    unique_indices.append(idx)
+
+            all_lateral_tags = np.array(all_lateral_tags)[unique_indices]
+            all_lateral_pts = np.array(all_lateral_coord).reshape(-1, 3)[
+                unique_indices
+            ]
+        else:
+            all_lateral_tags = np.array([])
+            all_lateral_pts = np.zeros((0, 3))
+
         for layer in range(1, n_layers):
             z_layer = bot_z + dz * layer
-            # Snapshot all current model nodes to look up existing z_layer nodes.
-            all_model_tags, all_model_coord, _ = gmsh.model.mesh.getNodes()
-            all_model_pts = np.array(all_model_coord).reshape(-1, 3)
+
             # Filter to nodes near z_layer for efficiency.
-            z_mask = np.abs(all_model_pts[:, 2] - z_layer) < point_tolerance
-            zlayer_tags = all_model_tags[z_mask]
-            zlayer_pts = all_model_pts[z_mask]
+            if len(all_lateral_tags):
+                z_mask = np.abs(all_lateral_pts[:, 2] - z_layer) < point_tolerance
+                zlayer_tags = all_lateral_tags[z_mask]
+                zlayer_pts = all_lateral_pts[z_mask]
+            else:
+                zlayer_tags = []
+                zlayer_pts = np.zeros((0, 3))
 
             this_map: dict[int, int] = {}
-            for i, bpt in enumerate(bot_pts):
-                if len(zlayer_tags):
-                    d = np.linalg.norm(zlayer_pts[:, :2] - bpt[:2], axis=1)
-                    if d.min() < point_tolerance:
-                        # Reuse the existing node at this z_layer position.
-                        this_map[i] = int(zlayer_tags[int(np.argmin(d))])
-                        continue
-                # No existing node close enough — create a fresh one.
-                new_tag = gmsh.model.mesh.getMaxNodeTag() + 1
-                gmsh.model.mesh.addNodes(
-                    3,
-                    vol_tag,
-                    [new_tag],
-                    [float(bpt[0]), float(bpt[1]), float(z_layer)],
-                )
-                this_map[i] = new_tag
+            matched_boundary_to_target = {}
+            unmatched_boundary_indices = []
+
+            if len(zlayer_tags):
+                boundary_indices = [i for i, t in enumerate(bot_node_tags) if int(t) in boundary_node_tags]
+                if boundary_indices:
+                    boundary_pts = bot_pts[boundary_indices]
+                    tree = KDTree(zlayer_pts[:, :2])
+                    distances, indices = tree.query(boundary_pts[:, :2], distance_upper_bound=snap_tolerance)
+
+                    for b_idx, dist, idx in zip(boundary_indices, distances, indices):
+                        if dist < snap_tolerance:
+                            matched_boundary_to_target[b_idx] = int(zlayer_tags[idx])
+                        else:
+                            unmatched_boundary_indices.append(b_idx)
+
+                    interior_indices = [i for i in range(len(bot_pts)) if i not in matched_boundary_to_target]
+                else:
+                    interior_indices = list(range(len(bot_pts)))
+            else:
+                interior_indices = list(range(len(bot_pts)))
+
+            # Bulk-add unmatched nodes at this layer.
+            if interior_indices:
+                num_new = len(interior_indices)
+                max_tag = gmsh.model.mesh.getMaxNodeTag()
+                new_tags = list(range(max_tag + 1, max_tag + 1 + num_new))
+
+                coords = []
+                for idx in interior_indices:
+                    bpt = bot_pts[idx]
+                    coords.extend([float(bpt[0]), float(bpt[1]), float(z_layer)])
+
+                gmsh.model.mesh.addNodes(3, vol_tag, new_tags, coords)
+
+                for idx, new_tag in zip(interior_indices, new_tags):
+                    this_map[idx] = new_tag
+
+            # Add matched boundary nodes to this_map.
+            for b_idx, target_tag in matched_boundary_to_target.items():
+                this_map[b_idx] = target_tag
+
             layer_maps.append(this_map)
     layer_maps.append(
         {i: bot_to_top[int(bot_node_tags[i])] for i in range(len(bot_node_tags))}
