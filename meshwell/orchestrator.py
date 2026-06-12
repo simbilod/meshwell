@@ -212,7 +212,14 @@ def generate_mesh(
             # after stamp_wedges; the scoped call is a safe no-op for them
             # while leaving the unstructured boundary mesh untouched.
             structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
-            gmsh.model.mesh.removeDuplicateNodes(structured_vol_dimtags)
+            # Temporarily tighten tolerance when deduplicating nodes to avoid 
+            # unintentional merges 
+            old_tol = gmsh.option.getNumber("Geometry.Tolerance")
+            gmsh.option.setNumber("Geometry.Tolerance", 1e-6)
+            try:
+                gmsh.model.mesh.removeDuplicateNodes(structured_vol_dimtags)
+            finally:
+                gmsh.option.setNumber("Geometry.Tolerance", old_tol)
         if user_pre_3d is not None:
             user_pre_3d()
 
@@ -223,7 +230,15 @@ def generate_mesh(
             # that were intentionally left by the scoped pre-3D dedup.  At
             # this point all volumes are fully meshed, so the dedup cannot
             # corrupt any pending generate() pass.
-            gmsh.model.mesh.removeDuplicateNodes()
+
+            # Temporarily tighten tolerance when deduplicating nodes to avoid 
+            # unintentional merges 
+            old_tol = gmsh.option.getNumber("Geometry.Tolerance")
+            gmsh.option.setNumber("Geometry.Tolerance", 1e-6)
+            try:
+                gmsh.model.mesh.removeDuplicateNodes()
+            finally:
+                gmsh.option.setNumber("Geometry.Tolerance", old_tol)
 
     has_structured = bool(state.slab_meta)
     pre_2d_hook = _structured_pre_2d if (has_structured or user_pre_2d) else None
