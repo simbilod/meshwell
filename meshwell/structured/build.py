@@ -303,6 +303,7 @@ class EdgeRegistry:
             if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
                 hits += 1
         if hits == 0:
+            # print(f"[Debug] EdgeRegistry._polyline_xy_canonical: 0 hits, fallback to standalone decomposition for ring with {n} keys", flush=True)
             return None  # closed-standalone fallback
         if hits != pair_count:
             raise CanonicalArrangementError(
@@ -313,7 +314,26 @@ class EdgeRegistry:
                 ),
             )
 
+        # Add defensive shifting logic before traversing canonical edges. 
+        # If the sequence begins at an interior vertex, the logic automatically 
+        # shifts the `inner_keys` array so that it perfectly aligns with an 
+        # arrangement node. This ensures the canonical edge traversal cleanly 
+        # spans from node to node without throwing an exception.
+        if ring_is_closed and hits == pair_count:
+            shift_idx = 0
+            for i in range(n):
+                a = inner_keys[i]
+                b = inner_keys[(i + 1) % n]
+                edge_idx = arrangement.edge_by_vertex_pair[frozenset({a, b})]
+                canon = arrangement.canonical_edges[edge_idx]
+                if not canon.is_closed and (canon.vertex_keys[0] == a or canon.vertex_keys[-1] == a):
+                    shift_idx = i
+                    break
+            if shift_idx > 0:
+                inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
+
         # Replay: walk the ring; each pair pins a canonical edge.
+        # print(f"[Debug] EdgeRegistry._polyline_xy_canonical: replaying {hits}/{pair_count} hits for ring with {n} keys", flush=True)
         edges: list[TopoDS_Edge] = []
         consumed = 0
         i = 0
@@ -322,6 +342,37 @@ class EdgeRegistry:
             b_key = inner_keys[(i + 1) % n]
             edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
             canon = arrangement.canonical_edges[edge_idx]
+            
+            # Add defensive shifting logic before traversing canonical edges. 
+            # If the sequence begins at an interior vertex, the logic automatically 
+            # shifts the `inner_keys` array so that it perfectly aligns with an 
+            # arrangement node. This ensures the canonical edge traversal cleanly 
+            # spans from node to node without throwing an exception.
+            if canon.is_closed:
+                idx = canon.vertex_keys.index(a_key)
+                n_canon = len(canon.vertex_keys)
+                if canon.vertex_keys[(idx + 1) % n_canon] == b_key:
+                    forward = True
+                elif canon.vertex_keys[(idx - 1) % n_canon] == b_key:
+                    forward = False
+                else:
+                    raise CanonicalArrangementError(
+                        cohort_index=arrangement.cohort_index,
+                        reason=(
+                            f"vertex {a_key} is in closed canonical edge "
+                            f"{edge_idx} but the ring is traversing "
+                            f"to {b_key} which is not adjacent."
+                        ),
+                    )
+                segments = list(canon.segments)
+                if not forward:
+                    segments = list(reversed(segments))
+                edges.extend(self._emit_edges_for_segments(segments, z))
+                step = n_canon
+                i += step
+                consumed += step
+                continue
+
             # Direction: canonical edge's first key == a_key -> forward,
             # else reverse.
             if canon.vertex_keys[0] == a_key:
@@ -632,6 +683,7 @@ def _polyline_segments_canonical(
         if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
             hits += 1
     if hits == 0:
+        # print(f"[Debug] _polyline_segments_canonical: 0 hits, fallback to standalone decomposition for ring with {n} keys", flush=True)
         return None
     if hits != pair_count:
         raise CanonicalArrangementError(
@@ -642,6 +694,25 @@ def _polyline_segments_canonical(
             ),
         )
 
+    # Add defensive shifting logic before traversing canonical edges. 
+    # If the sequence begins at an interior vertex, the logic automatically 
+    # shifts the `inner_keys` array so that it perfectly aligns with an 
+    # arrangement node. This ensures the canonical edge traversal cleanly 
+    # spans from node to node without throwing an exception.
+    if ring_is_closed and hits == pair_count:
+        shift_idx = 0
+        for i in range(n):
+            a = inner_keys[i]
+            b = inner_keys[(i + 1) % n]
+            edge_idx = arrangement.edge_by_vertex_pair[frozenset({a, b})]
+            canon = arrangement.canonical_edges[edge_idx]
+            if not canon.is_closed and (canon.vertex_keys[0] == a or canon.vertex_keys[-1] == a):
+                shift_idx = i
+                break
+        if shift_idx > 0:
+            inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
+
+    # print(f"[Debug] _polyline_segments_canonical: replaying {hits}/{pair_count} hits for ring with {n} keys", flush=True)
     out: list[_PolylineSegment] = []
     consumed = 0
     i = 0
@@ -650,6 +721,39 @@ def _polyline_segments_canonical(
         b_key = inner_keys[(i + 1) % n]
         edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
         canon = arrangement.canonical_edges[edge_idx]
+        
+        # Add defensive shifting logic before traversing canonical edges. 
+        # If the sequence begins at an interior vertex, the logic automatically 
+        # shifts the `inner_keys` array so that it perfectly aligns with an 
+        # arrangement node. This ensures the canonical edge traversal cleanly 
+        # spans from node to node without throwing an exception.
+        if canon.is_closed:
+            idx = canon.vertex_keys.index(a_key)
+            n_canon = len(canon.vertex_keys)
+            if canon.vertex_keys[(idx + 1) % n_canon] == b_key:
+                forward = True
+            elif canon.vertex_keys[(idx - 1) % n_canon] == b_key:
+                forward = False
+            else:
+                raise CanonicalArrangementError(
+                    cohort_index=arrangement.cohort_index,
+                    reason=(
+                        f"vertex {a_key} is in closed canonical edge "
+                        f"{edge_idx} but the lateral ring is traversing "
+                        f"to {b_key} which is not adjacent."
+                    ),
+                )
+            segments = list(canon.segments)
+            if not forward:
+                segments = list(reversed(segments))
+            out.extend(
+                _flatten_decomposition_to_polyline_segments(segments, point_tolerance)
+            )
+            step = n_canon
+            i += step
+            consumed += step
+            continue
+
         if canon.vertex_keys[0] == a_key:
             forward = True
         elif canon.vertex_keys[-1] == a_key:
