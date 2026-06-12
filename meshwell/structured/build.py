@@ -261,7 +261,12 @@ class EdgeRegistry:
         """
         from meshwell.structured.exceptions import CanonicalArrangementError
 
-        keys = [self.vertices._key(x, y, z) for x, y in coords]
+        # Ensure that sub-pieces at any vertical level successfully hit the 
+        # topological lookup and replay the canonical geometric segments, 
+        # while the actual returned OCC geometries still correctly use their 
+        # local extrusion Z coordinates.
+        arr_z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
+        keys = [self.vertices._key(x, y, arr_z) for x, y in coords]
         # Tolerate accidental closing duplicate at the tail; planar
         # rings often include it.
         if len(keys) >= 2 and keys[0] == keys[-1]:
@@ -589,9 +594,14 @@ def _polyline_segments_canonical(
     """
     from meshwell.structured.exceptions import CanonicalArrangementError
 
+    # Ensure that sub-pieces at any vertical level successfully hit the 
+    # topological lookup and replay the canonical geometric segments, 
+    # while the actual returned OCC geometries still correctly use their 
+    # local extrusion Z coordinates.
+    arr_z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
     def _key(x, y):
         s = point_tolerance
-        return (round(x / s), round(y / s), round(z / s))
+        return (round(x / s), round(y / s), round(arr_z / s))
 
     keys = [_key(x, y) for x, y in coords]
     if len(keys) >= 2 and keys[0] == keys[-1]:
