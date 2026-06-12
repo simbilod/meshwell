@@ -700,6 +700,15 @@ def mesh(
         # Save to file if output file provided
         if output_file is not None:
             mesh_generator.save_to_file(output_file)
+    except Exception as e:
+        if output_file is not None:
+            try:
+                debug_file = Path(output_file).with_name("debug_failed_mesh.msh")
+                print(f"[Debug] Saving failed mesh state to {debug_file}...", flush=True)
+                mesh_generator.save_to_file(str(debug_file))
+            except Exception as save_err:
+                print(f"[Debug] Failed to save debug mesh: {save_err}", flush=True)
+        raise e
     finally:
         # Finalize if we created the model -- even on failure, so gmsh
         # state doesn't leak into subsequent test runs / callers.
