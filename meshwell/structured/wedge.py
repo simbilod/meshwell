@@ -450,6 +450,67 @@ def _face_centroid_z(face_tag: int) -> float:
     return (bbox[2] + bbox[5]) / 2
 
 
+def _match_and_create_layer_nodes(
+    bot_pts,
+    bot_node_tags,
+    boundary_node_tags,
+    candidate_tags,
+    candidate_pts,
+    z_target: float,
+    add_dim: int,
+    add_tag: int,
+    snap_tolerance: float,
+) -> tuple[dict[int, int], int]:
+    """Map every bot-face node index to a node tag at height ``z_target``.
+
+    Boundary bot nodes within ``snap_tolerance`` (in XY) of a candidate
+    node reuse that candidate's tag (avoids duplicate positions that a
+    later removeDuplicateNodes would merge non-deterministically); every
+    remaining bot node is bulk-created at ``(x, y, z_target)`` on the
+    ``(add_dim, add_tag)`` entity.
+
+    Returns ``(idx_to_tag, n_unmatched_boundary)`` where ``idx_to_tag`` is
+    keyed by position in ``bot_node_tags``.
+    """
+    matched: dict[int, int] = {}
+    unmatched: list[int] = []
+    if len(candidate_tags):
+        boundary_indices = [
+            i for i, t in enumerate(bot_node_tags) if int(t) in boundary_node_tags
+        ]
+        if boundary_indices:
+            boundary_pts = bot_pts[boundary_indices]
+            tree = KDTree(candidate_pts[:, :2])
+            distances, indices = tree.query(
+                boundary_pts[:, :2], distance_upper_bound=snap_tolerance
+            )
+            for b_idx, dist, idx in zip(boundary_indices, distances, indices):
+                if dist < snap_tolerance:
+                    matched[b_idx] = int(candidate_tags[idx])
+                else:
+                    unmatched.append(b_idx)
+            interior_indices = [i for i in range(len(bot_pts)) if i not in matched]
+        else:
+            interior_indices = list(range(len(bot_pts)))
+    else:
+        interior_indices = list(range(len(bot_pts)))
+
+    idx_to_tag: dict[int, int] = {}
+    if interior_indices:
+        max_tag = gmsh.model.mesh.getMaxNodeTag()
+        new_tags = list(range(max_tag + 1, max_tag + 1 + len(interior_indices)))
+        coords: list[float] = []
+        for idx in interior_indices:
+            bpt = bot_pts[idx]
+            coords.extend([float(bpt[0]), float(bpt[1]), float(z_target)])
+        gmsh.model.mesh.addNodes(add_dim, add_tag, new_tags, coords)
+        for idx, new_tag in zip(interior_indices, new_tags):
+            idx_to_tag[idx] = new_tag
+    for b_idx, target_tag in matched.items():
+        idx_to_tag[b_idx] = target_tag
+    return idx_to_tag, len(unmatched)
+
+
 def _stamp_one(
     bot_tag: int,
     top_tag: int,
@@ -523,51 +584,22 @@ def _stamp_one(
     # bot_node_tag -> top_node_tag map.
     bot_to_top: dict[int, int] = {}
 
-    # 3a) Snapping top face nodes.
-    # Match boundary nodes using KDTree against existing top points.
-    matched_top_to_target = {}
-    unmatched_top_indices = []
-    mismatched = 0
-
-    if len(existing_top_pts):
-        boundary_indices = [i for i, t in enumerate(bot_node_tags) if int(t) in boundary_node_tags]
-        if boundary_indices:
-            boundary_pts = bot_pts[boundary_indices]
-            tree = KDTree(existing_top_pts[:, :2])
-            distances, indices = tree.query(boundary_pts[:, :2], distance_upper_bound=snap_tolerance)
-
-            for b_idx, dist, idx in zip(boundary_indices, distances, indices):
-                if dist < snap_tolerance:
-                    matched_top_to_target[b_idx] = int(existing_top_nodes[idx])
-                else:
-                    unmatched_top_indices.append(b_idx)
-            mismatched = len(unmatched_top_indices)
-            # Interior indices are all other indices.
-            interior_top_indices = [i for i in range(len(bot_pts)) if i not in matched_top_to_target]
-        else:
-            interior_top_indices = list(range(len(bot_pts)))
-    else:
-        interior_top_indices = list(range(len(bot_pts)))
-
-    # Bulk-add unmatched top face nodes.
-    if interior_top_indices:
-        num_new = len(interior_top_indices)
-        max_tag = gmsh.model.mesh.getMaxNodeTag()
-        new_tags = list(range(max_tag + 1, max_tag + 1 + num_new))
-
-        coords = []
-        for idx in interior_top_indices:
-            bpt = bot_pts[idx]
-            coords.extend([float(bpt[0]), float(bpt[1]), float(top_z)])
-
-        gmsh.model.mesh.addNodes(2, top_tag, new_tags, coords)
-
-        for idx, new_tag in zip(interior_top_indices, new_tags):
-            bot_to_top[int(bot_node_tags[idx])] = new_tag
-
-    # Add matched top face nodes.
-    for b_idx, target_tag in matched_top_to_target.items():
-        bot_to_top[int(bot_node_tags[b_idx])] = target_tag
+    # 3a) Snap/create top-face nodes for every bot node. Boundary nodes
+    # reuse existing top-face nodes (shared with adjacent volumes);
+    # the rest are created on the top face at top_z.
+    top_idx_to_tag, mismatched = _match_and_create_layer_nodes(
+        bot_pts,
+        bot_node_tags,
+        boundary_node_tags,
+        existing_top_nodes,
+        existing_top_pts,
+        z_target=top_z,
+        add_dim=2,
+        add_tag=top_tag,
+        snap_tolerance=snap_tolerance,
+    )
+    for idx, tag in top_idx_to_tag.items():
+        bot_to_top[int(bot_node_tags[idx])] = tag
 
     # Remove existing top-face elements WITHOUT removing nodes (so we do
     # not orphan interior nodes that are shared with adjacent volumes).
@@ -645,46 +677,19 @@ def _stamp_one(
                 zlayer_tags = []
                 zlayer_pts = np.zeros((0, 3))
 
-            this_map: dict[int, int] = {}
-            matched_boundary_to_target = {}
-
-            if len(zlayer_tags):
-                boundary_indices = [i for i, t in enumerate(bot_node_tags) if int(t) in boundary_node_tags]
-                if boundary_indices:
-                    boundary_pts = bot_pts[boundary_indices]
-                    tree = KDTree(zlayer_pts[:, :2])
-                    distances, indices = tree.query(boundary_pts[:, :2], distance_upper_bound=snap_tolerance)
-
-                    for b_idx, dist, idx in zip(boundary_indices, distances, indices):
-                        if dist < snap_tolerance:
-                            matched_boundary_to_target[b_idx] = int(zlayer_tags[idx])
-
-                    interior_indices = [i for i in range(len(bot_pts)) if i not in matched_boundary_to_target]
-                else:
-                    interior_indices = list(range(len(bot_pts)))
-            else:
-                interior_indices = list(range(len(bot_pts)))
-
-            # Bulk-add unmatched nodes at this layer.
-            if interior_indices:
-                num_new = len(interior_indices)
-                max_tag = gmsh.model.mesh.getMaxNodeTag()
-                new_tags = list(range(max_tag + 1, max_tag + 1 + num_new))
-
-                coords = []
-                for idx in interior_indices:
-                    bpt = bot_pts[idx]
-                    coords.extend([float(bpt[0]), float(bpt[1]), float(z_layer)])
-
-                gmsh.model.mesh.addNodes(3, vol_tag, new_tags, coords)
-
-                for idx, new_tag in zip(interior_indices, new_tags):
-                    this_map[idx] = new_tag
-
-            # Add matched boundary nodes to this_map.
-            for b_idx, target_tag in matched_boundary_to_target.items():
-                this_map[b_idx] = target_tag
-
+            # Boundary nodes reuse this slab's lateral-face nodes already
+            # placed at z_layer; interior nodes are created in the volume.
+            this_map, _ = _match_and_create_layer_nodes(
+                bot_pts,
+                bot_node_tags,
+                boundary_node_tags,
+                zlayer_tags,
+                zlayer_pts,
+                z_target=z_layer,
+                add_dim=3,
+                add_tag=vol_tag,
+                snap_tolerance=snap_tolerance,
+            )
             layer_maps.append(this_map)
     layer_maps.append(
         {i: bot_to_top[int(bot_node_tags[i])] for i in range(len(bot_node_tags))}
