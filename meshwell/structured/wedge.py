@@ -154,6 +154,102 @@ def _vertical_edge_layer_nodes(vertical_edge_tag: int) -> list[int]:
     return [t for t, _z in items]
 
 
+def _emit_lateral_face_quads(
+    face_tag: int,
+    z_bot: float,
+    z_top: float,
+    n_layers: int,
+    owners_per_face: dict[int, list[tuple[int, int]]],
+) -> None:
+    """Emit the structured quad mesh for one cohort lateral face.
+
+    Builds ``n_layers + 1`` rows of node tags between the bot and top
+    edges, reusing the transfinite-placed vertical-edge nodes for the
+    left/right endpoints, and connects consecutive rows with quads.
+    """
+    bot_edge, top_edge, verticals = _classify_lateral_face_edges(
+        face_tag, z_bot, z_top
+    )
+    if bot_edge is None or top_edge is None or len(verticals) != 2:
+        raise StructuredTransfiniteRejectedError(
+            face_tag=face_tag,
+            slab_index=owners_per_face[face_tag][0][0],
+            reason=(
+                f"lateral face must have bot + top + 2 vertical edges; "
+                f"got bot={bot_edge}, top={top_edge}, vert={len(verticals)}"
+            ),
+        )
+
+    bot_row = _ordered_curve_nodes(bot_edge)
+    top_row = _align_top_to_bot(bot_row, _ordered_curve_nodes(top_edge))
+    if len(bot_row) < 2 or len(top_row) != len(bot_row):
+        logger.warning(
+            "Slab %s: lateral face %s skipped because bot_row len (%s) != "
+            "top_row len (%s)",
+            owners_per_face[face_tag][0][0],
+            face_tag,
+            len(bot_row),
+            len(top_row),
+        )
+        return
+
+    # Pick left/right vertical edges by (x, y) proximity to bot row endpoints.
+    left_xy = (bot_row[0][1], bot_row[0][2])
+    right_xy = (bot_row[-1][1], bot_row[-1][2])
+    left_vert = right_vert = None
+    for ve in verticals:
+        ev = gmsh.model.getBoundary([(1, ve)], oriented=False, recursive=False)
+        x_v = y_v = None
+        for _vd, vt in ev:
+            pos = gmsh.model.getValue(0, vt, [])
+            x_v, y_v = pos[0], pos[1]
+            break
+        d_left = (x_v - left_xy[0]) ** 2 + (y_v - left_xy[1]) ** 2
+        d_right = (x_v - right_xy[0]) ** 2 + (y_v - right_xy[1]) ** 2
+        if d_left < d_right:
+            left_vert = ve
+        else:
+            right_vert = ve
+    if left_vert is None or right_vert is None:
+        return
+
+    # Reuse transfinite-placed vertical-edge nodes (no duplicates).
+    left_layer_nodes = _vertical_edge_layer_nodes(left_vert)
+    right_layer_nodes = _vertical_edge_layer_nodes(right_vert)
+
+    # Build n_layers+1 rows of node tags.
+    rows: list[list[int]] = [[t for t, _x, _y, _z in bot_row]]
+    for layer in range(1, n_layers):
+        z_layer = z_bot + (z_top - z_bot) * layer / n_layers
+        row_tags: list[int] = []
+        for idx, (_t, x, y, _z) in enumerate(bot_row):
+            if idx == 0:
+                row_tags.append(left_layer_nodes[layer])
+            elif idx == len(bot_row) - 1:
+                row_tags.append(right_layer_nodes[layer])
+            else:
+                new_tag = gmsh.model.mesh.getMaxNodeTag() + 1
+                gmsh.model.mesh.addNodes(2, face_tag, [new_tag], [x, y, z_layer])
+                row_tags.append(new_tag)
+        rows.append(row_tags)
+    rows.append([t for t, _x, _y, _z in top_row])
+
+    # Emit quad elements (gmsh type 3 = 4-node quad).
+    quad_nodes: list[int] = []
+    for r in range(len(rows) - 1):
+        for c in range(len(rows[r]) - 1):
+            quad_nodes.extend(
+                [
+                    rows[r][c],
+                    rows[r][c + 1],
+                    rows[r + 1][c + 1],
+                    rows[r + 1][c],
+                ]
+            )
+    if quad_nodes:
+        gmsh.model.mesh.addElementsByType(face_tag, 3, [], quad_nodes)
+
+
 def freeze_lateral_mesh(
     slab_meta: dict[ShapeKey, SlabMeta],
     face_tag_by_key: dict[ShapeKey, int],
@@ -267,88 +363,9 @@ def freeze_lateral_mesh(
 
     # Step 4: emit lateral-face quads.
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
-        n_layers = face_n_layers[face_tag]
-        bot_edge, top_edge, verticals = _classify_lateral_face_edges(
-            face_tag, z_bot, z_top
+        _emit_lateral_face_quads(
+            face_tag, z_bot, z_top, face_n_layers[face_tag], owners_per_face
         )
-        if bot_edge is None or top_edge is None or len(verticals) != 2:
-            raise StructuredTransfiniteRejectedError(
-                face_tag=face_tag,
-                slab_index=owners_per_face[face_tag][0][0],
-                reason=(
-                    f"lateral face must have bot + top + 2 vertical edges; "
-                    f"got bot={bot_edge}, top={top_edge}, vert={len(verticals)}"
-                ),
-            )
-
-        bot_row = _ordered_curve_nodes(bot_edge)
-        top_row = _align_top_to_bot(bot_row, _ordered_curve_nodes(top_edge))
-        if len(bot_row) < 2 or len(top_row) != len(bot_row):
-            logger.warning(
-                "Slab %s: lateral face %s skipped because bot_row len (%s) != "
-                "top_row len (%s)",
-                owners_per_face[face_tag][0][0],
-                face_tag,
-                len(bot_row),
-                len(top_row),
-            )
-            continue
-
-        # Pick left/right vertical edges by (x, y) proximity to bot row endpoints.
-        left_xy = (bot_row[0][1], bot_row[0][2])
-        right_xy = (bot_row[-1][1], bot_row[-1][2])
-        left_vert = right_vert = None
-        for ve in verticals:
-            ev = gmsh.model.getBoundary([(1, ve)], oriented=False, recursive=False)
-            x_v = y_v = None
-            for _vd, vt in ev:
-                pos = gmsh.model.getValue(0, vt, [])
-                x_v, y_v = pos[0], pos[1]
-                break
-            d_left = (x_v - left_xy[0]) ** 2 + (y_v - left_xy[1]) ** 2
-            d_right = (x_v - right_xy[0]) ** 2 + (y_v - right_xy[1]) ** 2
-            if d_left < d_right:
-                left_vert = ve
-            else:
-                right_vert = ve
-        if left_vert is None or right_vert is None:
-            continue
-
-        # Reuse transfinite-placed vertical-edge nodes (no duplicates).
-        left_layer_nodes = _vertical_edge_layer_nodes(left_vert)
-        right_layer_nodes = _vertical_edge_layer_nodes(right_vert)
-
-        # Build n_layers+1 rows of node tags.
-        rows: list[list[int]] = [[t for t, _x, _y, _z in bot_row]]
-        for layer in range(1, n_layers):
-            z_layer = z_bot + (z_top - z_bot) * layer / n_layers
-            row_tags: list[int] = []
-            for idx, (_t, x, y, _z) in enumerate(bot_row):
-                if idx == 0:
-                    row_tags.append(left_layer_nodes[layer])
-                elif idx == len(bot_row) - 1:
-                    row_tags.append(right_layer_nodes[layer])
-                else:
-                    new_tag = gmsh.model.mesh.getMaxNodeTag() + 1
-                    gmsh.model.mesh.addNodes(2, face_tag, [new_tag], [x, y, z_layer])
-                    row_tags.append(new_tag)
-            rows.append(row_tags)
-        rows.append([t for t, _x, _y, _z in top_row])
-
-        # Emit quad elements (gmsh type 3 = 4-node quad).
-        quad_nodes: list[int] = []
-        for r in range(len(rows) - 1):
-            for c in range(len(rows[r]) - 1):
-                quad_nodes.extend(
-                    [
-                        rows[r][c],
-                        rows[r][c + 1],
-                        rows[r + 1][c + 1],
-                        rows[r + 1][c],
-                    ]
-                )
-        if quad_nodes:
-            gmsh.model.mesh.addElementsByType(face_tag, 3, [], quad_nodes)
 
     # Step 4.5: prevent generate(2) from meshing cohort top faces.
     # We will mesh them in stamp_wedges. If generate(2) meshes them,
