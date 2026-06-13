@@ -330,33 +330,36 @@ def freeze_lateral_mesh(
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
         n_layers = face_n_layers.get(face_tag, 1)
         bot_edge, top_edge, verticals = _classify_lateral_face_edges(face_tag, z_bot, z_top)
-        
+
         for ve in verticals:
             if ve in vertical_edges_done:
                 continue
             vertical_edges_done.add(ve)
             gmsh.model.mesh.setTransfiniteCurve(ve, n_layers + 1)
-            
-        if bot_edge is not None and top_edge is not None:
-            if top_edge not in periodic_edges_done:
-                periodic_edges_done.add(top_edge)
-                dz = z_top - z_bot
-                transform = [
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, float(dz),
-                    0.0, 0.0, 0.0, 1.0
-                ]
-                try:
-                    gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
-                except Exception as per_err:
-                    logger.warning(
-                        "Failed to set periodic constraint for top_edge %s -> "
-                        "bot_edge %s: %s",
-                        top_edge,
-                        bot_edge,
-                        per_err,
-                    )
+
+        if (
+            bot_edge is not None
+            and top_edge is not None
+            and top_edge not in periodic_edges_done
+        ):
+            periodic_edges_done.add(top_edge)
+            dz = z_top - z_bot
+            transform = [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, float(dz),
+                0.0, 0.0, 0.0, 1.0
+            ]
+            try:
+                gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
+            except Exception as per_err:
+                logger.warning(
+                    "Failed to set periodic constraint for top_edge %s -> "
+                    "bot_edge %s: %s",
+                    top_edge,
+                    bot_edge,
+                    per_err,
+                )
 
     # Step 3: materialise 1D mesh.
     gmsh.model.mesh.generate(1)
@@ -521,10 +524,8 @@ def _match_and_create_layer_nodes(
             bpt = bot_pts[idx]
             coords.extend([float(bpt[0]), float(bpt[1]), float(z_target)])
         gmsh.model.mesh.addNodes(add_dim, add_tag, new_tags, coords)
-        for idx, new_tag in zip(interior_indices, new_tags):
-            idx_to_tag[idx] = new_tag
-    for b_idx, target_tag in matched.items():
-        idx_to_tag[b_idx] = target_tag
+        idx_to_tag.update(zip(interior_indices, new_tags))
+    idx_to_tag.update(matched)
     return idx_to_tag, len(unmatched)
 
 
@@ -558,7 +559,7 @@ def _stamp_one(
     for _, etag in edges:
         tags, _, _ = gmsh.model.mesh.getNodes(1, etag, includeBoundary=True)
         boundary_node_tags.extend(tags)
-    boundary_node_tags = set(int(t) for t in boundary_node_tags)
+    boundary_node_tags = {int(t) for t in boundary_node_tags}
 
     # 2) Determine top z from top face bbox.
     bbox = gmsh.model.getBoundingBox(2, top_tag)
