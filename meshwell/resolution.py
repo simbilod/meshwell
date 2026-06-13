@@ -86,7 +86,7 @@ class ConstantInField(ResolutionSpec):
 
     resolution: float
 
-    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int:  # noqa: ARG002
+    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int | None:  # noqa: ARG002
         """Apply constant resolution field to the model.
 
         Creates a MathEval field with constant resolution and restricts it
@@ -480,7 +480,7 @@ class StructuredExtrusionResolutionSpec(ResolutionSpec):
     apply_to: Literal["volumes"] = "volumes"
     n_layers: int = Field(default=1, ge=1)
 
-    def apply(self, **_kwargs):
+    def apply(self, **_kwargs) -> None:
         """No-op.
 
         StructuredExtrusionResolutionSpec is consumed by the wedge hook,

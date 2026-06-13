@@ -24,6 +24,10 @@ class PolyPrism(GeometryEntity):
         physical_name: name of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
+        structured: if True, mesh this prism with structured wedge elements (requires
+            extrude=True, i.e. all-zero buffers). Pair with a
+            StructuredExtrusionResolutionSpec(n_layers=N) in resolution_specs to
+            control the vertical layer count.
 
     """
 
@@ -37,7 +41,7 @@ class PolyPrism(GeometryEntity):
         additive: bool = False,
         subdivision: tuple[int, int, int] | None = None,
         point_tolerance: float = 1e-3,
-        identify_arcs: bool | None = None,
+        identify_arcs: bool = False,
         min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
@@ -79,18 +83,16 @@ class PolyPrism(GeometryEntity):
                 tuple[float, Polygon]
             ] = self._get_buffered_polygons(polygons, buffers)
 
-        # Structured validation and identify_arcs resolution
-        # entity_index=-1 is a placeholder: the real index is unknown at
-        # construction time; the cad_occ pre-pass will re-raise with the
-        # correct entity index once it has scanned the full entity list.
+        # Fail fast on direct misuse. entity_index=-1 because there is no
+        # entity-list context at construction time; the structured collect
+        # pass (structured/collect.py) re-validates with the real index for
+        # entities that reach the pipeline.
         if structured and not self.extrude:
             raise StructuredExtrudeRequiredError(entity_index=-1)
         # identify_arcs must be EXPLICITLY set to True; structured=True alone
         # does NOT imply arc detection. Automatically enabling it caused
         # polygons with all vertices co-circular (e.g. rectangles, whose corners
         # lie on the circumscribed circle) to be mis-built as disk-shaped solids.
-        if identify_arcs is None:
-            identify_arcs = False
         self.structured = structured
         self.identify_arcs = identify_arcs
 
@@ -532,6 +534,8 @@ class PolyPrism(GeometryEntity):
                 if hasattr(self.polygons, "geoms")
                 else [self.polygons]
             )
+            build_z = self.zmin
+            build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
                 # For polygons with holes, canonicalize to OGC convention
                 # (CCW exterior + CW interiors) so OCC's face-with-hole
@@ -547,8 +551,6 @@ class PolyPrism(GeometryEntity):
                 if poly.interiors:
                     poly = orient(poly, sign=1.0)
 
-                build_z = self.zmin
-                build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
                 exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
                 outer_wire = self._make_occ_wire_from_vertices(
                     exterior_vertices,

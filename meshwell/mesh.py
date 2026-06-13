@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from os import cpu_count
 from pathlib import Path
 
 import gmsh
+import meshio
 import numpy as np
 
-import meshio
 from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_algo(alg: int | Sequence[int]) -> tuple[int, ...]:
@@ -187,10 +191,6 @@ class Mesh:
 
     def _restore_structured_sweeps(self, blueprint: dict) -> None:
         """Analyze structured sweeps."""
-        import logging
-
-        logger = logging.getLogger(__name__)
-
         top_names = self.get_top_physical_names()
         for p_name in top_names:
             if p_name in blueprint and blueprint[p_name].get("mesh_structured", False):
@@ -404,9 +404,9 @@ class Mesh:
         global_scaling: float,
         verbosity: int,
         optimization_flags: tuple[tuple[str, int]] | None,
-        pre_2d_hook: callable | None = None,
-        pre_3d_hook: callable | None = None,
-        post_3d_hook: callable | None = None,
+        pre_2d_hook: Callable[[], None] | None = None,
+        pre_3d_hook: Callable[[], None] | None = None,
+        post_3d_hook: Callable[[], None] | None = None,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -423,7 +423,8 @@ class Mesh:
             gmsh.logger.start()
 
         if dim >= 2 and (
-            pre_2d_hook is not None or (dim >= 3 and pre_3d_hook is not None)
+            pre_2d_hook is not None
+            or (dim >= 3 and (pre_3d_hook is not None or post_3d_hook is not None))
         ):
             # Call hooks at the appropriate generate boundaries
             if pre_2d_hook is not None:
@@ -508,9 +509,9 @@ class Mesh:
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
-        pre_2d_hook: callable | None = None,
-        pre_3d_hook: callable | None = None,
-        post_3d_hook: callable | None = None,
+        pre_2d_hook: Callable[[], None] | None = None,
+        pre_3d_hook: Callable[[], None] | None = None,
+        post_3d_hook: Callable[[], None] | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -624,9 +625,9 @@ def mesh(
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
-    pre_2d_hook: callable | None = None,
-    pre_3d_hook: callable | None = None,
-    post_3d_hook: callable | None = None,
+    pre_2d_hook: Callable[[], None] | None = None,
+    pre_3d_hook: Callable[[], None] | None = None,
+    post_3d_hook: Callable[[], None] | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -700,15 +701,17 @@ def mesh(
         # Save to file if output file provided
         if output_file is not None:
             mesh_generator.save_to_file(output_file)
-    except Exception as e:
-        if output_file is not None:
+    except Exception:
+        # Opt-in failed-mesh dump for production triage. Off by default so a
+        # failure doesn't silently write an extra file beside the user's output.
+        if output_file is not None and os.environ.get("MESHWELL_DUMP_FAILED_MESH"):
             try:
                 debug_file = Path(output_file).with_name("debug_failed_mesh.msh")
-                print(f"[Debug] Saving failed mesh state to {debug_file}...", flush=True)
+                logger.warning("Saving failed mesh state to %s", debug_file)
                 mesh_generator.save_to_file(str(debug_file))
             except Exception as save_err:
-                print(f"[Debug] Failed to save debug mesh: {save_err}", flush=True)
-        raise e
+                logger.warning("Failed to save debug mesh: %s", save_err)
+        raise
     finally:
         # Finalize if we created the model -- even on failure, so gmsh
         # state doesn't leak into subsequent test runs / callers.

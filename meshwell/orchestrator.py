@@ -95,8 +95,11 @@ def generate_mesh(
     point_tolerance = cad_kwargs.get(
         "point_tolerance", mesh_kwargs.get("point_tolerance", 1e-3)
     )
-    # Default mirrors ``CAD_OCC.__init__`` (perturbation=1e-5 when None).
-    perturbation = cad_kwargs.get("perturbation") or 1e-5
+    # Default mirrors ``CAD_OCC.__init__`` (perturbation=1e-5 when None);
+    # use ``is None`` so an explicit ``perturbation=0.0`` is respected.
+    perturbation = cad_kwargs.get("perturbation")
+    if perturbation is None:
+        perturbation = 1e-5
 
     # --- Stage 1a: shapely intake pre-pass. -----------------------------
     # Apply the polygon-buffer + InterfaceTag resolve BEFORE the

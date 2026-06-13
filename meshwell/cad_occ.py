@@ -154,6 +154,10 @@ class CAD_OCC:
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
         )
+        # Set by the final fragment pass in ``_fragment_all`` so callers (e.g.
+        # the orchestrator's cohort-shell check) can query ``Modified()``.
+        # Stays None when only ``process_entities_cut_only`` runs.
+        self.last_fragment_builder: BOPAlgo_Builder | None = None
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from the first non-empty TopAbs class."""
@@ -476,9 +480,7 @@ class CAD_OCC:
                 # validate_no_volumetric_cohort_overlap), so the cut would
                 # be a no-op in volume but corrupts via fuzzy. fragment_all
                 # handles their boundary-plane merging cleanly.
-                if getattr(prev, "_is_cohort", False) or getattr(
-                    labeled, "_is_cohort", False
-                ):
+                if prev._is_cohort or labeled._is_cohort:
                     continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
@@ -581,7 +583,7 @@ def cad_occ(
     perturbation: float | None = None,
     return_processor: bool = False,
     prepared: bool = False,
-) -> list[OCCLabeledEntity]:
+) -> list[OCCLabeledEntity] | tuple[list[OCCLabeledEntity], CAD_OCC]:
     """Utility function for OCC-based CAD processing.
 
     Mirrors :func:`meshwell.cad_gmsh.cad_gmsh`'s signature (minus the
