@@ -32,6 +32,7 @@ from OCP.TopoDS import (
 )
 
 from meshwell.geometry_entity import decompose_vertices_2d
+from meshwell.structured.exceptions import CanonicalArrangementError
 from meshwell.structured.types import (
     Arrangement,
     Cohort,
@@ -254,170 +255,22 @@ class EdgeRegistry:
         z: float,
         arrangement: "Arrangement",
     ) -> "list[TopoDS_Edge] | None":
-        """Replay canonical arrangement edges for a ring.
+        """Replay canonical arrangement edges for a ring as OCC edges.
 
-        Returns the emitted edge list when every consecutive vertex
-        pair of ``coords`` is in ``arrangement.edge_by_vertex_pair``.
-        Returns None when NO pairs match (closed-standalone fallback).
-        Raises ``CanonicalArrangementError`` on mixed coverage.
+        Returns the emitted edge list when every consecutive vertex pair
+        of ``coords`` is in ``arrangement.edge_by_vertex_pair``; None when
+        NO pairs match (closed-standalone fallback). Raises
+        ``CanonicalArrangementError`` on mixed coverage.
         """
-        from meshwell.structured.exceptions import CanonicalArrangementError
-
-        # Ensure that sub-pieces at any vertical level successfully hit the 
-        # topological lookup and replay the canonical geometric segments, 
-        # while the actual returned OCC geometries still correctly use their 
-        # local extrusion Z coordinates.
-        arr_z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
-        keys = [self.vertices._key(x, y, arr_z) for x, y in coords]
-        # Tolerate accidental closing duplicate at the tail; planar
-        # rings often include it.
-        if len(keys) >= 2 and keys[0] == keys[-1]:
-            inner_keys = keys[:-1]
-            ring_is_closed = True
-        else:
-            inner_keys = list(keys)
-            ring_is_closed = False
-        # Drop consecutive duplicate keys that arise from floating-point
-        # near-identical vertices (e.g. the two circle-crossing points in a
-        # lens polygon where Shapely emits (0.5, -0.866...) and
-        # (0.4999..., -0.8660...4), both quantizing to the same vertex key).
-        # These degenerate zero-length steps carry no geometry and have no
-        # entry in the arrangement lookup; keeping them causes a spurious
-        # "mixed canonical coverage" error.
-        deduped: list = [inner_keys[0]] if inner_keys else []
-        for k in inner_keys[1:]:
-            if k != deduped[-1]:
-                deduped.append(k)
-        # Also drop a wrap-around duplicate when the ring is closed.
-        if ring_is_closed and len(deduped) >= 2 and deduped[-1] == deduped[0]:
-            deduped = deduped[:-1]
-        inner_keys = deduped
-        n = len(inner_keys)
-        if n < 2:
-            return []
-
-        # Probe coverage: count pair hits/misses.
-        pair_count = n if ring_is_closed else n - 1
-        hits = 0
-        for i in range(pair_count):
-            a = inner_keys[i]
-            b = inner_keys[(i + 1) % n] if ring_is_closed else inner_keys[i + 1]
-            if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
-                hits += 1
-        if hits == 0:
-            logger.debug(
-                "_polyline_xy_canonical: 0 hits, falling back to standalone "
-                "decomposition for ring with %d keys",
-                n,
-            )
-            return None  # closed-standalone fallback
-        if hits != pair_count:
-            raise CanonicalArrangementError(
-                cohort_index=arrangement.cohort_index,
-                reason=(
-                    f"sub-piece ring has mixed canonical coverage "
-                    f"({hits}/{pair_count} pairs in lookup) — coverage bug"
-                ),
-            )
-
-        # Add defensive shifting logic before traversing canonical edges. 
-        # If the sequence begins at an interior vertex, the logic automatically 
-        # shifts the `inner_keys` array so that it perfectly aligns with an 
-        # arrangement node. This ensures the canonical edge traversal cleanly 
-        # spans from node to node without throwing an exception.
-        if ring_is_closed and hits == pair_count:
-            shift_idx = 0
-            for i in range(n):
-                a = inner_keys[i]
-                b = inner_keys[(i + 1) % n]
-                edge_idx = arrangement.edge_by_vertex_pair[frozenset({a, b})]
-                canon = arrangement.canonical_edges[edge_idx]
-                if not canon.is_closed and (canon.vertex_keys[0] == a or canon.vertex_keys[-1] == a):
-                    shift_idx = i
-                    break
-            if shift_idx > 0:
-                inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
-
-        # Replay: walk the ring; each pair pins a canonical edge.
-        logger.debug(
-            "_polyline_xy_canonical: replaying %d/%d hits for ring with %d keys",
-            hits,
-            pair_count,
-            n,
+        replayed = _replay_canonical_ring(
+            coords, arrangement, self.vertices.point_tolerance, "sub-piece ring"
         )
+        if replayed is None:
+            return None
         edges: list[TopoDS_Edge] = []
-        consumed = 0
-        i = 0
-        while consumed < pair_count:
-            a_key = inner_keys[i % n]
-            b_key = inner_keys[(i + 1) % n]
-            edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
-            canon = arrangement.canonical_edges[edge_idx]
-            
-            # Add defensive shifting logic before traversing canonical edges. 
-            # If the sequence begins at an interior vertex, the logic automatically 
-            # shifts the `inner_keys` array so that it perfectly aligns with an 
-            # arrangement node. This ensures the canonical edge traversal cleanly 
-            # spans from node to node without throwing an exception.
-            if canon.is_closed:
-                idx = canon.vertex_keys.index(a_key)
-                n_canon = len(canon.vertex_keys)
-                if canon.vertex_keys[(idx + 1) % n_canon] == b_key:
-                    forward = True
-                elif canon.vertex_keys[(idx - 1) % n_canon] == b_key:
-                    forward = False
-                else:
-                    raise CanonicalArrangementError(
-                        cohort_index=arrangement.cohort_index,
-                        reason=(
-                            f"vertex {a_key} is in closed canonical edge "
-                            f"{edge_idx} but the ring is traversing "
-                            f"to {b_key} which is not adjacent."
-                        ),
-                    )
-                segments = list(canon.segments)
-                if not forward:
-                    segments = list(reversed(segments))
-                edges.extend(self._emit_edges_for_segments(segments, z))
-                step = n_canon
-                i += step
-                consumed += step
-                continue
-
-            # Direction: canonical edge's first key == a_key -> forward,
-            # else reverse.
-            if canon.vertex_keys[0] == a_key:
-                forward = True
-            elif canon.vertex_keys[-1] == a_key:
-                forward = False
-            else:
-                # Should not happen: sub-pieces enter canonical edges at
-                # one of the two endpoints (arrangement nodes). If the
-                # entered key is interior, the lookup is mis-built.
-                raise CanonicalArrangementError(
-                    cohort_index=arrangement.cohort_index,
-                    reason=(
-                        f"vertex {a_key} is interior to canonical edge "
-                        f"{edge_idx} but the ring is entering here"
-                    ),
-                )
-            segments = list(canon.segments)
-            if not forward:
-                # Reverse SEGMENT ORDER only, not each segment's points.
-                # arc_xy's cache key is direction-invariant on the sorted
-                # endpoint keys, so emitting the same canonical segment
-                # always returns the same TShape regardless of traversal
-                # direction. Reversing each segment's points would change
-                # the sampled midpoint for even-length arc segments
-                # (mid_idx = L // 2 is not symmetric under reversal for
-                # even L), producing different arc_xy keys forward vs
-                # reverse — silently breaking the TShape-sharing
-                # guarantee.
-                segments = list(reversed(segments))
+        for segments in replayed:
             edges.extend(self._emit_edges_for_segments(segments, z))
-            step = len(canon.vertex_keys) - 1
-            i += step
-            consumed += step
+        return edges
         return edges
 
 
@@ -556,7 +409,6 @@ def polyline_segments(
             )
         segs = _polyline_segments_canonical(
             coords,
-            z,
             arrangement,
             point_tolerance,
         )
@@ -636,44 +488,50 @@ def _flatten_decomposition_to_polyline_segments(
     return out
 
 
-def _polyline_segments_canonical(
+def _replay_canonical_ring(
     coords: list[tuple[float, float]],
-    z: float,
     arrangement: "Arrangement",
     point_tolerance: float,
-) -> "list[_PolylineSegment] | None":
-    """Replay canonical arrangement edges' segments for a ring.
+    ring_label: str,
+) -> "list[list] | None":
+    """Walk a ring against the cohort arrangement; return per-edge segments.
 
-    Returns the list when every pair is covered; None when NO pairs
-    match (closed-standalone fallback); raises on mixed coverage.
+    For each consecutive vertex pair of ``coords`` that maps to a canonical
+    arrangement edge, returns that edge's pre-fit ``segments`` in traversal
+    order (one inner list per canonical edge). Both the OCC-edge builder
+    (``EdgeRegistry._polyline_xy_canonical``) and the lateral polyline
+    builder (``_polyline_segments_canonical``) consume these, so two callers
+    traversing the same arrangement edge in opposite directions get
+    identical geometry by construction.
 
-    Note: like ``EdgeRegistry._polyline_xy_canonical``, this routine
-    reverses the SEGMENT LIST ORDER for reverse traversal but never
-    reverses each segment's internal point sequence — that would
-    break the even-length-arc mid-point symmetry. See the comments in
-    ``_polyline_xy_canonical`` for the same reasoning.
+    Returns ``None`` when NO consecutive pair is in the lookup (caller does
+    the closed-standalone greedy fallback); a possibly-empty list otherwise.
+    Raises ``CanonicalArrangementError`` on mixed coverage or a vertex that
+    is interior to / non-adjacent within a canonical edge.
+
+    Reverse traversal reverses the SEGMENT ORDER only, never each segment's
+    internal points: ``arc_xy``'s cache key is direction-invariant on the
+    sorted endpoint keys, and reversing points would shift the sampled
+    midpoint for even-length arc segments (mid_idx = L // 2 is asymmetric
+    under reversal), producing different arc keys forward vs reverse and
+    silently breaking the TShape-sharing guarantee.
     """
-    from meshwell.structured.exceptions import CanonicalArrangementError
-
-    # Ensure that sub-pieces at any vertical level successfully hit the 
-    # topological lookup and replay the canonical geometric segments, 
-    # while the actual returned OCC geometries still correctly use their 
-    # local extrusion Z coordinates.
+    s = point_tolerance
+    # Quantize XY against the arrangement's z so sub-pieces at any vertical
+    # level hit the same topological lookup; callers re-apply their own
+    # extrusion z when emitting geometry.
     arr_z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
-    def _key(x, y):
-        s = point_tolerance
-        return (round(x / s), round(y / s), round(arr_z / s))
-
-    keys = [_key(x, y) for x, y in coords]
+    keys = [(round(x / s), round(y / s), round(arr_z / s)) for x, y in coords]
+    # Tolerate an accidental closing duplicate at the tail.
     if len(keys) >= 2 and keys[0] == keys[-1]:
         inner_keys = keys[:-1]
         ring_is_closed = True
     else:
         inner_keys = list(keys)
         ring_is_closed = False
-    # Drop consecutive duplicate keys arising from floating-point near-
-    # identical vertices that quantize to the same key. Same dedup as
-    # in EdgeRegistry._polyline_xy_canonical.
+    # Drop consecutive duplicate keys from floating-point near-identical
+    # vertices that quantize to the same key (degenerate zero-length steps
+    # have no lookup entry and would trip a spurious mixed-coverage error).
     deduped: list = [inner_keys[0]] if inner_keys else []
     for k in inner_keys[1:]:
         if k != deduped[-1]:
@@ -685,6 +543,7 @@ def _polyline_segments_canonical(
     if n < 2:
         return []
 
+    # Probe coverage: count pair hits/misses.
     pair_count = n if ring_is_closed else n - 1
     hits = 0
     for i in range(pair_count):
@@ -694,8 +553,9 @@ def _polyline_segments_canonical(
             hits += 1
     if hits == 0:
         logger.debug(
-            "_polyline_segments_canonical: 0 hits, falling back to standalone "
+            "_replay_canonical_ring(%s): 0 hits, falling back to standalone "
             "decomposition for ring with %d keys",
+            ring_label,
             n,
         )
         return None
@@ -703,36 +563,37 @@ def _polyline_segments_canonical(
         raise CanonicalArrangementError(
             cohort_index=arrangement.cohort_index,
             reason=(
-                f"lateral ring has mixed canonical coverage "
+                f"{ring_label} has mixed canonical coverage "
                 f"({hits}/{pair_count} pairs in lookup) — coverage bug"
             ),
         )
 
-    # Add defensive shifting logic before traversing canonical edges. 
-    # If the sequence begins at an interior vertex, the logic automatically 
-    # shifts the `inner_keys` array so that it perfectly aligns with an 
-    # arrangement node. This ensures the canonical edge traversal cleanly 
-    # spans from node to node without throwing an exception.
-    if ring_is_closed and hits == pair_count:
+    # If the ring starts mid-edge, rotate it so traversal begins at an
+    # arrangement node; the canonical-edge walk then spans node to node
+    # without raising.
+    if ring_is_closed:
         shift_idx = 0
         for i in range(n):
             a = inner_keys[i]
             b = inner_keys[(i + 1) % n]
             edge_idx = arrangement.edge_by_vertex_pair[frozenset({a, b})]
             canon = arrangement.canonical_edges[edge_idx]
-            if not canon.is_closed and (canon.vertex_keys[0] == a or canon.vertex_keys[-1] == a):
+            if not canon.is_closed and (
+                canon.vertex_keys[0] == a or canon.vertex_keys[-1] == a
+            ):
                 shift_idx = i
                 break
         if shift_idx > 0:
             inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
 
     logger.debug(
-        "_polyline_segments_canonical: replaying %d/%d hits for ring with %d keys",
+        "_replay_canonical_ring(%s): replaying %d/%d hits for ring with %d keys",
+        ring_label,
         hits,
         pair_count,
         n,
     )
-    out: list[_PolylineSegment] = []
+    out: list[list] = []
     consumed = 0
     i = 0
     while consumed < pair_count:
@@ -740,12 +601,7 @@ def _polyline_segments_canonical(
         b_key = inner_keys[(i + 1) % n]
         edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
         canon = arrangement.canonical_edges[edge_idx]
-        
-        # Add defensive shifting logic before traversing canonical edges. 
-        # If the sequence begins at an interior vertex, the logic automatically 
-        # shifts the `inner_keys` array so that it perfectly aligns with an 
-        # arrangement node. This ensures the canonical edge traversal cleanly 
-        # spans from node to node without throwing an exception.
+
         if canon.is_closed:
             idx = canon.vertex_keys.index(a_key)
             n_canon = len(canon.vertex_keys)
@@ -758,21 +614,20 @@ def _polyline_segments_canonical(
                     cohort_index=arrangement.cohort_index,
                     reason=(
                         f"vertex {a_key} is in closed canonical edge "
-                        f"{edge_idx} but the lateral ring is traversing "
+                        f"{edge_idx} but the {ring_label} is traversing "
                         f"to {b_key} which is not adjacent."
                     ),
                 )
             segments = list(canon.segments)
             if not forward:
                 segments = list(reversed(segments))
-            out.extend(
-                _flatten_decomposition_to_polyline_segments(segments, point_tolerance)
-            )
+            out.append(segments)
             step = n_canon
             i += step
             consumed += step
             continue
 
+        # Open canonical edge: enter at one of its two endpoints.
         if canon.vertex_keys[0] == a_key:
             forward = True
         elif canon.vertex_keys[-1] == a_key:
@@ -782,20 +637,40 @@ def _polyline_segments_canonical(
                 cohort_index=arrangement.cohort_index,
                 reason=(
                     f"vertex {a_key} is interior to canonical edge "
-                    f"{edge_idx} but the lateral ring is entering here"
+                    f"{edge_idx} but the {ring_label} is entering here"
                 ),
             )
         segments = list(canon.segments)
         if not forward:
-            # Reverse segment ORDER only (see _polyline_xy_canonical
-            # for the even-L arc rationale).
             segments = list(reversed(segments))
-        out.extend(
-            _flatten_decomposition_to_polyline_segments(segments, point_tolerance)
-        )
+        out.append(segments)
         step = len(canon.vertex_keys) - 1
         i += step
         consumed += step
+    return out
+
+
+def _polyline_segments_canonical(
+    coords: list[tuple[float, float]],
+    arrangement: "Arrangement",
+    point_tolerance: float,
+) -> "list[_PolylineSegment] | None":
+    """Replay canonical arrangement edges' segments for a lateral ring.
+
+    Returns the flattened polyline-segment list when every pair is covered;
+    None when NO pairs match (closed-standalone fallback); raises on mixed
+    coverage. See ``_replay_canonical_ring`` for the shared traversal logic.
+    """
+    replayed = _replay_canonical_ring(
+        coords, arrangement, point_tolerance, "lateral ring"
+    )
+    if replayed is None:
+        return None
+    out: list[_PolylineSegment] = []
+    for segments in replayed:
+        out.extend(
+            _flatten_decomposition_to_polyline_segments(segments, point_tolerance)
+        )
     return out
 
 
