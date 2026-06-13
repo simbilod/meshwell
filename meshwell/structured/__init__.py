@@ -6,9 +6,13 @@ physical_name in the ``resolution_specs`` dict passed to
 ``generate_mesh``. The volume is meshed with wedge elements;
 surrounding unstructured regions remain tet-meshed and interfaces
 are conformal by construction.
+
+The public surface of this package is the structured-meshing exception
+family, all subclasses of ``StructuredError``.
 """
 from meshwell.structured.exceptions import (
-    CohortNonManifoldError,
+    CanonicalArrangementError,
+    CohortNotWrappedError,
     CohortShellModifiedError,
     MixedIdentifyArcsError,
     StructuredEntityTypeError,
@@ -16,15 +20,16 @@ from meshwell.structured.exceptions import (
     StructuredExtrudeRequiredError,
     StructuredLateralNLayersMismatchError,
     StructuredTransfiniteRejectedError,
+    StructuredVoidMeshOrderRequiredError,
+    StructuredVolumetricOverlapError,
     StructuredZStackError,
-    SubPolygonAssemblyError,
-    UnstructuredImprintRequiresPolyPrismError,
     WedgeBotNodeMismatchError,
     WedgeCountMismatchError,
 )
 
 __all__ = [
-    "CohortNonManifoldError",
+    "CanonicalArrangementError",
+    "CohortNotWrappedError",
     "CohortShellModifiedError",
     "MixedIdentifyArcsError",
     "StructuredEntityTypeError",
@@ -32,9 +37,9 @@ __all__ = [
     "StructuredExtrudeRequiredError",
     "StructuredLateralNLayersMismatchError",
     "StructuredTransfiniteRejectedError",
+    "StructuredVoidMeshOrderRequiredError",
+    "StructuredVolumetricOverlapError",
     "StructuredZStackError",
-    "SubPolygonAssemblyError",
-    "UnstructuredImprintRequiresPolyPrismError",
     "WedgeBotNodeMismatchError",
     "WedgeCountMismatchError",
 ]

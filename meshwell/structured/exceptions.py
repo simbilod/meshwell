@@ -69,45 +69,6 @@ class StructuredVolumetricOverlapError(StructuredError):
         )
 
 
-class UnstructuredImprintRequiresPolyPrismError(StructuredError):
-    """Raised when an unstructured entity at a structured z-plane is not a PolyPrism."""
-
-    def __init__(self, entity_index: int, type_name: str, z: float):
-        self.entity_index = entity_index
-        self.type_name = type_name
-        self.z = z
-        super().__init__(
-            f"Entity #{entity_index} ({type_name}) shares z-plane z={z} with "
-            "a structured cohort but is not a PolyPrism(extrude=True); "
-            "pre-cut requires a shapely polygon."
-        )
-
-
-class SubPolygonAssemblyError(StructuredError):
-    """Raised when sub-polygon assembly fails for a cohort z-interval."""
-
-    def __init__(self, cohort_index: int, z_interval: tuple[float, float], reason: str):
-        self.cohort_index = cohort_index
-        self.z_interval = z_interval
-        self.reason = reason
-        super().__init__(
-            f"Cohort #{cohort_index} sub-polygon assembly failed at "
-            f"z={z_interval}: {reason}"
-        )
-
-
-class CohortNonManifoldError(StructuredError):
-    """Raised when a cohort sewn compound has non-manifold edges."""
-
-    def __init__(self, cohort_index: int, edge_count: int):
-        self.cohort_index = cohort_index
-        self.edge_count = edge_count
-        super().__init__(
-            f"Cohort #{cohort_index} sewn compound has {edge_count} "
-            "non-manifold edges (planner bug — internal face sharing is wrong)."
-        )
-
-
 class CohortShellModifiedError(StructuredError):
     """Raised when BOP modifies a pre-baked cohort shell face."""
 

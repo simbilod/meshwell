@@ -1,36 +1,14 @@
-from meshwell.structured.exceptions import (
-    CohortNonManifoldError,
-    CohortShellModifiedError,
-    StructuredEntityTypeError,
-    StructuredExtrudeRequiredError,
-    StructuredLateralNLayersMismatchError,
-    StructuredTransfiniteRejectedError,
-    StructuredZStackError,
-    SubPolygonAssemblyError,
-    UnstructuredImprintRequiresPolyPrismError,
-    WedgeBotNodeMismatchError,
-    WedgeCountMismatchError,
-)
+import meshwell.structured as structured
+from meshwell.structured.exceptions import StructuredZStackError
 
 
 def test_all_exceptions_are_structured_errors():
-    """Every custom error inherits a common base for easy catching."""
-    from meshwell.structured.exceptions import StructuredError
-
-    for cls in [
-        StructuredExtrudeRequiredError,
-        StructuredEntityTypeError,
-        StructuredZStackError,
-        UnstructuredImprintRequiresPolyPrismError,
-        SubPolygonAssemblyError,
-        CohortNonManifoldError,
-        CohortShellModifiedError,
-        StructuredLateralNLayersMismatchError,
-        StructuredTransfiniteRejectedError,
-        WedgeCountMismatchError,
-        WedgeBotNodeMismatchError,
-    ]:
-        assert issubclass(cls, StructuredError), cls.__name__
+    """Every exported error inherits a common base for easy catching."""
+    exported = [getattr(structured, name) for name in structured.__all__]
+    errors = [cls for cls in exported if isinstance(cls, type)]
+    assert errors, "structured.__all__ should export the exception family"
+    for cls in errors:
+        assert issubclass(cls, structured.StructuredError), cls.__name__
 
 
 def test_zstack_error_carries_context():
