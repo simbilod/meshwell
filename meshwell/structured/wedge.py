@@ -179,7 +179,6 @@ def freeze_lateral_mesh(
     """
     # Step 1: per-face n_layers + consistency check.
     owners_per_face: dict[int, list[tuple[int, int]]] = defaultdict(list)
-    # print(f"[Debug] freeze_lateral_mesh: checking lateral faces for {len(slab_meta)} slabs...", flush=True)
     for meta in slab_meta.values():
         if not meta.keep:
             continue
@@ -395,17 +394,11 @@ def stamp_wedges(
         order.append((z, k, meta))
     order.sort(key=lambda t: t[0])
 
-    for idx, (_, sub_key, meta) in enumerate(order):
+    for _, sub_key, meta in order:
         bot_tag = face_tag_by_key[meta.bot_face_key]
         top_tag = face_tag_by_key[meta.top_face_key]
         vol_tag = sub_solid_tag_by_key[sub_key]
         n_layers = resolve_n_layers(meta.physical_name, resolution_specs)
-        # print(
-        #     f"[Debug] stamp_wedges: stamping slab {idx+1}/{len(order)} "
-        #     f"(name={meta.physical_name}, n_layers={n_layers}) "
-        #     f"bot_tag={bot_tag}, top_tag={top_tag}, vol_tag={vol_tag}",
-        #     flush=True
-        # )
         _stamp_one(
             bot_tag,
             top_tag,
@@ -623,7 +616,6 @@ def _stamp_one(
 
             this_map: dict[int, int] = {}
             matched_boundary_to_target = {}
-            unmatched_boundary_indices = []
 
             if len(zlayer_tags):
                 boundary_indices = [i for i, t in enumerate(bot_node_tags) if int(t) in boundary_node_tags]
@@ -635,8 +627,6 @@ def _stamp_one(
                     for b_idx, dist, idx in zip(boundary_indices, distances, indices):
                         if dist < snap_tolerance:
                             matched_boundary_to_target[b_idx] = int(zlayer_tags[idx])
-                        else:
-                            unmatched_boundary_indices.append(b_idx)
 
                     interior_indices = [i for i in range(len(bot_pts)) if i not in matched_boundary_to_target]
                 else:

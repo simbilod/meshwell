@@ -518,7 +518,6 @@ class GeometryEntity:
         identify_arcs: bool = False,
         min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
-        edge_registry: object | None = None,
     ) -> TopoDS_Wire:
         """Create an OCC wire from vertex coordinates with optional arc identification.
 
@@ -526,37 +525,7 @@ class GeometryEntity:
         sharing is delegated to ``BOPAlgo_Builder``'s fragment pass with
         its fuzzy tolerance, which is how gmsh's own OCC kernel handles
         the same scenario.
-
-        If ``edge_registry`` is provided, the wire is built through the
-        cohort's shared EdgeRegistry so arc/line TShapes match by
-        construction with the cohort boundary.
         """
-        if edge_registry is not None:
-            # Shared-registry path: cohort-adjacent boundary wires route
-            # through the cohort's EdgeRegistry so arc/line TShapes match
-            # by construction. We mirror the existing path's stripping
-            # so the registry sees the same canonical vertex sequence.
-            from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
-
-            vertices = _strip_consecutive_duplicates(
-                list(vertices), self.point_tolerance
-            )
-            if not vertices or len(vertices) < 2:
-                return BRepBuilderAPI_MakeWire().Wire()
-            z = vertices[0][2]
-            coords_2d = [(v[0], v[1]) for v in vertices]
-            edges = edge_registry.polyline_xy(
-                coords_2d,
-                z=z,
-                identify_arcs=identify_arcs,
-                min_arc_points=min_arc_points,
-                arc_tolerance=arc_tolerance,
-            )
-            wire_builder = BRepBuilderAPI_MakeWire()
-            for e in edges:
-                wire_builder.Add(e)
-            return wire_builder.Wire()
-
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
 
         vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)

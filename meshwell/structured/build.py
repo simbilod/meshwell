@@ -303,7 +303,6 @@ class EdgeRegistry:
             if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
                 hits += 1
         if hits == 0:
-            # print(f"[Debug] EdgeRegistry._polyline_xy_canonical: 0 hits, fallback to standalone decomposition for ring with {n} keys", flush=True)
             return None  # closed-standalone fallback
         if hits != pair_count:
             raise CanonicalArrangementError(
@@ -333,7 +332,6 @@ class EdgeRegistry:
                 inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
 
         # Replay: walk the ring; each pair pins a canonical edge.
-        # print(f"[Debug] EdgeRegistry._polyline_xy_canonical: replaying {hits}/{pair_count} hits for ring with {n} keys", flush=True)
         edges: list[TopoDS_Edge] = []
         consumed = 0
         i = 0
@@ -683,7 +681,6 @@ def _polyline_segments_canonical(
         if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
             hits += 1
     if hits == 0:
-        # print(f"[Debug] _polyline_segments_canonical: 0 hits, fallback to standalone decomposition for ring with {n} keys", flush=True)
         return None
     if hits != pair_count:
         raise CanonicalArrangementError(
@@ -712,7 +709,6 @@ def _polyline_segments_canonical(
         if shift_idx > 0:
             inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
 
-    # print(f"[Debug] _polyline_segments_canonical: replaying {hits}/{pair_count} hits for ring with {n} keys", flush=True)
     out: list[_PolylineSegment] = []
     consumed = 0
     i = 0
@@ -794,41 +790,6 @@ def _shape_key(shape) -> ShapeKey:
 
 def _ring_coords(ring) -> list[tuple[float, float]]:
     return list(ring.coords)
-
-
-def _ring_coords_ccw(ring) -> list[tuple[float, float]]:
-    """Return ring coords ensuring CCW orientation (positive signed area).
-
-    OCC ``BRepBuilderAPI_MakeFace`` expects the outer wire to be CCW when
-    viewed from the face normal (+Z for a horizontal face).
-    """
-    coords = list(ring.coords)
-    # Signed area using the shoelace formula.  Positive => CCW.
-    n = len(coords)
-    area2 = sum(
-        coords[i][0] * coords[(i + 1) % n][1] - coords[(i + 1) % n][0] * coords[i][1]
-        for i in range(n)
-    )
-    if area2 < 0:
-        coords = list(reversed(coords))
-    return coords
-
-
-def _ring_coords_cw(ring) -> list[tuple[float, float]]:
-    """Return ring coords ensuring CW orientation (negative signed area).
-
-    OCC ``BRepBuilderAPI_MakeFace.Add(hole_wire)`` expects the hole wire
-    to be CW when viewed from the face normal (+Z for a horizontal face).
-    """
-    coords = list(ring.coords)
-    n = len(coords)
-    area2 = sum(
-        coords[i][0] * coords[(i + 1) % n][1] - coords[(i + 1) % n][0] * coords[i][1]
-        for i in range(n)
-    )
-    if area2 > 0:
-        coords = list(reversed(coords))
-    return coords
 
 
 def _build_horizontal_face(

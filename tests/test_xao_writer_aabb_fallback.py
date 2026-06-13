@@ -18,7 +18,7 @@ from shapely.geometry import Polygon
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from meshwell.cad_occ import cad_occ
-from meshwell.occ_xao_writer import _aabbs_close, write_xao
+from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.structured.pipeline import structured_post_pass, structured_pre_pass
 
@@ -141,18 +141,3 @@ def test_aabb_match_face_excluded_from_neighbour_none_group(tmp_path):
     assert (
         not overlap_bg
     ), f"bg___base interface faces appear in bg___None: {overlap_bg}"
-
-
-def test_aabbs_close_helper():
-    """Unit-test the _aabbs_close primitive directly."""
-    b1 = (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-    b2 = (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-    assert _aabbs_close(b1, b2, 1e-9) is True
-
-    # Each corner within tol -> True
-    b3 = (0.0005, 0.0, 0.0, 1.0005, 1.0, 1.0)
-    assert _aabbs_close(b1, b3, 1e-2) is True
-
-    # One corner outside tol -> False
-    b4 = (0.1, 0.0, 0.0, 1.0, 1.0, 1.0)
-    assert _aabbs_close(b1, b4, 1e-2) is False

@@ -555,7 +555,6 @@ class PolyPrism(GeometryEntity):
                     identify_arcs=self.identify_arcs,
                     min_arc_points=self.min_arc_points,
                     arc_tolerance=self.arc_tolerance,
-                    edge_registry=None,
                 )
                 mf = BRepBuilderAPI_MakeFace(outer_wire)
                 for interior in poly.interiors:
@@ -565,7 +564,6 @@ class PolyPrism(GeometryEntity):
                         identify_arcs=self.identify_arcs,
                         min_arc_points=self.min_arc_points,
                         arc_tolerance=self.arc_tolerance,
-                        edge_registry=None,
                     )
                     mf.Add(hole_wire)
                 face = mf.Face()

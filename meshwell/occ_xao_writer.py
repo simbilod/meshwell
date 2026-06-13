@@ -191,11 +191,6 @@ def _shape_aabb(shape) -> tuple[float, ...] | None:
     return box.Get()
 
 
-def _aabbs_close(b1: tuple[float, ...], b2: tuple[float, ...], tol: float) -> bool:
-    """Per-corner L_inf proximity between two AABBs."""
-    return all(abs(b1[i] - b2[i]) < tol for i in range(6))
-
-
 def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
     """True if ``ent`` is a structured-pipeline bookkeeping companion only.
 
