@@ -1,21 +1,30 @@
 """Pipeline validators that may raise.
 
-Stage 3a — z-stack: every entity's z-boundary that lands inside a
-cohort z-range must coincide with one of the cohort's own z-planes.
-
-Post-BOP shell invariance comes in Task 12.
+z-stack: every entity's z-boundary that lands inside a cohort z-range
+must coincide with one of the cohort's own z-planes. Volumetric overlap,
+cohort wrapping, and post-BOP shell invariance are also checked here.
 """
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any
+
+from shapely.geometry import Polygon
+from shapely.ops import unary_union
 
 from meshwell.polyprism import PolyPrism
 from meshwell.structured._zmath import approx_in
+from meshwell.structured.decompose import _cohort_xy_at
 from meshwell.structured.exceptions import (
+    CohortNotWrappedError,
+    CohortShellModifiedError,
     StructuredVolumetricOverlapError,
     StructuredZStackError,
 )
-from meshwell.structured.types import Cohort
+from meshwell.structured.types import Cohort, ShapeKey, SlabMeta
+
+if TYPE_CHECKING:
+    from OCP.TopoDS import TopoDS_Face
 
 
 def _entity_z_boundaries(ent: Any) -> list[float]:
@@ -37,14 +46,6 @@ def _entity_xy_at(ent: Any, z: float):
     if isinstance(ent, PolyPrism) and ent.extrude and ent.zmin <= z <= ent.zmax:
         return ent.polygons
     return None
-
-
-def _cohort_xy_at(cohort: Cohort, z: float):
-    """Union of cohort slab footprints whose z-interval covers z."""
-    from shapely.ops import unary_union
-
-    polys = [s.footprint for s in cohort.slabs if s.zlo <= z <= s.zhi]
-    return unary_union(polys)
 
 
 def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
@@ -148,13 +149,6 @@ def validate_cohort_wrapping(
 
     Raises ``CohortNotWrappedError`` on the first violation found.
     """
-    from shapely.geometry import Polygon
-    from shapely.ops import unary_union
-
-    from meshwell.polyprism import PolyPrism
-    from meshwell.structured._zmath import approx_in
-    from meshwell.structured.exceptions import CohortNotWrappedError
-
     for ci, cohort in enumerate(cohorts):
         for z_plane in (cohort.z_planes[0], cohort.z_planes[-1]):
             # Collect adjacent neighbours' footprints at this z-plane.
@@ -190,15 +184,6 @@ def validate_cohort_wrapping(
                             "footprint at this z-plane"
                         ),
                     )
-
-
-from typing import TYPE_CHECKING, Iterable  # noqa: E402
-
-from meshwell.structured.exceptions import CohortShellModifiedError  # noqa: E402
-from meshwell.structured.types import ShapeKey, SlabMeta  # noqa: E402
-
-if TYPE_CHECKING:
-    from OCP.TopoDS import TopoDS_Face
 
 
 def validate_cohort_shells(

@@ -4,7 +4,7 @@ Pre-pass: collect → cohort → validate z-stacks → decompose → build →
 swap entities. Returns a StructuredState that the orchestrator
 threads forward to the cad_occ and meshing stages.
 
-Post-pass (Task 14): expand cohort OCCLabeledEntity into per-sub-solid
+Post-pass: expand cohort OCCLabeledEntity into per-sub-solid
 entities + record post-BOP face ShapeKeys.
 """
 from __future__ import annotations
@@ -15,13 +15,19 @@ from typing import Any
 
 import shapely
 
-from meshwell.structured.build import build_cohort_compound
+from meshwell.structured.build import (
+    EdgeRegistry,
+    FaceRegistry,
+    VertexRegistry,
+    build_cohort_compound,
+)
 from meshwell.structured.cohort import build_cohorts
 from meshwell.structured.cohort_entity import _CohortEntity
 from meshwell.structured.collect import collect_structured_slabs
 from meshwell.structured.decompose import decompose_cohorts
 from meshwell.structured.types import ShapeKey, SlabMeta
 from meshwell.structured.validators import (
+    validate_cohort_wrapping,
     validate_no_volumetric_cohort_overlap,
     validate_z_stacks,
 )
@@ -51,7 +57,9 @@ class StructuredState:
     # (sub-piece bot/top faces, lateral edges) are shared by identity within
     # each cohort. Aggregated here for diagnostic access; no downstream
     # stage reads this field directly.
-    cohort_registries: list = field(default_factory=list)
+    cohort_registries: list[tuple[VertexRegistry, EdgeRegistry, FaceRegistry]] = field(
+        default_factory=list
+    )
 
 
 def structured_pre_pass(
@@ -87,14 +95,11 @@ def structured_pre_pass(
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
     validate_no_volumetric_cohort_overlap(cohorts, entities)
-    from meshwell.structured.validators import validate_cohort_wrapping
-
     validate_cohort_wrapping(cohorts, unstructured, point_tolerance=point_tolerance)
-    subpieces_per_cohort, pre_cut_unstr, arrangements = decompose_cohorts(
+    # decompose_cohorts returns the unstructured list unchanged (third slot).
+    subpieces_per_cohort, unstructured_out, arrangements = decompose_cohorts(
         cohorts, unstructured, point_tolerance=point_tolerance
     )
-
-    from meshwell.structured.build import EdgeRegistry, FaceRegistry, VertexRegistry
 
     cohort_entities: list[_CohortEntity] = []
     all_slab_meta: dict[ShapeKey, SlabMeta] = {}
@@ -134,7 +139,7 @@ def structured_pre_pass(
             for li, lk in enumerate(meta.lateral_face_keys):
                 face_name_by_key[lk] = f"__cohort_{ci}__slab_{si}__lat_{li}"
 
-    entities_out = cohort_entities + pre_cut_unstr
+    entities_out = cohort_entities + unstructured_out
     return StructuredState(
         entities_out=entities_out,
         slab_meta=all_slab_meta,

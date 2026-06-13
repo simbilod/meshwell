@@ -10,6 +10,7 @@ triangulation to top and emits wedge elements.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 import gmsh
@@ -24,6 +25,8 @@ from meshwell.structured.exceptions import (
     WedgeCountMismatchError,
 )
 from meshwell.structured.types import ShapeKey, SlabMeta
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_n_layers(
@@ -54,7 +57,7 @@ def resolve_n_layers(
 
 
 # ---------------------------------------------------------------------------
-# Alt B: freeze cohort lateral mesh before generate(2)
+# Freeze cohort lateral mesh before generate(2)
 # ---------------------------------------------------------------------------
 
 
@@ -154,7 +157,7 @@ def _vertical_edge_layer_nodes(vertical_edge_tag: int) -> list[int]:
 def freeze_lateral_mesh(
     slab_meta: dict[ShapeKey, SlabMeta],
     face_tag_by_key: dict[ShapeKey, int],
-    resolution_specs: dict | None = None,
+    resolution_specs: dict[str, list] | None = None,
 ) -> None:
     """Pre_2d hook: emit cohort lateral-face mesh before generate(2).
 
@@ -172,12 +175,11 @@ def freeze_lateral_mesh(
       5. Set Mesh.MeshOnlyEmpty=1 so the outer generate(2) skips
          faces that already have a mesh.
 
-    The result is identical in physical-group output to the old
-    freeze_lateral_mesh path but never invokes gmsh's
-    2D mesher or its periodic-surface mesher on cohort lateral
-    faces — both sources of past failures.
+    This never invokes gmsh's 2D mesher or its periodic-surface mesher
+    on cohort lateral faces — both sources of past failures.
     """
     # Step 1: per-face n_layers + consistency check.
+    logger.debug("freeze_lateral_mesh: checking lateral faces for %d slabs", len(slab_meta))
     owners_per_face: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for meta in slab_meta.values():
         if not meta.keep:
@@ -186,7 +188,12 @@ def freeze_lateral_mesh(
         for fk in meta.lateral_face_keys:
             tag = face_tag_by_key.get(fk)
             if tag is None:
-                print(f"    [Warning] Slab {meta.slab_index} ({meta.physical_name}): lateral face key {fk} NOT found in face_tag_by_key!", flush=True)
+                logger.warning(
+                    "Slab %s (%s): lateral face key %s not found in face_tag_by_key",
+                    meta.slab_index,
+                    meta.physical_name,
+                    fk,
+                )
                 continue
             owners_per_face[tag].append((meta.slab_index, n_layers))
 
@@ -247,7 +254,13 @@ def freeze_lateral_mesh(
                 try:
                     gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
                 except Exception as per_err:
-                    print(f"[Warning] Failed to set periodic constraint for top_edge {top_edge} -> bot_edge {bot_edge}: {per_err}", flush=True)
+                    logger.warning(
+                        "Failed to set periodic constraint for top_edge %s -> "
+                        "bot_edge %s: %s",
+                        top_edge,
+                        bot_edge,
+                        per_err,
+                    )
 
     # Step 3: materialise 1D mesh.
     gmsh.model.mesh.generate(1)
@@ -271,7 +284,14 @@ def freeze_lateral_mesh(
         bot_row = _ordered_curve_nodes(bot_edge)
         top_row = _align_top_to_bot(bot_row, _ordered_curve_nodes(top_edge))
         if len(bot_row) < 2 or len(top_row) != len(bot_row):
-            print(f"[Warning] Slab {owners_per_face[face_tag][0][0]}: lateral face {face_tag} skipped because bot_row len ({len(bot_row)}) != top_row len ({len(top_row) if top_row is not None else 0})!", flush=True)
+            logger.warning(
+                "Slab %s: lateral face %s skipped because bot_row len (%s) != "
+                "top_row len (%s)",
+                owners_per_face[face_tag][0][0],
+                face_tag,
+                len(bot_row),
+                len(top_row),
+            )
             continue
 
         # Pick left/right vertical edges by (x, y) proximity to bot row endpoints.
@@ -394,11 +414,22 @@ def stamp_wedges(
         order.append((z, k, meta))
     order.sort(key=lambda t: t[0])
 
-    for _, sub_key, meta in order:
+    for idx, (_, sub_key, meta) in enumerate(order):
         bot_tag = face_tag_by_key[meta.bot_face_key]
         top_tag = face_tag_by_key[meta.top_face_key]
         vol_tag = sub_solid_tag_by_key[sub_key]
         n_layers = resolve_n_layers(meta.physical_name, resolution_specs)
+        logger.debug(
+            "stamp_wedges: stamping slab %d/%d (name=%s, n_layers=%s) "
+            "bot_tag=%s, top_tag=%s, vol_tag=%s",
+            idx + 1,
+            len(order),
+            meta.physical_name,
+            n_layers,
+            bot_tag,
+            top_tag,
+            vol_tag,
+        )
         _stamp_one(
             bot_tag,
             top_tag,

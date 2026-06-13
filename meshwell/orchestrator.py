@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,17 +13,40 @@ from meshwell.cad_common import prepare_entities
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
+from meshwell.occ_xao_writer import default_interface_aabb_tolerance
 from meshwell.structured.pipeline import (
     StructuredState,
     structured_post_pass,
     structured_pre_pass,
 )
 from meshwell.structured.types import ShapeKey
+from meshwell.structured.validators import validate_cohort_shells
 from meshwell.structured.wedge import (
     freeze_lateral_mesh,
     stamp_wedges,
 )
 from meshwell.utils import deserialize
+
+# Tight gmsh geometry tolerance used while deduplicating mesh nodes, so
+# distinct-but-close points (e.g. on adjacent fine curves) are not merged.
+_DEDUP_GEOMETRY_TOLERANCE = 1e-6
+
+
+def _remove_duplicate_nodes_tight(dimtags: list[tuple[int, int]] | None = None) -> None:
+    """Run ``removeDuplicateNodes`` under a tightened geometry tolerance.
+
+    Pass ``dimtags`` to scope the dedup to specific entities, or ``None``
+    for a global pass. The previous ``Geometry.Tolerance`` is restored.
+    """
+    old_tol = gmsh.option.getNumber("Geometry.Tolerance")
+    gmsh.option.setNumber("Geometry.Tolerance", _DEDUP_GEOMETRY_TOLERANCE)
+    try:
+        if dimtags is None:
+            gmsh.model.mesh.removeDuplicateNodes()
+        else:
+            gmsh.model.mesh.removeDuplicateNodes(dimtags)
+    finally:
+        gmsh.option.setNumber("Geometry.Tolerance", old_tol)
 
 
 def generate_mesh(
@@ -29,7 +54,7 @@ def generate_mesh(
     dim: int,
     output_mesh: Path | str | None = None,
     checkpoint_cad: Path | str | None = None,
-    registry: dict[str, callable] | None = None,
+    registry: dict[str, Callable[..., Any]] | None = None,
     backend: str | None = None,  # deprecated
     **mesh_kwargs,
 ) -> Any:
@@ -61,6 +86,9 @@ def generate_mesh(
               only catches OCC-identical coincident TShapes.
             - ``interface_delimiter``, ``boundary_delimiter``: XAO group
               name delimiters.
+            - ``pre_2d_hook`` / ``pre_3d_hook`` (callables): composed with
+              the structured wedge hooks (run after the structured pass),
+              not replacing them.
 
     Returns:
         meshio.Mesh: The generated mesh object (or ``None`` if
@@ -125,8 +153,6 @@ def generate_mesh(
     # TopoDS_Face by ShapeKey, then calls validate_cohort_shells, which
     # raises CohortShellModifiedError on a >1 fragment count.
     if state.slab_meta and _cad_processor.last_fragment_builder is not None:
-        from meshwell.structured.validators import validate_cohort_shells
-
         faces_by_key = _collect_faces_by_key(state)
         validate_cohort_shells(
             state.slab_meta,
@@ -150,7 +176,7 @@ def generate_mesh(
         remove_all_duplicates=remove_all_duplicates,
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
-        interface_aabb_tolerance=10 * point_tolerance,
+        interface_aabb_tolerance=default_interface_aabb_tolerance(point_tolerance),
     )
 
     if checkpoint_cad:
@@ -215,14 +241,7 @@ def generate_mesh(
             # after stamp_wedges; the scoped call is a safe no-op for them
             # while leaving the unstructured boundary mesh untouched.
             structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
-            # Temporarily tighten tolerance when deduplicating nodes to avoid 
-            # unintentional merges 
-            old_tol = gmsh.option.getNumber("Geometry.Tolerance")
-            gmsh.option.setNumber("Geometry.Tolerance", 1e-6)
-            try:
-                gmsh.model.mesh.removeDuplicateNodes(structured_vol_dimtags)
-            finally:
-                gmsh.option.setNumber("Geometry.Tolerance", old_tol)
+            _remove_duplicate_nodes_tight(structured_vol_dimtags)
         if user_pre_3d is not None:
             user_pre_3d()
 
@@ -233,15 +252,7 @@ def generate_mesh(
             # that were intentionally left by the scoped pre-3D dedup.  At
             # this point all volumes are fully meshed, so the dedup cannot
             # corrupt any pending generate() pass.
-
-            # Temporarily tighten tolerance when deduplicating nodes to avoid 
-            # unintentional merges 
-            old_tol = gmsh.option.getNumber("Geometry.Tolerance")
-            gmsh.option.setNumber("Geometry.Tolerance", 1e-6)
-            try:
-                gmsh.model.mesh.removeDuplicateNodes()
-            finally:
-                gmsh.option.setNumber("Geometry.Tolerance", old_tol)
+            _remove_duplicate_nodes_tight()
 
     has_structured = bool(state.slab_meta)
     pre_2d_hook = _structured_pre_2d if (has_structured or user_pre_2d) else None
@@ -337,8 +348,6 @@ def _strip_synthetic_physical_groups() -> None:
     Called right before :func:`mesh` writes the .msh so synthetic
     bookkeeping groups don't leak into the output.
     """
-    import contextlib
-
     to_remove: list[tuple[int, int]] = []
     names_to_drop: list[str] = []
     for dim, gtag in gmsh.model.getPhysicalGroups():

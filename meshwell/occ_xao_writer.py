@@ -83,7 +83,18 @@ _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 # 10x multiplier provides safety margin for combined shapely + BOP
 # drift. Callers should pass ``interface_aabb_tolerance`` to ``write_xao``
 # explicitly when their point_tolerance differs from the default.
-_DEFAULT_AABB_INTERFACE_TOL = 1e-2
+_AABB_INTERFACE_TOL_FACTOR = 10.0
+_DEFAULT_AABB_INTERFACE_TOL = _AABB_INTERFACE_TOL_FACTOR * 1e-3
+
+
+def default_interface_aabb_tolerance(point_tolerance: float) -> float:
+    """AABB interface tolerance derived from ``point_tolerance``.
+
+    The ``10x`` margin covers combined shapely + BOP drift (BOP
+    fragmenting can move coincident face coords by up to
+    ``fragment_fuzzy_value``, which defaults to ``point_tolerance``).
+    """
+    return _AABB_INTERFACE_TOL_FACTOR * point_tolerance
 
 
 def _entity_union_aabbs(

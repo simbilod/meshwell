@@ -25,6 +25,17 @@ from meshwell.structured.types import (
 )
 
 
+def _policy_b_key(slab: StructuredSlab) -> tuple[float, int]:
+    """Policy B priority key: lower ``(mesh_order, source_index)`` wins.
+
+    A ``None`` mesh_order sorts last (treated as +inf).
+    """
+    return (
+        slab.mesh_order if slab.mesh_order is not None else float("inf"),
+        slab.source_index,
+    )
+
+
 def _quantize_key(x: float, y: float, z: float, point_tolerance: float) -> VertexKey:
     """Match VertexRegistry._key's quantization.
 
@@ -185,13 +196,7 @@ def zinterval_footprint(slabs_here: list[StructuredSlab]) -> Polygon:
     For mesh_bool=True: union (footprint - accumulated).
     For mesh_bool=False (void): subtract footprint from accumulated.
     """
-    ordered = sorted(
-        slabs_here,
-        key=lambda s: (
-            s.mesh_order if s.mesh_order is not None else float("inf"),
-            s.source_index,
-        ),
-    )
+    ordered = sorted(slabs_here, key=_policy_b_key)
     acc = Polygon()  # empty
     for s in ordered:
         if s.mesh_bool:
@@ -562,12 +567,5 @@ def _owner_slab(
     here = [s for s in candidate_slabs if s.footprint.contains(pt)]
     if not here:
         return None
-    ordered = sorted(
-        here,
-        key=lambda s: (
-            s.mesh_order if s.mesh_order is not None else float("inf"),
-            s.source_index,
-        ),
-    )
-    winner = ordered[0]
+    winner = min(here, key=_policy_b_key)
     return winner.source_index

@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from shapely.geometry import MultiPolygon, Polygon
 
+    from meshwell.geometry_entity import DecompositionSegment
+
 
 @dataclass(frozen=True)
 class ShapeKey:
@@ -126,7 +128,7 @@ class ArrangementEdge:
 
     vertex_keys: tuple["VertexKey", ...]
     z: float
-    segments: tuple = ()  # tuple[DecompositionSegment, ...] — runtime import
+    segments: tuple[DecompositionSegment, ...] = ()
     is_closed: bool = False
 
 
@@ -147,8 +149,8 @@ class Arrangement:
     sub-pieces sharing an arc-shaped boundary subset emit the same
     OCC TShape by construction.
 
-    Both cohort sub-piece extraction and adjacent unstructured pre-cut
-    consume this same tuple.
+    Cohort sub-piece extraction consumes this tuple to build each
+    sub-solid's boundary wires.
 
     Identity contract:
     - When a downstream consumer receives a single Polygon (e.g., a

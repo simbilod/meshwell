@@ -10,6 +10,7 @@ is what makes cohort internal interfaces conformal without BOP.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from OCP.BRep import BRep_Builder
@@ -39,6 +40,8 @@ from meshwell.structured.types import (
     StructuredSlab,
     SubPiece,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,9 +199,8 @@ class EdgeRegistry:
     def _emit_edges_for_segments(self, segments, z: float) -> list[TopoDS_Edge]:
         """Emit OCC edges for a list of DecompositionSegment objects.
 
-        Extracted from polyline_xy's legacy body so the canonical-replay
-        path and the greedy-fallback path share the same arc/line/
-        full-circle emission code.
+        Shared by the canonical-replay path and the greedy-fallback path
+        so both use the same arc/line/full-circle emission code.
         """
         edges: list[TopoDS_Edge] = []
         for seg in segments:
@@ -303,6 +305,11 @@ class EdgeRegistry:
             if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
                 hits += 1
         if hits == 0:
+            logger.debug(
+                "_polyline_xy_canonical: 0 hits, falling back to standalone "
+                "decomposition for ring with %d keys",
+                n,
+            )
             return None  # closed-standalone fallback
         if hits != pair_count:
             raise CanonicalArrangementError(
@@ -332,6 +339,12 @@ class EdgeRegistry:
                 inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
 
         # Replay: walk the ring; each pair pins a canonical edge.
+        logger.debug(
+            "_polyline_xy_canonical: replaying %d/%d hits for ring with %d keys",
+            hits,
+            pair_count,
+            n,
+        )
         edges: list[TopoDS_Edge] = []
         consumed = 0
         i = 0
@@ -567,9 +580,8 @@ def _flatten_decomposition_to_polyline_segments(
 ) -> list[_PolylineSegment]:
     """Convert DecompositionSegment list to _PolylineSegment list.
 
-    Extracted from polyline_segments' legacy body so the canonical
-    and greedy paths share the same DecompositionSegment -> _PolylineSegment
-    conversion.
+    Shared by the canonical and greedy paths for the same
+    DecompositionSegment -> _PolylineSegment conversion.
     """
     out: list[_PolylineSegment] = []
     for seg in raw:
@@ -681,6 +693,11 @@ def _polyline_segments_canonical(
         if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
             hits += 1
     if hits == 0:
+        logger.debug(
+            "_polyline_segments_canonical: 0 hits, falling back to standalone "
+            "decomposition for ring with %d keys",
+            n,
+        )
         return None
     if hits != pair_count:
         raise CanonicalArrangementError(
@@ -709,6 +726,12 @@ def _polyline_segments_canonical(
         if shift_idx > 0:
             inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
 
+    logger.debug(
+        "_polyline_segments_canonical: replaying %d/%d hits for ring with %d keys",
+        hits,
+        pair_count,
+        n,
+    )
     out: list[_PolylineSegment] = []
     consumed = 0
     i = 0
