@@ -420,6 +420,7 @@ class CAD_OCC:
         if not entities_list:
             return []
 
+        # MANUAL_NOTE: better place to apply the optional pre-cut buffer?
         if not prepared:
             # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
             # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
@@ -442,6 +443,9 @@ class CAD_OCC:
             )
         )
 
+        # MANUAL_NOTE: oscillating back-and-forth between lazy (partial functions)
+        # or passing already-instanciated entities.
+        # Leaning toward lazy, since more options for under-the-hood parallelization
         instantiated: list[OCCLabeledEntity | None] = [None] * len(entities_list)
         for orig_idx, ent in tqdm(
             indexed,
@@ -459,6 +463,8 @@ class CAD_OCC:
             # cutting against them would cause BRepAlgoAPI_Cut to split
             # the object's faces along the tool boundary even when no
             # material is removed (OCC always performs a full BOP).
+            # MANUAL_NOTE: investigate returning cut object if cut result is None
+            # instead of bbox checks (although we have made them cheap)
             obj_bboxes = [
                 b for s in labeled.shapes if (b := self._shape_bbox(s)) is not None
             ]
@@ -481,6 +487,10 @@ class CAD_OCC:
                 # be a no-op in volume but corrupts via fuzzy. fragment_all
                 # handles their boundary-plane merging cleanly.
                 if prev._is_cohort or labeled._is_cohort:
+                    # MANUAL_NOTE: don't do this silently, log it?
+                    # MANUAL_NOTE: treat cohort hull as its own solid to cut
+                    # unstructured around? Then only need to validate higher
+                    # priority cohort mesh order
                     continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
@@ -495,6 +505,7 @@ class CAD_OCC:
                     # silently split the object into multiple SOLIDs and
                     # produce duplicate face TShapes that prevent
                     # downstream meshing.
+                    # MANUAL_NOTE: see note about cut --> None
                     if not any(
                         self._shapes_actually_overlap(s, ts) for s in labeled.shapes
                     ):
@@ -511,6 +522,8 @@ class CAD_OCC:
                 # large bodies like a substrate cut against ~10
                 # metal+helper bodies, even though the same body against
                 # each tool individually retains 1 SOLID per cut.
+                # MANUAL_NOTE: need to revisit, an advantage of raw OCP
+                # is parallelization...
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     try:
@@ -565,6 +578,7 @@ class CAD_OCC:
         interface-naming pass; the writer itself excludes their bodies
         from the emitted BREP.
         """
+        # MANUAL_NOTE: move pre-pass buffer and ordering here?
         labeled_entities = self.process_entities_cut_only(
             entities_list, progress_bars=progress_bars, prepared=prepared
         )
@@ -607,6 +621,7 @@ def cad_occ(
     out = processor.process_entities(
         entities_list, progress_bars=progress_bars, prepared=prepared
     )
+    # MANUAL_NOTE: unify these two return values?
     if return_processor:
         return out, processor
     return out

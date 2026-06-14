@@ -1,9 +1,9 @@
 """Verify n_layers mismatch check ignores keep=False owners."""
 from pathlib import Path
 
+import meshio
 from shapely.geometry import Polygon
 
-import meshio
 from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import StructuredExtrusionResolutionSpec

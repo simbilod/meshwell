@@ -60,6 +60,9 @@ class PolyPrism(GeometryEntity):
         )
 
         # Parse buffers or prepare extrusion
+        # MANUAL_NOTE: properly validate point_tolerance instead of if
+        # MANUAL_NOTE: shared shapely entity (like goemetry entity) for
+        # polygon preprocessing?
         if point_tolerance > 0:
             # Snap input polygons to user grid before storing / buffering.
             if isinstance(polygons, list):
@@ -89,10 +92,6 @@ class PolyPrism(GeometryEntity):
         # entities that reach the pipeline.
         if structured and not self.extrude:
             raise StructuredExtrudeRequiredError(entity_index=-1)
-        # identify_arcs must be EXPLICITLY set to True; structured=True alone
-        # does NOT imply arc detection. Automatically enabling it caused
-        # polygons with all vertices co-circular (e.g. rectangles, whose corners
-        # lie on the circumscribed circle) to be mis-built as disk-shaped solids.
         self.structured = structured
         self.identify_arcs = identify_arcs
 
@@ -120,6 +119,9 @@ class PolyPrism(GeometryEntity):
         if self.extrude:
             surfaces = self._create_surfaces_with_holes_at_z(self.polygons, self.zmin)
             surface_dimtags = [(2, surface) for surface in surfaces]
+            # MANUAL_NOTE: gmsh.model.occ.extrude() has n_layers for structured extrusion
+            # Might be worth revisiting one day (although it does not play nice with fragmentation)
+            # and external OCP)
             entities = gmsh.model.occ.extrude(
                 surface_dimtags, 0, 0, self.zmax - self.zmin
             )
@@ -314,6 +316,7 @@ class PolyPrism(GeometryEntity):
             surfaces.append(exterior)
         return surfaces
 
+    # MANUAL_NOTE: delete this
     def subdivide(self, model, prisms, subdivision):
         """Split the prisms into subprisms according to subdivision."""
         subdivided_prisms = []

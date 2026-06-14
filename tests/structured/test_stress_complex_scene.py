@@ -6,11 +6,11 @@ unstructured neighbours above and below, mesh_order carving.
 """
 from __future__ import annotations
 
+import meshio
 import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
-import meshio
 from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import StructuredExtrusionResolutionSpec

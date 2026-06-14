@@ -75,6 +75,7 @@ _DIM_TO_TOPABS = {
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 
+# MANUAL_NOTE: pass to validate tolerances and factors...
 # Default tolerance for the spatial fallback in
 # ``_compute_physical_groups`` when TShape-identity matching fails to
 # pair a cut face with its coincident neighbour. Picks up cut faces
@@ -202,6 +203,8 @@ def _shape_aabb(shape) -> tuple[float, ...] | None:
     return box.Get()
 
 
+# MANUAL_NOTE: revise use of synthetic physical group for structured tags
+# or at least revise/validate the hardcoded string used for it
 def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
     """True if ``ent`` is a structured-pipeline bookkeeping companion only.
 
@@ -309,7 +312,7 @@ def _compute_physical_groups(
     #    (keep=False) entities. Pairs where both sides are keep=False have
     #    no shape in the emitted BREP and would reference phantom topology.
 
-    # Pre-compute AABBs once per entity (was recomputed per pair before).
+    # Pre-compute AABBs once per entity.
     # Keyed by tshape_id; None when the shape's bbox is void.
     entity_aabbs: list[dict[int, tuple[float, ...]]] = []
     for i in range(len(entities)):
@@ -335,8 +338,8 @@ def _compute_physical_groups(
         )
 
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
+
     # Prune pairs whose entity-level AABBs cannot overlap.
-    # See docs/superpowers/specs/2026-06-09-aabb-candidate-pair-prune-design.md.
     _union_aabbs, _valid_mask = _entity_union_aabbs(entity_aabbs)
     _candidate_pairs = _candidate_pair_mask(
         _union_aabbs, _valid_mask, interface_aabb_tolerance
@@ -414,6 +417,7 @@ def _compute_physical_groups(
         # ``lower___upper`` interface only, not ``__cohort_0__slab_0___upper``.
         # Fall back to the full tuple if filtering left nothing — only
         # happens for purely-synthetic pairs, which we skipped above.
+        # MANUAL_NOTE: structured name conventions
         names1 = _filter_real_names(ent1.physical_name) or ent1.physical_name
         names2 = _filter_real_names(ent2.physical_name) or ent2.physical_name
         # Two cohort sub-solids from the same user entity (e.g. ``b``
@@ -425,6 +429,7 @@ def _compute_physical_groups(
             continue
         # Internal "iface" helpers (named e.g. ``oxide_iface``) carry their
         # own physical_name and should not also be glued to a neighbour pair.
+        # MANUAL_NOTE: structured name conventions
         if any("iface" in n for n in ent1.physical_name + ent2.physical_name):
             continue
         common_shapes = [entity_boundary[i1][bid] for bid in common]
@@ -524,6 +529,7 @@ def write_xao(
 
     # OCP's BRepTools only exposes Write to a file path (no stream API), so
     # round-trip through a temp file to get the BREP text for inline CDATA.
+    # MANUAL_NOTE: probably not optimal
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".brep", delete=False) as tf:
         tf_path = Path(tf.name)
     try:
@@ -532,6 +538,7 @@ def write_xao(
     finally:
         tf_path.unlink(missing_ok=True)
 
+    # MANUAL_NOTE: better validators
     if "]]>" in brep_text:
         raise ValueError("BREP text contains ']]>' sequence, cannot embed in XAO CDATA")
 

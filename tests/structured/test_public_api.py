@@ -27,9 +27,7 @@ def test_all_matches_live_raised_exceptions():
     # raised from core modules (e.g. polyprism.py), not only structured/.
     pkg_dir = pathlib.Path(meshwell.__file__).parent
     source = "\n".join(
-        p.read_text()
-        for p in pkg_dir.rglob("*.py")
-        if p.name != "exceptions.py"
+        p.read_text() for p in pkg_dir.rglob("*.py") if p.name != "exceptions.py"
     )
 
     defined = {

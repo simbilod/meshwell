@@ -10,9 +10,9 @@ These tests are EXPECTED TO FAIL on the current code.  Do not fix the bug here.
 """
 from __future__ import annotations
 
+import meshio
 from shapely.geometry import Polygon
 
-import meshio
 from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import StructuredExtrusionResolutionSpec

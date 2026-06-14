@@ -86,7 +86,7 @@ class ConstantInField(ResolutionSpec):
 
     resolution: float
 
-    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int | None:  # noqa: ARG002
+    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int | None:  # noqa
         """Apply constant resolution field to the model.
 
         Creates a MathEval field with constant resolution and restricts it

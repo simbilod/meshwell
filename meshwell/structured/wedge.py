@@ -167,9 +167,7 @@ def _emit_lateral_face_quads(
     edges, reusing the transfinite-placed vertical-edge nodes for the
     left/right endpoints, and connects consecutive rows with quads.
     """
-    bot_edge, top_edge, verticals = _classify_lateral_face_edges(
-        face_tag, z_bot, z_top
-    )
+    bot_edge, top_edge, verticals = _classify_lateral_face_edges(face_tag, z_bot, z_top)
     if bot_edge is None or top_edge is None or len(verticals) != 2:
         raise StructuredTransfiniteRejectedError(
             face_tag=face_tag,
@@ -275,7 +273,9 @@ def freeze_lateral_mesh(
     on cohort lateral faces — both sources of past failures.
     """
     # Step 1: per-face n_layers + consistency check.
-    logger.debug("freeze_lateral_mesh: checking lateral faces for %d slabs", len(slab_meta))
+    logger.debug(
+        "freeze_lateral_mesh: checking lateral faces for %d slabs", len(slab_meta)
+    )
     owners_per_face: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for meta in slab_meta.values():
         if not meta.keep:
@@ -329,7 +329,9 @@ def freeze_lateral_mesh(
     periodic_edges_done: set[int] = set()
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
         n_layers = face_n_layers.get(face_tag, 1)
-        bot_edge, top_edge, verticals = _classify_lateral_face_edges(face_tag, z_bot, z_top)
+        bot_edge, top_edge, verticals = _classify_lateral_face_edges(
+            face_tag, z_bot, z_top
+        )
 
         for ve in verticals:
             if ve in vertical_edges_done:
@@ -345,10 +347,22 @@ def freeze_lateral_mesh(
             periodic_edges_done.add(top_edge)
             dz = z_top - z_bot
             transform = [
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, float(dz),
-                0.0, 0.0, 0.0, 1.0
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                float(dz),
+                0.0,
+                0.0,
+                0.0,
+                1.0,
             ]
             try:
                 gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
@@ -382,7 +396,9 @@ def freeze_lateral_mesh(
             continue
         elem_types, _, _ = gmsh.model.mesh.getElements(2, top_tag)
         if len(elem_types) == 0:
-            edges = gmsh.model.getBoundary([(2, top_tag)], oriented=False, recursive=False)
+            edges = gmsh.model.getBoundary(
+                [(2, top_tag)], oriented=False, recursive=False
+            )
             boundary_nodes = []
             for _, etag in edges:
                 tags, _, _ = gmsh.model.mesh.getNodes(1, etag)
@@ -390,7 +406,14 @@ def freeze_lateral_mesh(
             boundary_nodes = list(set(boundary_nodes))
             if len(boundary_nodes) >= 3:
                 gmsh.model.mesh.addElementsByType(
-                    top_tag, 2, [], [int(boundary_nodes[0]), int(boundary_nodes[1]), int(boundary_nodes[2])]
+                    top_tag,
+                    2,
+                    [],
+                    [
+                        int(boundary_nodes[0]),
+                        int(boundary_nodes[1]),
+                        int(boundary_nodes[2]),
+                    ],
                 )
 
     # Step 5: tell outer generate(2) to skip already-meshed faces.
@@ -660,9 +683,7 @@ def _stamp_one(
         all_lateral_tags = []
         all_lateral_coord = []
         for lf_tag in lateral_face_tags:
-            tags, coords, _ = gmsh.model.mesh.getNodes(
-                2, lf_tag, includeBoundary=True
-            )
+            tags, coords, _ = gmsh.model.mesh.getNodes(2, lf_tag, includeBoundary=True)
             all_lateral_tags.extend(tags)
             all_lateral_coord.extend(coords)
 
@@ -676,9 +697,7 @@ def _stamp_one(
                     unique_indices.append(idx)
 
             all_lateral_tags = np.array(all_lateral_tags)[unique_indices]
-            all_lateral_pts = np.array(all_lateral_coord).reshape(-1, 3)[
-                unique_indices
-            ]
+            all_lateral_pts = np.array(all_lateral_coord).reshape(-1, 3)[unique_indices]
         else:
             all_lateral_tags = np.array([])
             all_lateral_pts = np.zeros((0, 3))
