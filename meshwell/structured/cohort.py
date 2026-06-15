@@ -34,11 +34,7 @@ def _xy_overlaps(a: StructuredSlab, b: StructuredSlab) -> bool:
 
 
 def build_cohorts(slabs: list[StructuredSlab]) -> list[Cohort]:
-    """Group slabs into cohorts.
-
-    O(N²) is fine here — cohort detection runs once per generate_mesh
-    call on the structured subset (~tens of slabs typical).
-    """
+    """Group slabs into cohorts."""
     n = len(slabs)
     if n == 0:
         return []

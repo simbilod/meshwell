@@ -42,8 +42,11 @@ def _quantize_key(x: float, y: float, z: float, point_tolerance: float) -> Verte
     Ensures canonical edges and runtime EdgeRegistry vertices share the
     same key space.
     """
-    s = point_tolerance
-    return (round(x / s), round(y / s), round(z / s))
+    return (
+        round(x / point_tolerance),
+        round(y / point_tolerance),
+        round(z / point_tolerance),
+    )
 
 
 def _build_canonical_edges(

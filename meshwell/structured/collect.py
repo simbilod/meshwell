@@ -34,6 +34,7 @@ def collect_structured_slabs(
     # is present, every PolyPrism must opt in. Mixing arc and polyline
     # representations on a shared cohort pre-cut boundary produces OCC
     # edges that BOP cannot merge within fragment_fuzzy_value.
+    # MANUAL_NOTE: log or warn if this triggers
     if any(getattr(e, "structured", False) for e in entities):
         arcs_true: list[tuple[int, tuple[str, ...] | str]] = []
         arcs_false: list[tuple[int, tuple[str, ...] | str]] = []
