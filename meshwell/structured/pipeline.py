@@ -132,6 +132,8 @@ def structured_pre_pass(
         # writes these into the XAO via synthetic 2D / 3D entities so it
         # can recover ShapeKey -> gmsh-tag mappings by name lookup after
         # XAO load.
+        # MANUAL_NOTE: investigate alternative, e.g. brep sidecar w/
+        # deterministic import
         for si, (sub_key, meta) in enumerate(slab_meta.items()):
             sub_solid_name_by_key[sub_key] = f"__cohort_{ci}__slab_{si}"
             face_name_by_key[meta.bot_face_key] = f"__cohort_{ci}__slab_{si}__bot"
