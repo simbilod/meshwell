@@ -11,7 +11,7 @@ stackup front-end** and **meshwell as the 3D/2D meshing backend**. This is the
 "downstream backend (e.g. meshwell)" that gdswell notebook `15-stackup.py`
 explicitly defers painter's-algorithm cutting to. The notebook walks one
 recognizable silicon-photonic example all the way from a 2D layout to a
-watertight 3D mesh and a 2D cross-section mesh.
+watertight (unstructured) 3D mesh and a 2D cross-section mesh.
 
 ## Background / current state
 
@@ -27,9 +27,7 @@ watertight 3D mesh and a 2D cross-section mesh.
   physical_name, mesh_order, structured=…)` and `PolySurface(polygons=<shapely>,
   physical_name, mesh_order)`, then `generate_mesh(entities=[…], dim=2|3, …)`.
   Convention: **lowest `mesh_order` wins** on overlap (`cad_occ` fragment +
-  ownership). Structured wedge meshing requires a pure extrusion (all-zero
-  buffers) plus a `StructuredExtrusionResolutionSpec(n_layers=N)` per physical
-  name in `resolution_specs`.
+  ownership).
 - The existing `gdsfactory_interface.py` page is the old (meshwell 1.0.7,
   non-executed, markdown-only) integration. The new page supersedes the
   "modern front-end" story; the gdsfactory page is left untouched.
@@ -69,7 +67,7 @@ Reuse the rib-waveguide + TiN-heater + via + metal example from gdswell
 
 ```python
 resolved = stack.resolve(cell)                       # ResolvedStackup
-polyprisms = resolved_to_polyprisms(resolved, structured_names={...})
+polyprisms = resolved_to_polyprisms(resolved)
 ```
 
 Adapter helpers (defined inline in the notebook):
@@ -77,26 +75,28 @@ Adapter helpers (defined inline in the notebook):
 - `region_to_shapely(region: kdb.Region, dbu: float) -> shapely (Multi)Polygon`
   — iterate merged polygons, scale integer dbu points by `dbu` to µm, preserve
   holes.
-- `resolved_to_polyprisms(resolved, structured_names=()) -> list[PolyPrism]`:
+- `resolved_to_polyprisms(resolved) -> list[PolyPrism]`:
   for each `keep=True` prism,
   - base footprint = `region_to_shapely` of the **min-z** region;
   - `buffers = {z: (bbox_width(region_z) − bbox_width(region_zmin)) / 2}` over
     the prism's z-keys. This is exact for gdswell's uniform `.size(d)` slants
     (rib top → `−0.05`, via top → `+0.2`) and `0` for uniform layers;
   - `physical_name = prism.name`;
-  - `mesh_order = N − prism.mesh_order`;
-  - `structured = prism.name in structured_names` (only set on uniform layers).
+  - `mesh_order = N − prism.mesh_order`.
   `keep=False` cutters are **skipped** (documented limitation — see below).
 
-### Section 3 — 3D structured mesh
+### Section 3 — 3D mesh
 
-`generate_mesh(entities=polyprisms, dim=3, default_characteristic_length=…,
-resolution_specs={name: [StructuredExtrusionResolutionSpec(n_layers=N)] …})`.
-Uniform-footprint layers (slab, claddings, heater, metal1) opt into
-`structured=True` → wedge fill; the **slanted rib and via stay unstructured
-tets** because a non-zero buffer precludes structured meshing. Teaching point:
-the wedge cohort and surrounding tets share **conformal** interfaces — cross-
-reference `structured.py`. Report wedge/tet counts and `plot3D(...)`.
+`generate_mesh(entities=polyprisms, dim=3, default_characteristic_length=…)`
+produces a single watertight unstructured (tetrahedral) mesh. Overlapping
+bodies are resolved by the inverted `mesh_order`, and shared faces appear as
+conformal interface physical groups (`name___name`). Report the interface
+groups and `plot3D(...)`.
+
+> Structured wedge meshing (`structured=True` +
+> `StructuredExtrusionResolutionSpec`) is intentionally **out of scope** for
+> this notebook; see `structured.py` for that path. It can be layered onto the
+> uniform-footprint layers later.
 
 ### Section 4 — 2D cross-section mesh at a port
 
@@ -142,7 +142,7 @@ physical_name=name, mesh_order=N − mesh_order)`.
 
 - Notebook executes end-to-end under `uv run --python 3.12` (3.14 lacks a
   cadquery-ocp wheel): both adapters run, `generate_mesh` returns for `dim=3`
-  and `dim=2`, wedge and tet counts are non-zero, conformal interface groups
+  and `dim=2`, the 3D mesh has non-zero tetrahedra, conformal interface groups
   (`name___name`) are present, and `plot3D`/`plot2D` render.
 - Confirm the inverted `mesh_order` produces the same kept-region ownership as
   gdswell's `cut_by` on the overlapping pairs (e.g. via the heater pad / metal1
