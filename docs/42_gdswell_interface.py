@@ -19,6 +19,7 @@
 # into your own project.
 
 # %%
+import math
 from enum import Enum
 
 import gdswell as gw
@@ -33,11 +34,17 @@ from meshwell.visualization import plot2D, plot3D
 # %% [markdown]
 # ## A silicon-photonic stackup (gdswell)
 #
-# We reuse the rib-waveguide example from gdswell's stackup notebook: a 70 nm
-# silicon slab, a 220 nm rib with slanted sidewalls, a TiN heater, a via column,
-# and a metal-1 pad, all embedded in substrate / buried-oxide / cladding bulk
-# media. The bulk media use the `AllLayers().bbox()` smart recipe so they grow
-# to the bounding box of whatever the device draws.
+# We reuse the rib-waveguide example from gdswell's stackup notebook: a silicon
+# slab, a rib with angled sidewalls, a TiN heater, a via column, and a metal-1
+# pad, all embedded in substrate / buried-oxide / cladding bulk media. The bulk
+# media use the `AllLayers().bbox()` smart recipe so they grow to the bounding
+# box of whatever the device draws.
+#
+# A `build_stack` factory exposes every layer thickness and the rib/via
+# **sidewall angles** (degrees from horizontal: `90` = vertical, `<90` = top
+# narrower, `>90` = flared) as keyword arguments, so a process corner is a
+# one-line sweep. The factory converts each angle into the per-side xy offset
+# gdswell needs via `offset = -thickness / tan(angle)`.
 
 
 # %%
@@ -55,16 +62,21 @@ def build_stack(
     *,
     slab_thickness: float = 0.07,
     rib_thickness: float = 0.22,
-    rib_sidewall: float = -0.05,
+    rib_sidewall_angle: float = 80.0,
     heater_thickness: float = 0.10,
-    via_sidewall: float = 0.20,
+    via_sidewall_angle: float = 100.0,
 ) -> gw.Stackup:
     """Assemble the silicon-photonic stackup.
 
-    All lengths are in µm. ``*_thickness`` set each layer's z-extent;
-    ``rib_sidewall`` / ``via_sidewall`` are the per-side xy offset between the
-    bottom and top of the rib / via (negative narrows going up, positive flares).
+    Thicknesses are in µm. Sidewall angles are in degrees measured from the
+    horizontal substrate plane: ``90`` is a vertical wall, ``<90`` makes the
+    top narrower (an inward slope), ``>90`` flares the top outward. The
+    per-side xy offset over a layer of height ``t`` is ``-t / tan(angle)``.
     """
+
+    def sidewall_offset(thickness: float, angle_deg: float) -> float:
+        return -thickness / math.tan(math.radians(angle_deg))
+
     device_extent = gw.AllLayers().bbox()
     substrate = gw.StackupEntry.uniform("Substrate", device_extent, -2.0, -1.0)
     box = gw.StackupEntry.uniform("BOX", device_extent, -1.0, 0.0)
@@ -73,11 +85,26 @@ def build_stack(
 
     si_slab = gw.StackupEntry.uniform("Si_slab", PDK.SLAB, 0.0, slab_thickness)
     si_rib = gw.StackupEntry(
-        "Si_rib", {0.0: PDK.WG, rib_thickness: PDK.WG.size(rib_sidewall)}
+        "Si_rib",
+        {
+            0.0: PDK.WG,
+            rib_thickness: PDK.WG.size(
+                sidewall_offset(rib_thickness, rib_sidewall_angle)
+            ),
+        },
     )
 
     heater = gw.StackupEntry.uniform("Heater", PDK.HEATER, 1.5, 1.5 + heater_thickness)
-    via1 = gw.StackupEntry("Via1", {1.55: PDK.VIA1, 2.5: PDK.VIA1.size(via_sidewall)})
+    via_zmin, via_zmax = 1.55, 2.5
+    via1 = gw.StackupEntry(
+        "Via1",
+        {
+            via_zmin: PDK.VIA1,
+            via_zmax: PDK.VIA1.size(
+                sidewall_offset(via_zmax - via_zmin, via_sidewall_angle)
+            ),
+        },
+    )
     metal1 = gw.StackupEntry.uniform("Metal1", PDK.METAL1, 2.5, 3.5)
 
     return (
@@ -93,7 +120,9 @@ def build_stack(
     )
 
 
-stack = build_stack()
+# Every thickness and sidewall angle is a knob — sweep a process corner by
+# passing values here (a steeper 75° rib and a more flared 110° via):
+stack = build_stack(rib_sidewall_angle=75.0, via_sidewall_angle=110.0)
 print(stack)
 
 # %% [markdown]
@@ -174,6 +203,9 @@ cell = device_cell()
 #    rib's taper and the via's flare across; for a constant footprint the offset
 #    is `0` and the prism is a plain extrusion. So we still only expose
 #    `region_to_shapely` and `resolved_to_polyprisms` / `resolved2d_to_polysurfaces`.
+#
+#    NOTE: meshwell precedes gdswell; in the future we could consider moving from shapely
+#    to KLayout regions directly, and use the z --> region convention instead of buffers.
 
 
 # %%
@@ -289,18 +321,8 @@ mesh2d = generate_mesh(
 plot2D(mesh2d, wireframe=True)
 
 # %% [markdown]
-# ## Limitations
+# ## Notes
 #
-# - **Pure cutters.** gdswell keeps `keep=False` entries only so other prisms'
-#   `cut_by` can reference them; the adapter drops them. meshwell expresses
-#   subtraction through `mesh_order`, so a faithful pure-cutter mapping is left
-#   as future work.
-# - **Footprint morphs.** The buffer model captures *uniform* z-offset slants
-#   (gdswell's `.size(d)`) only. An entry whose footprint changes topology with
-#   z cannot be expressed as a single base polygon plus scalar buffers.
 # - **Structured meshing.** This page produces an unstructured (tetrahedral)
 #   mesh. The uniform-footprint layers could opt into structured wedge meshing —
 #   see [Structured meshing](23_structured).
-#
-# Once the adapter API settles, these helpers are natural candidates to graduate
-# from notebook glue into a small library module.
