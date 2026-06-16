@@ -19,7 +19,6 @@
 # into your own project.
 
 # %%
-import math
 from enum import Enum
 
 import gdswell as gw
@@ -52,30 +51,49 @@ class PDK(gw.Layer, Enum):
     METAL1 = (12, 0)  # routing metal
 
 
-device_extent = gw.AllLayers().bbox()
-substrate = gw.StackupEntry.uniform("Substrate", device_extent, -2.0, -1.0)
-box = gw.StackupEntry.uniform("BOX", device_extent, -1.0, 0.0)
-lower_clad = gw.StackupEntry.uniform("Lower_clad", device_extent, 0.0, 1.5)
-upper_clad = gw.StackupEntry.uniform("Upper_clad", device_extent, 1.6, 2.5)
+def build_stack(
+    *,
+    slab_thickness: float = 0.07,
+    rib_thickness: float = 0.22,
+    rib_sidewall: float = -0.05,
+    heater_thickness: float = 0.10,
+    via_sidewall: float = 0.20,
+) -> gw.Stackup:
+    """Assemble the silicon-photonic stackup.
 
-si_slab = gw.StackupEntry.uniform("Si_slab", PDK.SLAB, 0.0, 0.07)
-si_rib = gw.StackupEntry("Si_rib", {0.0: PDK.WG, 0.22: PDK.WG.size(-0.05)})
+    All lengths are in µm. ``*_thickness`` set each layer's z-extent;
+    ``rib_sidewall`` / ``via_sidewall`` are the per-side xy offset between the
+    bottom and top of the rib / via (negative narrows going up, positive flares).
+    """
+    device_extent = gw.AllLayers().bbox()
+    substrate = gw.StackupEntry.uniform("Substrate", device_extent, -2.0, -1.0)
+    box = gw.StackupEntry.uniform("BOX", device_extent, -1.0, 0.0)
+    lower_clad = gw.StackupEntry.uniform("Lower_clad", device_extent, 0.0, 1.5)
+    upper_clad = gw.StackupEntry.uniform("Upper_clad", device_extent, 1.6, 2.5)
 
-heater = gw.StackupEntry.uniform("Heater", PDK.HEATER, 1.5, 1.6)
-via1 = gw.StackupEntry("Via1", {1.55: PDK.VIA1, 2.5: PDK.VIA1.size(0.2)})
-metal1 = gw.StackupEntry.uniform("Metal1", PDK.METAL1, 2.5, 3.5)
+    si_slab = gw.StackupEntry.uniform("Si_slab", PDK.SLAB, 0.0, slab_thickness)
+    si_rib = gw.StackupEntry(
+        "Si_rib", {0.0: PDK.WG, rib_thickness: PDK.WG.size(rib_sidewall)}
+    )
 
-stack = (
-    substrate
-    + box
-    + lower_clad
-    + upper_clad
-    + si_slab
-    + si_rib
-    + heater
-    + via1
-    + metal1
-)
+    heater = gw.StackupEntry.uniform("Heater", PDK.HEATER, 1.5, 1.5 + heater_thickness)
+    via1 = gw.StackupEntry("Via1", {1.55: PDK.VIA1, 2.5: PDK.VIA1.size(via_sidewall)})
+    metal1 = gw.StackupEntry.uniform("Metal1", PDK.METAL1, 2.5, 3.5)
+
+    return (
+        substrate
+        + box
+        + lower_clad
+        + upper_clad
+        + si_slab
+        + si_rib
+        + heater
+        + via1
+        + metal1
+    )
+
+
+stack = build_stack()
 print(stack)
 
 # %% [markdown]
@@ -137,15 +155,25 @@ cell = device_cell()
 # `mesh_order` (its position in the painter's stack), and a `cut_by` list of
 # later entries that carve it.
 #
-# Two facts make the conversion small:
+# Three facts make the conversion small:
 #
 # 1. **klayout regions become shapely polygons** by scaling integer coordinates
-#    by the database unit `dbu` (µm per integer).
+#    by the database unit `dbu` (µm per integer). This is the only helper we
+#    really need — `region_to_shapely`.
 # 2. **meshwell's `mesh_order` reproduces gdswell's `cut_by` for free.** In
 #    gdswell, *later* entries cut earlier ones. In meshwell, the entity with the
 #    *lowest* `mesh_order` owns an overlap. So we simply invert the order —
 #    `mesh_order = N - prism.mesh_order` — and meshwell's CAD stage performs the
 #    painter's cuts. No explicit boolean subtraction in the adapter.
+# 3. **Sidewalls cross the two solid models.** A meshwell `PolyPrism` is *one*
+#    base footprint plus a `{z: offset}` map of **scalar** buffers — at each z it
+#    grows or shrinks the base by `polygon.buffer(offset)`. gdswell instead hands
+#    us an explicit region at *every* z-key. The two agree for gdswell's uniform
+#    `.size(d)` sidewalls, where the equivalent meshwell offset is just half the
+#    change in bbox width. That single line (inlined below) is what carries the
+#    rib's taper and the via's flare across; for a constant footprint the offset
+#    is `0` and the prism is a plain extrusion. So we still only expose
+#    `region_to_shapely` and `resolved_to_polyprisms` / `resolved2d_to_polysurfaces`.
 
 
 # %%
@@ -164,15 +192,6 @@ def region_to_shapely(region: kdb.Region, dbu: float):
     return polys[0] if len(polys) == 1 else shapely.MultiPolygon(polys)
 
 
-def _buffer_at(region: kdb.Region, base: kdb.Region, dbu: float) -> float:
-    """Uniform xy offset (µm) mapping ``base`` to ``region`` via bbox width.
-
-    Exact for gdswell's uniform ``.size(d)`` slants, ``0`` for a constant
-    footprint. ``.size(d)`` changes the bbox width by ``2 d``.
-    """
-    return (region.bbox().width() - base.bbox().width()) / 2 * dbu
-
-
 def resolved_to_polyprisms(resolved: gw.ResolvedStackup) -> list[PolyPrism]:
     """Convert a resolved 3D stackup into meshwell PolyPrisms."""
     n = len(resolved.prisms)
@@ -185,8 +204,12 @@ def resolved_to_polyprisms(resolved: gw.ResolvedStackup) -> list[PolyPrism]:
         polygons = region_to_shapely(base, resolved.dbu)
         if polygons is None:
             continue
+        # meshwell offsets the single `base` footprint by a scalar buffer at each
+        # z; gdswell's uniform `.size(d)` sidewall is half the bbox-width change.
+        base_width = base.bbox().width()
         buffers = {
-            z: _buffer_at(rp.z_to_region[z], base, resolved.dbu) for z in rp.z_to_region
+            z: (region.bbox().width() - base_width) / 2 * resolved.dbu
+            for z, region in rp.z_to_region.items()
         }
         prisms.append(
             PolyPrism(
@@ -225,29 +248,12 @@ print("interface groups:", [k for k in mesh3d.cell_sets if "___" in k][:10])
 plot3D(mesh3d, title="gdswell stackup meshed by meshwell (3D)")
 
 # %% [markdown]
-# ## 2D cross-section at a port
+# ## 2D cross-section
 #
-# A `Port` carries a `position` and an outward `angle`. The transverse
-# cross-section cutline runs **perpendicular** to that direction, through a point
-# nudged slightly inward (so we sample the interior rather than the exact cell
-# edge). `Stackup.resolve_cutline` slices the stackup along it, returning 2D
-# regions in the `(s, z)` plane — arclength `s` along the cut on x, height `z` on
-# y.
+# gdswell's Stackup can be resolved along a 1D cutline or given a specific cross-section. This can be used to define a 2D vertical cross-sectional mesh:
 
 
 # %%
-def cutline_from_port(port: gw.Port, half_extent: float, inset: float = 1.0):
-    """Transverse cutline (two xy points, µm) perpendicular to a port."""
-    rad = math.radians(port.angle)
-    dx, dy = round(math.cos(rad)), round(math.sin(rad))
-    cx, cy = port.x - dx * inset, port.y - dy * inset  # nudge inward
-    px, py = -dy, dx  # perpendicular
-    return (
-        (cx - px * half_extent, cy - py * half_extent),
-        (cx + px * half_extent, cy + py * half_extent),
-    )
-
-
 def resolved2d_to_polysurfaces(resolved_2d: gw.ResolvedStackup2D) -> list[PolySurface]:
     """Convert a resolved 2D cross-section into meshwell PolySurfaces."""
     n = len(resolved_2d.polygons)
@@ -269,8 +275,7 @@ def resolved2d_to_polysurfaces(resolved_2d: gw.ResolvedStackup2D) -> list[PolySu
 
 
 # %%
-cutline = cutline_from_port(cell.ports["input"], half_extent=W - 1.0)
-resolved_2d = stack.resolve_cutline(cell, cutline)
+resolved_2d = stack.resolve_cross_section(cell.ports["input"].cross_section)
 polysurfaces = resolved2d_to_polysurfaces(resolved_2d)
 
 mesh2d = generate_mesh(
