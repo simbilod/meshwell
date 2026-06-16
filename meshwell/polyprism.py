@@ -61,7 +61,7 @@ class PolyPrism(GeometryEntity):
 
         # Parse buffers or prepare extrusion
         # MANUAL_NOTE: properly validate point_tolerance instead of if
-        # MANUAL_NOTE: shared shapely entity (like goemetry entity) for
+        # MANUAL_NOTE: shared shapely entity (like geometry entity) for
         # polygon preprocessing?
         if point_tolerance > 0:
             # Snap input polygons to user grid before storing / buffering.
