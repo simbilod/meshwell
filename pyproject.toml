@@ -1,4 +1,4 @@
-# https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
+# https://hatch.pypa.io/latest/config/build/
 
 [build-system]
 build-backend = "hatchling.build"
@@ -48,9 +48,6 @@ docs = [
     # docs/42_gdswell_interface.py; it pulls in klayout.
     "gdswell",
     ]
-
-[tool.setuptools.packages]
-find = {}
 
 # [project.scripts]
 # meshwell = "meshwell.cli:cli"
@@ -210,6 +207,3 @@ known-third-party = ["gmsh"]
     "D103"
 ]
 "tests/**/*.py" = ["S101", "D100", "D102", "D103"]
-
-[tool.setuptools.package-data]
-mypkg = ["*.csv", "*.yaml"]
