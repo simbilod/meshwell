@@ -1,8 +1,14 @@
 # https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
 
 [build-system]
-build-backend = "flit_core.buildapi"
-requires = ["flit_core >=3.2,<4"]
+build-backend = "hatchling.build"
+requires = ["hatchling", "hatch-vcs"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["meshwell"]
 
 [project]
 authors = [{ name = "Simon Bilodeau", email = "sb30@princeton.edu" }]
@@ -17,7 +23,7 @@ license = { file = "LICENSE" }
 name = "meshwell"
 readme = "README.md"
 requires-python = ">=3.13"
-version = "2.3.6"
+dynamic = ["version"]
 
 [project.optional-dependencies]
 dev = [
@@ -69,10 +75,6 @@ include = '\.pyi?$'
 line-length = 88
 target-version = ['py310']
 
-[tool.commitizen]
-name = "cz_conventional_commits"
-version = "2.3.6"
-version_files = ["pyproject.toml:version"]
 
 [tool.flake8]
 exclude = [
