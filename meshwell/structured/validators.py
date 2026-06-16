@@ -1,22 +1,18 @@
 """Pipeline validators that may raise.
 
 z-stack: every entity's z-boundary that lands inside a cohort z-range
-must coincide with one of the cohort's own z-planes. Volumetric overlap,
-cohort wrapping, and post-BOP shell invariance are also checked here.
+must coincide with one of the cohort's own z-planes. Volumetric overlap
+and post-BOP shell invariance are also checked here.
 """
 from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from shapely.geometry import Polygon
-from shapely.ops import unary_union
-
 from meshwell.polyprism import PolyPrism
 from meshwell.structured._zmath import approx_in
 from meshwell.structured.decompose import _cohort_xy_at
 from meshwell.structured.exceptions import (
-    CohortNotWrappedError,
     CohortShellModifiedError,
     StructuredVolumetricOverlapError,
     StructuredZStackError,
@@ -128,62 +124,6 @@ def validate_no_volumetric_cohort_overlap(
                     cohort_index=cohort_idx,
                     z_overlap=z_overlap,
                 )
-
-
-def validate_cohort_wrapping(
-    cohorts: "list[Cohort]",
-    unstructured_entities: list,
-    point_tolerance: float = 1e-3,
-) -> None:
-    """Verify every cohort z-plane is covered by adjacent unstructured neighbours.
-
-    For each cohort and each of its outer z-planes (``zmin``, ``zmax``),
-    walk every cohort sub-piece active at that plane and confirm at
-    least one adjacent unstructured PolyPrism's footprint covers it.
-    "Covers" = the sub-piece's footprint is contained (within
-    ``point_tolerance``) in the union of all adjacent neighbours'
-    footprints at that plane.
-
-    The union convention lets multiple neighbours together wrap a
-    cohort (e.g., a substrate split into east/west halves).
-
-    Raises ``CohortNotWrappedError`` on the first violation found.
-    """
-    for ci, cohort in enumerate(cohorts):
-        for z_plane in (cohort.z_planes[0], cohort.z_planes[-1]):
-            # Collect adjacent neighbours' footprints at this z-plane.
-            neighbours_at_z: list[Polygon] = []
-            for ent in unstructured_entities:
-                if not isinstance(ent, PolyPrism) or not ent.extrude:
-                    continue
-                z_keys = sorted(ent.buffers.keys())
-                if not (
-                    approx_in(z_plane, [z_keys[0]]) or approx_in(z_plane, [z_keys[-1]])
-                ):
-                    continue
-                neighbours_at_z.append(ent.polygons)
-            if not neighbours_at_z:
-                slabs_here = [s for s in cohort.slabs if s.zlo <= z_plane <= s.zhi]
-                first_sub = slabs_here[0].source_index if slabs_here else -1
-                raise CohortNotWrappedError(
-                    cohort_index=ci,
-                    z_plane=z_plane,
-                    sub_piece_index=first_sub,
-                    reason="no adjacent unstructured neighbour at this z-plane",
-                )
-            cover = unary_union(neighbours_at_z)
-            slabs_here = [s for s in cohort.slabs if s.zlo <= z_plane <= s.zhi]
-            for slab in slabs_here:
-                if not cover.buffer(point_tolerance).contains(slab.footprint):
-                    raise CohortNotWrappedError(
-                        cohort_index=ci,
-                        z_plane=z_plane,
-                        sub_piece_index=slab.source_index,
-                        reason=(
-                            "adjacent neighbour union does not cover slab "
-                            "footprint at this z-plane"
-                        ),
-                    )
 
 
 def validate_cohort_shells(

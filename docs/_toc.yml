@@ -24,6 +24,7 @@ parts:
     - file: resolution_basic
     - file: resolution_advanced
     - file: direct_size_specification
+    - file: structured
 
   - caption: Remesh
     chapters:

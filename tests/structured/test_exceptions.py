@@ -19,22 +19,6 @@ def test_zstack_error_carries_context():
     assert "1.5" in str(err)
 
 
-def test_cohort_not_wrapped_error_message():
-    from meshwell.structured.exceptions import CohortNotWrappedError
-
-    err = CohortNotWrappedError(
-        cohort_index=0,
-        z_plane=0.0,
-        sub_piece_index=2,
-        reason="no neighbour covers this sub-piece",
-    )
-    msg = str(err)
-    assert "cohort 0" in msg
-    assert "z=0.0" in msg
-    assert "sub-piece 2" in msg
-    assert "no neighbour covers this sub-piece" in msg
-
-
 def test_canonical_arrangement_error_message():
     from meshwell.structured.exceptions import (
         CanonicalArrangementError,

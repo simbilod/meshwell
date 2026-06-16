@@ -200,6 +200,7 @@ class MixedIdentifyArcsError(StructuredError):
         )
 
 
+# MANUAL_NOTE: reevaluate need for this
 class CanonicalArrangementError(StructuredError):
     """Cohort arrangement's canonical-edge invariant was violated.
 

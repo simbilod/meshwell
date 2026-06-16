@@ -27,7 +27,6 @@ from meshwell.structured.collect import collect_structured_slabs
 from meshwell.structured.decompose import decompose_cohorts
 from meshwell.structured.types import ShapeKey, SlabMeta
 from meshwell.structured.validators import (
-    validate_cohort_wrapping,
     validate_no_volumetric_cohort_overlap,
     validate_z_stacks,
 )
@@ -95,7 +94,6 @@ def structured_pre_pass(
     cohorts = build_cohorts(structured_slabs)
     validate_z_stacks(cohorts, entities)
     validate_no_volumetric_cohort_overlap(cohorts, entities)
-    validate_cohort_wrapping(cohorts, unstructured, point_tolerance=point_tolerance)
     # decompose_cohorts returns the unstructured list unchanged (third slot).
     subpieces_per_cohort, unstructured_out, arrangements = decompose_cohorts(
         cohorts, unstructured, point_tolerance=point_tolerance

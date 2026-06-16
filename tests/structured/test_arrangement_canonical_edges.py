@@ -569,7 +569,8 @@ def test_pre_pass_threads_arrangement_to_cohort_compound():
             structured=True,
             mesh_order=2.0,
         ),
-        # Wrapping unstructured layers required by validate_cohort_wrapping.
+        # Unstructured layers above/below so the cohort caps become
+        # conformal interfaces rather than exterior faces.
         PolyPrism(wrapper_poly, {-1.0: 0.0, 0.0: 0.0}, physical_name="below"),
         PolyPrism(wrapper_poly, {1.0: 0.0, 2.0: 0.0}, physical_name="above"),
     ]
