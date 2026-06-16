@@ -3,7 +3,7 @@
 #
 # By default meshwell fills every 3D volume with **tetrahedra**: each
 # `PolyPrism` is fragmented by OpenCASCADE boolean operations (BOP) and then
-# handed to gmsh's unstructured tet mesher (see [Prisms](prisms)).
+# handed to gmsh's unstructured tet mesher (see [Prisms](12_prisms)).
 #
 # A `PolyPrism` can instead be meshed with **wedge** (triangular-prism)
 # elements by setting `structured=True`. The XY footprint is triangulated once

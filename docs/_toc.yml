@@ -7,32 +7,36 @@ root: intro
 parts:
   - caption: Getting Started
     chapters:
-    - file: changelog
-    - file: intro_gmsh
-    - file: intro_meshwell
-    - file: usage_approaches
+    - file: 01_intro_gmsh
+    - file: 02_intro_meshwell
+    - file: 03_usage_approaches
 
   - caption: CAD
     chapters:
-    - file: gmsh_entity
-    - file: polysurfaces
-    - file: prisms
-    - file: models
+    - file: 10_occ_entity
+    - file: 11_polysurfaces
+    - file: 12_prisms
+    - file: 13_arc_identification
+    - file: 14_models
 
   - caption: Mesh
     chapters:
-    - file: resolution_basic
-    - file: resolution_advanced
-    - file: direct_size_specification
-    - file: structured
+    - file: 20_resolution_basic
+    - file: 21_resolution_advanced
+    - file: 22_direct_size_specification
+    - file: 23_structured
 
   - caption: Remesh
     chapters:
-    - file: adaptive_remeshing_gmsh
-    - file: adaptive_remeshing_mmg
+    - file: 30_adaptive_remeshing_gmsh
+    - file: 31_adaptive_remeshing_mmg
 
   - caption: Misc
     chapters:
-    - file: mesh_quality
-    - file: importing_gds
-    - file: gdsfactory_interface
+    - file: 40_mesh_quality
+    - file: 41_importing_gds
+    - file: 42_gdswell_interface
+
+  - caption: Reference
+    chapters:
+    - file: 90_changelog

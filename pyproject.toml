@@ -17,7 +17,7 @@ keywords = ["python"]
 license = { file = "LICENSE" }
 name = "meshwell"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 version = "2.3.6"
 
 [project.optional-dependencies]
@@ -37,6 +37,11 @@ dev = [
     "plotly",
     "matplotlib",
     "pymmg",
+    ]
+docs = [
+    # gdswell is the layout/stackup front-end demonstrated in
+    # docs/42_gdswell_interface.py; it pulls in klayout.
+    "gdswell",
     ]
 
 [tool.setuptools.packages]

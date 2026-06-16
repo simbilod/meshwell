@@ -37,10 +37,10 @@ write_xao(cad_occ([entity]), "geometry.xao")
 ```
 
 For more details on the CAD options, see:
-- [OCC entities](occ_entity), which can be arbitrarily complex
-- [Polysurfaces](polysurfaces)
-- [Prisms](prisms)
-- [Models](models)
+- [OCC entities](10_occ_entity), which can be arbitrarily complex
+- [Polysurfaces](11_polysurfaces)
+- [Prisms](12_prisms)
+- [Models](14_models)
 
 ---
 
@@ -64,9 +64,9 @@ initial_mesh = mesh(
 ```
 
 For more advanced meshing options, see:
-- [Resolution Basics](resolution_basic)
-- [Resolution Advanced](resolution_advanced)
-- [Direct Size Specification](direct_size_specification)
+- [Resolution Basics](20_resolution_basic)
+- [Resolution Advanced](21_resolution_advanced)
+- [Direct Size Specification](22_direct_size_specification)
 
 ---
 
@@ -106,5 +106,5 @@ Meshwell supports two remeshing backends:
 - **MMG** (`remesh_mmg`): Uses MMG library, often produces higher quality meshes
 
 See the detailed examples:
-- [Adaptive Remeshing (GMSH)](adaptive_remeshing_gmsh)
-- [Adaptive Remeshing (MMG)](adaptive_remeshing_mmg)
+- [Adaptive Remeshing (GMSH)](30_adaptive_remeshing_gmsh)
+- [Adaptive Remeshing (MMG)](31_adaptive_remeshing_mmg)
