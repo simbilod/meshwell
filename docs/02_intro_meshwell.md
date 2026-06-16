@@ -7,6 +7,31 @@ flowchart LR
     Self-contained inputs --> CAD["CAD\n(Geometry)"] --> MESH["Mesh\n(Initial)"] --> REMESH["Remesh\n(Adaptive)"]
 ```
 
+## Feature highlights
+
+A quick map of everything meshwell can do; each item links to a dedicated page below.
+
+**Geometry (CAD)**
+- [1D/2D/3D entities](11_polysurfaces) — `PolyLine`, `PolySurface`, and `PolyPrism` built straight from Shapely.
+- [Arbitrary OCC shapes](10_occ_entity) — drop in any OpenCASCADE construction when polygons aren't enough.
+- [Arc identification](13_arc_identification) — `identify_arcs=True` recovers true circular boundaries from point-sampled polygons.
+- [Multi-entity models](14_models) — combine OCC entities, polysurfaces, and prisms in one model.
+- **`mesh_order` ownership** — painter's-algorithm resolution of overlapping entities (lower order wins); see [Usage Approaches](03_usage_approaches).
+
+**Meshing**
+- **2D & 3D meshing** — planes, cross-sections, surfaces of 3D objects, or full volumes.
+- [Resolution control](20_resolution_basic) — global sizing plus per-entity [`ThresholdField`](21_resolution_advanced) distance-based refinement.
+- [Direct size specification](22_direct_size_specification) — prescribe the mesh-size field explicitly over space.
+- [Structured meshing](23_structured) — wedge (prism) elements through a layer's thickness, conformal with the surrounding unstructured tets.
+- [Mesh quality analysis](40_mesh_quality) — `MeshQualityAnalyzer` reports element quality before you simulate.
+
+**Remeshing**
+- [Adaptive remeshing](30_adaptive_remeshing_gmsh) — drive mesh size from a computed field via `RemeshingStrategy`, with [GMSH](30_adaptive_remeshing_gmsh) and [MMG](31_adaptive_remeshing_mmg) backends.
+
+**Integrations**
+- [GDS import](41_importing_gds) — load `.gds` layers as Shapely polygons ready to mesh.
+- [gdswell](42_gdswell_interface) — turn a gdswell layout `Stackup` into a 3D mesh and 2D cross-sections.
+
 ---
 
 ## 1. Polygons (and more) --> CAD
@@ -15,7 +40,9 @@ The first step is to define your geometry using built-in meshwell entity classes
 
 - **PolyLine**: 1D lines defined by LineStrings
 - **PolySurface**: 2D surfaces defined by polygons
-- **PolyPrism**: 3D volumes created by extruding polygons along the z-axis
+- **PolyPrism**: 3D volumes created by extruding polygons along the z-axis — with z-dependent `buffers`, the footprint can grow or shrink with height to make tapered or slanted sidewalls
+
+Beyond these, geometry can also come from [arbitrary OCC entities](10_occ_entity). Assemblies of entities can form [multi-entity models](14_models).
 
 Key concepts:
 - **`physical_name`**: A label for the entity, used for the GMSH physical group
@@ -40,6 +67,7 @@ For more details on the CAD options, see:
 - [OCC entities](10_occ_entity), which can be arbitrarily complex
 - [Polysurfaces](11_polysurfaces)
 - [Prisms](12_prisms)
+- [Arc identification](13_arc_identification)
 - [Models](14_models)
 
 ---
@@ -63,16 +91,19 @@ initial_mesh = mesh(
 )
 ```
 
-For more advanced meshing options, see:
-- [Resolution Basics](20_resolution_basic)
-- [Resolution Advanced](21_resolution_advanced)
-- [Direct Size Specification](22_direct_size_specification)
+Meshwell offers [three ways to drive this](03_usage_approaches): the **functional** helpers shown above, an **object-oriented** `Model` that shares a single GMSH session between CAD and meshing, and the **`generate_mesh`** orchestrator that runs the whole pipeline in one call.
+
+A few meshing features worth calling out:
+- **Resolution fields** — combine a global size with per-entity refinement such as `ThresholdField` (mesh size grows with distance from an entity). See [Resolution Basics](20_resolution_basic) and [Resolution Advanced](21_resolution_advanced).
+- **Direct size specification** — prescribe the size field explicitly over space when you already know where you want resolution: [Direct Size Specification](22_direct_size_specification).
+- **Structured meshing** — fill a layer with wedge (triangular-prism) elements through its thickness while staying conformal with the surrounding unstructured tetrahedra: [Structured meshing](23_structured).
+- **Quality analysis** — inspect element quality with the `MeshQualityAnalyzer` before using the mesh downstream: [Mesh Quality](40_mesh_quality).
 
 ---
 
 ## 3. mesh --> (re)mesh
 
-DirectSizeSpecification allows fine grained control of mesh sizing over space. Often, however, we want  this process to be guided by some data field we have computed over an existing mesh. The remeshing utilities are here for that.
+DirectSizeSpecification allows fine grained control of mesh sizing over space. Often, however, we want  this process to be guided by some data field we have computed over an existing mesh. The remeshing utilities are here for that (in case your solver does not have a native way to do this, which is preferred!).
 
 Remeshing is controlled by `RemeshingStrategy` objects that define how mesh sizes should change. Generic strategies have the following attributes:
 
@@ -108,3 +139,11 @@ Meshwell supports two remeshing backends:
 See the detailed examples:
 - [Adaptive Remeshing (GMSH)](30_adaptive_remeshing_gmsh)
 - [Adaptive Remeshing (MMG)](31_adaptive_remeshing_mmg)
+
+---
+
+## Integrations
+
+Meshwell is the meshing backend for higher-level layout tools:
+
+- **[gdswell](42_gdswell_interface)** — convert a gdswell layout `Stackup` (the 3D extension of a 2D layout) into a watertight 3D mesh, and slice 2D cross-sections at a cell's ports. meshwell's `mesh_order` reproduces gdswell's painter's-order cutting for free.
