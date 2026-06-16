@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version-file: 'pyproject.toml'
+          python-version-file: '.python-version'
       - uses: pre-commit/action@v3.0.1
 
   run_regressions:
