@@ -7,8 +7,7 @@ requires = ["flit_core >=3.2,<4"]
 [project]
 authors = [{ name = "Simon Bilodeau", email = "sb30@princeton.edu" }]
 classifiers = [
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
 ]
 dependencies = ["shapely", "gmsh", "meshio", "tqdm", "pydantic", "gdstk", "scipy", "cadquery"]
@@ -72,7 +71,7 @@ target-version = ['py310']
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.1.0"
+version = "2.3.6"
 version_files = ["pyproject.toml:version"]
 
 [tool.flake8]

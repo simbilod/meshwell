@@ -9,7 +9,7 @@ from meshwell.utils import deserialize
 # configuring a handler on the "meshwell" logger.
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__version__ = "0.0.1"
+__version__ = "2.3.6"
 __author__ = "Simon Bilodeau <sb30@princeton.edu>"
 
 __all__ = ["deserialize", "generate_mesh"]
