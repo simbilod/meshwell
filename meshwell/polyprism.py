@@ -8,6 +8,7 @@ import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
 from meshwell.geometry_entity import GeometryEntity
+from meshwell.structured.exceptions import StructuredExtrudeRequiredError
 from meshwell.validation import format_physical_name
 
 if TYPE_CHECKING:
@@ -23,6 +24,10 @@ class PolyPrism(GeometryEntity):
         physical_name: name of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
         mesh_bool: if True, entity will be meshed; if not, will not be meshed (useful to tag boundaries)
+        structured: if True, mesh this prism with structured wedge elements (requires
+            extrude=True, i.e. all-zero buffers). Pair with a
+            StructuredExtrusionResolutionSpec(n_layers=N) in resolution_specs to
+            control the vertical layer count.
 
     """
 
@@ -37,12 +42,13 @@ class PolyPrism(GeometryEntity):
         subdivision: tuple[int, int, int] | None = None,
         point_tolerance: float = 1e-3,
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
+        structured: bool = False,
     ):
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
@@ -54,6 +60,9 @@ class PolyPrism(GeometryEntity):
         )
 
         # Parse buffers or prepare extrusion
+        # MANUAL_NOTE: properly validate point_tolerance instead of if
+        # MANUAL_NOTE: shared shapely entity (like geometry entity) for
+        # polygon preprocessing?
         if point_tolerance > 0:
             # Snap input polygons to user grid before storing / buffering.
             if isinstance(polygons, list):
@@ -77,20 +86,28 @@ class PolyPrism(GeometryEntity):
                 tuple[float, Polygon]
             ] = self._get_buffered_polygons(polygons, buffers)
 
+        # Fail fast on direct misuse. entity_index=-1 because there is no
+        # entity-list context at construction time; the structured collect
+        # pass (structured/collect.py) re-validates with the real index for
+        # entities that reach the pipeline.
+        if structured and not self.extrude:
+            raise StructuredExtrudeRequiredError(entity_index=-1)
+        self.structured = structured
+        self.identify_arcs = identify_arcs
+
+        if self.identify_arcs and not self.extrude:
+            raise NotImplementedError(
+                "Arc identification is currently only supported for PolyPrism when extrude=True."
+            )
+
         # Store other attributes
         self.buffers = buffers
         self.mesh_order = mesh_order
         self.additive = additive
         self.dimension = 3
         self.subdivision = subdivision
-        self.identify_arcs = identify_arcs
         self.min_arc_points = min_arc_points
         self.arc_tolerance = arc_tolerance
-
-        if self.identify_arcs and not self.extrude:
-            raise NotImplementedError(
-                "Arc identification is currently only supported for PolyPrism when extrude=True."
-            )
 
         # Format physical name
         self.physical_name = format_physical_name(physical_name)
@@ -102,6 +119,9 @@ class PolyPrism(GeometryEntity):
         if self.extrude:
             surfaces = self._create_surfaces_with_holes_at_z(self.polygons, self.zmin)
             surface_dimtags = [(2, surface) for surface in surfaces]
+            # MANUAL_NOTE: gmsh.model.occ.extrude() has n_layers for structured extrusion
+            # Might be worth revisiting one day (although it does not play nice with fragmentation)
+            # and external OCP)
             entities = gmsh.model.occ.extrude(
                 surface_dimtags, 0, 0, self.zmax - self.zmin
             )
@@ -296,6 +316,7 @@ class PolyPrism(GeometryEntity):
             surfaces.append(exterior)
         return surfaces
 
+    # MANUAL_NOTE: delete this
     def subdivide(self, model, prisms, subdivision):
         """Split the prisms into subprisms according to subdivision."""
         subdivided_prisms = []
@@ -516,7 +537,8 @@ class PolyPrism(GeometryEntity):
                 if hasattr(self.polygons, "geoms")
                 else [self.polygons]
             )
-            vec = gp_Vec(0, 0, self.zmax - self.zmin)
+            build_z = self.zmin
+            build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
                 # For polygons with holes, canonicalize to OGC convention
                 # (CCW exterior + CW interiors) so OCC's face-with-hole
@@ -531,7 +553,8 @@ class PolyPrism(GeometryEntity):
                 # no-hole case.
                 if poly.interiors:
                     poly = orient(poly, sign=1.0)
-                exterior_vertices = [(x, y, self.zmin) for x, y in poly.exterior.coords]
+
+                exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
                 outer_wire = self._make_occ_wire_from_vertices(
                     exterior_vertices,
                     identify_arcs=self.identify_arcs,
@@ -540,7 +563,7 @@ class PolyPrism(GeometryEntity):
                 )
                 mf = BRepBuilderAPI_MakeFace(outer_wire)
                 for interior in poly.interiors:
-                    hole_vertices = [(x, y, self.zmin) for x, y in interior.coords]
+                    hole_vertices = [(x, y, build_z) for x, y in interior.coords]
                     hole_wire = self._make_occ_wire_from_vertices(
                         hole_vertices,
                         identify_arcs=self.identify_arcs,
@@ -550,7 +573,7 @@ class PolyPrism(GeometryEntity):
                     mf.Add(hole_wire)
                 face = mf.Face()
 
-                volumes.append(BRepPrimAPI_MakePrism(face, vec).Shape())
+                volumes.append(BRepPrimAPI_MakePrism(face, build_vec).Shape())
         else:
             volumes.extend(
                 [
@@ -600,6 +623,7 @@ class PolyPrism(GeometryEntity):
             "mesh_bool": self.mesh_bool,
             "additive": self.additive,
             "point_tolerance": self.point_tolerance,
+            "structured": self.structured,
             "identify_arcs": self.identify_arcs,
             "min_arc_points": self.min_arc_points,
             "arc_tolerance": self.arc_tolerance,
@@ -637,6 +661,7 @@ class PolyPrism(GeometryEntity):
             mesh_bool=data["mesh_bool"],
             additive=data["additive"],
             point_tolerance=data["point_tolerance"],
+            structured=data.get("structured", False),
             identify_arcs=data["identify_arcs"],
             min_arc_points=data["min_arc_points"],
             arc_tolerance=data["arc_tolerance"],

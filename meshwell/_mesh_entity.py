@@ -472,13 +472,13 @@ class _MeshEntity:
                             resolutionspec.entity_str
                         ].extend(entities_mass_dict_sharing.keys())
                     else:
-                        refinement_field_indices.append(
-                            resolutionspec.apply(
-                                model=self.model,
-                                entities_mass_dict=entities_mass_dict_sharing,
-                                restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
-                                restrict_to_tags=restrict_to_tags,
-                            )
+                        field_idx = resolutionspec.apply(
+                            model=self.model,
+                            entities_mass_dict=entities_mass_dict_sharing,
+                            restrict_to_str=restrict_to_str,  # RegionsList or SurfaceLists, depends on model dimensionality
+                            restrict_to_tags=restrict_to_tags,
                         )
+                        if field_idx is not None:
+                            refinement_field_indices.append(field_idx)
 
         return refinement_field_indices

@@ -1,0 +1,1341 @@
+"""Stage 4 — assemble cohort TopoDS_Compound of N sub-solids.
+
+Bottom-up build: unique vertices → unique edges (with arc detection)
+→ unique faces (horizontal interior/boundary, lateral) → per-subpiece
+TopoDS_Solid → TopoDS_Compound per cohort.
+
+Shared TShapes by CONSTRUCTION (not post-hoc sewing): every face and
+edge is built once and referenced by every solid that needs it. This
+is what makes cohort internal interfaces conformal without BOP.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from OCP.BRep import BRep_Builder
+from OCP.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge,
+    BRepBuilderAPI_MakeFace,
+    BRepBuilderAPI_MakeVertex,
+    BRepBuilderAPI_MakeWire,
+)
+from OCP.GC import GC_MakeArcOfCircle
+from OCP.gp import gp_Pnt
+from OCP.TopoDS import (
+    TopoDS_Compound,
+    TopoDS_Edge,
+    TopoDS_Face,
+    TopoDS_Shell,
+    TopoDS_Solid,
+    TopoDS_Vertex,
+)
+
+from meshwell.geometry_entity import decompose_vertices_2d
+from meshwell.structured.exceptions import CanonicalArrangementError
+from meshwell.structured.types import (
+    Arrangement,
+    Cohort,
+    ShapeKey,
+    SlabMeta,
+    StructuredSlab,
+    SubPiece,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class VertexRegistry:
+    """Snap-and-dedup vertex store.
+
+    Coordinates are quantized to `point_tolerance` so near-coincident
+    vertices map to the same TopoDS_Vertex.
+    """
+
+    point_tolerance: float
+
+    def __post_init__(self):
+        """Initialise the internal vertex store."""
+        self._store: dict[tuple[int, int, int], TopoDS_Vertex] = {}
+
+    def _key(self, x: float, y: float, z: float) -> tuple[int, int, int]:
+        s = self.point_tolerance
+        return (round(x / s), round(y / s), round(z / s))
+
+    def get_or_create(self, x: float, y: float, z: float) -> TopoDS_Vertex:
+        """Return the unique vertex at (x, y, z), creating it if necessary."""
+        k = self._key(x, y, z)
+        if k not in self._store:
+            self._store[k] = BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, z)).Vertex()
+        return self._store[k]
+
+    def __len__(self):
+        """Return the number of unique vertices in the registry."""
+        return len(self._store)
+
+
+@dataclass
+class EdgeRegistry:
+    """Unique edge store with arc detection.
+
+    Two flavours:
+      - polyline_xy: a 2D polyline at fixed z; runs of vertices on a
+        circle (when identify_arcs) build a GC_MakeArcOfCircle edge.
+      - vertical: a single edge between two z values at one (x,y).
+    """
+
+    vertices: VertexRegistry
+    point_tolerance: float
+
+    def __post_init__(self):
+        """Initialise the internal edge store."""
+        self._store: dict[tuple, TopoDS_Edge] = {}
+
+    def vertical(self, x: float, y: float, z_a: float, z_b: float) -> TopoDS_Edge:
+        """Return the unique vertical edge at (x, y) between z_a and z_b."""
+        a = self.vertices.get_or_create(x, y, z_a)
+        b = self.vertices.get_or_create(x, y, z_b)
+        key = ("V", self.vertices._key(x, y, z_a), self.vertices._key(x, y, z_b))
+        if key not in self._store:
+            self._store[key] = BRepBuilderAPI_MakeEdge(a, b).Edge()
+        return self._store[key]
+
+    def line_xy(
+        self, x1: float, y1: float, x2: float, y2: float, z: float
+    ) -> TopoDS_Edge:
+        """Return the unique straight edge between (x1,y1,z) and (x2,y2,z)."""
+        a = self.vertices.get_or_create(x1, y1, z)
+        b = self.vertices.get_or_create(x2, y2, z)
+        k_a = self.vertices._key(x1, y1, z)
+        k_b = self.vertices._key(x2, y2, z)
+        key = ("L", tuple(sorted([k_a, k_b])))
+        if key not in self._store:
+            self._store[key] = BRepBuilderAPI_MakeEdge(a, b).Edge()
+        return self._store[key]
+
+    def arc_xy(
+        self,
+        start: tuple[float, float],
+        mid: tuple[float, float],
+        end: tuple[float, float],
+        z: float,
+    ) -> TopoDS_Edge:
+        """Return a unique arc edge through start, mid, end at height z.
+
+        The cache key is direction-invariant on (start, end): an arc
+        traversed V_a→mid→V_b and one traversed V_b→mid→V_a share an
+        underlying TShape. ``mid`` distinguishes physically distinct
+        arcs that share endpoints (e.g. top vs bottom half of a closed
+        circle). Without this, CCW (exterior) and CW (interior) shapely
+        orientations of the same circle produce duplicate OCC edges,
+        which breaks gmsh's periodic-cylinder mesher.
+        """
+        sv = self.vertices.get_or_create(*start, z)
+        ev = self.vertices.get_or_create(*end, z)
+        k_s = self.vertices._key(*start, z)
+        k_m = self.vertices._key(*mid, z)
+        k_e = self.vertices._key(*end, z)
+        key = ("A", tuple(sorted([k_s, k_e])), k_m)
+        if key not in self._store:
+            # Guard: GC_MakeArcOfCircle cannot handle a full circle (start==end).
+            # Caller should split the circle into sub-arcs before calling here.
+            p_start = gp_Pnt(start[0], start[1], z)
+            p_mid = gp_Pnt(mid[0], mid[1], z)
+            p_end = gp_Pnt(end[0], end[1], z)
+            builder = GC_MakeArcOfCircle(p_start, p_mid, p_end)
+            if not builder.IsDone():
+                raise ValueError(
+                    f"GC_MakeArcOfCircle failed for start={start} mid={mid} end={end}. "
+                    "Full-circle arcs must be split into two half-arcs before calling arc_xy."
+                )
+            self._store[key] = BRepBuilderAPI_MakeEdge(builder.Value(), sv, ev).Edge()
+        return self._store[key]
+
+    def polyline_xy(
+        self,
+        coords: list[tuple[float, float]],
+        z: float,
+        identify_arcs: bool,
+        min_arc_points: int = 5,
+        arc_tolerance: float = 1e-3,
+        arrangement: "Arrangement | None" = None,
+    ) -> list[TopoDS_Edge]:
+        """Return the list of edges (lines and/or arcs) covering coords.
+
+        When ``arrangement`` is provided AND every consecutive vertex
+        pair of ``coords`` is found in ``arrangement.edge_by_vertex_pair``,
+        replays each canonical edge's pre-fit segments so two callers
+        traversing the same arrangement edge in opposite directions get
+        the SAME OCC TShape by construction.
+
+        Falls back to per-ring greedy decomposition via
+        ``decompose_vertices_2d`` when arrangement is None, or when the
+        ring has NO pairs in the lookup (closed-standalone case — a
+        single closed canonical edge handles itself deterministically
+        via _find_canonical_seam). Raises ``CanonicalArrangementError``
+        on MIXED coverage (some pairs found, some missing) — that's a
+        canonicaliser bug.
+        """
+        if arrangement is not None and arrangement.canonical_edges:
+            edges = self._polyline_xy_canonical(
+                coords,
+                z,
+                arrangement,
+            )
+            if edges is not None:
+                return edges
+            # else: fell through to fallback (closed-standalone ring).
+
+        segments = decompose_vertices_2d(
+            coords,
+            z=z,
+            point_tolerance=self.point_tolerance,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+        return self._emit_edges_for_segments(segments, z)
+
+    def _emit_edges_for_segments(self, segments, z: float) -> list[TopoDS_Edge]:
+        """Emit OCC edges for a list of DecompositionSegment objects.
+
+        Shared by the canonical-replay path and the greedy-fallback path
+        so both use the same arc/line/full-circle emission code.
+        """
+        edges: list[TopoDS_Edge] = []
+        for seg in segments:
+            pts = seg.points
+            if seg.is_arc:
+                start = pts[0]
+                end = pts[-1]
+                is_closed = self.vertices._key(
+                    start[0], start[1], z
+                ) == self.vertices._key(end[0], end[1], z)
+                if is_closed:
+                    mid_idx = len(pts) // 2
+                    quarter_idx = len(pts) // 4
+                    three_quarter_idx = (len(pts) * 3) // 4
+                    edges.append(
+                        self.arc_xy(
+                            (pts[0][0], pts[0][1]),
+                            (pts[quarter_idx][0], pts[quarter_idx][1]),
+                            (pts[mid_idx][0], pts[mid_idx][1]),
+                            z,
+                        )
+                    )
+                    edges.append(
+                        self.arc_xy(
+                            (pts[mid_idx][0], pts[mid_idx][1]),
+                            (pts[three_quarter_idx][0], pts[three_quarter_idx][1]),
+                            (pts[-1][0], pts[-1][1]),
+                            z,
+                        )
+                    )
+                else:
+                    mid_idx = len(pts) // 2
+                    edges.append(
+                        self.arc_xy(
+                            (pts[0][0], pts[0][1]),
+                            (pts[mid_idx][0], pts[mid_idx][1]),
+                            (pts[-1][0], pts[-1][1]),
+                            z,
+                        )
+                    )
+            else:
+                edges.extend(
+                    self.line_xy(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], z)
+                    for i in range(len(pts) - 1)
+                )
+        return edges
+
+    def _polyline_xy_canonical(
+        self,
+        coords: list[tuple[float, float]],
+        z: float,
+        arrangement: "Arrangement",
+    ) -> "list[TopoDS_Edge] | None":
+        """Replay canonical arrangement edges for a ring as OCC edges.
+
+        Returns the emitted edge list when every consecutive vertex pair
+        of ``coords`` is in ``arrangement.edge_by_vertex_pair``; None when
+        NO pairs match (closed-standalone fallback). Raises
+        ``CanonicalArrangementError`` on mixed coverage.
+        """
+        replayed = _replay_canonical_ring(
+            coords, arrangement, self.vertices.point_tolerance, "sub-piece ring"
+        )
+        if replayed is None:
+            return None
+        edges: list[TopoDS_Edge] = []
+        for segments in replayed:
+            edges.extend(self._emit_edges_for_segments(segments, z))
+        return edges
+        return edges
+
+
+@dataclass
+class FaceRegistry:
+    """Cohort-global TopoDS_Face cache, deduplicated by canonical polygon key.
+
+    Faces are keyed by ``(z_quantized, exterior_canonical, frozenset(interior_canonical))``
+    where ``*_canonical`` is the polygon ring's vertex_key sequence normalized
+    to start at the lexicographically minimum vertex_key and traversed in the
+    direction that visits the next-minimum vertex_key first. This makes the
+    key invariant under ring rotation and reversal so the same polygon built
+    by two callers (cohort sub-piece bot/top face + adjacent unstructured
+    touched-plane face) collides in the registry.
+    """
+
+    edges: "EdgeRegistry"
+    point_tolerance: float
+
+    def __post_init__(self):
+        """Initialise the internal face store."""
+        self._store: dict[tuple, "TopoDS_Face"] = {}
+
+    def _canonical_ring(
+        self, ring_coords: list[tuple[float, float]], z: float
+    ) -> tuple[tuple[int, int, int], ...]:
+        """Quantize ring vertices and normalise rotation + direction.
+
+        Shapely closes its rings (first == last), so drop the trailing repeat
+        before normalising.
+        """
+        coords = list(ring_coords)
+        if coords and coords[0] == coords[-1]:
+            coords = coords[:-1]
+        keys = [self.edges.vertices._key(x, y, z) for x, y in coords]
+        if not keys:
+            return ()
+        # Rotate to start at the minimum vertex_key.
+        i_min = min(range(len(keys)), key=lambda i: keys[i])
+        rotated = keys[i_min:] + keys[:i_min]
+        # Force a canonical direction: visit the next-minimum vertex_key first.
+        if len(rotated) >= 2 and rotated[-1] < rotated[1]:
+            rotated = [rotated[0], *list(reversed(rotated[1:]))]
+        return tuple(rotated)
+
+    def key_for_polygon(self, polygon, z: float) -> tuple[int, tuple, frozenset]:
+        """Return the cache key for a shapely Polygon at height z."""
+        z_q = round(z / self.point_tolerance)
+        exterior = self._canonical_ring(list(polygon.exterior.coords), z)
+        interiors = frozenset(
+            self._canonical_ring(list(interior.coords), z)
+            for interior in polygon.interiors
+        )
+        return (z_q, exterior, interiors)
+
+    def face_xy(
+        self,
+        polygon,
+        z: float,
+        identify_arcs: bool,
+        min_arc_points: int,
+        arc_tolerance: float,
+        arrangement: "Arrangement | None" = None,
+    ) -> "TopoDS_Face":
+        """Return a unique TopoDS_Face for ``polygon`` at height ``z``.
+
+        Builds the face on first call via ``_build_horizontal_face`` (so
+        arc detection / edge sharing through the EdgeRegistry are
+        honoured). Subsequent calls with a polygon that produces the
+        same canonical key return the cached face by TShape identity.
+
+        When ``arrangement`` is provided, the build path uses canonical
+        arrangement edges so sub-pieces sharing a boundary subset emit
+        the same OCC TShape on first construction.
+        """
+        key = self.key_for_polygon(polygon, z)
+        if key not in self._store:
+            self._store[key] = _build_horizontal_face(
+                polygon,
+                z,
+                self.edges,
+                identify_arcs,
+                min_arc_points,
+                arc_tolerance,
+                arrangement=arrangement,
+            )
+        return self._store[key]
+
+
+@dataclass(frozen=True)
+class _PolylineSegment:
+    """One segment of a 2D polyline: a straight line or a circular arc.
+
+    ``kind`` is either ``"line"`` (mid is unused) or ``"arc"`` (mid is
+    a point lying on the arc between start and end).
+
+    This is the lateral-face-builder's local view of a polyline segment;
+    ``polyline_segments`` adapts the canonical ``DecompositionSegment``
+    output of ``decompose_vertices_2d`` into this 2D-flat form so that
+    the lateral builder code can stay simple.
+    """
+
+    kind: str
+    start: tuple[float, float]
+    end: tuple[float, float]
+    mid: tuple[float, float] | None = None
+
+
+def polyline_segments(
+    coords: list[tuple[float, float]],
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+    point_tolerance: float,
+    arrangement: "Arrangement | None" = None,
+    z: float | None = None,
+) -> list[_PolylineSegment]:
+    """Decompose a 2D polyline into line and arc segments.
+
+    When ``arrangement`` is provided AND every consecutive vertex pair
+    in ``coords`` is registered in ``arrangement.edge_by_vertex_pair``,
+    the canonical pre-fit segments are replayed (forward or reverse
+    per traversal direction) so lateral faces match horizontal faces
+    on every shared boundary edge. ``z`` must be provided in that case
+    (used for vertex-key quantization).
+
+    Falls back to ``decompose_vertices_2d`` on the input ring when no
+    arrangement is provided, or when the ring has NO arrangement-edge
+    coverage (closed-standalone ring), preserving today's behaviour.
+    Raises ``CanonicalArrangementError`` on mixed coverage.
+    """
+    if arrangement is not None and arrangement.canonical_edges:
+        if z is None:
+            raise ValueError(
+                "polyline_segments requires z= when arrangement is provided"
+            )
+        segs = _polyline_segments_canonical(
+            coords,
+            arrangement,
+            point_tolerance,
+        )
+        if segs is not None:
+            return segs
+        # else: fall through to greedy fitter (closed-standalone case)
+
+    raw = decompose_vertices_2d(
+        coords,
+        z=0.0,  # z is irrelevant — we only need (x, y) downstream
+        point_tolerance=point_tolerance,
+        identify_arcs=identify_arcs,
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
+    )
+    return _flatten_decomposition_to_polyline_segments(raw, point_tolerance)
+
+
+def _flatten_decomposition_to_polyline_segments(
+    raw, point_tolerance: float
+) -> list[_PolylineSegment]:
+    """Convert DecompositionSegment list to _PolylineSegment list.
+
+    Shared by the canonical and greedy paths for the same
+    DecompositionSegment -> _PolylineSegment conversion.
+    """
+    out: list[_PolylineSegment] = []
+    for seg in raw:
+        pts = seg.points
+        if seg.is_arc:
+            start_xy = (pts[0][0], pts[0][1])
+            end_xy = (pts[-1][0], pts[-1][1])
+            mid_idx = len(pts) // 2
+            if (
+                abs(start_xy[0] - end_xy[0]) < point_tolerance
+                and abs(start_xy[1] - end_xy[1]) < point_tolerance
+            ):
+                # Full-circle: split into two half-arcs so each maps to a
+                # well-defined ``GC_MakeArcOfCircle`` build downstream.
+                q1_idx = mid_idx // 2
+                q3_idx = (mid_idx + len(pts) - 1) // 2
+                mid_xy = (pts[mid_idx][0], pts[mid_idx][1])
+                out.append(
+                    _PolylineSegment(
+                        kind="arc",
+                        start=start_xy,
+                        end=mid_xy,
+                        mid=(pts[q1_idx][0], pts[q1_idx][1]),
+                    )
+                )
+                out.append(
+                    _PolylineSegment(
+                        kind="arc",
+                        start=mid_xy,
+                        end=end_xy,
+                        mid=(pts[q3_idx][0], pts[q3_idx][1]),
+                    )
+                )
+            else:
+                out.append(
+                    _PolylineSegment(
+                        kind="arc",
+                        start=start_xy,
+                        end=end_xy,
+                        mid=(pts[mid_idx][0], pts[mid_idx][1]),
+                    )
+                )
+        else:
+            out.extend(
+                _PolylineSegment(
+                    kind="line",
+                    start=(pts[i][0], pts[i][1]),
+                    end=(pts[i + 1][0], pts[i + 1][1]),
+                )
+                for i in range(len(pts) - 1)
+            )
+    return out
+
+
+def _replay_canonical_ring(
+    coords: list[tuple[float, float]],
+    arrangement: "Arrangement",
+    point_tolerance: float,
+    ring_label: str,
+) -> "list[list] | None":
+    """Walk a ring against the cohort arrangement; return per-edge segments.
+
+    For each consecutive vertex pair of ``coords`` that maps to a canonical
+    arrangement edge, returns that edge's pre-fit ``segments`` in traversal
+    order (one inner list per canonical edge). Both the OCC-edge builder
+    (``EdgeRegistry._polyline_xy_canonical``) and the lateral polyline
+    builder (``_polyline_segments_canonical``) consume these, so two callers
+    traversing the same arrangement edge in opposite directions get
+    identical geometry by construction.
+
+    Returns ``None`` when NO consecutive pair is in the lookup (caller does
+    the closed-standalone greedy fallback); a possibly-empty list otherwise.
+    Raises ``CanonicalArrangementError`` on mixed coverage or a vertex that
+    is interior to / non-adjacent within a canonical edge.
+
+    Reverse traversal reverses the SEGMENT ORDER only, never each segment's
+    internal points: ``arc_xy``'s cache key is direction-invariant on the
+    sorted endpoint keys, and reversing points would shift the sampled
+    midpoint for even-length arc segments (mid_idx = L // 2 is asymmetric
+    under reversal), producing different arc keys forward vs reverse and
+    silently breaking the TShape-sharing guarantee.
+    """
+    s = point_tolerance
+    # Quantize XY against the arrangement's z so sub-pieces at any vertical
+    # level hit the same topological lookup; callers re-apply their own
+    # extrusion z when emitting geometry.
+    arr_z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
+    keys = [(round(x / s), round(y / s), round(arr_z / s)) for x, y in coords]
+    # Tolerate an accidental closing duplicate at the tail.
+    if len(keys) >= 2 and keys[0] == keys[-1]:
+        inner_keys = keys[:-1]
+        ring_is_closed = True
+    else:
+        inner_keys = list(keys)
+        ring_is_closed = False
+    # Drop consecutive duplicate keys from floating-point near-identical
+    # vertices that quantize to the same key (degenerate zero-length steps
+    # have no lookup entry and would trip a spurious mixed-coverage error).
+    deduped: list = [inner_keys[0]] if inner_keys else []
+    for k in inner_keys[1:]:
+        if k != deduped[-1]:
+            deduped.append(k)
+    if ring_is_closed and len(deduped) >= 2 and deduped[-1] == deduped[0]:
+        deduped = deduped[:-1]
+    inner_keys = deduped
+    n = len(inner_keys)
+    if n < 2:
+        return []
+
+    # Probe coverage: count pair hits/misses.
+    pair_count = n if ring_is_closed else n - 1
+    hits = 0
+    for i in range(pair_count):
+        a = inner_keys[i]
+        b = inner_keys[(i + 1) % n] if ring_is_closed else inner_keys[i + 1]
+        if frozenset({a, b}) in arrangement.edge_by_vertex_pair:
+            hits += 1
+    if hits == 0:
+        logger.debug(
+            "_replay_canonical_ring(%s): 0 hits, falling back to standalone "
+            "decomposition for ring with %d keys",
+            ring_label,
+            n,
+        )
+        return None
+    if hits != pair_count:
+        raise CanonicalArrangementError(
+            cohort_index=arrangement.cohort_index,
+            reason=(
+                f"{ring_label} has mixed canonical coverage "
+                f"({hits}/{pair_count} pairs in lookup) — coverage bug"
+            ),
+        )
+
+    # If the ring starts mid-edge, rotate it so traversal begins at an
+    # arrangement node; the canonical-edge walk then spans node to node
+    # without raising.
+    if ring_is_closed:
+        shift_idx = 0
+        for i in range(n):
+            a = inner_keys[i]
+            b = inner_keys[(i + 1) % n]
+            edge_idx = arrangement.edge_by_vertex_pair[frozenset({a, b})]
+            canon = arrangement.canonical_edges[edge_idx]
+            if not canon.is_closed and (
+                canon.vertex_keys[0] == a or canon.vertex_keys[-1] == a
+            ):
+                shift_idx = i
+                break
+        if shift_idx > 0:
+            inner_keys = inner_keys[shift_idx:] + inner_keys[:shift_idx]
+
+    logger.debug(
+        "_replay_canonical_ring(%s): replaying %d/%d hits for ring with %d keys",
+        ring_label,
+        hits,
+        pair_count,
+        n,
+    )
+    out: list[list] = []
+    consumed = 0
+    i = 0
+    while consumed < pair_count:
+        a_key = inner_keys[i % n]
+        b_key = inner_keys[(i + 1) % n]
+        edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
+        canon = arrangement.canonical_edges[edge_idx]
+
+        if canon.is_closed:
+            idx = canon.vertex_keys.index(a_key)
+            n_canon = len(canon.vertex_keys)
+            if canon.vertex_keys[(idx + 1) % n_canon] == b_key:
+                forward = True
+            elif canon.vertex_keys[(idx - 1) % n_canon] == b_key:
+                forward = False
+            else:
+                raise CanonicalArrangementError(
+                    cohort_index=arrangement.cohort_index,
+                    reason=(
+                        f"vertex {a_key} is in closed canonical edge "
+                        f"{edge_idx} but the {ring_label} is traversing "
+                        f"to {b_key} which is not adjacent."
+                    ),
+                )
+            segments = list(canon.segments)
+            if not forward:
+                segments = list(reversed(segments))
+            out.append(segments)
+            step = n_canon
+            i += step
+            consumed += step
+            continue
+
+        # Open canonical edge: enter at one of its two endpoints.
+        if canon.vertex_keys[0] == a_key:
+            forward = True
+        elif canon.vertex_keys[-1] == a_key:
+            forward = False
+        else:
+            raise CanonicalArrangementError(
+                cohort_index=arrangement.cohort_index,
+                reason=(
+                    f"vertex {a_key} is interior to canonical edge "
+                    f"{edge_idx} but the {ring_label} is entering here"
+                ),
+            )
+        segments = list(canon.segments)
+        if not forward:
+            segments = list(reversed(segments))
+        out.append(segments)
+        step = len(canon.vertex_keys) - 1
+        i += step
+        consumed += step
+    return out
+
+
+def _polyline_segments_canonical(
+    coords: list[tuple[float, float]],
+    arrangement: "Arrangement",
+    point_tolerance: float,
+) -> "list[_PolylineSegment] | None":
+    """Replay canonical arrangement edges' segments for a lateral ring.
+
+    Returns the flattened polyline-segment list when every pair is covered;
+    None when NO pairs match (closed-standalone fallback); raises on mixed
+    coverage. See ``_replay_canonical_ring`` for the shared traversal logic.
+    """
+    replayed = _replay_canonical_ring(
+        coords, arrangement, point_tolerance, "lateral ring"
+    )
+    if replayed is None:
+        return None
+    out: list[_PolylineSegment] = []
+    for segments in replayed:
+        out.extend(
+            _flatten_decomposition_to_polyline_segments(segments, point_tolerance)
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 parts 3-6: face registry + sub-solid + cohort compound assembly
+# ---------------------------------------------------------------------------
+
+
+def _shape_key(shape) -> ShapeKey:
+    from OCP.TopTools import TopTools_ShapeMapHasher
+
+    hasher = TopTools_ShapeMapHasher()
+    return ShapeKey(tshape_id=hasher(shape), orientation=int(shape.Orientation()))
+
+
+def _ring_coords(ring) -> list[tuple[float, float]]:
+    return list(ring.coords)
+
+
+def _build_horizontal_face(
+    polygon,
+    z: float,
+    ereg: EdgeRegistry,
+    identify_arcs: bool,
+    min_arc_points: int,
+    arc_tolerance: float,
+    face_registry: "FaceRegistry | None" = None,
+    arrangement: "Arrangement | None" = None,
+) -> TopoDS_Face:
+    """Build a horizontal TopoDS_Face for a polygon at fixed z.
+
+    When ``face_registry`` is provided, returns a cached face for the
+    polygon's canonical key, sharing TShape across callers. When None,
+    constructs a fresh TopoDS_Face each call (legacy behaviour for tests
+    and call sites that don't have a registry threaded through).
+
+    When ``arrangement`` is provided, the underlying ``polyline_xy``
+    call uses canonical arrangement edges so sub-pieces sharing a
+    boundary subset emit the same OCC TShape by construction.
+    """
+    if face_registry is not None:
+        return face_registry.face_xy(
+            polygon,
+            z,
+            identify_arcs,
+            min_arc_points,
+            arc_tolerance,
+            arrangement=arrangement,
+        )
+    outer_coords = _ring_coords(polygon.exterior)
+    outer_edges = ereg.polyline_xy(
+        outer_coords,
+        z,
+        identify_arcs,
+        min_arc_points,
+        arc_tolerance,
+        arrangement=arrangement,
+    )
+    mw = BRepBuilderAPI_MakeWire()
+    for e in outer_edges:
+        mw.Add(e)
+    outer_wire = mw.Wire()
+    mf = BRepBuilderAPI_MakeFace(outer_wire)
+    for interior in polygon.interiors:
+        hole_coords = _ring_coords(interior)
+        hole_edges = ereg.polyline_xy(
+            hole_coords,
+            z,
+            identify_arcs,
+            min_arc_points,
+            arc_tolerance,
+            arrangement=arrangement,
+        )
+        mw_h = BRepBuilderAPI_MakeWire()
+        for e in hole_edges:
+            mw_h.Add(e)
+        mf.Add(mw_h.Wire())
+    return mf.Face()
+
+
+def _is_arc_edge(edge: "TopoDS_Edge") -> bool:
+    """Return True iff the edge's underlying curve is a circular arc."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.GeomAdaptor import GeomAdaptor_Curve
+
+    fp, lp = 0.0, 1.0
+    curv = BRep_Tool.Curve_s(edge, fp, lp)
+    if curv is None:
+        return False
+    try:
+        adaptor = GeomAdaptor_Curve(curv)
+        return adaptor.GetType() == GeomAbs_Circle
+    except Exception:
+        return False
+
+
+def _build_lateral_face(
+    edge_xy_low: "TopoDS_Edge",
+    edge_xy_high: "TopoDS_Edge",
+    v_left: "TopoDS_Edge",
+    v_right: "TopoDS_Edge",
+) -> "TopoDS_Face":
+    """Stitch four edges into a lateral face.
+
+    For straight edges the face is planar.  For arc edges (circular
+    curves in the XY-plane) the face is built on the matching
+    ``Geom_CylindricalSurface`` so that the OCC BRep is topologically
+    closed and passes BRepCheck validation.
+    """
+    if _is_arc_edge(edge_xy_low):
+        return _build_cylindrical_lateral_face(
+            edge_xy_low, edge_xy_high, v_left, v_right
+        )
+    mw = BRepBuilderAPI_MakeWire()
+    mw.Add(edge_xy_low)
+    mw.Add(v_right)
+    mw.Add(edge_xy_high)
+    mw.Add(v_left)
+    wire = mw.Wire()
+    return BRepBuilderAPI_MakeFace(wire).Face()
+
+
+def _build_cylindrical_lateral_face(
+    edge_low: "TopoDS_Edge",
+    edge_high: "TopoDS_Edge",
+    v_left: "TopoDS_Edge",
+    v_right: "TopoDS_Edge",
+) -> "TopoDS_Face":
+    """Build a cylindrical lateral face on an explicit ``Geom_CylindricalSurface``.
+
+    The four input edges (two arc XY edges at z=z_low/z_high plus two
+    vertical edges at the arc endpoints) are reused as-is — their TShapes
+    remain shared with neighbouring sub-pieces and with the horizontal
+    faces above/below. We construct a cylinder whose axis is vertical
+    through the arc's circle center and whose radius matches the arc's,
+    build a wire from the four edges, then build the face on that surface
+    with parametric (PCurve) representations added for every edge.
+
+    Building the face on an explicit canonical surface (rather than letting
+    ``BRepOffsetAPI_ThruSections`` infer a ruled surface from the wire)
+    prevents ``BOPAlgo_Builder`` from later splitting the face into multiple
+    fragments at the seam line on the cylinder, which is what caused the
+    "5 boundary edges" failure for the structured transfinite hint.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    from OCP.Geom import Geom_CylindricalSurface
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.GeomAdaptor import GeomAdaptor_Curve
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+    from OCP.ShapeFix import ShapeFix_Edge
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    def _ruled_fallback() -> "TopoDS_Face":
+        mw_lo = BRepBuilderAPI_MakeWire()
+        mw_lo.Add(edge_low)
+        mw_hi = BRepBuilderAPI_MakeWire()
+        mw_hi.Add(edge_high)
+        tss = BRepOffsetAPI_ThruSections(False, True)
+        tss.AddWire(mw_lo.Wire())
+        tss.AddWire(mw_hi.Wire())
+        tss.Build()
+        if tss.IsDone():
+            exp = TopExp_Explorer(tss.Shape(), TopAbs_FACE)
+            if exp.More():
+                return TopoDS.Face_s(exp.Current())
+        mw = BRepBuilderAPI_MakeWire()
+        mw.Add(edge_low)
+        mw.Add(v_right)
+        mw.Add(edge_high)
+        mw.Add(v_left)
+        return BRepBuilderAPI_MakeFace(mw.Wire()).Face()
+
+    # Extract the underlying gp_Circ from the low arc edge.
+    fp, lp = 0.0, 1.0
+    curv_handle = BRep_Tool.Curve_s(edge_low, fp, lp)
+    if curv_handle is None:
+        return _ruled_fallback()
+    try:
+        adaptor = GeomAdaptor_Curve(curv_handle)
+        if adaptor.GetType() != GeomAbs_Circle:
+            return _ruled_fallback()
+        gp_circ = adaptor.Circle()
+    except Exception:
+        return _ruled_fallback()
+
+    # z of the bot edge (vertical cylinder origin).
+    v_bot_first = TopExp.FirstVertex_s(edge_low)
+    bot_z = BRep_Tool.Pnt_s(v_bot_first).Z()
+
+    # Construct a vertical cylindrical surface through the arc's axis
+    # location with the arc's radius. We orient the cylinder's X-axis (its
+    # u=0 reference direction) to point at the arc's start vertex.  This
+    # guarantees the PCurve of the arc on this surface has u starting at 0
+    # and lying in [0, 2π) rather than crossing the u=0/u=2π seam of the
+    # cylinder's intrinsic parameterization — which is what triggered
+    # "BRepCheck_UnorientableShape" for the second half-arc of a closed
+    # circle (its arc spans π → 2π on a cylinder whose +X reference points
+    # at u=0).
+    center = gp_circ.Location()
+    start_pt = BRep_Tool.Pnt_s(v_bot_first)
+    dx = start_pt.X() - center.X()
+    dy = start_pt.Y() - center.Y()
+    norm = (dx * dx + dy * dy) ** 0.5
+    # Degenerate (start coincident with center) shouldn't happen; fall
+    # back to global +X.
+    x_dir = gp_Dir(1, 0, 0) if norm < 1e-12 else gp_Dir(dx / norm, dy / norm, 0.0)
+    cyl_axis = gp_Ax3(
+        gp_Pnt(center.X(), center.Y(), bot_z),
+        gp_Dir(0, 0, 1),
+        x_dir,
+    )
+    radius = gp_circ.Radius()
+    surf = Geom_CylindricalSurface(cyl_axis, radius)
+
+    # Build the closing wire from the 4 existing edges, traversing CCW in the
+    # face's UV space. For both arc orientations (CCW outer, CW hole) we try
+    # one orientation first and fall back to the reverse if BRepBuilderAPI
+    # complains.
+    def _try_wire(wire_edges) -> "TopoDS_Face | None":
+        from OCP.BRepCheck import BRepCheck_Analyzer
+
+        mw = BRepBuilderAPI_MakeWire()
+        for e in wire_edges:
+            mw.Add(e)
+        if not mw.IsDone():
+            return None
+        wire = mw.Wire()
+        mf = BRepBuilderAPI_MakeFace(surf, wire, True)
+        if not mf.IsDone():
+            return None
+        face = mf.Face()
+        # Build PCurves for every edge on the cylindrical surface.
+        sfe = ShapeFix_Edge()
+        exp = TopExp_Explorer(face, TopAbs_EDGE)
+        while exp.More():
+            e = TopoDS.Edge_s(exp.Current())
+            # FixAddPCurve returning False is non-fatal: a PCurve may
+            # already exist on the edge for this face.
+            sfe.FixAddPCurve(e, face, False, 1e-7)
+            exp.Next()
+        # Reject "unorientable" faces — these arise when the wire's PCurves
+        # straddle the cylinder's u=0/u=2π seam.  The caller will try the
+        # reversed wire orientation next, then fall back to a ruled surface.
+        if not BRepCheck_Analyzer(face).IsValid():
+            return None
+        return face
+
+    # Order 1: bot forward, right up, top reversed, left down.
+    face = _try_wire(
+        [
+            edge_low,
+            v_right,
+            TopoDS.Edge_s(edge_high.Reversed()),
+            TopoDS.Edge_s(v_left.Reversed()),
+        ]
+    )
+    if face is None:
+        # Order 2: bot reversed, left up, top forward, right down.
+        face = _try_wire(
+            [
+                TopoDS.Edge_s(edge_low.Reversed()),
+                v_left,
+                edge_high,
+                TopoDS.Edge_s(v_right.Reversed()),
+            ]
+        )
+    if face is None:
+        return _ruled_fallback()
+    return face
+
+
+def build_cohort_compound(
+    cohort: Cohort,
+    subpieces: list[SubPiece],
+    point_tolerance: float,
+    vertex_registry: "VertexRegistry | None" = None,
+    edge_registry: "EdgeRegistry | None" = None,
+    face_registry: "FaceRegistry | None" = None,
+    arrangement: "Arrangement | None" = None,
+) -> tuple[TopoDS_Compound, dict[ShapeKey, SlabMeta]]:
+    """Stage 4 driver — assemble compound + slab_meta.
+
+    The compound is one TopoDS_Compound containing N sub-solids, where
+    N == len(subpieces). Faces and edges shared between sub-solids are
+    constructed once and referenced from both — guaranteeing shared
+    TShapes without BOP.
+
+    Arc-detection conformality: when two subpieces from adjacent z-levels
+    share a z-plane, one source slab may have ``identify_arcs=True`` while
+    the other does not.  We propagate ``identify_arcs=True`` across shared
+    z-planes so that BOTH faces at the interface use the same arc
+    representation.
+
+    Args:
+        cohort: The Cohort whose slabs define z-intervals and arc settings.
+        subpieces: Flat list of SubPiece records (one per z-interval x sub-polygon).
+        point_tolerance: Snap tolerance for vertex deduplication.
+        vertex_registry: Optional pre-created VertexRegistry to use instead
+            of creating a fresh one. When provided, vertices are shared with
+            the caller's registry. When None, a fresh registry is created
+            (existing behavior).
+        edge_registry: Optional pre-created EdgeRegistry to use instead of
+            creating a fresh one. When provided, edges are shared with the
+            caller's registry. When None, a fresh registry is created
+            (existing behavior).
+        face_registry: Optional pre-created FaceRegistry to use instead of
+            creating a fresh one. When provided, faces are shared with the
+            caller's registry. When None, a fresh registry is created
+            (existing behavior).
+        arrangement: Optional Arrangement (planar graph of all cohort
+            boundaries). When provided, forwarded to every
+            ``_build_horizontal_face`` and ``polyline_segments`` call so
+            sub-pieces sharing a boundary edge consume canonical OCC
+            TShapes by construction.
+    """
+    # Use injected registries when provided; otherwise create fresh ones
+    # so existing callers see no behavior change. When both are provided
+    # they must be consistent (the edge_registry's vertex store IS the
+    # vertex_registry) or vertex dedup and edge dedup operate on
+    # mismatched key spaces and downstream edge construction breaks.
+    if (
+        edge_registry is not None
+        and vertex_registry is not None
+        and edge_registry.vertices is not vertex_registry
+    ):
+        raise ValueError(
+            "edge_registry.vertices must be the same VertexRegistry as "
+            "vertex_registry when both are injected"
+        )
+    if (
+        face_registry is not None
+        and edge_registry is not None
+        and face_registry.edges is not edge_registry
+    ):
+        raise ValueError(
+            "face_registry.edges must be the same EdgeRegistry as "
+            "edge_registry when both are injected"
+        )
+    vreg = (
+        vertex_registry
+        if vertex_registry is not None
+        else (
+            edge_registry.vertices
+            if edge_registry is not None
+            else VertexRegistry(point_tolerance=point_tolerance)
+        )
+    )
+    ereg = (
+        edge_registry
+        if edge_registry is not None
+        else EdgeRegistry(vertices=vreg, point_tolerance=point_tolerance)
+    )
+    freg = (
+        face_registry
+        if face_registry is not None
+        else FaceRegistry(edges=ereg, point_tolerance=point_tolerance)
+    )
+
+    slab_by_source: dict[int, StructuredSlab] = {
+        s.source_index: s for s in cohort.slabs
+    }
+
+    # Pre-compute, for each z-plane in the cohort, whether ANY source slab
+    # active AT that plane (either touching from below or from above) has
+    # identify_arcs=True.  A subpiece's bottom face uses the z=zlo plane
+    # setting and its top face uses the z=zhi plane setting.
+    z_plane_id_arcs: dict[float, bool] = {}
+    z_plane_min_arc_pts: dict[float, int] = {}
+    z_plane_arc_tol: dict[float, float] = {}
+    for slab in cohort.slabs:
+        for z in (slab.zlo, slab.zhi):
+            if slab.identify_arcs:
+                z_plane_id_arcs[z] = True
+                # Use the most sensitive (smallest) arc_tolerance and
+                # largest min_arc_points when multiple slabs contribute.
+                if z not in z_plane_arc_tol or slab.arc_tolerance < z_plane_arc_tol[z]:
+                    z_plane_arc_tol[z] = slab.arc_tolerance
+                if (
+                    z not in z_plane_min_arc_pts
+                    or slab.min_arc_points > z_plane_min_arc_pts[z]
+                ):
+                    z_plane_min_arc_pts[z] = slab.min_arc_points
+            else:
+                z_plane_id_arcs.setdefault(z, False)
+                z_plane_arc_tol.setdefault(z, slab.arc_tolerance)
+                z_plane_min_arc_pts.setdefault(z, slab.min_arc_points)
+
+    # First pass: identify shared horizontal interior faces.
+    # Two subpieces share an interior face when their z_intervals are
+    # adjacent (one's zhi == other's zlo) and their sub_polygons
+    # intersect with non-zero area.
+    sub_idx_by_z: dict[float, list[int]] = {}
+    for i, sp in enumerate(subpieces):
+        sub_idx_by_z.setdefault(sp.z_interval[0], []).append(i)
+        sub_idx_by_z.setdefault(sp.z_interval[1], []).append(i)
+
+    shared_horizontal: dict[tuple[int, int], object] = {}
+    for z in sorted(sub_idx_by_z.keys()):
+        below = [i for i in sub_idx_by_z[z] if subpieces[i].z_interval[1] == z]
+        above = [i for i in sub_idx_by_z[z] if subpieces[i].z_interval[0] == z]
+        for b in below:
+            for a in above:
+                inter = subpieces[b].sub_polygon.intersection(subpieces[a].sub_polygon)
+                if inter.area > 0:
+                    shared_horizontal[(b, a)] = inter
+
+    # Cache built horizontal faces by (subpiece_idx, side) for quick lookup.
+    # side: "bot" or "top".
+    horiz_faces: dict[tuple[int, str], TopoDS_Face] = {}
+
+    def arc_params_for_z(z: float, sp_idx: int):
+        s = slab_by_source[subpieces[sp_idx].source_slab_indices[0]]
+        id_arcs = z_plane_id_arcs.get(z, s.identify_arcs)
+        min_p = z_plane_min_arc_pts.get(z, s.min_arc_points)
+        arc_tol = z_plane_arc_tol.get(z, s.arc_tolerance)
+        return id_arcs, min_p, arc_tol
+
+    # Build shared interior faces first.
+    # A face is shared (same TShape) only when the intersection covers the
+    # FULL polygon of the sub-piece being assigned.  If inter_poly is only a
+    # fragment of the sub-piece's polygon (e.g., an above-sub-piece is larger
+    # than the below-sub-piece), assigning the tiny intersection as the face
+    # would cause stamp_wedges to read only that fragment's triangulation.
+    # In that situation we skip the assignment here and let the "remaining
+    # bot/top faces" loop below build the correct full-polygon face.
+    for (b, a), inter_poly in shared_horizontal.items():
+        z = subpieces[b].z_interval[1]
+        id_arcs, min_p, arc_tol = arc_params_for_z(z, b)
+        area_tol = 1e-8
+        below_full = abs(inter_poly.area - subpieces[b].sub_polygon.area) < area_tol
+        above_full = abs(inter_poly.area - subpieces[a].sub_polygon.area) < area_tol
+        face = _build_horizontal_face(
+            inter_poly,
+            z,
+            ereg,
+            id_arcs,
+            min_p,
+            arc_tol,
+            face_registry=freg,
+            arrangement=arrangement,
+        )
+        if below_full:
+            horiz_faces[(b, "top")] = face
+        if above_full:
+            horiz_faces[(a, "bot")] = face
+
+    # Build remaining bot/top faces (those that weren't shared).
+    for i, sp in enumerate(subpieces):
+        if (i, "bot") not in horiz_faces:
+            id_arcs, min_p, arc_tol = arc_params_for_z(sp.z_interval[0], i)
+            horiz_faces[(i, "bot")] = _build_horizontal_face(
+                sp.sub_polygon,
+                sp.z_interval[0],
+                ereg,
+                id_arcs,
+                min_p,
+                arc_tol,
+                face_registry=freg,
+                arrangement=arrangement,
+            )
+        if (i, "top") not in horiz_faces:
+            id_arcs, min_p, arc_tol = arc_params_for_z(sp.z_interval[1], i)
+            horiz_faces[(i, "top")] = _build_horizontal_face(
+                sp.sub_polygon,
+                sp.z_interval[1],
+                ereg,
+                id_arcs,
+                min_p,
+                arc_tol,
+                face_registry=freg,
+                arrangement=arrangement,
+            )
+
+    # Build lateral faces per subpiece. Each polygon-edge of the
+    # subpiece's sub_polygon becomes one lateral face. The edge
+    # registry shares vertical edges between laterally-adjacent
+    # subpieces in the same z-interval automatically.
+    #
+    # A lateral face cache keyed by the same vertex identity used by the
+    # edge registry shares the FACE TShape between two subpieces that
+    # have a coincident xy-edge at the same z-interval. The cohort
+    # compound is passed to BOPAlgo_Builder as one argument
+    # (keep_compound_for_bop=True) so it does NOT fragment internal
+    # coincident-but-distinct-TShape faces. Without this cache the
+    # n_layers-mismatch lateral-touch detection in
+    # ``freeze_lateral_mesh`` cannot see that two adjacent
+    # slabs share a lateral face.
+    lateral_face_cache: dict[tuple, TopoDS_Face] = {}
+
+    def _lateral_key(
+        seg: _PolylineSegment,
+        zlo: float,
+        zhi: float,
+    ) -> tuple:
+        """Build a lateral-face cache key for one polyline segment.
+
+        The key distinguishes lateral faces that genuinely differ even
+        when their endpoints coincide. Crucially, for a closed circle
+        ``polyline_segments`` returns two half-arcs whose endpoint pair
+        ``(start, end)`` are identical when sorted (start = coords[0],
+        end = coords[mid]; second arc swaps them). Without the segment
+        ``mid`` in the key, the two half-cylinder faces would collapse
+        to one TShape and the lateral wall would only be half-covered
+        in the final mesh.
+
+        For straight-line segments shared by two side-by-side subpieces
+        (e.g., two squares touching at x=10) the key is endpoint-order-
+        invariant so the same face is shared between subpieces. That
+        sharing is what lets ``freeze_lateral_mesh`` detect
+        n_layers mismatches and lets two adjacent solids hold the same
+        TShape.
+        """
+        a, b = seg.start, seg.end
+        k_a = vreg._key(a[0], a[1], zlo)
+        k_b = vreg._key(b[0], b[1], zlo)
+        # Endpoint-order-invariant; same lateral whether traversed
+        # left->right or right->left.
+        endpoints = tuple(sorted([k_a, k_b]))
+        if seg.kind == "arc":
+            # Arcs with the same endpoints but different midpoints
+            # (the two halves of a full circle) MUST get distinct keys.
+            mid = seg.mid
+            k_mid = vreg._key(mid[0], mid[1], zlo)
+            disambig: tuple = ("arc", k_mid)
+        else:
+            disambig = ("line",)
+        return (
+            "F",
+            endpoints,
+            disambig,
+            vreg._key(0, 0, zlo)[2],
+            vreg._key(0, 0, zhi)[2],
+        )
+
+    lateral_faces: dict[int, list[TopoDS_Face]] = {i: [] for i in range(len(subpieces))}
+
+    def _build_laterals_for_ring(
+        ring_coords: list[tuple[float, float]],
+        zlo: float,
+        zhi: float,
+        use_arcs: bool,
+        min_arc_points: int,
+        arc_tolerance: float,
+    ) -> list[TopoDS_Face]:
+        """Build (or fetch cached) lateral faces walking one closed XY ring.
+
+        Used for both the exterior ring and each interior (hole) ring of a
+        sub-polygon. Interior rings produce inner-cylindrical lateral walls
+        which were previously absent — see the regression test
+        ``test_annulus_inner_lateral.py``.
+
+        The lateral-face cache (``_lateral_key``) handles shared TShapes
+        across ring origins: if two cohort sub-solids share the same XY edge
+        at the same z-interval (whether the edge is on an outer or inner
+        ring), they receive the same TShape and the cohort shell remains
+        conformal.
+        """
+        segments = polyline_segments(
+            ring_coords,
+            identify_arcs=use_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+            point_tolerance=point_tolerance,
+            arrangement=arrangement,
+            z=zlo,
+        )
+        out_faces: list[TopoDS_Face] = []
+        for seg in segments:
+            a, b = seg.start, seg.end
+            if seg.kind == "arc":
+                e_lo = ereg.arc_xy(a, seg.mid, b, zlo)
+                e_hi = ereg.arc_xy(a, seg.mid, b, zhi)
+            else:
+                e_lo = ereg.line_xy(a[0], a[1], b[0], b[1], zlo)
+                e_hi = ereg.line_xy(a[0], a[1], b[0], b[1], zhi)
+            v_left = ereg.vertical(a[0], a[1], zlo, zhi)
+            v_right = ereg.vertical(b[0], b[1], zlo, zhi)
+            cache_key = _lateral_key(seg, zlo, zhi)
+            face = lateral_face_cache.get(cache_key)
+            if face is None:
+                # ``_build_lateral_face`` (and its arc variant) already tries
+                # both wire orientations and falls back to a ruled surface,
+                # so interior rings (which carry the reverse XY orientation
+                # of an exterior ring around the same arc geometry) reuse
+                # the same code path without a dedicated ``_inner_lateral``
+                # flag — the orientation discovery happens in ``_try_wire``.
+                face = _build_lateral_face(e_lo, e_hi, v_left, v_right)
+                lateral_face_cache[cache_key] = face
+            out_faces.append(face)
+        return out_faces
+
+    for i, sp in enumerate(subpieces):
+        zlo, zhi = sp.z_interval
+        # When arc-detection is active for either z-plane of this sub-piece,
+        # decompose the polygon boundary into the same arc/line segments
+        # used by the horizontal faces above and below.  This makes each
+        # lateral face's bot/top boundary edge be the SAME shared TShape
+        # already used by the horizontal face, so the shell is closed and
+        # BOP doesn't need to re-discover the arc topology.
+        id_arcs_lo, min_p_lo, arc_tol_lo = arc_params_for_z(zlo, i)
+        id_arcs_hi, min_p_hi, arc_tol_hi = arc_params_for_z(zhi, i)
+        # Cohort-wide arc propagation guarantees both planes agree on
+        # whether identify_arcs is in effect; we just need to detect the
+        # segmentation once.
+        use_arcs = id_arcs_lo or id_arcs_hi
+        min_arc_points = max(min_p_lo, min_p_hi)
+        arc_tolerance = min(arc_tol_lo, arc_tol_hi)
+
+        # Exterior ring: outer lateral walls.
+        lateral_faces[i].extend(
+            _build_laterals_for_ring(
+                _ring_coords(sp.sub_polygon.exterior),
+                zlo,
+                zhi,
+                use_arcs,
+                min_arc_points,
+                arc_tolerance,
+            )
+        )
+
+        # Interior rings (holes): inner-cylindrical / inner lateral walls.
+        # Previously these were silently skipped, so any structured PolyPrism
+        # whose footprint has holes (e.g. an annulus) was missing the
+        # inner radial boundary surface in the final mesh.
+        for interior_ring in sp.sub_polygon.interiors:
+            lateral_faces[i].extend(
+                _build_laterals_for_ring(
+                    _ring_coords(interior_ring),
+                    zlo,
+                    zhi,
+                    use_arcs,
+                    min_arc_points,
+                    arc_tolerance,
+                )
+            )
+
+    # Build each sub-solid.
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    slab_meta: dict[ShapeKey, SlabMeta] = {}
+    for i, sp in enumerate(subpieces):
+        shell = TopoDS_Shell()
+        builder.MakeShell(shell)
+        bot = horiz_faces[(i, "bot")]
+        top = horiz_faces[(i, "top")]
+        laterals = lateral_faces[i]
+        for f in [bot, top, *laterals]:
+            builder.Add(shell, f)
+        solid = TopoDS_Solid()
+        builder.MakeSolid(solid)
+        builder.Add(solid, shell)
+        builder.Add(compound, solid)
+        source_slab = slab_by_source[sp.source_slab_indices[0]]
+        slab_meta[_shape_key(solid)] = SlabMeta(
+            slab_index=source_slab.source_index,
+            physical_name=source_slab.physical_name,
+            bot_face_key=_shape_key(bot),
+            top_face_key=_shape_key(top),
+            lateral_face_keys=tuple(_shape_key(f) for f in laterals),
+            keep=source_slab.mesh_bool,
+        )
+    return compound, slab_meta

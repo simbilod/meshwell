@@ -107,6 +107,140 @@ def _rotate_closed(
     return rotated
 
 
+def decompose_vertices_2d(
+    coords_2d: list[tuple[float, float]],
+    z: float,
+    point_tolerance: float,
+    identify_arcs: bool = False,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
+) -> list["DecompositionSegment"]:
+    """Decompose a 2D coordinate sequence into line and arc segments.
+
+    This is the free-function form of ``GeometryEntity.decompose_vertices``.
+    It lifts 2D coords to 3D (using ``z``) before delegating, so both the
+    structured pipeline (which works with explicit z planes) and the
+    legacy ``GeometryEntity`` callers (which carry z in the vertex tuples)
+    share the SAME arc-detection logic. This is the canonical entry point
+    for arc detection — keep all callers aligned on it so that cohort
+    construction and unstructured pre-cut produce matching OCC edges.
+
+    Args:
+        coords_2d: List of (x, y) 2D coordinates.
+        z: z-coordinate to attach to every vertex.
+        point_tolerance: Tolerance for vertex deduplication and rounding.
+        identify_arcs: Whether to attempt arc identification.
+        min_arc_points: Minimum number of points to form an arc.
+        arc_tolerance: Tolerance for circle fitting.
+
+    Returns:
+        List of DecompositionSegment objects (their ``points`` are 3D
+        with the supplied ``z``).
+    """
+    vertices_3d = [(c[0], c[1], z) for c in coords_2d]
+    return _decompose_vertices_3d(
+        vertices_3d,
+        point_tolerance=point_tolerance,
+        identify_arcs=identify_arcs,
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
+    )
+
+
+def _decompose_vertices_3d(
+    vertices: list[tuple[float, float, float]],
+    point_tolerance: float,
+    identify_arcs: bool = False,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
+) -> list["DecompositionSegment"]:
+    """Free-function form of ``GeometryEntity.decompose_vertices``.
+
+    Takes ``point_tolerance`` explicitly instead of reading it from a
+    ``GeometryEntity`` instance, so it can be called from non-entity
+    contexts (e.g., the structured EdgeRegistry).
+    """
+    vertices = _strip_consecutive_duplicates(list(vertices), point_tolerance)
+    if not vertices or len(vertices) < 2:
+        return []
+
+    if (
+        identify_arcs
+        and len(vertices) >= max(min_arc_points + 1, 4)
+        and vertices[0] == vertices[-1]
+    ):
+        seam = _find_canonical_seam(vertices)
+        vertices = _rotate_closed(vertices, seam)
+
+    if not identify_arcs or len(vertices) < min_arc_points:
+        # Fallback to simple line segments
+        return [
+            DecompositionSegment(points=[vertices[i], vertices[i + 1]], is_arc=False)
+            for i in range(len(vertices) - 1)
+        ]
+
+    segments = []
+    i = 0
+    n = len(vertices)
+    ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
+
+    while i < n - 1:
+        # Try to find an arc starting at i
+        best_arc = None
+        if i + min_arc_points <= n:
+            for j in range(i + min_arc_points, n + 1):
+                pts = np.array(vertices[i:j])
+                # Ensure points are not collinear and can be fit to a circle
+                # For simplicity, we assume the arc is in the XY plane
+                center, radius, residual = fit_circle_2d(pts[:, :2])
+
+                if residual <= arc_tolerance and radius < 1e6:
+                    # Ensure it's not a polygon with sharp corners (like a rectangle)
+                    valid_arc = True
+                    for k in range(1, len(pts) - 1):
+                        v1 = pts[k][:2] - pts[k - 1][:2]
+                        v2 = pts[k + 1][:2] - pts[k][:2]
+                        n1 = np.linalg.norm(v1)
+                        n2 = np.linalg.norm(v2)
+                        if n1 > 1e-6 and n2 > 1e-6:
+                            cos_angle = np.dot(v1, v2) / (n1 * n2)
+                            if cos_angle < 0.5:  # Turn angle > 60 degrees
+                                valid_arc = False
+                                break
+
+                    if valid_arc:
+                        # Round center and radius to consistent decimal places based on tolerance
+                        cx = round(center[0], ndigits)
+                        cy = round(center[1], ndigits)
+                        r = round(radius, ndigits)
+
+                        # Update best arc candidate for this start point
+                        best_arc = DecompositionSegment(
+                            points=vertices[i:j],
+                            is_arc=True,
+                            center=(cx, cy, vertices[i][2]),
+                            radius=r,
+                        )
+                else:
+                    # Stop expanding if fit fails
+                    break
+
+        if best_arc:
+            segments.append(best_arc)
+            # Increment i by the number of points in the arc minus 1
+            i += len(best_arc.points) - 1
+        else:
+            # Add a line segment
+            segments.append(
+                DecompositionSegment(
+                    points=[vertices[i], vertices[i + 1]], is_arc=False
+                )
+            )
+            i += 1
+
+    return segments
+
+
 def fit_circle_2d(points: np.ndarray) -> tuple[tuple[float, float], float, float]:
     """Fit a circle to 2D points using algebraic distance (least squares).
 
@@ -252,7 +386,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> int:
         """Create a GMSH surface from vertex coordinates with optional arc identification."""
@@ -343,10 +477,15 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> list[DecompositionSegment]:
         """Decompose a sequence of vertices into line segments and circular arcs.
+
+        Thin wrapper around the free function ``_decompose_vertices_3d``
+        — kept as a method for backward compatibility. New 2D callers
+        should prefer ``decompose_vertices_2d`` which lifts (x, y) +
+        z into the 3D shape this function consumes.
 
         Args:
             vertices: List of (x, y, z) coordinates
@@ -357,87 +496,13 @@ class GeometryEntity:
         Returns:
             List of DecompositionSegment objects
         """
-        vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
-        if not vertices or len(vertices) < 2:
-            return []
-
-        if (
-            identify_arcs
-            and len(vertices) >= max(min_arc_points + 1, 4)
-            and vertices[0] == vertices[-1]
-        ):
-            seam = _find_canonical_seam(vertices)
-            vertices = _rotate_closed(vertices, seam)
-
-        if not identify_arcs or len(vertices) < min_arc_points:
-            # Fallback to simple line segments
-            return [
-                DecompositionSegment(
-                    points=[vertices[i], vertices[i + 1]], is_arc=False
-                )
-                for i in range(len(vertices) - 1)
-            ]
-
-        segments = []
-        i = 0
-        n = len(vertices)
-        ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
-
-        while i < n - 1:
-            # Try to find an arc starting at i
-            best_arc = None
-            if i + min_arc_points <= n:
-                for j in range(i + min_arc_points, n + 1):
-                    pts = np.array(vertices[i:j])
-                    # Ensure points are not collinear and can be fit to a circle
-                    # For simplicity, we assume the arc is in the XY plane
-                    center, radius, residual = fit_circle_2d(pts[:, :2])
-
-                    if residual <= arc_tolerance and radius < 1e6:
-                        # Ensure it's not a polygon with sharp corners (like a rectangle)
-                        valid_arc = True
-                        for k in range(1, len(pts) - 1):
-                            v1 = pts[k][:2] - pts[k - 1][:2]
-                            v2 = pts[k + 1][:2] - pts[k][:2]
-                            n1 = np.linalg.norm(v1)
-                            n2 = np.linalg.norm(v2)
-                            if n1 > 1e-6 and n2 > 1e-6:
-                                cos_angle = np.dot(v1, v2) / (n1 * n2)
-                                if cos_angle < 0.5:  # Turn angle > 60 degrees
-                                    valid_arc = False
-                                    break
-
-                        if valid_arc:
-                            # Round center and radius to consistent decimal places based on tolerance
-                            cx = round(center[0], ndigits)
-                            cy = round(center[1], ndigits)
-                            r = round(radius, ndigits)
-
-                            # Update best arc candidate for this start point
-                            best_arc = DecompositionSegment(
-                                points=vertices[i:j],
-                                is_arc=True,
-                                center=(cx, cy, vertices[i][2]),
-                                radius=r,
-                            )
-                    else:
-                        # Stop expanding if fit fails
-                        break
-
-            if best_arc:
-                segments.append(best_arc)
-                # Increment i by the number of points in the arc minus 1
-                i += len(best_arc.points) - 1
-            else:
-                # Add a line segment
-                segments.append(
-                    DecompositionSegment(
-                        points=[vertices[i], vertices[i + 1]], is_arc=False
-                    )
-                )
-                i += 1
-
-        return segments
+        return _decompose_vertices_3d(
+            vertices,
+            point_tolerance=self.point_tolerance,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
 
     def _make_occ_points(
         self, vertices: list[tuple[float, float, float]]
@@ -451,7 +516,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> TopoDS_Wire:
         """Create an OCC wire from vertex coordinates with optional arc identification.
@@ -570,7 +635,7 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
     ) -> TopoDS_Face:
         """Create an OCC face from a wire built from the given vertices."""
@@ -592,7 +657,7 @@ class GeometryEntity:
         arc_color: str = "red",
         show_centers: bool = True,
         identify_arcs: bool = False,
-        min_arc_points: int = 4,
+        min_arc_points: int = 5,
         arc_tolerance: float = 1e-3,
         **kwargs,
     ):

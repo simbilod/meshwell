@@ -1,14 +1,19 @@
-# https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html
+# https://hatch.pypa.io/latest/config/build/
 
 [build-system]
-build-backend = "flit_core.buildapi"
-requires = ["flit_core >=3.2,<4"]
+build-backend = "hatchling.build"
+requires = ["hatchling", "hatch-vcs"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["meshwell"]
 
 [project]
 authors = [{ name = "Simon Bilodeau", email = "sb30@princeton.edu" }]
 classifiers = [
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Operating System :: OS Independent",
 ]
 dependencies = ["shapely", "gmsh", "meshio", "tqdm", "pydantic", "gdstk", "scipy", "cadquery"]
@@ -17,8 +22,8 @@ keywords = ["python"]
 license = { file = "LICENSE" }
 name = "meshwell"
 readme = "README.md"
-requires-python = ">=3.11"
-version = "2.3.6"
+requires-python = ">=3.13"
+dynamic = ["version"]
 
 [project.optional-dependencies]
 dev = [
@@ -38,9 +43,11 @@ dev = [
     "matplotlib",
     "pymmg",
     ]
-
-[tool.setuptools.packages]
-find = {}
+docs = [
+    # gdswell is the layout/stackup front-end demonstrated in
+    # docs/42_gdswell_interface.py; it pulls in klayout.
+    "gdswell",
+    ]
 
 # [project.scripts]
 # meshwell = "meshwell.cli:cli"
@@ -65,10 +72,6 @@ include = '\.pyi?$'
 line-length = 88
 target-version = ['py310']
 
-[tool.commitizen]
-name = "cz_conventional_commits"
-version = "0.1.0"
-version_files = ["pyproject.toml:version"]
 
 [tool.flake8]
 exclude = [
@@ -204,6 +207,3 @@ known-third-party = ["gmsh"]
     "D103"
 ]
 "tests/**/*.py" = ["S101", "D100", "D102", "D103"]
-
-[tool.setuptools.package-data]
-mypkg = ["*.csv", "*.yaml"]

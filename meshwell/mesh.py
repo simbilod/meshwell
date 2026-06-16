@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+import os
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from os import cpu_count
 from pathlib import Path
 
@@ -13,6 +15,8 @@ import numpy as np
 
 from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_algo(alg: int | Sequence[int]) -> tuple[int, ...]:
@@ -187,10 +191,6 @@ class Mesh:
 
     def _restore_structured_sweeps(self, blueprint: dict) -> None:
         """Analyze structured sweeps."""
-        import logging
-
-        logger = logging.getLogger(__name__)
-
         top_names = self.get_top_physical_names()
         for p_name in top_names:
             if p_name in blueprint and blueprint[p_name].get("mesh_structured", False):
@@ -404,6 +404,9 @@ class Mesh:
         global_scaling: float,
         verbosity: int,
         optimization_flags: tuple[tuple[str, int]] | None,
+        pre_2d_hook: Callable[[], None] | None = None,
+        pre_3d_hook: Callable[[], None] | None = None,
+        post_3d_hook: Callable[[], None] | None = None,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -419,7 +422,22 @@ class Mesh:
         if global_3D_algorithm == 1 and verbosity:
             gmsh.logger.start()
 
-        self.model_manager.model.mesh.generate(dim)
+        if dim >= 2 and (
+            pre_2d_hook is not None
+            or (dim >= 3 and (pre_3d_hook is not None or post_3d_hook is not None))
+        ):
+            # Call hooks at the appropriate generate boundaries
+            if pre_2d_hook is not None:
+                pre_2d_hook()
+            self.model_manager.model.mesh.generate(2)
+            if dim >= 3:
+                if pre_3d_hook is not None:
+                    pre_3d_hook()
+                self.model_manager.model.mesh.generate(3)
+                if post_3d_hook is not None:
+                    post_3d_hook()
+        else:
+            self.model_manager.model.mesh.generate(dim)
 
         if optimization_flags:
             for optimization_flag, niter in optimization_flags:
@@ -491,6 +509,9 @@ class Mesh:
         resolution_specs: dict = (),
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
+        pre_2d_hook: Callable[[], None] | None = None,
+        pre_3d_hook: Callable[[], None] | None = None,
+        post_3d_hook: Callable[[], None] | None = None,
     ) -> meshio.Mesh:
         """Process loaded geometry into mesh (no file I/O).
 
@@ -512,6 +533,9 @@ class Mesh:
             gmsh_version: GMSH version
             blueprint: mapping between entity and extrusion type
             interface_delimiter: String used to separate names in an interface
+            pre_2d_hook: Optional callable invoked immediately before generate(2)
+            pre_3d_hook: Optional callable invoked immediately before generate(3)
+            post_3d_hook: Optional callable invoked immediately after generate(3)
 
         Returns:
             meshio.Mesh: Generated mesh object
@@ -545,6 +569,9 @@ class Mesh:
                 global_scaling=global_scaling,
                 verbosity=verbosity,
                 optimization_flags=optimization_flags,
+                pre_2d_hook=pre_2d_hook,
+                pre_3d_hook=pre_3d_hook,
+                post_3d_hook=post_3d_hook,
             )
 
         if len(attempts) == 1:
@@ -598,6 +625,9 @@ def mesh(
     point_tolerance: float | None = None,
     gmsh_version: float | None = None,
     interface_delimiter: str = "___",
+    pre_2d_hook: Callable[[], None] | None = None,
+    pre_3d_hook: Callable[[], None] | None = None,
+    post_3d_hook: Callable[[], None] | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -624,6 +654,9 @@ def mesh(
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
         point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
         interface_delimiter: String used to separate names in an interface
+        pre_2d_hook: Optional callable invoked immediately before generate(2)
+        pre_3d_hook: Optional callable invoked immediately before generate(3)
+        post_3d_hook: Optional callable invoked immediately after generate(3)
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -660,11 +693,25 @@ def mesh(
             resolution_specs=resolution_specs,
             gmsh_version=gmsh_version,
             interface_delimiter=interface_delimiter,
+            pre_2d_hook=pre_2d_hook,
+            pre_3d_hook=pre_3d_hook,
+            post_3d_hook=post_3d_hook,
         )
 
         # Save to file if output file provided
         if output_file is not None:
             mesh_generator.save_to_file(output_file)
+    except Exception:
+        # Opt-in failed-mesh dump for production triage. Off by default so a
+        # failure doesn't silently write an extra file beside the user's output.
+        if output_file is not None and os.environ.get("MESHWELL_DUMP_FAILED_MESH"):
+            try:
+                debug_file = Path(output_file).with_name("debug_failed_mesh.msh")
+                logger.warning("Saving failed mesh state to %s", debug_file)
+                mesh_generator.save_to_file(str(debug_file))
+            except Exception as save_err:
+                logger.warning("Failed to save debug mesh: %s", save_err)
+        raise
     finally:
         # Finalize if we created the model -- even on failure, so gmsh
         # state doesn't leak into subsequent test runs / callers.

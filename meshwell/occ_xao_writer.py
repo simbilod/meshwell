@@ -46,10 +46,11 @@ from __future__ import annotations
 
 import tempfile
 import xml.etree.ElementTree as ET
-from itertools import combinations, product
+from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Builder
 from OCP.BRepBndLib import BRepBndLib
@@ -74,11 +75,100 @@ _DIM_TO_TOPABS = {
 _DIM_TO_XAO_ELEM = {3: "solid", 2: "face", 1: "edge", 0: "vertex"}
 _DIM_TO_XAO_GROUP = {3: "solids", 2: "faces", 1: "edges", 0: "vertices"}
 
-# Used by the spatial fallback in ``_compute_physical_groups`` when
-# TShape-identity matching fails to pair a cut face with its
-# coincident neighbour. Picks up cut faces drifted by ~mm at user
-# scale; only kicks in when identity matching produced no commons.
-_AABB_INTERFACE_TOL = 1e-2
+# MANUAL_NOTE: pass to validate tolerances and factors...
+# Default tolerance for the spatial fallback in
+# ``_compute_physical_groups`` when TShape-identity matching fails to
+# pair a cut face with its coincident neighbour. Picks up cut faces
+# whose coords drifted apart during BOP fragmenting (bounded above by
+# fragment_fuzzy_value, which defaults to point_tolerance=1e-3). The
+# 10x multiplier provides safety margin for combined shapely + BOP
+# drift. Callers should pass ``interface_aabb_tolerance`` to ``write_xao``
+# explicitly when their point_tolerance differs from the default.
+_AABB_INTERFACE_TOL_FACTOR = 10.0
+_DEFAULT_AABB_INTERFACE_TOL = _AABB_INTERFACE_TOL_FACTOR * 1e-3
+
+
+def default_interface_aabb_tolerance(point_tolerance: float) -> float:
+    """AABB interface tolerance derived from ``point_tolerance``.
+
+    The ``10x`` margin covers combined shapely + BOP drift (BOP
+    fragmenting can move coincident face coords by up to
+    ``fragment_fuzzy_value``, which defaults to ``point_tolerance``).
+    """
+    return _AABB_INTERFACE_TOL_FACTOR * point_tolerance
+
+
+def _entity_union_aabbs(
+    entity_aabbs: list[dict[int, tuple[float, ...]]],
+) -> tuple["np.ndarray", "np.ndarray"]:
+    """Per-entity union of face AABBs.
+
+    Returns:
+        union_aabbs: ``(N, 6)`` numpy array, one row per entity.
+            ``[xmin, ymin, zmin, xmax, ymax, zmax]`` over the entity's
+            face AABBs. Entities with no face AABBs get a row of NaN
+            sentinels (never read directly — gated by ``valid_mask``).
+        valid_mask: ``(N,)`` boolean array. ``False`` for entities with
+            empty face AABB sets. ``_candidate_pair_mask`` treats these
+            entities as "intersects every other entity" so they are
+            never pruned.
+    """
+    n = len(entity_aabbs)
+    union_aabbs = np.full((n, 6), np.nan, dtype=float)
+    valid_mask = np.zeros(n, dtype=bool)
+    for i, boxes in enumerate(entity_aabbs):
+        if not boxes:
+            continue
+        arr = np.array(list(boxes.values()), dtype=float)
+        union_aabbs[i, :3] = arr[:, :3].min(axis=0)
+        union_aabbs[i, 3:] = arr[:, 3:].max(axis=0)
+        valid_mask[i] = True
+    return union_aabbs, valid_mask
+
+
+def _candidate_pair_mask(
+    union_aabbs: "np.ndarray",
+    valid_mask: "np.ndarray",
+    tol: float = _DEFAULT_AABB_INTERFACE_TOL,
+) -> "np.ndarray":
+    """Return ``(M, 2)`` array of ``(i, j)`` pairs with ``i < j`` whose inflated entity AABBs overlap.
+
+    Inflation by ``tol`` on each side: two AABBs overlap iff for every
+    axis, ``xmin_i - tol < xmax_j`` AND ``xmin_j - tol < xmax_i``.
+    At ``tol == 0``, AABBs that touch at a face/edge/corner are NOT
+    considered overlapping — overlap requires strictly positive measure
+    on every axis. At ``tol > 0`` (production usage), the inflation makes
+    touching faces overlap as expected.
+
+    Entities with ``valid_mask[i] == False`` (no valid face AABBs)
+    are treated as overlapping every other entity — they appear in
+    every pair.
+
+    Pairs are returned in lexicographic ``(i, j)`` order, matching
+    ``combinations(range(N), 2)`` filtered to overlapping pairs.
+    """
+    n = union_aabbs.shape[0]
+    if n < 2:
+        return np.zeros((0, 2), dtype=int)
+    mins = union_aabbs[:, :3]  # (N, 3)
+    maxs = union_aabbs[:, 3:]  # (N, 3)
+    # overlap[i, j] = True iff inflated AABB i overlaps AABB j on all axes.
+    # Broadcasting: (N, 1, 3) vs (1, N, 3).
+    overlap_axes = (mins[:, None, :] - tol < maxs[None, :, :]) & (
+        mins[None, :, :] - tol < maxs[:, None, :]
+    )
+    overlap = overlap_axes.all(axis=2)  # (N, N)
+    # Degenerate entities (valid=False) override: they overlap everything.
+    # Set their rows AND columns to True.
+    degenerate = ~valid_mask
+    if degenerate.any():
+        overlap[degenerate, :] = True
+        overlap[:, degenerate] = True
+    # Upper triangle (i < j) — NumPy's triu returns row-major order which
+    # is lexicographic (i, j) order. ``np.argwhere`` then preserves it.
+    upper = np.triu(overlap, k=1)
+    return np.argwhere(upper)
+
 
 # ---------------------------------------------------------------------------
 # OCP-level helpers
@@ -113,15 +203,52 @@ def _shape_aabb(shape) -> tuple[float, ...] | None:
     return box.Get()
 
 
-def _aabbs_close(b1: tuple[float, ...], b2: tuple[float, ...], tol: float) -> bool:
-    """Per-corner L_inf proximity between two AABBs."""
-    return all(abs(b1[i] - b2[i]) < tol for i in range(6))
+# MANUAL_NOTE: revise use of synthetic physical group for structured tags
+# or at least revise/validate the hardcoded string used for it
+def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
+    """True if ``ent`` is a structured-pipeline bookkeeping companion only.
+
+    Structured-pipeline post-pass emits two flavours of entities carrying
+    a synthetic ``__cohort_<ci>__slab_<si>[...]`` name:
+
+    1. Real cohort sub-solids: their ``physical_name`` is a tuple where
+       the synthetic name is **appended** to the user's real name
+       (e.g. ``("lower", "__cohort_0__slab_0")``). These are real
+       geometry — they own faces, can interface with neighbours, and
+       must produce ``A___B`` / ``A___None`` groups normally.
+
+    2. Synthetic 2D face annotators: their ``physical_name`` consists
+       **only** of a synthetic name (e.g. ``("__cohort_0__slab_0__top",)``).
+       They duplicate the parent solid's face TShape so the orchestrator
+       can resolve face → gmsh tag by physical-group name lookup after
+       gmsh.merge. They must not affect interface or boundary detection
+       — purely an annotator on an existing face.
+
+    We use "all names start with ``__cohort_``" rather than "any" so the
+    real sub-solid (flavour 1) is treated as real geometry while the
+    annotator (flavour 2) is correctly identified as bookkeeping-only.
+    """
+    return bool(ent.physical_name) and all(
+        n.startswith("__cohort_") for n in ent.physical_name
+    )
+
+
+def _filter_real_names(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Drop synthetic ``__cohort_*`` names; keep the user-visible names only.
+
+    Used when forming ``A___B`` interface group names from a pair of real
+    cohort sub-solids: their ``physical_name`` tuple has a synthetic name
+    appended, but we only want the user-visible ``A___B``, not also the
+    spurious ``A_____cohort_X``, ``__cohort_X___B``, ``__cohort_X_____cohort_Y``.
+    """
+    return tuple(n for n in names if not n.startswith("__cohort_"))
 
 
 def _compute_physical_groups(
     entities: list[OCCLabeledEntity],
     interface_delimiter: str,
     boundary_delimiter: str,
+    interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
 ) -> dict[tuple[int, str], list]:
     """OCP reconstruction of ``tag_entities``/``tag_interfaces``/``tag_boundaries``.
 
@@ -184,8 +311,44 @@ def _compute_physical_groups(
     #    so kept neighbours can name boundaries shared with helper
     #    (keep=False) entities. Pairs where both sides are keep=False have
     #    no shape in the emitted BREP and would reference phantom topology.
+
+    # Pre-compute AABBs once per entity.
+    # Keyed by tshape_id; None when the shape's bbox is void.
+    entity_aabbs: list[dict[int, tuple[float, ...]]] = []
+    for i in range(len(entities)):
+        boxes: dict[int, tuple[float, ...]] = {}
+        for sid, face in entity_boundary[i].items():
+            box = _shape_aabb(face)
+            if box is not None:
+                boxes[sid] = box
+        entity_aabbs.append(boxes)
+
+    # Pre-stack each entity's AABBs into a numpy array for vectorized
+    # proximity matching in the fallback below. ``entity_sids[i]`` is
+    # the sid-in-array-order list; entity_aabb_arr[i] is the (F, 6) array.
+    entity_sids: list[list[int]] = []
+    entity_aabb_arr: list[np.ndarray] = []
+    for boxes in entity_aabbs:
+        sids = list(boxes.keys())
+        entity_sids.append(sids)
+        entity_aabb_arr.append(
+            np.array([boxes[s] for s in sids], dtype=float)
+            if sids
+            else np.zeros((0, 6), dtype=float)
+        )
+
     entity_interface_ids: list[set[int]] = [set() for _ in entities]
-    for (i1, ent1), (i2, ent2) in combinations(enumerate(entities), 2):
+
+    # Prune pairs whose entity-level AABBs cannot overlap.
+    _union_aabbs, _valid_mask = _entity_union_aabbs(entity_aabbs)
+    _candidate_pairs = _candidate_pair_mask(
+        _union_aabbs, _valid_mask, interface_aabb_tolerance
+    )
+    for i1, i2 in _candidate_pairs:
+        i1 = int(i1)
+        i2 = int(i2)
+        ent1 = entities[i1]
+        ent2 = entities[i2]
         if ent1.dim <= 0 or ent2.dim <= 0:
             continue
         bid1 = set(entity_boundary[i1].keys())
@@ -194,33 +357,79 @@ def _compute_physical_groups(
 
         # Spatial AABB fallback: cut faces that drifted apart in
         # TShape identity but still occupy the same region. Only runs
-        # when identity-based matching produced nothing.
-        if not common and entity_boundary[i1] and entity_boundary[i2]:
-            b2_boxes: dict[int, tuple[float, ...]] = {}
-            for sid2, f2 in entity_boundary[i2].items():
-                box = _shape_aabb(f2)
-                if box is not None:
-                    b2_boxes[sid2] = box
-            for sid1, f1 in entity_boundary[i1].items():
-                box1 = _shape_aabb(f1)
-                if box1 is None:
+        # when identity-based matching produced nothing. Vectorized
+        # with numpy: for each face on entity 1, compute the L_inf
+        # per-corner distance to every face on entity 2 in one shot,
+        # then pick the first index whose distance is within tolerance.
+        # When an AABB match is found, sid1 (entity 1's id) and sid2
+        # (entity 2's id) are distinct because BOP produced separate
+        # TShapes for the coincident faces. ``common`` carries sid1 so
+        # downstream interface assembly works on entity 1's leaves;
+        # ``i2_matched_sids`` tracks sid2 so entity 2's exterior pass
+        # correctly excludes the matched face from its ``___None`` group.
+        i2_matched_sids: set[int] = set()
+        if not common and entity_aabbs[i1] and entity_aabbs[i2]:
+            arr2 = entity_aabb_arr[i2]
+            sids2 = entity_sids[i2]
+            for sid1, b1 in entity_aabbs[i1].items():
+                b1_arr = np.asarray(b1, dtype=float)
+                # Per-row L_inf corner distance to b1 across all of entity 2.
+                dists = np.abs(arr2 - b1_arr).max(axis=1)
+                matches = np.where(dists < interface_aabb_tolerance)[0]
+                if matches.size == 0:
                     continue
-                for sid2, b2 in b2_boxes.items():
-                    if _aabbs_close(box1, b2, _AABB_INTERFACE_TOL):
-                        common.add(sid1)
-                        entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
-                        break
+                # Preserve "pick first match by sid-array order" semantics
+                # for determinism.
+                sid2 = sids2[int(matches[0])]
+                common.add(sid1)
+                i2_matched_sids.add(sid2)
+                entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
 
         if not common:
             continue
+        # Purely-synthetic structured-pipeline 2D annotators duplicate the
+        # parent solid's face TShape so the orchestrator can name-resolve
+        # ``__cohort_X__slab_Y__role`` -> gmsh face tag after merge. They
+        # are bookkeeping companions, not real geometry: they must NOT
+        # consume their parent's exterior boundary faces (otherwise
+        # ``A___None`` is empty), and they must NOT contribute to "shared
+        # between A and B" interface detection (otherwise the natural
+        # ``A___B`` interface gets attributed to ``A___annotator`` and
+        # the real ``A___B`` is never emitted).
+        #
+        # Real cohort sub-solids ALSO carry a synthetic name appended to
+        # their tuple (e.g. ``("lower", "__cohort_0__slab_0")``) but they
+        # are real geometry — their interfaces still need to be detected
+        # normally. ``_is_purely_synthetic`` distinguishes the two flavours.
+        if _is_purely_synthetic(ent1) or _is_purely_synthetic(ent2):
+            continue
         entity_interface_ids[i1].update(common)
+        # For TShape-identity matches, ``common`` ⊆ entity 2's bids
+        # (it's ``bid1 & bid2``) so adding it covers entity 2. For
+        # AABB-resolved matches, the entity 2-side sids live in
+        # ``i2_matched_sids`` because sid1 != sid2 there.
         entity_interface_ids[i2].update(common)
+        entity_interface_ids[i2].update(i2_matched_sids)
         if not (ent1.keep or ent2.keep):
             continue
-        if ent1.physical_name == ent2.physical_name:
+        # Skip synthetic names from the cross product: a cohort sub-solid
+        # named ``("lower", "__cohort_0__slab_0")`` should yield the user
+        # ``lower___upper`` interface only, not ``__cohort_0__slab_0___upper``.
+        # Fall back to the full tuple if filtering left nothing — only
+        # happens for purely-synthetic pairs, which we skipped above.
+        # MANUAL_NOTE: structured name conventions
+        names1 = _filter_real_names(ent1.physical_name) or ent1.physical_name
+        names2 = _filter_real_names(ent2.physical_name) or ent2.physical_name
+        # Two cohort sub-solids from the same user entity (e.g. ``b``
+        # split into two slabs) share an internal slab boundary face;
+        # that's an interior face of ``b``, not a ``b___b`` group.
+        # Compare on the real-name view so the synthetic appendix
+        # doesn't fool the same-entity check.
+        if names1 == names2:
             continue
         # Internal "iface" helpers (named e.g. ``oxide_iface``) carry their
         # own physical_name and should not also be glued to a neighbour pair.
+        # MANUAL_NOTE: structured name conventions
         if any("iface" in n for n in ent1.physical_name + ent2.physical_name):
             continue
         common_shapes = [entity_boundary[i1][bid] for bid in common]
@@ -229,7 +438,7 @@ def _compute_physical_groups(
         # entity matches a top-dim entity's face, both are FACEs (dim=2)
         # even though ent.dim differs.
         interface_dim = 2 if common_shapes[0].ShapeType() == TopAbs_FACE else 1
-        for n1, n2 in product(ent1.physical_name, ent2.physical_name):
+        for n1, n2 in product(names1, names2):
             name = f"{n1}{interface_delimiter}{n2}"
             groups.setdefault((interface_dim, name), []).extend(common_shapes)
 
@@ -239,6 +448,12 @@ def _compute_physical_groups(
     lower_dim_ids: set[int] = set()
     for ent, leaves in zip(entities, entity_leaves):
         if ent.dim < max_dim:
+            # Purely-synthetic structured-pipeline 2D annotators tag the
+            # same TShape as their user-visible parent; they must not
+            # steal those faces out of the parent's ``___None`` exterior
+            # boundary group.
+            if _is_purely_synthetic(ent):
+                continue
             for leaf in leaves:
                 lower_dim_ids.add(_HASHER(leaf))
 
@@ -269,6 +484,7 @@ def write_xao(
     model_name: str = "meshwell",
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
+    interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
 ) -> None:
     """Serialize ``entities`` into a self-contained XAO file.
 
@@ -278,6 +494,11 @@ def write_xao(
         model_name: XAO ``<geometry name=>`` value.
         interface_delimiter: Separator for ``A___B`` interface group names.
         boundary_delimiter: Stand-in for "no neighbour" in ``A___None``.
+        interface_aabb_tolerance: L_inf per-corner distance threshold used
+            by the spatial fallback when TShape-identity matching produces
+            no shared boundaries. Should be at least the BOP
+            ``fragment_fuzzy_value``; recommended ``10 * point_tolerance``
+            for safety against combined shapely + BOP drift.
 
     keep=False entities are **not** serialized into the BREP -- only
     their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
@@ -308,6 +529,7 @@ def write_xao(
 
     # OCP's BRepTools only exposes Write to a file path (no stream API), so
     # round-trip through a temp file to get the BREP text for inline CDATA.
+    # MANUAL_NOTE: probably not optimal
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".brep", delete=False) as tf:
         tf_path = Path(tf.name)
     try:
@@ -316,6 +538,7 @@ def write_xao(
     finally:
         tf_path.unlink(missing_ok=True)
 
+    # MANUAL_NOTE: better validators
     if "]]>" in brep_text:
         raise ValueError("BREP text contains ']]>' sequence, cannot embed in XAO CDATA")
 
@@ -323,7 +546,10 @@ def write_xao(
     TopExp.MapShapes_s(brep_compound, shape_reference_map)
 
     physical_groups = _compute_physical_groups(
-        entities, interface_delimiter, boundary_delimiter
+        entities,
+        interface_delimiter,
+        boundary_delimiter,
+        interface_aabb_tolerance=interface_aabb_tolerance,
     )
 
     # Build per-dim topology index covering every shape any group references.

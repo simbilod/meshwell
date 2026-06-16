@@ -175,7 +175,20 @@ class ModelManager:
         """
         import tempfile
 
-        from meshwell.occ_xao_writer import write_xao
+        from meshwell.occ_xao_writer import (
+            default_interface_aabb_tolerance,
+            write_xao,
+        )
+
+        # Derive AABB interface tolerance from point_tolerance unless the
+        # caller already supplied one.
+        if (
+            "interface_aabb_tolerance" not in write_xao_kwargs
+            and self.point_tolerance is not None
+        ):
+            write_xao_kwargs[
+                "interface_aabb_tolerance"
+            ] = default_interface_aabb_tolerance(self.point_tolerance)
 
         self.ensure_initialized("temp")
         with tempfile.TemporaryDirectory() as tmpdir:

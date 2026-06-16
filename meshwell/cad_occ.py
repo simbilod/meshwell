@@ -70,6 +70,7 @@ class OCCLabeledEntity:
     keep: bool
     dim: int
     mesh_order: float | None = None
+    _is_cohort: bool = False
 
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
@@ -153,6 +154,10 @@ class CAD_OCC:
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
         )
+        # Set by the final fragment pass in ``_fragment_all`` so callers (e.g.
+        # the orchestrator's cohort-shell check) can query ``Modified()``.
+        # Stays None when only ``process_entities_cut_only`` runs.
+        self.last_fragment_builder: BOPAlgo_Builder | None = None
 
     def _get_shape_dimension(self, shape: TopoDS_Shape) -> int:
         """Infer dimension from the first non-empty TopAbs class."""
@@ -274,7 +279,14 @@ class CAD_OCC:
         index: int,
         entity_obj: Any,
     ) -> OCCLabeledEntity:
-        """Instantiate a single entity into an OCC shape."""
+        """Instantiate a single entity into an OCC shape.
+
+        Compounds are flattened to their constituent dim-level
+        sub-shapes so BOPAlgo_Builder.Modified() in fragment_all
+        can track per-sub-shape provenance. Required for the
+        structured pipeline's cohort compound (multiple sub-solids
+        per cohort).
+        """
         shape = entity_obj.instanciate_occ()
         dim = getattr(entity_obj, "dimension", None)
         if dim is None:
@@ -282,13 +294,23 @@ class CAD_OCC:
         physical_name = entity_obj.physical_name
         if isinstance(physical_name, str):
             physical_name = (physical_name,)
+        # Entities that set keep_compound_for_bop=True (e.g. _CohortEntity)
+        # must be passed to BOPAlgo_Builder as a single compound argument so
+        # that BOP does not fuse their internal sub-solids (which would occur
+        # if the sub-solids share TShape faces and are added as separate args).
+        keep_compound = getattr(entity_obj, "keep_compound_for_bop", False)
+        if keep_compound and shape is not None:
+            shapes = [shape]
+        else:
+            shapes = self._unwrap_shape(shape, dim) if shape is not None else []
         return OCCLabeledEntity(
-            shapes=[shape],
+            shapes=shapes,
             physical_name=physical_name,
             index=index,
             keep=getattr(entity_obj, "mesh_bool", True),
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
+            _is_cohort=getattr(entity_obj, "is_cohort", False),
         )
 
     def _fragment_all(
@@ -301,10 +323,17 @@ class CAD_OCC:
         Each entity's ``shapes`` list is replaced with the fragment
         pieces it owns. Matches ``gmsh.model.occ.fragment`` + mesh_order
         post-processing semantically.
+
+        The last ``BOPAlgo_Builder`` instance is stashed on
+        ``self.last_fragment_builder`` so callers (e.g. the orchestrator's
+        post-pass shell-invariance validator) can query
+        ``builder.Modified(shape)`` after the BOP runs.
         """
         if not entities:
+            self.last_fragment_builder = None
             return []
         if len(entities) == 1:
+            self.last_fragment_builder = None
             return entities
 
         builder = BOPAlgo_Builder()
@@ -364,12 +393,16 @@ class CAD_OCC:
         for key, ent_idx in owners.items():
             entities[ent_idx].shapes.append(piece_shapes[key])
 
+        # Stash the builder so callers can query Modified() post-BOP.
+        self.last_fragment_builder = builder
+
         return entities
 
     def process_entities_cut_only(
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        prepared: bool = False,
     ) -> list[OCCLabeledEntity]:
         """Run the OCP-side prepare + sort + instantiate + sequential-cut phase.
 
@@ -377,21 +410,29 @@ class CAD_OCC:
         post-cut shapes but no piece-ownership reassignment has happened.
         This is the bridge point used by the gmsh-fragment hand-off, where
         gmsh re-fragments the cut shapes and runs its own tagging pipeline.
+
+        When ``prepared=True`` the caller has already invoked
+        :func:`meshwell.cad_common.prepare_entities` on the list (e.g. the
+        orchestrator runs it BEFORE the structured pre-pass so the
+        cohort compound is built from perturbed XY). In that case the
+        internal call is skipped; ``prepare_entities`` is NOT idempotent.
         """
         if not entities_list:
             return []
 
-        # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
-        # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
-        # resolved strip is wide enough for non-degenerate panels (at
-        # least 2*point_tolerance per side). Without this override OCC
-        # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
-        # produce zero-area panels at user scale.
-        prepare_entities(
-            entities_list,
-            perturbation=self.perturbation,
-            resolve_snap=max(self.perturbation, self.point_tolerance),
-        )
+        # MANUAL_NOTE: better place to apply the optional pre-cut buffer?
+        if not prepared:
+            # ``resolve_snap`` controls the InterfaceTag snap distance. Mirror
+            # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
+            # resolved strip is wide enough for non-degenerate panels (at
+            # least 2*point_tolerance per side). Without this override OCC
+            # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
+            # produce zero-area panels at user scale.
+            prepare_entities(
+                entities_list,
+                perturbation=self.perturbation,
+                resolve_snap=max(self.perturbation, self.point_tolerance),
+            )
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))
@@ -402,6 +443,9 @@ class CAD_OCC:
             )
         )
 
+        # MANUAL_NOTE: oscillating back-and-forth between lazy (partial functions)
+        # or passing already-instanciated entities.
+        # Leaning toward lazy, since more options for under-the-hood parallelization
         instantiated: list[OCCLabeledEntity | None] = [None] * len(entities_list)
         for orig_idx, ent in tqdm(
             indexed,
@@ -419,6 +463,8 @@ class CAD_OCC:
             # cutting against them would cause BRepAlgoAPI_Cut to split
             # the object's faces along the tool boundary even when no
             # material is removed (OCC always performs a full BOP).
+            # MANUAL_NOTE: investigate returning cut object if cut result is None
+            # instead of bbox checks (although we have made them cheap)
             obj_bboxes = [
                 b for s in labeled.shapes if (b := self._shape_bbox(s)) is not None
             ]
@@ -431,6 +477,20 @@ class CAD_OCC:
                     continue
                 p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
                 if p_ord >= l_ord:
+                    continue
+                # SKIP: if either side is a cohort, the cut is unsafe and
+                # unnecessary. Cohort sub-solids are OCC-invalid (built
+                # bottom-up with shared TShapes); BRepAlgoAPI_Cut silently
+                # produces empty results on them. By design cohorts are
+                # disjoint in 3D from non-cohorts (enforced by
+                # validate_no_volumetric_cohort_overlap), so the cut would
+                # be a no-op in volume but corrupts via fuzzy. fragment_all
+                # handles their boundary-plane merging cleanly.
+                if prev._is_cohort or labeled._is_cohort:
+                    # MANUAL_NOTE: don't do this silently, log it?
+                    # MANUAL_NOTE: treat cohort hull as its own solid to cut
+                    # unstructured around? Then only need to validate higher
+                    # priority cohort mesh order
                     continue
                 for ts in prev.shapes:
                     tb = self._shape_bbox(ts)
@@ -445,6 +505,7 @@ class CAD_OCC:
                     # silently split the object into multiple SOLIDs and
                     # produce duplicate face TShapes that prevent
                     # downstream meshing.
+                    # MANUAL_NOTE: see note about cut --> None
                     if not any(
                         self._shapes_actually_overlap(s, ts) for s in labeled.shapes
                     ):
@@ -461,6 +522,8 @@ class CAD_OCC:
                 # large bodies like a substrate cut against ~10
                 # metal+helper bodies, even though the same body against
                 # each tool individually retains 1 SOLID per cut.
+                # MANUAL_NOTE: need to revisit, an advantage of raw OCP
+                # is parallelization...
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
                     try:
@@ -493,6 +556,7 @@ class CAD_OCC:
         self,
         entities_list: list[Any],
         progress_bars: bool = False,
+        prepared: bool = False,
     ) -> list[OCCLabeledEntity]:
         """Instantiate, sequentially cut, then fragment all entities.
 
@@ -514,8 +578,9 @@ class CAD_OCC:
         interface-naming pass; the writer itself excludes their bodies
         from the emitted BREP.
         """
+        # MANUAL_NOTE: move pre-pass buffer and ordering here?
         labeled_entities = self.process_entities_cut_only(
-            entities_list, progress_bars=progress_bars
+            entities_list, progress_bars=progress_bars, prepared=prepared
         )
         if not labeled_entities:
             return []
@@ -530,13 +595,21 @@ def cad_occ(
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,
     perturbation: float | None = None,
-) -> list[OCCLabeledEntity]:
+    return_processor: bool = False,
+    prepared: bool = False,
+) -> list[OCCLabeledEntity] | tuple[list[OCCLabeledEntity], CAD_OCC]:
     """Utility function for OCC-based CAD processing.
 
     Mirrors :func:`meshwell.cad_gmsh.cad_gmsh`'s signature (minus the
     gmsh-specific ``model`` / ``filename`` / tagging kwargs); the result
     feeds :func:`meshwell.occ_xao_writer.write_xao` to produce a tagged
     XAO gmsh can load.
+
+    When ``return_processor`` is True the call returns
+    ``(entities, processor)`` so callers can inspect
+    ``processor.last_fragment_builder`` and query ``Modified()`` on
+    pre-BOP shapes (used by the structured shell-invariance validator).
+    See :class:`CAD_OCC` for the rest of the parameter semantics.
     """
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
@@ -545,4 +618,10 @@ def cad_occ(
         fragment_fuzzy_value=fragment_fuzzy_value,
         perturbation=perturbation,
     )
-    return processor.process_entities(entities_list, progress_bars=progress_bars)
+    out = processor.process_entities(
+        entities_list, progress_bars=progress_bars, prepared=prepared
+    )
+    # MANUAL_NOTE: unify these two return values?
+    if return_processor:
+        return out, processor
+    return out

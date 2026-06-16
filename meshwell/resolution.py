@@ -4,7 +4,7 @@ import warnings
 from typing import Any, Literal
 
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Mapping from apply_to sub-types to gmsh entity type strings.
 # To add more curve subtypes in the future, simply add entries here
@@ -86,7 +86,7 @@ class ConstantInField(ResolutionSpec):
 
     resolution: float
 
-    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int:  # noqa: ARG002
+    def apply(self, model: Any, entities_mass_dict, **kwargs) -> int | None:  # noqa
         """Apply constant resolution field to the model.
 
         Creates a MathEval field with constant resolution and restricts it
@@ -465,3 +465,25 @@ class DirectSizeSpecification(ResolutionSpec):
             return restrict_field
 
         return field_index
+
+
+class StructuredExtrusionResolutionSpec(ResolutionSpec):
+    """Number of z-layers per structured slab for wedge stamping.
+
+    Attached to a structured PolyPrism's physical_name via the
+    standard ``resolution_specs={name: [spec, ...]}`` dict passed to
+    generate_mesh. Read by meshwell.structured.wedge at mesh time;
+    has no gmsh-field apply() because wedge stamping doesn't go
+    through the mesh-size field machinery.
+    """
+
+    apply_to: Literal["volumes"] = "volumes"
+    n_layers: int = Field(default=1, ge=1)
+
+    def apply(self, **_kwargs) -> None:
+        """No-op.
+
+        StructuredExtrusionResolutionSpec is consumed by the wedge hook,
+        not by the gmsh mesh-size field machinery.
+        """
+        return
