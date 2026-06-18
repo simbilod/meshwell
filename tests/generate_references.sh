@@ -43,7 +43,7 @@ echo "[generate_references] Generating references from commit: $REF_COMMIT"
 echo "[generate_references] Reference source: $REF_REPO"
 
 # Create and activate venv
-uv venv --python=3.11
+uv venv --python=3.13
 # shellcheck source=/dev/null
 source .venv/bin/activate
 
