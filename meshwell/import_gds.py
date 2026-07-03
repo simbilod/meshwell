@@ -5,16 +5,13 @@ from shapely.ops import unary_union
 
 
 def gdstk_to_shapely(cell, layer_tuple):
-    """Convert GDSTK polygons to Shapely geometries."""
+    """Convert GDSTK polygons (hierarchy- and path-resolved) to Shapely geometries."""
     polygons = []
     layer, datatype = layer_tuple
 
-    # Process this layer's polygons in the cell
-    for polygon in cell.polygons:
-        if polygon.layer != layer or polygon.datatype != datatype:
-            continue
-
-        # Convert points to float tuples
+    # depth=None descends through all referenced cells; include_paths=True
+    # (gdstk default) converts FlexPath/RobustPath to polygons.
+    for polygon in cell.get_polygons(depth=None, layer=layer, datatype=datatype):
         points = [(float(x), float(y)) for x, y in polygon.points]
 
         if len(points) >= 3:
@@ -46,15 +43,18 @@ def read_gds_layers(gds_file, cell_name=None, layers=None):
         if cell is None:
             raise ValueError(f"Cell '{cell_name}' not found in GDS file")
     else:
-        cell = library.top_level()[0]
+        top_cells = library.top_level()
+        if not top_cells:
+            raise ValueError(f"No top-level cell found in GDS file '{gds_file}'")
+        cell = top_cells[0]
 
-    # Get all layers if none specified
+    # Get all layers if none specified — from the fully resolved hierarchy,
+    # so subcell-only and path-only layers are detected too.
     if layers is None:
-        layers = set()
-        for polygon in cell.polygons:
-            layers.add((polygon.layer, polygon.datatype))
-        for path in cell.paths:
-            layers.add((path.layer, path.datatype))
+        layers = {
+            (polygon.layer, polygon.datatype)
+            for polygon in cell.get_polygons(depth=None)
+        }
 
     # Process each layer
     layer_to_multipolygons = {}

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import gdstk
+import pytest
 import shapely.geometry as sg
 
 from meshwell.import_gds import read_gds_layers
@@ -102,6 +103,41 @@ def test_gds_to_shapely():
         # Cleanup
         if test_file.exists():
             test_file.unlink()
+
+
+def _write_hierarchical_gds(path):
+    lib = gdstk.Library()
+    child = lib.new_cell("CHILD")
+    child.add(gdstk.rectangle((0, 0), (1, 1), layer=1, datatype=0))
+    top = lib.new_cell("TOP")
+    top.add(gdstk.rectangle((2, 0), (3, 1), layer=1, datatype=0))
+    top.add(gdstk.Reference(child, origin=(5, 5)))
+    top.add(gdstk.FlexPath([(0, 3), (4, 3)], 0.5, layer=2, datatype=0))
+    lib.write_gds(path)
+    return path
+
+
+def test_subcell_polygons_are_imported(tmp_path):
+    gds = _write_hierarchical_gds(tmp_path / "hier.gds")
+    layers = read_gds_layers(gds, cell_name="TOP")
+    geom = layers[(1, 0)]
+    # own rectangle (1.0) + referenced child rectangle (1.0)
+    assert geom.area == pytest.approx(2.0, rel=1e-6)
+
+
+def test_path_layers_are_not_empty(tmp_path):
+    gds = _write_hierarchical_gds(tmp_path / "hier.gds")
+    layers = read_gds_layers(gds, cell_name="TOP")
+    assert (2, 0) in layers
+    assert layers[(2, 0)].area == pytest.approx(4 * 0.5, rel=1e-2)
+
+
+def test_missing_top_cell_raises_value_error(tmp_path):
+    lib = gdstk.Library()
+    empty = tmp_path / "empty.gds"
+    lib.write_gds(empty)
+    with pytest.raises(ValueError, match="top-level"):
+        read_gds_layers(empty)
 
 
 if __name__ == "__main__":
