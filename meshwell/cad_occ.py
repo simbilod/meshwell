@@ -24,9 +24,9 @@ time while still using the shared TShapes to name
 ``occ.remove(..., recursive=True)`` at model level for the same
 user-visible result.
 
-Ownership semantics match :func:`meshwell.cad_gmsh._resolve_piece_ownership`
-exactly; tests that pin one pin the other. Both backends share the same
-contract:
+Ownership is resolved by :func:`meshwell.cad_common.resolve_piece_ownership`,
+the literal same function both backends import; tests that pin one pin the
+other. Both backends share the same contract:
 
 * Same-mesh_order entities are not cut against each other pre-fragment;
   the final fragment resolves ownership of the shared overlap by lowest

@@ -535,7 +535,7 @@ class GeometryEntity:
                 exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
             elif on_empty_cut == "warn_drop":
                 warnings.warn(
-                    f"Hole cut annihilated surface for PolySurface "
+                    f"Hole cut annihilated surface for {type(self).__name__} "
                     f"{self.physical_name}; this surface is DROPPED.",
                     stacklevel=2,
                 )
