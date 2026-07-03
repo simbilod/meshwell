@@ -24,6 +24,7 @@ OCC ownership model also pin this one.
 """
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
@@ -449,8 +450,12 @@ class CAD_GMSH:
                         self.model_manager.sync_model()
                         labeled_ent.dimtags = out_dimtags
                     except Exception as e:
-                        if progress_bars:
-                            print(f"Warning: Cut failed for entity {orig_idx}: {e}")
+                        warnings.warn(
+                            f"Cut failed for entity {orig_idx} "
+                            f"({labeled_ent.physical_name}): {e}; proceeding with "
+                            f"un-cut dimtags.",
+                            stacklevel=2,
+                        )
 
             instantiated_entities.append(labeled_ent)
 
