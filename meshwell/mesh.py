@@ -166,6 +166,52 @@ class Mesh:
                     "Proceeding with unstructured or recombined fallback."
                 )
 
+    def _append_interface_group(
+        self,
+        entities: _MeshEntity,
+        group_name: str,
+        boundary_delimiter: str,
+        suffix: str | None = None,
+    ) -> None:
+        """Route one interface/boundary physical group onto ``entities``.
+
+        Shared body of the two interface-recovery branches in
+        :meth:`_recover_labels_from_cad`. For every sub-dimensional tag in
+        ``group_name`` it raises the entity's dimension (when still unknown)
+        and records the tag as an interface (or a mesh-edge boundary).
+
+        Args:
+            entities: The entity accumulating interfaces/boundaries.
+            group_name: Physical group name ``"A___B"`` to pull dimtags from.
+            boundary_delimiter: Sentinel marking exterior "name___None" groups.
+            suffix: The neighbour side of the interface name when
+                ``physical_name`` is the LEFT part. When it equals
+                ``boundary_delimiter`` the group is an exterior boundary and
+                its tags go to ``mesh_edge_name_interfaces``. Pass ``None``
+                (the default) to disable that routing -- used by the branch
+                where ``physical_name`` is the RIGHT part, whose neighbour
+                (the LEFT part) is provably never the boundary sentinel.
+        """
+        dimtags = self.get_physical_dimtags(group_name)
+        if not dimtags:
+            return
+        for i_dim, i_tag in dimtags:
+            if i_dim < entities.dim or entities.dim == -1:
+                if entities.dim == -1:
+                    # Raise the (still unknown) dimension; ``max`` with the
+                    # already-raised value guarantees a prior raise is never
+                    # discarded (the pre-refactor second branch used
+                    # ``max(entities.dim, ...)`` and could lower it).
+                    entities._explicit_dim = max(entities._explicit_dim or 0, i_dim + 1)
+
+                if suffix is not None and suffix == boundary_delimiter:
+                    entities.mesh_edge_name_interfaces.append(i_tag)
+                else:
+                    entities.interfaces.append(i_tag)
+
+                # Always treat interfaces as boundaries for refinement
+                entities.boundaries.append(i_tag)
+
     def _recover_labels_from_cad(
         self,
         resolution_specs: dict,
@@ -221,38 +267,31 @@ class Mesh:
                 parts = other_p_name.split(interface_delimiter)
                 if len(parts) == 2:
                     if parts[0] == physical_name:
-                        suffix = parts[1]
-                        dimtags = self.get_physical_dimtags(other_p_name)
-                        if dimtags:
-                            for i_dim, i_tag in dimtags:
-                                if i_dim < entities.dim or entities.dim == -1:
-                                    if entities.dim == -1:
-                                        entities._explicit_dim = max(
-                                            entities._explicit_dim or 0, i_dim + 1
-                                        )
-
-                                    if suffix == boundary_delimiter:
-                                        entities.mesh_edge_name_interfaces.append(i_tag)
-                                    else:
-                                        entities.interfaces.append(i_tag)
-
-                                    # Always treat interfaces as boundaries for refinement
-                                    entities.boundaries.append(i_tag)
-
+                        # physical_name is the LEFT side; the RIGHT side
+                        # (parts[1]) is the neighbour and may be the
+                        # boundary sentinel for exterior "A___None" groups,
+                        # so pass it as ``suffix`` to enable mesh-edge routing.
+                        self._append_interface_group(
+                            entities,
+                            other_p_name,
+                            boundary_delimiter,
+                            suffix=parts[1],
+                        )
                     elif parts[1] == physical_name:
-                        dimtags = self.get_physical_dimtags(other_p_name)
-                        if dimtags:
-                            for i_dim, i_tag in dimtags:
-                                if i_dim < entities.dim or entities.dim == -1:
-                                    if entities.dim == -1:
-                                        entities._explicit_dim = max(
-                                            entities.dim, i_dim + 1
-                                        )
-
-                                    entities.interfaces.append(i_tag)
-
-                                    # Always treat interfaces as boundaries for refinement
-                                    entities.boundaries.append(i_tag)
+                        # physical_name is the RIGHT side. The LEFT side
+                        # (parts[0]) is always a real entity name: interface
+                        # groups are built from ``sorted((real, real))`` and
+                        # the ``boundary_delimiter`` ("None") sentinel is only
+                        # ever emitted as the parts[1] suffix of "name___None"
+                        # exterior groups (see cad_gmsh.py / occ_xao_writer.py).
+                        # So there is no boundary routing here -- pass no
+                        # suffix. The asymmetry with the branch above is
+                        # intentional (a genuine interface with a real entity
+                        # literally named "None" must stay in ``interfaces``,
+                        # not be misrouted as an exterior boundary).
+                        self._append_interface_group(
+                            entities, other_p_name, boundary_delimiter
+                        )
 
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities
