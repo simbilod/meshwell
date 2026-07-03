@@ -11,7 +11,6 @@ from pathlib import Path
 
 import gmsh
 import meshio
-import numpy as np
 
 from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
@@ -105,41 +104,6 @@ class Mesh:
         if gmsh_version is not None:
             gmsh.option.setNumber("Mesh.MshFileVersion", gmsh_version)
         self.model_manager.sync_model()
-
-    def _apply_periodic_boundaries(
-        self, periodic_entities: list[tuple[str, str]]
-    ) -> None:
-        """Apply periodic boundary conditions."""
-        mapping = {
-            self.model_manager.model.getPhysicalName(dimtag[0], dimtag[1]): dimtag
-            for dimtag in self.model_manager.model.getPhysicalGroups()
-        }
-
-        for label1, label2 in periodic_entities:
-            if label1 not in mapping or label2 not in mapping:
-                continue
-
-            self._set_periodic_pair(mapping, label1, label2)
-
-    def _set_periodic_pair(self, mapping: dict, label1: str, label2: str) -> None:
-        """Set up periodic boundary pair."""
-        tags1 = self.model_manager.model.getEntitiesForPhysicalGroup(*mapping[label1])
-        tags2 = self.model_manager.model.getEntitiesForPhysicalGroup(*mapping[label2])
-
-        vector1 = self.model_manager.model.occ.getCenterOfMass(
-            mapping[label1][0], tags1[0]
-        )
-        vector2 = self.model_manager.model.occ.getCenterOfMass(
-            mapping[label1][0], tags2[0]
-        )
-        vector = np.subtract(vector1, vector2)
-
-        self.model_manager.model.mesh.setPeriodic(
-            mapping[label1][0],
-            tags1,
-            tags2,
-            [1, 0, 0, vector[0], 0, 1, 0, vector[1], 0, 0, 1, vector[2], 0, 0, 0, 1],
-        )
 
     def _apply_mesh_refinement(
         self,
@@ -503,7 +467,6 @@ class Mesh:
         global_3D_algorithm: int | Sequence[int] = 1,
         mesh_element_order: int = 1,
         verbosity: int | None = 0,
-        periodic_entities: list[tuple[str, str]] | None = None,  # noqa: ARG002
         optimization_flags: tuple[tuple[str, int]] | None = None,
         boundary_delimiter: str = "None",
         resolution_specs: dict = (),
@@ -526,7 +489,6 @@ class Mesh:
                 algorithms to try in order if earlier attempts fail.
             mesh_element_order: Element order
             verbosity: GMSH verbosity level
-            periodic_entities: List of periodic boundary pairs
             optimization_flags: Mesh optimization flags
             boundary_delimiter: Delimiter for boundary names
             resolution_specs: Mesh resolution specifications
@@ -616,7 +578,6 @@ def mesh(
     global_3D_algorithm: int | Sequence[int] = 1,
     mesh_element_order: int = 1,
     verbosity: int | None = 0,
-    periodic_entities: list[tuple[str, str]] | None = None,
     optimization_flags: tuple[tuple[str, int]] | None = None,
     boundary_delimiter: str = "None",
     n_threads: int = cpu_count(),
@@ -645,7 +606,6 @@ def mesh(
             algorithms tried in order with fallback on failure.
         mesh_element_order: Element order
         verbosity: GMSH verbosity level
-        periodic_entities: List of periodic boundary pairs
         optimization_flags: Mesh optimization flags
         boundary_delimiter: Delimiter for boundary names
         n_threads: Number of threads to use
@@ -687,7 +647,6 @@ def mesh(
             global_3D_algorithm=global_3D_algorithm,
             mesh_element_order=mesh_element_order,
             verbosity=verbosity,
-            periodic_entities=periodic_entities,
             optimization_flags=optimization_flags,
             boundary_delimiter=boundary_delimiter,
             resolution_specs=resolution_specs,
