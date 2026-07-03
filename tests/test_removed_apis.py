@@ -55,3 +55,10 @@ def test_additive_false_round_trips():
     ps = PolySurface(polygons=_SQUARE, physical_name="x", additive=False)
     assert ps.to_dict()["additive"] is False
     assert PolySurface.from_dict(ps.to_dict()).additive is False
+
+
+def test_resolution_specs_default_is_none():
+    default = (
+        inspect.signature(Mesh.process_geometry).parameters["resolution_specs"].default
+    )
+    assert default is None, "tuple default () crashes .get() calls downstream"

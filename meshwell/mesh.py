@@ -469,7 +469,7 @@ class Mesh:
         verbosity: int | None = 0,
         optimization_flags: tuple[tuple[str, int]] | None = None,
         boundary_delimiter: str = "None",
-        resolution_specs: dict = (),
+        resolution_specs: dict | None = None,
         gmsh_version: float | None = None,
         interface_delimiter: str = "___",
         pre_2d_hook: Callable[[], None] | None = None,
@@ -504,6 +504,8 @@ class Mesh:
 
         """
         self._initialize_model()
+        if resolution_specs is None:
+            resolution_specs = {}
 
         attempts = _pair_algos(
             _normalize_algo(global_2D_algorithm),
