@@ -184,13 +184,13 @@ class Remesher:
 
         elif isinstance(input_mesh, meshio.Mesh):
             self.vxyz = input_mesh.points
-            # Handle 2D (triangle) and 3D (tetra) elements
-            if "triangle" in input_mesh.cells_dict:
-                self.triangles = input_mesh.cells_dict["triangle"]
-            elif "tetra" in input_mesh.cells_dict:
+            # Prefer volume cells: a 3D mesh always also contains its
+            # boundary triangles, which must not drive the size field.
+            if "tetra" in input_mesh.cells_dict:
                 self.triangles = input_mesh.cells_dict["tetra"]
+            elif "triangle" in input_mesh.cells_dict:
+                self.triangles = input_mesh.cells_dict["triangle"]
             else:
-                # Fallback or empty
                 self.triangles = None
 
         elif isinstance(input_mesh, ModelManager):
