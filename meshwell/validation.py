@@ -22,17 +22,22 @@ def validate_dimtags(dimtags):
     return dims[0]
 
 
-def format_physical_name(physical_name: str | tuple[str, ...]) -> tuple[str, ...]:
+def format_physical_name(
+    physical_name: str | list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
     """Format a physical name to ensure consistent tuple representation.
 
     Args:
         physical_name: The physical name to format
 
     Returns:
-        tuple: A tuple containing the physical name
+        tuple: A tuple containing the physical name(s), or None if
+            ``physical_name`` is None.
     """
     if isinstance(physical_name, str):
         return (physical_name,)
+    if isinstance(physical_name, list):
+        return tuple(physical_name)
     return physical_name
 
 

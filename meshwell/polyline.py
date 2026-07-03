@@ -8,6 +8,7 @@ import shapely
 from shapely.geometry import LineString, MultiLineString
 
 from meshwell.geometry_entity import GeometryEntity
+from meshwell.validation import format_physical_name
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -77,10 +78,7 @@ class PolyLine(GeometryEntity):
             ]
 
         self.mesh_order = mesh_order
-        if isinstance(physical_name, str):
-            self.physical_name = (physical_name,)
-        else:
-            self.physical_name = physical_name
+        self.physical_name = format_physical_name(physical_name)
         self.mesh_bool = mesh_bool
         self.dimension = 1
         self.additive = additive
@@ -198,27 +196,10 @@ class PolyLine(GeometryEntity):
         Returns:
             Dictionary containing serializable entity data
         """
-        import shapely.wkt
-
-        linestrings_wkt = [
-            shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings
-        ]
-
         return {
             "type": "PolyLine",
-            "linestrings_wkt": linestrings_wkt,
-            "physical_name": self.physical_name,
-            "mesh_order": self.mesh_order,
-            "mesh_bool": self.mesh_bool,
-            "additive": self.additive,
-            "point_tolerance": self.point_tolerance,
-            "identify_arcs": self.identify_arcs,
-            "min_arc_points": self.min_arc_points,
-            "arc_tolerance": self.arc_tolerance,
-            "translation": self.translation,
-            "rotation_axis": self.rotation_axis,
-            "rotation_point": self.rotation_point,
-            "rotation_angle": self.rotation_angle,
+            "linestrings_wkt": self._wkt_list(self.linestrings),
+            **self._common_dict(),
         }
 
     @classmethod
@@ -242,18 +223,7 @@ class PolyLine(GeometryEntity):
 
         return cls(
             linestrings=linestrings,
-            physical_name=data["physical_name"],
-            mesh_order=data["mesh_order"],
-            mesh_bool=data["mesh_bool"],
-            additive=data["additive"],
-            point_tolerance=data["point_tolerance"],
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
-            translation=data.get("translation"),
-            rotation_axis=data.get("rotation_axis"),
-            rotation_point=data.get("rotation_point"),
-            rotation_angle=data.get("rotation_angle", 0.0),
+            **cls._common_kwargs_from_dict(data),
         )
 
     def plot_decomposition(

@@ -614,30 +614,13 @@ class PolyPrism(GeometryEntity):
         Returns:
             Dictionary containing serializable entity data
         """
-        import shapely.wkt
-
-        polygons_wkt = [
-            shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
-        ]
-
         return {
             "type": "PolyPrism",
-            "polygons_wkt": polygons_wkt,
+            "polygons_wkt": self._wkt_list(self.polygons.geoms),
             "buffers": {str(k): v for k, v in self.buffers.items()},
-            "physical_name": self.physical_name,
-            "mesh_order": self.mesh_order,
-            "mesh_bool": self.mesh_bool,
-            "additive": self.additive,
-            "point_tolerance": self.point_tolerance,
             "structured": self.structured,
-            "identify_arcs": self.identify_arcs,
-            "min_arc_points": self.min_arc_points,
-            "arc_tolerance": self.arc_tolerance,
             "subdivision": list(self.subdivision) if self.subdivision else None,
-            "translation": self.translation,
-            "rotation_axis": self.rotation_axis,
-            "rotation_point": self.rotation_point,
-            "rotation_angle": self.rotation_angle,
+            **self._common_dict(),
         }
 
     @classmethod
@@ -660,20 +643,9 @@ class PolyPrism(GeometryEntity):
         return cls(
             polygons=polygons,
             buffers=buffers,
-            physical_name=data["physical_name"],
-            mesh_order=data["mesh_order"],
-            mesh_bool=data["mesh_bool"],
-            additive=data["additive"],
-            point_tolerance=data["point_tolerance"],
             structured=data.get("structured", False),
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
             subdivision=subdivision,
-            translation=data.get("translation"),
-            rotation_axis=data.get("rotation_axis"),
-            rotation_point=data.get("rotation_point"),
-            rotation_angle=data.get("rotation_angle", 0.0),
+            **cls._common_kwargs_from_dict(data),
         )
 
     def _validate_polygon_buffers(self) -> bool:

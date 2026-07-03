@@ -679,6 +679,52 @@ class GeometryEntity:
             **kwargs,
         )
 
+    @staticmethod
+    def _wkt_list(geoms) -> list[str]:
+        """Dump an iterable of shapely geometries to a list of WKT strings.
+
+        Shared by the ``to_dict`` implementations of PolyLine, PolySurface,
+        and PolyPrism so all three serialize geometry the same way.
+        """
+        import shapely.wkt
+
+        return [shapely.wkt.dumps(g, rounding_precision=12) for g in geoms]
+
+    def _common_dict(self) -> dict:
+        """Return the serialization keys shared by every geometry entity."""
+        return {
+            "physical_name": self.physical_name,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "additive": self.additive,
+            "point_tolerance": self.point_tolerance,
+            "identify_arcs": self.identify_arcs,
+            "min_arc_points": self.min_arc_points,
+            "arc_tolerance": self.arc_tolerance,
+            "translation": self.translation,
+            "rotation_axis": self.rotation_axis,
+            "rotation_point": self.rotation_point,
+            "rotation_angle": self.rotation_angle,
+        }
+
+    @staticmethod
+    def _common_kwargs_from_dict(data: dict) -> dict:
+        """Inverse of :meth:`_common_dict`: build constructor kwargs from a dict."""
+        return {
+            "physical_name": data["physical_name"],
+            "mesh_order": data["mesh_order"],
+            "mesh_bool": data["mesh_bool"],
+            "additive": data["additive"],
+            "point_tolerance": data["point_tolerance"],
+            "identify_arcs": data["identify_arcs"],
+            "min_arc_points": data["min_arc_points"],
+            "arc_tolerance": data["arc_tolerance"],
+            "translation": data.get("translation"),
+            "rotation_axis": data.get("rotation_axis"),
+            "rotation_point": data.get("rotation_point"),
+            "rotation_angle": data.get("rotation_angle", 0.0),
+        }
+
     def instanciate(self, cad_model: Any | None = None) -> list[tuple[int, int]]:
         """Create GMSH geometry. To be implemented by subclasses.
 
