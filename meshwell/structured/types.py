@@ -15,6 +15,20 @@ if TYPE_CHECKING:
     from meshwell.geometry_entity import DecompositionSegment
 
 
+def quantize_key(
+    x: float, y: float, z: float, point_tolerance: float
+) -> tuple[int, int, int]:
+    """Quantize a 3D coordinate to an integer key at ``point_tolerance``.
+
+    The single quantization convention shared by ``VertexRegistry``
+    (structured/build.py), canonical-edge construction, and the
+    canonical-edge-coverage validator (structured/decompose.py) so
+    near-coincident vertices map to the same key everywhere.
+    """
+    s = point_tolerance
+    return (round(x / s), round(y / s), round(z / s))
+
+
 @dataclass(frozen=True)
 class ShapeKey:
     """Stable identity for a TopoDS_Shape used as a dict key.
@@ -173,5 +187,6 @@ class Arrangement:
 
     cohort_index: int
     polygons: tuple["Polygon", ...]
+    point_tolerance: float
     canonical_edges: tuple[ArrangementEdge, ...] = ()
     edge_by_vertex_pair: dict[frozenset["VertexKey"], int] = field(default_factory=dict)

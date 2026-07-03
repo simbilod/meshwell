@@ -22,6 +22,7 @@ from meshwell.structured.types import (
     StructuredSlab,
     SubPiece,
     VertexKey,
+    quantize_key,
 )
 
 
@@ -40,13 +41,10 @@ def _quantize_key(x: float, y: float, z: float, point_tolerance: float) -> Verte
     """Match VertexRegistry._key's quantization.
 
     Ensures canonical edges and runtime EdgeRegistry vertices share the
-    same key space.
+    same key space. Delegates to the single quantization implementation
+    in ``structured.types``.
     """
-    return (
-        round(x / point_tolerance),
-        round(y / point_tolerance),
-        round(z / point_tolerance),
-    )
+    return quantize_key(x, y, z, point_tolerance)
 
 
 def _build_canonical_edges(
@@ -320,6 +318,7 @@ def build_cohort_arrangement(
     return Arrangement(
         cohort_index=cohort_index,
         polygons=pieces,
+        point_tolerance=point_tolerance,
         canonical_edges=canonical_edges,
         edge_by_vertex_pair=edge_by_vertex_pair,
     )
@@ -487,10 +486,10 @@ def validate_canonical_edge_coverage(
     Raises:
         CanonicalArrangementError: when any ring has mixed coverage.
     """
-    s = _polygon_point_tol(arrangement)
+    s = arrangement.point_tolerance
 
     def _key(x: float, y: float, z: float) -> VertexKey:
-        return (round(x / s), round(y / s), round(z / s))
+        return quantize_key(x, y, z, s)
 
     def _check(coords, z):
         keys = [_key(x, y, z) for x, y in coords]
@@ -526,26 +525,6 @@ def validate_canonical_edge_coverage(
         _check(list(poly.exterior.coords), z)
         for interior in poly.interiors:
             _check(list(interior.coords), z)
-
-
-def _polygon_point_tol(arrangement: Arrangement) -> float:
-    """Recover the point_tolerance used to build the arrangement.
-
-    Stored implicitly via the quantization scale: vkey = round(coord / s).
-    For the validator we don't have direct access to s; the caller-
-    facing convention is to use the arrangement's host point_tolerance.
-
-    We derive s from the FIRST canonical edge's z key: vkey_z = round(z / s)
-    -> s = z / vkey_z when both nonzero. Fall back to 1e-3 when z == 0.
-    """
-    if not arrangement.canonical_edges:
-        return 1e-3
-    edge = arrangement.canonical_edges[0]
-    z = edge.z
-    vkey_z = edge.vertex_keys[0][2]
-    if z != 0 and vkey_z != 0:
-        return abs(z / vkey_z)
-    return 1e-3
 
 
 def _owner_slab(

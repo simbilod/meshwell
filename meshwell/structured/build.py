@@ -40,6 +40,7 @@ from meshwell.structured.types import (
     SlabMeta,
     StructuredSlab,
     SubPiece,
+    quantize_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,8 +61,7 @@ class VertexRegistry:
         self._store: dict[tuple[int, int, int], TopoDS_Vertex] = {}
 
     def _key(self, x: float, y: float, z: float) -> tuple[int, int, int]:
-        s = self.point_tolerance
-        return (round(x / s), round(y / s), round(z / s))
+        return quantize_key(x, y, z, self.point_tolerance)
 
     def get_or_create(self, x: float, y: float, z: float) -> TopoDS_Vertex:
         """Return the unique vertex at (x, y, z), creating it if necessary."""
@@ -377,10 +377,9 @@ def ring_is_closed(
     point_tolerance: float,
 ) -> bool:
     """True if start/end quantize to the same key (VertexRegistry._key convention)."""
-    s = point_tolerance
-    return round(start_xy[0] / s) == round(end_xy[0] / s) and round(
-        start_xy[1] / s
-    ) == round(end_xy[1] / s)
+    start_key = quantize_key(start_xy[0], start_xy[1], 0.0, point_tolerance)
+    end_key = quantize_key(end_xy[0], end_xy[1], 0.0, point_tolerance)
+    return start_key[:2] == end_key[:2]
 
 
 @dataclass(frozen=True)

@@ -65,7 +65,7 @@ def test_arrangement_is_hashable_and_holds_polygons():
 
     p1 = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
     p2 = Polygon([(1, 0), (2, 0), (2, 1), (1, 1)])
-    arr = Arrangement(cohort_index=0, polygons=(p1, p2))
+    arr = Arrangement(cohort_index=0, polygons=(p1, p2), point_tolerance=1e-3)
     assert arr.cohort_index == 0
     assert len(arr.polygons) == 2
     # frozen → hashable, usable as dict key

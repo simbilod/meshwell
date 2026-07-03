@@ -112,7 +112,7 @@ def test_arrangement_edge_defaults_to_empty():
     """
     from meshwell.structured.types import Arrangement, ArrangementEdge
 
-    arr = Arrangement(cohort_index=0, polygons=())
+    arr = Arrangement(cohort_index=0, polygons=(), point_tolerance=1e-3)
     assert arr.canonical_edges == ()
     assert arr.edge_by_vertex_pair == {}
 
