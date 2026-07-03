@@ -329,12 +329,10 @@ def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
             for b1 in eas[i1].values():
                 b1_arr = np.asarray(b1, dtype=float)
                 if np.any(np.abs(arr2 - b1_arr).max(axis=1) < interface_aabb_tolerance):
-                    n1 = (
-                        xao_mod._filter_real_names(e1.physical_name) or e1.physical_name
-                    )
-                    n2 = (
-                        xao_mod._filter_real_names(e2.physical_name) or e2.physical_name
-                    )
+                    # _filter_real_names now takes the labeled entity and
+                    # keys on its ``synthetic_names`` set (not the name text).
+                    n1 = xao_mod._filter_real_names(e1) or e1.physical_name
+                    n2 = xao_mod._filter_real_names(e2) or e2.physical_name
                     rescues["___".join(sorted((n1[0], n2[0])))] += 1
         return original(
             entities,

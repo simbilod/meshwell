@@ -106,6 +106,15 @@ class InterfaceTag(GeometryEntity):
         mesh_bool: whether to keep the resulting surfaces in the mesh.
     """
 
+    # An InterfaceTag only NAMES an interface that already exists between two
+    # polygon entities; it owns its own physical group and must never be
+    # glued into a neighbour ``A___B`` interface pair by the OCC XAO writer.
+    # Read by ``cad_occ._instantiate_entity_occ`` onto the labeled record and
+    # honored in ``occ_xao_writer._compute_physical_groups``. This explicit
+    # flag replaces the old ``"iface" in name`` substring heuristic, so user
+    # entities that merely contain "iface" in their name keep their interfaces.
+    is_interface_helper: bool = True
+
     def __init__(
         self,
         linestrings: LineString | list[LineString] | MultiLineString,

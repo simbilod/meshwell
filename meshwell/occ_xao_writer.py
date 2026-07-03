@@ -215,24 +215,29 @@ def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
        gmsh.merge. They must not affect interface or boundary detection
        — purely an annotator on an existing face.
 
-    We use "all names start with ``__cohort_``" rather than "any" so the
-    real sub-solid (flavour 1) is treated as real geometry while the
-    annotator (flavour 2) is correctly identified as bookkeeping-only.
+    We look at the record's ``synthetic_names`` set (populated by the
+    structured post-pass) rather than the name TEXT so the real sub-solid
+    (flavour 1) is treated as real geometry while the annotator (flavour 2)
+    is correctly identified as bookkeeping-only -- and a user who names an
+    entity ``__cohort_trap`` is NOT mistaken for synthetic bookkeeping.
     """
     return bool(ent.physical_name) and all(
-        n.startswith("__cohort_") for n in ent.physical_name
+        n in ent.synthetic_names for n in ent.physical_name
     )
 
 
-def _filter_real_names(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Drop synthetic ``__cohort_*`` names; keep the user-visible names only.
+def _filter_real_names(ent: OCCLabeledEntity) -> tuple[str, ...]:
+    """Drop this entity's synthetic bookkeeping names; keep user-visible ones.
 
     Used when forming ``A___B`` interface group names from a pair of real
     cohort sub-solids: their ``physical_name`` tuple has a synthetic name
     appended, but we only want the user-visible ``A___B``, not also the
     spurious ``A_____cohort_X``, ``__cohort_X___B``, ``__cohort_X_____cohort_Y``.
+
+    Keys on the record's ``synthetic_names`` set rather than the name text so
+    a user entity that merely happens to be named ``__cohort_*`` keeps its name.
     """
-    return tuple(n for n in names if not n.startswith("__cohort_"))
+    return tuple(n for n in ent.physical_name if n not in ent.synthetic_names)
 
 
 def _compute_physical_groups(
@@ -408,9 +413,8 @@ def _compute_physical_groups(
         # ``lower___upper`` interface only, not ``__cohort_0__slab_0___upper``.
         # Fall back to the full tuple if filtering left nothing — only
         # happens for purely-synthetic pairs, which we skipped above.
-        # MANUAL_NOTE: structured name conventions
-        names1 = _filter_real_names(ent1.physical_name) or ent1.physical_name
-        names2 = _filter_real_names(ent2.physical_name) or ent2.physical_name
+        names1 = _filter_real_names(ent1) or ent1.physical_name
+        names2 = _filter_real_names(ent2) or ent2.physical_name
         # Two cohort sub-solids from the same user entity (e.g. ``b``
         # split into two slabs) share an internal slab boundary face;
         # that's an interior face of ``b``, not a ``b___b`` group.
@@ -418,10 +422,13 @@ def _compute_physical_groups(
         # doesn't fool the same-entity check.
         if names1 == names2:
             continue
-        # Internal "iface" helpers (named e.g. ``oxide_iface``) carry their
-        # own physical_name and should not also be glued to a neighbour pair.
-        # MANUAL_NOTE: structured name conventions
-        if any("iface" in n for n in ent1.physical_name + ent2.physical_name):
+        # Interface-helper entities (e.g. InterfaceTag) carry their own
+        # physical_name and only NAME an existing interface; they must not
+        # also be glued into this neighbour pair. Keyed on the explicit
+        # ``is_interface_helper`` flag rather than an ``"iface" in name``
+        # substring, so a user entity merely named e.g. ``oxide_iface`` keeps
+        # its own interface groups.
+        if ent1.is_interface_helper or ent2.is_interface_helper:
             continue
         common_shapes = [entity_boundary[i1][bid] for bid in common]
         # interface_dim is determined by the actual shape type of the shared

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import warnings
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
 
@@ -79,6 +79,15 @@ class OCCLabeledEntity:
     dim: int
     mesh_order: float | None = None
     _is_cohort: bool = False
+    # Explicit semantic flags read by the OCC XAO writer (occ_xao_writer.py).
+    # These replace the old name-substring heuristics: an interface-helper
+    # entity (e.g. InterfaceTag) must not be glued into a neighbour interface
+    # pair, and ``synthetic_names`` marks which of this record's
+    # ``physical_name`` entries are structured-pipeline bookkeeping names
+    # (``__cohort_*``) so they can be excluded from ``A___B`` naming and used
+    # to detect purely-synthetic annotators -- WITHOUT keying on the name text.
+    is_interface_helper: bool = False
+    synthetic_names: frozenset[str] = field(default_factory=frozenset)
 
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
@@ -286,6 +295,7 @@ class CAD_OCC:
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
             _is_cohort=getattr(entity_obj, "is_cohort", False),
+            is_interface_helper=getattr(entity_obj, "is_interface_helper", False),
         )
 
     def _fragment_all(

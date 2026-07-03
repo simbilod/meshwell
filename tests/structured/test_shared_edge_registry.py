@@ -190,12 +190,10 @@ def test_aabb_rescue_count_reduced_under_sharing(tmp_path):
                 ) and not (
                     xao_mod._is_purely_synthetic(e1) or xao_mod._is_purely_synthetic(e2)
                 ):
-                    n1 = (
-                        xao_mod._filter_real_names(e1.physical_name) or e1.physical_name
-                    )
-                    n2 = (
-                        xao_mod._filter_real_names(e2.physical_name) or e2.physical_name
-                    )
+                    # _filter_real_names now takes the labeled entity and
+                    # keys on its ``synthetic_names`` set (not the name text).
+                    n1 = xao_mod._filter_real_names(e1) or e1.physical_name
+                    n2 = xao_mod._filter_real_names(e2) or e2.physical_name
                     rescues.append((n1[0], n2[0]))
         return original(
             entities,

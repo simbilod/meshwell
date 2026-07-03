@@ -239,8 +239,13 @@ def structured_post_pass(
                 )
                 sub_solid_name = state.sub_solid_name_by_key.get(sub_key)
                 names: tuple[str, ...] = meta.physical_name
+                synthetic: frozenset[str] = frozenset()
                 if sub_solid_name is not None:
                     names = (*meta.physical_name, sub_solid_name)
+                    # Mark the appended ``__cohort_*`` bookkeeping name as
+                    # synthetic so the writer excludes it from ``A___B``
+                    # naming without inspecting the name text.
+                    synthetic = frozenset({sub_solid_name})
                 sub_ent = OCCLabeledEntity(
                     shapes=[shape],
                     physical_name=names,
@@ -248,6 +253,7 @@ def structured_post_pass(
                     keep=meta.keep,
                     dim=3,
                     mesh_order=ent.mesh_order,
+                    synthetic_names=synthetic,
                 )
                 expanded.append(sub_ent)
                 next_index += 1
@@ -290,6 +296,10 @@ def structured_post_pass(
                         keep=True,
                         dim=2,
                         mesh_order=None,
+                        # Purely-synthetic 2D annotator: its only name is
+                        # bookkeeping, so the writer treats it as a
+                        # non-geometric annotator (``_is_purely_synthetic``).
+                        synthetic_names=frozenset({face_name}),
                     )
                     expanded.append(face_ent)
                     next_index += 1
@@ -455,6 +465,11 @@ def _match_by_bbox(
 def _copy_with(ent, shapes, idx: int):
     from meshwell.cad_occ import OCCLabeledEntity
 
+    # Used only for leftover cohort fragments with no matching slab: the
+    # source ``ent`` is the cohort compound whose physical_name is the
+    # synthetic ``__cohort_<ci>`` bookkeeping name. Mark every name synthetic
+    # (plus anything the source already flagged) so the writer treats this
+    # piece as a purely-synthetic annotator, not real geometry.
     return OCCLabeledEntity(
         shapes=list(shapes),
         physical_name=ent.physical_name,
@@ -462,4 +477,5 @@ def _copy_with(ent, shapes, idx: int):
         keep=ent.keep,
         dim=ent.dim,
         mesh_order=ent.mesh_order,
+        synthetic_names=frozenset(ent.physical_name) | ent.synthetic_names,
     )
