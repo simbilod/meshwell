@@ -14,6 +14,7 @@ import meshio
 
 from meshwell._mesh_entity import _MeshEntity
 from meshwell.model import ModelManager
+from meshwell.resolution import create_constant_matheval_restrict_field
 
 logger = logging.getLogger(__name__)
 
@@ -317,14 +318,8 @@ class Mesh:
 
         # Process constant fields in batches
         for resolution, entity_types in constant_collector.items():
-            matheval_field_index = self.model_manager.model.mesh.field.add("MathEval")
-            self.model_manager.model.mesh.field.setString(
-                matheval_field_index, "F", f"{resolution}"
-            )
-
-            restrict_field_index = self.model_manager.model.mesh.field.add("Restrict")
-            self.model_manager.model.mesh.field.setNumber(
-                restrict_field_index, "InField", matheval_field_index
+            restrict_field_index = create_constant_matheval_restrict_field(
+                self.model_manager.model, resolution
             )
 
             for entity_str, tags in entity_types.items():
@@ -408,12 +403,7 @@ class Mesh:
                 self.model_manager.model.mesh.optimize(optimization_flag, niter=niter)
 
         # Return mesh object without writing to file
-        with contextlib.redirect_stdout(
-            None
-        ), tempfile.TemporaryDirectory() as tmpdirname:
-            temp_mesh_path = f"{tmpdirname}/mesh.msh"
-            gmsh.write(temp_mesh_path)
-            return meshio.read(temp_mesh_path)
+        return self.to_meshio()
 
     def save_to_file(self, output_file: Path) -> None:
         """Save current mesh to file.

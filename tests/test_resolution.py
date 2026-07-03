@@ -723,6 +723,24 @@ def test_mass_filter_curves_excludes_short_edges(tmp_path):
     assert unfiltered > filtered
 
 
+def test_entity_str_and_target_dimension_use_shared_maps():
+    """entity_str/target_dimension are driven by the shared dim<->list maps."""
+    from meshwell.resolution import APPLY_TO_DIM, DIM_TO_LIST_FIELD
+
+    expected = {
+        "volumes": ("RegionsList", 3),
+        "surfaces": ("SurfacesList", 2),
+        "curves": ("CurvesList", 1),
+        "points": ("PointsList", 0),
+    }
+    for apply_to, (entity_str, target_dimension) in expected.items():
+        spec = ConstantInField(apply_to=apply_to, resolution=1.0)
+        assert spec.entity_str == entity_str
+        assert spec.target_dimension == target_dimension
+        assert APPLY_TO_DIM[apply_to] == target_dimension
+        assert DIM_TO_LIST_FIELD[target_dimension] == entity_str
+
+
 if __name__ == "__main__":
     test_2D_resolution()
     # test_refine(ConstantInField(apply_to="surfaces", resolution=1))

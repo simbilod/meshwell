@@ -14,6 +14,48 @@ CURVE_SUBTYPE_MAP: dict[str, str] = {
     "circles": "Circle",
 }
 
+# Mapping from target geometric dimension to the gmsh Restrict-field
+# list-option name used to reference entities of that dimension.
+DIM_TO_LIST_FIELD: dict[int, str] = {
+    3: "RegionsList",
+    2: "SurfacesList",
+    1: "CurvesList",
+    0: "PointsList",
+}
+
+# Mapping from a ResolutionSpec's ``apply_to`` to its target dimension.
+# Curve subtypes (see CURVE_SUBTYPE_MAP) are not listed here; they all
+# resolve to dimension 1.
+APPLY_TO_DIM: dict[str, int] = {
+    "volumes": 3,
+    "surfaces": 2,
+    "curves": 1,
+    "points": 0,
+}
+
+
+def create_constant_matheval_restrict_field(model: Any, resolution: float) -> int:
+    """Create a MathEval field holding a constant value, wrapped in a Restrict field.
+
+    Shared by ``ConstantInField.apply`` and the constant-field batching path in
+    ``Mesh.process_mesh`` (which restricts the same Restrict field to several
+    entity lists at once), so the field-creation boilerplate lives in one place.
+
+    Args:
+        model: The mesh model to create the fields on.
+        resolution: The constant mesh size value for the MathEval field.
+
+    Returns:
+        int: Index of the created (still entity-less) Restrict field. Callers
+            must still call ``model.mesh.field.setNumbers`` with the entity
+            list(s) to restrict to.
+    """
+    matheval_field_index = model.mesh.field.add("MathEval")
+    model.mesh.field.setString(matheval_field_index, "F", f"{resolution}")
+    restrict_field_index = model.mesh.field.add("Restrict")
+    model.mesh.field.setNumber(restrict_field_index, "InField", matheval_field_index)
+    return restrict_field_index
+
 
 class ResolutionSpec(BaseModel):
     """A ResolutionSpec is attached to a pre-CAD entity.
@@ -46,32 +88,14 @@ class ResolutionSpec(BaseModel):
     @property
     def entity_str(self):
         """Convenience wrapper."""
-        if self.apply_to == "volumes":
-            return "RegionsList"
-        if self.apply_to == "surfaces":
-            return "SurfacesList"
-        if self.apply_to == "curves":
-            return "CurvesList"
-        if self.apply_to in CURVE_SUBTYPE_MAP:
-            return "CurvesList"
-        if self.apply_to == "points":
-            return "PointsList"
-        return None
+        return DIM_TO_LIST_FIELD.get(self.target_dimension)
 
     @property
     def target_dimension(self):
         """Convenience wrapper."""
-        if self.apply_to == "volumes":
-            return 3
-        if self.apply_to == "surfaces":
-            return 2
-        if self.apply_to == "curves":
-            return 1
         if self.apply_to in CURVE_SUBTYPE_MAP:
             return 1
-        if self.apply_to == "points":
-            return 0
-        return None
+        return APPLY_TO_DIM.get(self.apply_to)
 
 
 class ConstantInField(ResolutionSpec):
@@ -100,11 +124,8 @@ class ConstantInField(ResolutionSpec):
         Returns:
             int: Index of the created restrict field.
         """
-        matheval_field_index = model.mesh.field.add("MathEval")
-        model.mesh.field.setString(matheval_field_index, "F", f"{self.resolution}")
-        restrict_field_index = model.mesh.field.add("Restrict")
-        model.mesh.field.setNumber(
-            restrict_field_index, "InField", matheval_field_index
+        restrict_field_index = create_constant_matheval_restrict_field(
+            model, self.resolution
         )
         model.mesh.field.setNumbers(
             restrict_field_index,

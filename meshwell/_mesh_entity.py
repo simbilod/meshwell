@@ -10,7 +10,7 @@ from typing import Any
 
 import gmsh
 
-from meshwell.resolution import CURVE_SUBTYPE_MAP, ResolutionSpec
+from meshwell.resolution import CURVE_SUBTYPE_MAP, DIM_TO_LIST_FIELD, ResolutionSpec
 
 
 def entity_name_set(physical_name: str | tuple[str, ...]) -> set[str]:
@@ -479,14 +479,7 @@ class _MeshEntity:
                 else:
                     restrict_to_tags = None
 
-                if self.dim == 3:
-                    restrict_to_str = "VolumesList"
-                elif self.dim == 2:
-                    restrict_to_str = "SurfacesList"
-                elif self.dim == 1:
-                    restrict_to_str = "CurvesList"
-                elif self.dim == 0:
-                    restrict_to_str = "PointsList"
+                restrict_to_str = DIM_TO_LIST_FIELD.get(self.dim)
 
                 if entities_mass_dict_sharing:
                     if constant_collector is not None and isinstance(
