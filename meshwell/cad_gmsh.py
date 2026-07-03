@@ -18,9 +18,19 @@ Pipeline:
 5. Assign physical groups for entities, pair-wise interfaces, and
    exterior domain boundaries.
 
-Ownership semantics match :mod:`meshwell.cad_occ` exactly -- the same
-``mesh_order`` ladder and tie-break rules apply, so tests that pin the
-OCC ownership model also pin this one.
+Ownership semantics match :mod:`meshwell.cad_occ` exactly:
+
+* Pre-fragment cuts run only against STRICTLY lower ``mesh_order``
+  tools -- mesh-order ties are NOT cut. The final all-fragment pass
+  resolves tie ownership by insertion order, so the earlier-declared
+  entity wins a shared overlap. Same final topology, fewer boolean ops.
+* Same-material contacts (a shared face between identically-named
+  neighbours) do NOT get an ``A___A`` interface physical group; the
+  face is tracked only so it can be removed from each side's exterior
+  ``A___None`` boundary. This matches the OCC XAO writer.
+
+The same ``mesh_order`` ladder and tie-break rules apply, so tests that
+pin the OCC ownership model also pin this one.
 """
 from __future__ import annotations
 
@@ -328,9 +338,13 @@ class CAD_GMSH:
                     continue
                 for ni in ei.physical_name:
                     for nj in ej.physical_name:
-                        if ni == nj:
+                        if strip_suffix(ni) == strip_suffix(nj):
+                            # Same-material contact: not a physical interface.
+                            # Track for exterior-boundary subtraction (below)
+                            # but emit no A___A group -- matches the OCC XAO
+                            # writer, which records the shared face for
+                            # exterior subtraction yet skips the same-name pair.
                             same_material_interfaces.update(shared)
-                            pair_dimtags[(ni, ni)].update(shared)
                             continue
                         key = tuple(sorted((ni, nj)))
                         pair_dimtags[key].update(shared)
@@ -432,12 +446,28 @@ class CAD_GMSH:
             # InterfaceTag entities will read resolved_linestrings).
             labeled_ent = self._instantiate_entity(orig_idx, ent)
 
-            # Cut with all previously instantiated entities of the same dim.
+            # Cut only against previously instantiated same-dim entities of
+            # STRICTLY lower mesh_order -- ties are not cut (matches cad_occ;
+            # the final fragment resolves tie ownership by insertion order,
+            # so the earlier-declared entity wins the shared overlap).
             if labeled_ent.dimtags:
+                l_ord = (
+                    labeled_ent.mesh_order
+                    if labeled_ent.mesh_order is not None
+                    else float("inf")
+                )
                 all_tool_dimtags = []
                 for prev_ent in instantiated_entities:
-                    if prev_ent.dim == labeled_ent.dim and prev_ent.dimtags:
-                        all_tool_dimtags.extend(prev_ent.dimtags)
+                    if prev_ent.dim != labeled_ent.dim or not prev_ent.dimtags:
+                        continue
+                    p_ord = (
+                        prev_ent.mesh_order
+                        if prev_ent.mesh_order is not None
+                        else float("inf")
+                    )
+                    if p_ord >= l_ord:
+                        continue
+                    all_tool_dimtags.extend(prev_ent.dimtags)
 
                 if all_tool_dimtags:
                     try:
