@@ -1,6 +1,7 @@
 """Main gmsh model definitions."""
 from __future__ import annotations
 
+import warnings
 from os import cpu_count
 from pathlib import Path
 
@@ -64,6 +65,10 @@ class ModelManager:
 
         # Initialization state
         self._is_initialized = False
+        # True while the live gmsh session was started by this manager
+        # instance; lets _initialize distinguish a same-manager re-init
+        # from displacing another owner's session.
+        self._owns_gmsh_session = False
 
         # CAD and Mesh instances (created lazily)
         self._mesh = None
@@ -80,10 +85,21 @@ class ModelManager:
 
         # Handle GMSH initialization
         if gmsh.is_initialized():
+            if not self._owns_gmsh_session:
+                displaced = gmsh.model.getCurrent() or "<unnamed>"
+                warnings.warn(
+                    f"{type(self).__name__} is displacing a live gmsh session "
+                    f"(current model: '{displaced}'); its state will be "
+                    "destroyed. Finalize the other session first to silence "
+                    "this warning.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             gmsh.finalize()
             gmsh.initialize()
         else:
             gmsh.initialize()
+        self._owns_gmsh_session = True
 
         # Clear any existing model
         gmsh.clear()
@@ -151,6 +167,21 @@ class ModelManager:
         self.model.occ.synchronize()
         if remove_all_duplicates:
             self._fragment_all_loaded_dimtags()
+
+    def load_geometry(self, path: Path | str) -> None:
+        """Load a geometry or mesh file into the managed model.
+
+        Wraps ``gmsh.open`` so callers do not bypass the manager's
+        lifecycle bookkeeping: the manager is initialized if needed and
+        the opened file becomes the current model.
+
+        Args:
+            path: Geometry/mesh file readable by gmsh (.xao, .msh, ...).
+
+        """
+        self.ensure_initialized(str(self.filename))
+        gmsh.open(str(path))
+        self.model.occ.synchronize()
 
     def load_occ_entities(
         self,
@@ -325,6 +356,7 @@ class ModelManager:
         if gmsh.is_initialized():
             gmsh.finalize()
         self._is_initialized = False
+        self._owns_gmsh_session = False
         self.model = None
         self.occ = None
         # Clean up lazy instances

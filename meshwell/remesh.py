@@ -160,28 +160,28 @@ class Remesher:
             input_mesh: Path to .msh file, meshio.Mesh object, or ModelManager.
         """
         if isinstance(input_mesh, (str, Path)):
-            # Ensure gmsh is initialized
+            # Ensure gmsh is initialized. Route through the manager so
+            # the session is owned by this remesher (and finalized by
+            # it); a pre-existing session is left to its owner.
             if not gmsh.isInitialized():
-                gmsh.initialize()
+                self.model_manager.ensure_initialized(str(self.model_manager.filename))
 
             # Create a temporary model to load the mesh
             temp_model = "temp_mesh_reader"
 
-            # Store current model if any
-            try:
-                current_model = gmsh.model.getCurrent()
-            except:  # noqa: E722
-                current_model = None
+            # Store current model if any. In an initialized session
+            # getCurrent() returns "" (never raises) when no model exists.
+            current_model = gmsh.model.getCurrent() or None
 
             gmsh.model.add(temp_model)
             gmsh.model.setCurrent(temp_model)
-            gmsh.merge(str(input_mesh))
-
-            self._extract_gmsh_mesh_data()
-
-            gmsh.model.remove()
-            if current_model:
-                gmsh.model.setCurrent(current_model)
+            try:
+                gmsh.merge(str(input_mesh))
+                self._extract_gmsh_mesh_data()
+            finally:
+                gmsh.model.remove()
+                if current_model:
+                    gmsh.model.setCurrent(current_model)
 
         elif isinstance(input_mesh, meshio.Mesh):
             self.vxyz = input_mesh.points
@@ -217,19 +217,23 @@ class Remesher:
 
         vmap = {j: i for i, j in enumerate(self.vtags)}
 
-        # Try 3D first
-        try:
-            self.triangles_tags, evtags = gmsh.model.mesh.getElementsByType(4)
-            evid = np.array([vmap[j] for j in evtags])
-            self.triangles = evid.reshape((self.triangles_tags.shape[-1], -1))
-        except:  # noqa: E722
-            # Try 2D
-            try:
-                self.triangles_tags, evtags = gmsh.model.mesh.getElementsByType(2)
-                evid = np.array([vmap[j] for j in evtags])
-                self.triangles = evid.reshape((self.triangles_tags.shape[-1], -1))
-            except:  # noqa: E722
-                self.triangles = None
+        # Select the element type by count: prefer tetrahedra (type 4),
+        # fall back to triangles (type 2), and record no elements when
+        # neither is present.
+        for element_type in (4, 2):
+            element_tags, evtags = gmsh.model.mesh.getElementsByType(element_type)
+            if len(element_tags):
+                break
+        else:
+            self.triangles_tags = None
+            self.triangles = None
+            return
+
+        self.triangles_tags = element_tags
+        # A KeyError here means elements reference node tags absent from
+        # getNodes (corrupt mesh): propagate it, never mask it as "try 2D".
+        evid = np.array([vmap[j] for j in evtags])
+        self.triangles = evid.reshape((self.triangles_tags.shape[-1], -1))
 
     def _extract_edges(self) -> set[tuple[int, int]]:
         """Extract unique edges from the loaded mesh elements.
@@ -311,7 +315,10 @@ class Remesher:
                 if isinstance(strategy.refinement_data, (str, Path)):
                     try:
                         r_data = np.load(strategy.refinement_data)
-                    except:  # noqa: E722
+                    except ValueError:
+                        # np.load raises ValueError for non-.npy content;
+                        # fall back to plain text. A missing file raises
+                        # FileNotFoundError and propagates.
                         r_data = np.loadtxt(strategy.refinement_data)
                 else:
                     r_data = strategy.refinement_data
@@ -419,8 +426,13 @@ class Remesher:
         self.model_manager.save_to_mesh(output_file, format)
 
     def finalize(self):
-        """Finalize resources."""
-        if self._owns_model:
+        """Finalize resources this remesher created.
+
+        Only finalizes when the remesher owns its ModelManager AND that
+        manager actually initialized a gmsh session; a live session set
+        up by the caller is never torn down.
+        """
+        if self._owns_model and self.model_manager.is_initialized():
             self.model_manager.finalize()
 
 
@@ -473,12 +485,8 @@ class RemeshGMSH(Remesher):
         # We can reuse self.model_manager
         from meshwell.mesh import Mesh
 
-        # Initialize model for remeshing
-        self.model_manager.ensure_initialized(str(self.model_manager.filename))
-
-        # Load geometry
-        gmsh.open(str(geometry_file))
-        gmsh.model.occ.synchronize()
+        # Load geometry through the manager, which owns the gmsh lifecycle
+        self.model_manager.load_geometry(geometry_file)
 
         # Create Mesh instance attached to our model manager
         mesh_gen = Mesh(model=self.model_manager)
@@ -813,13 +821,16 @@ def remesh_mmg(
 ) -> np.ndarray:
     """Utility function for adaptive mesh refinement using MMG."""
     remesher = RemeshMMG(mmg_executable=mmg_executable, verbosity=verbosity)
-    return remesher.remesh(
-        input_mesh=input_mesh,
-        output_mesh=output_mesh,
-        strategies=strategies,
-        dim=dim,
-        **kwargs,
-    )
+    try:
+        return remesher.remesh(
+            input_mesh=input_mesh,
+            output_mesh=output_mesh,
+            strategies=strategies,
+            dim=dim,
+            **kwargs,
+        )
+    finally:
+        remesher.finalize()
 
 
 def compute_total_size_map(
@@ -830,5 +841,8 @@ def compute_total_size_map(
 ) -> np.ndarray:
     """Compute the combined size map from multiple strategies without remeshing."""
     remesher = Remesher(n_threads=n_threads, verbosity=verbosity)
-    remesher._load_mesh_data(input_mesh)
-    return remesher.compute_size_field(strategies)
+    try:
+        remesher._load_mesh_data(input_mesh)
+        return remesher.compute_size_field(strategies)
+    finally:
+        remesher.finalize()
