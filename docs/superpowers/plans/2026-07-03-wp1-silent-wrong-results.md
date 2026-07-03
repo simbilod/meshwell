@@ -31,8 +31,8 @@
 - [ ] **Step 1: Run the full suite and capture failures** (no `-x` — the full failure list is the deliverable)
 
 ```bash
-uv run pytest meshwell/tests -q --no-header | tail -20
-uv run pytest meshwell/tests -q --no-header 2>&1 | grep -E "^(FAILED|ERROR)" > docs/superpowers/plans/2026-07-03-wp1-baseline-failures.txt
+uv run pytest tests -q --no-header | tail -20
+uv run pytest tests -q --no-header 2>&1 | grep -E "^(FAILED|ERROR)" > docs/superpowers/plans/2026-07-03-wp1-baseline-failures.txt
 cat docs/superpowers/plans/2026-07-03-wp1-baseline-failures.txt
 ```
 
@@ -53,7 +53,7 @@ git commit -m "test: record WP1 baseline failures"
 
 **Files:**
 - Modify: `meshwell/mesh.py:109-142` (delete `_apply_periodic_boundaries`, `_set_periodic_pair`), `:506` (param), `:529` (docstring line), `:619` / `:648` / `:690` (public `mesh()` param, docstring line, forwarding kwarg)
-- Test: `meshwell/tests/test_removed_apis.py` (create)
+- Test: `tests/test_removed_apis.py` (create)
 
 **Interfaces:**
 - Produces: `Mesh.process_geometry` and `mesh()` no longer accept `periodic_entities`. Task 2 appends to the same test file.
@@ -82,7 +82,7 @@ def test_periodic_helper_methods_deleted():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_removed_apis.py -v`
+Run: `uv run pytest tests/test_removed_apis.py -v`
 Expected: 3 FAILED (parameter/attributes still present).
 
 - [ ] **Step 3: Implement**
@@ -95,13 +95,13 @@ In `meshwell/mesh.py`:
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_removed_apis.py meshwell/tests/test_mesh_in_memory.py -v`
-Expected: new tests PASS; no new failures vs. baseline elsewhere (`uv run pytest meshwell/tests -q`).
+Run: `uv run pytest tests/test_removed_apis.py tests/test_mesh_in_memory.py -v`
+Expected: new tests PASS; no new failures vs. baseline elsewhere (`uv run pytest tests -q`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/mesh.py meshwell/tests/test_removed_apis.py
+git add meshwell/mesh.py tests/test_removed_apis.py
 git commit -m "feat!: remove no-op periodic_entities parameter
 
 _apply_periodic_boundaries was never called; users requesting periodic
@@ -116,7 +116,7 @@ boundaries silently got a non-periodic mesh."
 
 **Files:**
 - Modify: `meshwell/occ_entity.py:37`, `meshwell/polyprism.py:106,115`, `meshwell/polysurface.py:77`, `meshwell/polyline.py:81`
-- Test: `meshwell/tests/test_removed_apis.py` (append)
+- Test: `tests/test_removed_apis.py` (append)
 
 **Interfaces:**
 - Consumes: test file from Task 1.
@@ -162,7 +162,7 @@ def test_additive_false_round_trips():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_removed_apis.py -v -k additive`
+Run: `uv run pytest tests/test_removed_apis.py -v -k additive`
 Expected: 4 FAILED (no error raised), round-trip test PASSES already.
 
 - [ ] **Step 3: Implement**
@@ -181,13 +181,13 @@ In `meshwell/polyprism.py` also delete the duplicate `self.additive = additive` 
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_removed_apis.py -v && uv run pytest meshwell/tests -q`
+Run: `uv run pytest tests/test_removed_apis.py -v && uv run pytest tests -q`
 Expected: all new tests PASS; no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/occ_entity.py meshwell/polyprism.py meshwell/polysurface.py meshwell/polyline.py meshwell/tests/test_removed_apis.py
+git add meshwell/occ_entity.py meshwell/polyprism.py meshwell/polysurface.py meshwell/polyline.py tests/test_removed_apis.py
 git commit -m "feat!: additive=True now raises NotImplementedError
 
 The flag was stored and serialized but never read by either CAD
@@ -202,7 +202,7 @@ backend, so callers silently got cut semantics."
 
 **Files:**
 - Modify: `meshwell/structured/build.py:200-250` (`_emit_edges_for_segments`), `:430-488` (`_flatten_decomposition_to_polyline_segments`), new module-level helpers near line 360
-- Test: `meshwell/tests/test_structured_arc_split.py` (create)
+- Test: `tests/test_structured_arc_split.py` (create)
 
 **Interfaces:**
 - Produces: `closed_arc_split_indices(n_pts) -> tuple[int, int, int]` and `ring_is_closed(start_xy, end_xy, point_tolerance) -> bool`, module-level in `meshwell/structured/build.py`, used by both paths.
@@ -276,7 +276,7 @@ def test_ring_is_closed_matches_vertex_registry_quantization():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_structured_arc_split.py -v`
+Run: `uv run pytest tests/test_structured_arc_split.py -v`
 Expected: ImportError (`closed_arc_split_indices` does not exist yet).
 
 - [ ] **Step 3: Implement**
@@ -344,13 +344,13 @@ In `_flatten_decomposition_to_polyline_segments` (build.py:439-469), replace the
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_structured_arc_split.py meshwell/tests/test_arc_identification.py meshwell/tests/test_arc_extrusion.py meshwell/tests/test_arc_fusion.py -v`
-Expected: all PASS. Then full suite: `uv run pytest meshwell/tests -q` — no new failures vs. baseline. If a structured reference mesh diverges, inspect: the *new* topology (shared TShape) is correct; regenerate that reference via `uv run python meshwell/tests/generate_references.py` only for affected cases and say so in the commit message.
+Run: `uv run pytest tests/test_structured_arc_split.py tests/test_arc_identification.py tests/test_arc_extrusion.py tests/test_arc_fusion.py -v`
+Expected: all PASS. Then full suite: `uv run pytest tests -q` — no new failures vs. baseline. If a structured reference mesh diverges, inspect: the *new* topology (shared TShape) is correct; regenerate that reference via `uv run python tests/generate_references.py` only for affected cases and say so in the commit message.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/structured/build.py meshwell/tests/test_structured_arc_split.py
+git add meshwell/structured/build.py tests/test_structured_arc_split.py
 git commit -m "fix(structured): unify closed-arc splitting across face paths
 
 Horizontal and lateral paths split full circles at different q3 indices
@@ -366,7 +366,7 @@ arc edges (non-conformal meshes) on discs/annuli."
 
 **Files:**
 - Modify: `meshwell/remesh.py:185-194` (`_load_mesh_data` meshio branch)
-- Test: `meshwell/tests/test_remesh_load.py` (create)
+- Test: `tests/test_remesh_load.py` (create)
 
 **Interfaces:**
 - Produces: for a meshio input, `self.triangles` holds tetra connectivity when tetra cells exist, else triangles; `self.vtags`/`self.triangles_tags` stay `None` (documented) in this branch.
@@ -409,7 +409,7 @@ def test_meshio_input_falls_back_to_triangles():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_remesh_load.py -v`
+Run: `uv run pytest tests/test_remesh_load.py -v`
 Expected: `test_meshio_input_prefers_tetra` FAILS with shape (4, 3) instead of (1, 4).
 
 - [ ] **Step 3: Implement**
@@ -431,13 +431,13 @@ Replace the meshio branch in `_load_mesh_data` (remesh.py:185-194):
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_remesh_load.py -v && uv run pytest meshwell/tests -q -k remesh`
+Run: `uv run pytest tests/test_remesh_load.py -v && uv run pytest tests -q -k remesh`
 Expected: PASS; no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/remesh.py meshwell/tests/test_remesh_load.py
+git add meshwell/remesh.py tests/test_remesh_load.py
 git commit -m "fix(remesh): load tetra cells before triangles from meshio input
 
 Boundary triangles were driving the 3D size field."
@@ -451,7 +451,7 @@ Boundary triangles were driving the 3D size field."
 
 **Files:**
 - Modify: `meshwell/cad_occ.py:527-546` (cut cascade), add `import warnings` to imports
-- Test: `meshwell/tests/test_cad_occ_cut_failure.py` (create)
+- Test: `tests/test_cad_occ_cut_failure.py` (create)
 
 **Interfaces:**
 - Produces: a failed/null cut keeps the pre-cut shape for that tool and emits a `UserWarning`; never feeds a null shape to `_unwrap_shape`.
@@ -498,11 +498,11 @@ def test_failed_cut_warns_and_keeps_shape(monkeypatch):
     assert all(le.shapes for le in labeled)
 ```
 
-Note: if `CAD_OCC()` requires constructor arguments or `process_entities_cut_only` needs extra parameters, mirror the minimal invocation used in `meshwell/tests/test_cad_occ.py`.
+Note: if `CAD_OCC()` requires constructor arguments or `process_entities_cut_only` needs extra parameters, mirror the minimal invocation used in `tests/test_cad_occ.py`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_cad_occ_cut_failure.py -v`
+Run: `uv run pytest tests/test_cad_occ_cut_failure.py -v`
 Expected: FAIL — either `AssertionError: Shape() must not be called` or no warning raised.
 
 - [ ] **Step 3: Implement**
@@ -545,13 +545,13 @@ Delete the old `try/except Exception` wrapper and the `if result is not None` gu
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_cad_occ_cut_failure.py meshwell/tests/test_cad_occ.py meshwell/tests/test_cad_occ_fragment_ownership.py -v`
-Expected: PASS; then `uv run pytest meshwell/tests -q` — no new failures vs. baseline.
+Run: `uv run pytest tests/test_cad_occ_cut_failure.py tests/test_cad_occ.py tests/test_cad_occ_fragment_ownership.py -v`
+Expected: PASS; then `uv run pytest tests -q` — no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/cad_occ.py meshwell/tests/test_cad_occ_cut_failure.py
+git add meshwell/cad_occ.py tests/test_cad_occ_cut_failure.py
 git commit -m "fix(cad_occ): check IsDone/IsNull after BRepAlgoAPI_Cut
 
 A failed BOP returned a null TopoDS_Shape that passed the None guard
@@ -566,7 +566,7 @@ and reached _unwrap_shape."
 
 **Files:**
 - Modify: `meshwell/cad_gmsh.py:441-453`, add `import warnings`
-- Test: `meshwell/tests/test_cad_gmsh_cut_failure.py` (create)
+- Test: `tests/test_cad_gmsh_cut_failure.py` (create)
 
 **Interfaces:**
 - Produces: cut failures emit `UserWarning` regardless of `progress_bars`.
@@ -597,11 +597,11 @@ def test_cut_failure_warns_without_progress_bars(monkeypatch):
         proc.process_entities([a, b], progress_bars=False)
 ```
 
-Note: mirror the minimal `CAD_GMSH()` construction/teardown used in `meshwell/tests/test_cad_gmsh.py` (it may need a `ModelManager` or a finalize step) — apply the monkeypatch only after construction so model setup still works.
+Note: mirror the minimal `CAD_GMSH()` construction/teardown used in `tests/test_cad_gmsh.py` (it may need a `ModelManager` or a finalize step) — apply the monkeypatch only after construction so model setup still works.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_cad_gmsh_cut_failure.py -v`
+Run: `uv run pytest tests/test_cad_gmsh_cut_failure.py -v`
 Expected: FAIL — `DID NOT WARN`.
 
 - [ ] **Step 3: Implement**
@@ -630,13 +630,13 @@ Add `import warnings` to the imports.
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_cad_gmsh_cut_failure.py meshwell/tests/test_cad_gmsh.py -v && uv run pytest meshwell/tests -q`
+Run: `uv run pytest tests/test_cad_gmsh_cut_failure.py tests/test_cad_gmsh.py -v && uv run pytest tests -q`
 Expected: PASS; no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/cad_gmsh.py meshwell/tests/test_cad_gmsh_cut_failure.py
+git add meshwell/cad_gmsh.py tests/test_cad_gmsh_cut_failure.py
 git commit -m "fix(cad_gmsh): warn on cut failure regardless of progress_bars"
 ```
 
@@ -648,7 +648,7 @@ git commit -m "fix(cad_gmsh): warn on cut failure regardless of progress_bars"
 
 **Files:**
 - Modify: `meshwell/polyprism.py:206-216`, add `import warnings`
-- Test: `meshwell/tests/test_polyprism_loft_failure.py` (create)
+- Test: `tests/test_polyprism_loft_failure.py` (create)
 
 **Interfaces:**
 - Produces: a failed loft still returns 0 (dropped volume) but emits `UserWarning` naming the entity.
@@ -686,11 +686,11 @@ def test_thrusections_failure_warns(monkeypatch):
         gmsh.model.remove()
 ```
 
-Note: `_create_volume_directly` needs curve loops built first; if the direct call errors before reaching `addThruSections` (e.g. needs `occ` synchronize setup), follow the setup pattern from `meshwell/tests/test_prism.py` for constructing prisms against a live gmsh model.
+Note: `_create_volume_directly` needs curve loops built first; if the direct call errors before reaching `addThruSections` (e.g. needs `occ` synchronize setup), follow the setup pattern from `tests/test_prism.py` for constructing prisms against a live gmsh model.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_polyprism_loft_failure.py -v`
+Run: `uv run pytest tests/test_polyprism_loft_failure.py -v`
 Expected: FAIL — `DID NOT WARN`.
 
 - [ ] **Step 3: Implement**
@@ -741,13 +741,13 @@ Add `import warnings` to imports.
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_polyprism_loft_failure.py meshwell/tests/test_prism.py meshwell/tests/test_buffers_prism.py -v && uv run pytest meshwell/tests -q`
+Run: `uv run pytest tests/test_polyprism_loft_failure.py tests/test_prism.py tests/test_buffers_prism.py -v && uv run pytest tests -q`
 Expected: PASS; no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/polyprism.py meshwell/tests/test_polyprism_loft_failure.py
+git add meshwell/polyprism.py tests/test_polyprism_loft_failure.py
 git commit -m "fix(polyprism): warn when a thru-sections loft drops a volume"
 ```
 
@@ -759,12 +759,12 @@ git commit -m "fix(polyprism): warn when a thru-sections loft drops a volume"
 
 **Files:**
 - Modify: `meshwell/import_gds.py` (whole file is 65 lines)
-- Test: `meshwell/tests/test_from_gds.py` (append)
+- Test: `tests/test_from_gds.py` (append)
 
 **Interfaces:**
 - Produces: `gdstk_to_shapely(cell, layer_tuple)` and `read_gds_layers(gds_file, cell_name=None, layers=None)` keep their signatures but see referenced-subcell polygons and path geometry (gdstk's `get_polygons(depth=None, include_paths=True)` resolves both).
 
-- [ ] **Step 1: Write the failing test** (append to `meshwell/tests/test_from_gds.py`)
+- [ ] **Step 1: Write the failing test** (append to `tests/test_from_gds.py`)
 
 ```python
 import gdstk
@@ -810,7 +810,7 @@ def test_missing_top_cell_raises_value_error(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_from_gds.py -v -k "subcell or path_layers or missing_top"`
+Run: `uv run pytest tests/test_from_gds.py -v -k "subcell or path_layers or missing_top"`
 Expected: subcell test FAILS (area 1.0 not 2.0); path test FAILS (empty geometry); missing-top test FAILS (`IndexError` not `ValueError`).
 
 - [ ] **Step 3: Implement**
@@ -864,13 +864,13 @@ and in `read_gds_layers`:
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_from_gds.py -v && uv run pytest meshwell/tests -q`
+Run: `uv run pytest tests/test_from_gds.py -v && uv run pytest tests -q`
 Expected: PASS (old flat-GDS tests must still pass — `get_polygons` on a flat cell returns the same set); no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/import_gds.py meshwell/tests/test_from_gds.py
+git add meshwell/import_gds.py tests/test_from_gds.py
 git commit -m "fix(import_gds): resolve cell hierarchy and paths
 
 cell.polygons only held the cell's own polygons; referenced subcells
@@ -885,7 +885,7 @@ were silently dropped and path layers imported as empty."
 
 **Files:**
 - Modify: `meshwell/_mesh_entity.py:174-216`
-- Test: `meshwell/tests/test_mesh_entity_filters.py` (create)
+- Test: `tests/test_mesh_entity_filters.py` (create)
 
 **Interfaces:**
 - Consumes: `_MeshEntity` with `self.tags` (list[int]), `self.boundaries` (list[int] attribute), `self.dim`, `self.model` (gmsh model object).
@@ -970,7 +970,7 @@ def test_target_above_dim_warns_and_returns_empty(box_entity):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_mesh_entity_filters.py -v`
+Run: `uv run pytest tests/test_mesh_entity_filters.py -v`
 Expected: `points_from_volume` and `points_from_surface` FAIL (curves returned); `target_above_dim` FAILS with `UnboundLocalError` for dim 1 → target 3.
 
 - [ ] **Step 3: Implement**
@@ -1023,13 +1023,13 @@ Replace the body of `filter_tags_by_target_dimension` (keep signature and docstr
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_mesh_entity_filters.py meshwell/tests/test_resolution.py meshwell/tests/test_lines_circles_resolution.py -v && uv run pytest meshwell/tests -q`
+Run: `uv run pytest tests/test_mesh_entity_filters.py tests/test_resolution.py tests/test_lines_circles_resolution.py -v && uv run pytest tests -q`
 Expected: PASS; no new failures vs. baseline. If a resolution test changes behavior, it is because point-targeted specs previously matched curve tags — inspect and confirm the new behavior is the documented one before adjusting any test.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/_mesh_entity.py meshwell/tests/test_mesh_entity_filters.py
+git add meshwell/_mesh_entity.py tests/test_mesh_entity_filters.py
 git commit -m "fix(_mesh_entity): return points (not curves) for target dim 0
 
 Also removes the UnboundLocalError path for target dims more than one
@@ -1044,7 +1044,7 @@ above the entity's."
 
 **Files:**
 - Modify: `meshwell/_mesh_entity.py:360, 405-423`
-- Test: `meshwell/tests/test_mesh_entity_filters.py` (append)
+- Test: `tests/test_mesh_entity_filters.py` (append)
 
 **Interfaces:**
 - Consumes: Task 9's test file.
@@ -1072,7 +1072,7 @@ def test_no_substring_matching():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest meshwell/tests/test_mesh_entity_filters.py -v -k name_set`
+Run: `uv run pytest tests/test_mesh_entity_filters.py -v -k name_set`
 Expected: ImportError (`entity_name_set` does not exist).
 
 - [ ] **Step 3: Implement**
@@ -1100,13 +1100,13 @@ Then in the sharing-resolution method:
 
 - [ ] **Step 4: Run tests**
 
-Run: `uv run pytest meshwell/tests/test_mesh_entity_filters.py meshwell/tests/test_resolution.py meshwell/tests/test_interface_tag.py -v && uv run pytest meshwell/tests -q`
+Run: `uv run pytest tests/test_mesh_entity_filters.py tests/test_resolution.py tests/test_interface_tag.py -v && uv run pytest tests -q`
 Expected: PASS; no new failures vs. baseline.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add meshwell/_mesh_entity.py meshwell/tests/test_mesh_entity_filters.py
+git add meshwell/_mesh_entity.py tests/test_mesh_entity_filters.py
 git commit -m "fix(_mesh_entity): exact-name matching in legacy sharing fallback
 
 Per-character/substring matching made 'metal' match 'metal2'; the
@@ -1117,6 +1117,6 @@ fallback also now only triggers when no reverse index was built at all."
 
 ## Final verification (orchestrator, after Task 10)
 
-- [ ] `uv run pytest meshwell/tests -q` — compare against `2026-07-03-wp1-baseline-failures.txt`; require no new failures.
+- [ ] `uv run pytest tests -q` — compare against `2026-07-03-wp1-baseline-failures.txt`; require no new failures.
 - [ ] `git log --oneline` shows one commit per task.
 - [ ] Run superpowers:requesting-code-review on the WP1 diff before starting WP2.
