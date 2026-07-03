@@ -91,5 +91,34 @@ def test_hole_covering_exterior_warns_and_skips():
         gmsh.model.remove()
 
 
+def test_degenerate_exterior_skips_interior_creation():
+    """A zero exterior must short-circuit BEFORE any interior surface is built.
+
+    Otherwise interior addPlaneSurface results are orphaned in the gmsh model
+    (never cut, never removed) and silently picked up by mesh generation.
+    """
+    from shapely.geometry import Polygon
+
+    from meshwell.polysurface import PolySurface
+
+    polygon = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[[(2, 2), (8, 2), (8, 8), (2, 8)]],
+    )
+    ps = PolySurface(polygons=polygon, physical_name="degenerate_exterior")
+
+    calls = []
+
+    def fake_create_surface_from_vertices(vertices, **kwargs):  # noqa: ARG001
+        calls.append(vertices)
+        return 0  # first call = exterior degenerates to 0
+
+    ps._create_surface_from_vertices = fake_create_surface_from_vertices
+
+    assert ps._create_surface_with_holes(ps.polygons[0]) == 0
+    # Only the exterior call happened; interior creation was never reached.
+    assert len(calls) == 1
+
+
 if __name__ == "__main__":
     test_coinciding_polysurface()

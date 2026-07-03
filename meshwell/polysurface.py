@@ -98,6 +98,11 @@ class PolySurface(GeometryEntity):
             arc_tolerance=self.arc_tolerance,
         )
 
+        # A degenerate exterior cannot host holes; bail out before creating
+        # interior surfaces that would otherwise be orphaned in the model.
+        if exterior == 0:
+            return 0
+
         # Create interior surfaces (holes)
         interior_surfaces = []
         for interior in polygon.interiors:
@@ -112,10 +117,6 @@ class PolySurface(GeometryEntity):
             )
             if interior_surface != 0:
                 interior_surfaces.append(interior_surface)
-
-        # A degenerate exterior cannot host holes.
-        if exterior == 0:
-            return 0
 
         # Cut holes from exterior surface
         for interior_surface in interior_surfaces:
