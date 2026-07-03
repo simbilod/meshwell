@@ -25,6 +25,39 @@ from shapely.geometry import MultiPolygon, Polygon, box
 from meshwell.interface_tag import InterfaceTag
 
 
+def normalize_mesh_order(mo: float | None) -> float:
+    """Map ``None`` mesh_order to +inf so unset entities sort last.
+
+    Shared by cad_gmsh and cad_occ at every sort key / cut-priority
+    comparison site so "unset mesh_order" has one meaning across both
+    backends.
+    """
+    return float("inf") if mo is None else mo
+
+
+def resolve_piece_ownership(
+    piece_candidates: dict[Any, list[tuple[int, float]]],
+) -> dict[Any, int]:
+    """Pick the owning entity index for each fragment piece.
+
+    Rule: lowest ``mesh_order`` wins; first candidate in insertion order
+    wins on tie. Single source of truth for cad_gmsh and cad_occ, whose
+    fragment-then-resolve pipelines both build a
+    ``piece -> [(entity_index, mesh_order), ...]`` candidate map and call
+    this to invert it into ``piece -> owning entity_index``.
+    """
+    owners: dict[Any, int] = {}
+    for piece, candidates in piece_candidates.items():
+        best_idx = candidates[0][0]
+        best_mo = candidates[0][1]
+        for idx, mo in candidates[1:]:
+            if mo < best_mo:
+                best_idx = idx
+                best_mo = mo
+        owners[piece] = best_idx
+    return owners
+
+
 def prepare_entities(
     entities_list: list[Any],
     perturbation: float,

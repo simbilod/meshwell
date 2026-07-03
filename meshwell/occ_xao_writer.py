@@ -51,14 +51,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Builder
-from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepTools import BRepTools
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound
 from OCP.TopTools import TopTools_IndexedMapOfShape, TopTools_ShapeMapHasher
+
+from meshwell.occ_util import shape_bbox as _shape_aabb
 
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
@@ -192,15 +192,6 @@ def _leaf_subshapes(shape, dim):
             seen.add(key)
             yield sub, key
         exp.Next()
-
-
-def _shape_aabb(shape) -> tuple[float, ...] | None:
-    """Return the (xmin, ymin, zmin, xmax, ymax, zmax) AABB or None if void."""
-    box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
-    if box.IsVoid():
-        return None
-    return box.Get()
 
 
 # MANUAL_NOTE: revise use of synthetic physical group for structured tags

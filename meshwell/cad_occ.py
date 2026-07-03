@@ -42,10 +42,8 @@ from dataclasses import dataclass
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
 
-from OCP.Bnd import Bnd_Box
 from OCP.BOPAlgo import BOPAlgo_Builder
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 from OCP.TopAbs import (
     TopAbs_EDGE,
@@ -58,7 +56,9 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
-from meshwell.cad_common import prepare_entities
+from meshwell.cad_common import normalize_mesh_order, prepare_entities
+from meshwell.cad_common import resolve_piece_ownership as _resolve_piece_ownership
+from meshwell.occ_util import shape_bbox
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -94,26 +94,6 @@ def _shape_key(shape: TopoDS_Shape) -> tuple[int, int]:
     hashes on the underlying ``TShape*`` pointer instead.
     """
     return (_SHAPE_HASHER(shape), int(shape.Orientation()))
-
-
-def _resolve_piece_ownership(
-    piece_candidates: dict[Any, list[tuple[int, float]]],
-) -> dict[Any, int]:
-    """Pick the owning entity index for each fragment piece.
-
-    Rule: lowest ``mesh_order`` wins; first candidate in insertion order
-    wins on tie. Matches :func:`meshwell.cad_gmsh._resolve_piece_ownership`.
-    """
-    owners: dict[Any, int] = {}
-    for piece, candidates in piece_candidates.items():
-        best_idx = candidates[0][0]
-        best_mo = candidates[0][1]
-        for idx, mo in candidates[1:]:
-            if mo < best_mo:
-                best_idx = idx
-                best_mo = mo
-        owners[piece] = best_idx
-    return owners
 
 
 class CAD_OCC:
@@ -204,19 +184,6 @@ class CAD_OCC:
             out.append(exp.Current())
             exp.Next()
         return out if out else [shape]
-
-    def _shape_bbox(
-        self, shape: TopoDS_Shape
-    ) -> tuple[float, float, float, float, float, float] | None:
-        """Return (xmin, ymin, zmin, xmax, ymax, zmax) bounding box of shape.
-
-        Returns ``None`` for void / empty shapes.
-        """
-        box = Bnd_Box()
-        BRepBndLib.Add_s(shape, box)
-        if box.IsVoid():
-            return None
-        return box.Get()
 
     def _shapes_actually_overlap(self, s1: TopoDS_Shape, s2: TopoDS_Shape) -> bool:
         """Return True iff two shapes are within ``cut_fuzzy_value`` of touching.
@@ -380,9 +347,7 @@ class CAD_OCC:
                 leave=False,
             )
         ):
-            mo = ent.mesh_order
-            if mo is None:
-                mo = float("inf")
+            mo = normalize_mesh_order(ent.mesh_order)
             for original in originals_per_entity[ent_idx]:
                 modified = builder.Modified(original)
                 if modified.IsEmpty() and not builder.IsDeleted(original):
@@ -446,7 +411,7 @@ class CAD_OCC:
         indexed = list(enumerate(entities_list))
         indexed.sort(
             key=lambda pair: (
-                pair[1].mesh_order if pair[1].mesh_order is not None else float("inf"),
+                normalize_mesh_order(pair[1].mesh_order),
                 pair[0],
             )
         )
@@ -473,17 +438,13 @@ class CAD_OCC:
             # material is removed (OCC always performs a full BOP).
             # MANUAL_NOTE: investigate returning cut object if cut result is None
             # instead of bbox checks (although we have made them cheap)
-            obj_bboxes = [
-                b for s in labeled.shapes if (b := self._shape_bbox(s)) is not None
-            ]
+            obj_bboxes = [b for s in labeled.shapes if (b := shape_bbox(s)) is not None]
             tool_shapes: list[TopoDS_Shape] = []
-            l_ord = (
-                labeled.mesh_order if labeled.mesh_order is not None else float("inf")
-            )
+            l_ord = normalize_mesh_order(labeled.mesh_order)
             for prev in instantiated:
                 if prev is None or prev.dim != labeled.dim:
                     continue
-                p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
+                p_ord = normalize_mesh_order(prev.mesh_order)
                 if p_ord >= l_ord:
                     continue
                 # SKIP: if either side is a cohort, the cut is unsafe and
@@ -501,7 +462,7 @@ class CAD_OCC:
                     # priority cohort mesh order
                     continue
                 for ts in prev.shapes:
-                    tb = self._shape_bbox(ts)
+                    tb = shape_bbox(ts)
                     if tb is None:
                         continue
                     if not any(self._bboxes_overlap(ob, tb) for ob in obj_bboxes):

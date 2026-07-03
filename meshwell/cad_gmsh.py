@@ -43,7 +43,8 @@ from typing import Any
 import gmsh
 from tqdm.auto import tqdm
 
-from meshwell.cad_common import prepare_entities
+from meshwell.cad_common import normalize_mesh_order, prepare_entities
+from meshwell.cad_common import resolve_piece_ownership as _resolve_piece_ownership
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
 
@@ -69,27 +70,6 @@ class GMSHLabeledEntity:
     keep: bool
     dim: int
     mesh_order: float | None = None
-
-
-def _resolve_piece_ownership(
-    piece_candidates: dict[Any, list[tuple[int, float]]],
-) -> dict[Any, int]:
-    """Pick the owning entity index for each fragment piece.
-
-    Rule: lowest ``mesh_order`` wins. On tie, first candidate in
-    insertion order wins. Matches :func:`cad_occ._resolve_piece_ownership`
-    exactly so the two backends give identical ownership outcomes.
-    """
-    owners: dict[Any, int] = {}
-    for piece, candidates in piece_candidates.items():
-        best_idx = candidates[0][0]
-        best_mo = candidates[0][1]
-        for idx, mo in candidates[1:]:
-            if mo < best_mo:
-                best_idx = idx
-                best_mo = mo
-        owners[piece] = best_idx
-    return owners
 
 
 class CAD_GMSH:
@@ -237,9 +217,7 @@ class CAD_GMSH:
             )
         ):
             ent_idx = provenance[i]
-            mo = entities[ent_idx].mesh_order
-            if mo is None:
-                mo = float("inf")
+            mo = normalize_mesh_order(entities[ent_idx].mesh_order)
             for piece in pieces:
                 # gmsh returns pieces as (dim, tag) tuples. Force to a
                 # hashable tuple so dict keys are deterministic.
@@ -445,7 +423,7 @@ class CAD_GMSH:
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
         indexed_entities.sort(
             key=lambda x: (
-                x[0].mesh_order if x[0].mesh_order is not None else float("inf"),
+                normalize_mesh_order(x[0].mesh_order),
                 x[1],
             )
         )
@@ -462,20 +440,12 @@ class CAD_GMSH:
             # the final fragment resolves tie ownership by insertion order,
             # so the earlier-declared entity wins the shared overlap).
             if labeled_ent.dimtags:
-                l_ord = (
-                    labeled_ent.mesh_order
-                    if labeled_ent.mesh_order is not None
-                    else float("inf")
-                )
+                l_ord = normalize_mesh_order(labeled_ent.mesh_order)
                 all_tool_dimtags = []
                 for prev_ent in instantiated_entities:
                     if prev_ent.dim != labeled_ent.dim or not prev_ent.dimtags:
                         continue
-                    p_ord = (
-                        prev_ent.mesh_order
-                        if prev_ent.mesh_order is not None
-                        else float("inf")
-                    )
+                    p_ord = normalize_mesh_order(prev_ent.mesh_order)
                     if p_ord >= l_ord:
                         continue
                     all_tool_dimtags.extend(prev_ent.dimtags)
