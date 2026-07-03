@@ -1,0 +1,1 @@
+# Baseline at 3354b47 (2026-07-03): fully green - 341 passed, 7 skipped, 0 failures. Any failure after this point is a regression.
