@@ -209,13 +209,13 @@ class EdgeRegistry:
             if seg.is_arc:
                 start = pts[0]
                 end = pts[-1]
-                is_closed = self.vertices._key(
-                    start[0], start[1], z
-                ) == self.vertices._key(end[0], end[1], z)
+                is_closed = ring_is_closed(
+                    (start[0], start[1]), (end[0], end[1]), self.point_tolerance
+                )
                 if is_closed:
-                    mid_idx = len(pts) // 2
-                    quarter_idx = len(pts) // 4
-                    three_quarter_idx = (len(pts) * 3) // 4
+                    quarter_idx, mid_idx, three_quarter_idx = closed_arc_split_indices(
+                        len(pts)
+                    )
                     edges.append(
                         self.arc_xy(
                             (pts[0][0], pts[0][1]),
@@ -360,6 +360,29 @@ class FaceRegistry:
         return self._store[key]
 
 
+def closed_arc_split_indices(n_pts: int) -> tuple[int, int, int]:
+    """Return (q1, mid, q3) point indices splitting a closed arc run in two.
+
+    The horizontal-face emission path and the lateral-face flattening path
+    MUST both use these indices: EdgeRegistry.arc_xy's cache key includes
+    the quantized mid point, so divergent midpoints create duplicate
+    coincident OCC edges for the same physical half-circle.
+    """
+    return n_pts // 4, n_pts // 2, (n_pts * 3) // 4
+
+
+def ring_is_closed(
+    start_xy: tuple[float, float],
+    end_xy: tuple[float, float],
+    point_tolerance: float,
+) -> bool:
+    """True if start/end quantize to the same key (VertexRegistry._key convention)."""
+    s = point_tolerance
+    return round(start_xy[0] / s) == round(end_xy[0] / s) and round(
+        start_xy[1] / s
+    ) == round(end_xy[1] / s)
+
+
 @dataclass(frozen=True)
 class _PolylineSegment:
     """One segment of a 2D polyline: a straight line or a circular arc.
@@ -441,15 +464,10 @@ def _flatten_decomposition_to_polyline_segments(
         if seg.is_arc:
             start_xy = (pts[0][0], pts[0][1])
             end_xy = (pts[-1][0], pts[-1][1])
-            mid_idx = len(pts) // 2
-            if (
-                abs(start_xy[0] - end_xy[0]) < point_tolerance
-                and abs(start_xy[1] - end_xy[1]) < point_tolerance
-            ):
+            if ring_is_closed(start_xy, end_xy, point_tolerance):
                 # Full-circle: split into two half-arcs so each maps to a
                 # well-defined ``GC_MakeArcOfCircle`` build downstream.
-                q1_idx = mid_idx // 2
-                q3_idx = (mid_idx + len(pts) - 1) // 2
+                q1_idx, mid_idx, q3_idx = closed_arc_split_indices(len(pts))
                 mid_xy = (pts[mid_idx][0], pts[mid_idx][1])
                 out.append(
                     _PolylineSegment(
@@ -468,6 +486,7 @@ def _flatten_decomposition_to_polyline_segments(
                     )
                 )
             else:
+                mid_idx = len(pts) // 2
                 out.append(
                     _PolylineSegment(
                         kind="arc",
