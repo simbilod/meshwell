@@ -1,6 +1,7 @@
 """Gmsh polyprism definitions."""
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import gmsh
@@ -214,9 +215,19 @@ class PolyPrism(GeometryEntity):
             gmsh.model.occ.synchronize()
             if volume_dimtags and volume_dimtags[0][0] == 3:
                 return volume_dimtags[0][1]
-        except Exception:
+        except Exception as e:
+            warnings.warn(
+                f"addThruSections failed for PolyPrism {self.physical_name}: {e}; "
+                f"this volume is DROPPED from the model.",
+                stacklevel=2,
+            )
             return 0
 
+        warnings.warn(
+            f"addThruSections produced no volume for PolyPrism "
+            f"{self.physical_name}; this volume is DROPPED from the model.",
+            stacklevel=2,
+        )
         return 0
 
     def xy_surface_vertices(
