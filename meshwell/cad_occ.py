@@ -29,6 +29,7 @@ exactly; tests that pin one pin the other.
 """
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
@@ -526,23 +527,32 @@ class CAD_OCC:
                 # is parallelization...
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
-                    try:
-                        result = s
-                        for ts in tool_shapes:
-                            cut_op = BRepAlgoAPI_Cut(result, ts)
-                            cut_op.SetFuzzyValue(self.cut_fuzzy_value)
-                            cut_op.Build()
-                            result = cut_op.Shape()
-                    except Exception as e:  # pragma: no cover -- defensive
-                        print(
-                            f"Warning: BRepAlgoAPI_Cut failed for entity "
-                            f"{orig_idx}: {e}"
-                        )
-                        result = s
-                    if result is not None:
-                        # Flatten compound wrapper so BOPAlgo_Builder.Modified()
-                        # in the final fragment pass tracks sub-shape provenance.
-                        new_shapes.extend(self._unwrap_shape(result, labeled.dim))
+                    result = s
+                    for ts in tool_shapes:
+                        cut_op = BRepAlgoAPI_Cut(result, ts)
+                        cut_op.SetFuzzyValue(self.cut_fuzzy_value)
+                        cut_op.Build()
+                        if not cut_op.IsDone():
+                            warnings.warn(
+                                f"BRepAlgoAPI_Cut failed (not done) for entity "
+                                f"{orig_idx} ({labeled.physical_name}); keeping "
+                                f"uncut shape for this tool.",
+                                stacklevel=2,
+                            )
+                            continue
+                        shape = cut_op.Shape()
+                        if shape is None or shape.IsNull():
+                            warnings.warn(
+                                f"BRepAlgoAPI_Cut returned a null shape for entity "
+                                f"{orig_idx} ({labeled.physical_name}); keeping "
+                                f"uncut shape for this tool.",
+                                stacklevel=2,
+                            )
+                            continue
+                        result = shape
+                    # Flatten compound wrapper so BOPAlgo_Builder.Modified()
+                    # in the final fragment pass tracks sub-shape provenance.
+                    new_shapes.extend(self._unwrap_shape(result, labeled.dim))
                 labeled.shapes = new_shapes
 
             instantiated[orig_idx] = labeled
