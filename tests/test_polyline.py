@@ -148,5 +148,25 @@ def test_polyline_multilinestring():
     compare_gmsh_files(Path("test_polyline_multilinestring.msh"))
 
 
+def test_instanciate_filters_zero_wire_tags(monkeypatch):
+    """A degenerate linestring must not leak a (1, 0) dimtag."""
+    import gmsh
+    from shapely.geometry import LineString
+
+    from meshwell.polyline import PolyLine
+
+    pl = PolyLine(linestrings=[LineString([(0, 0), (1, 1)])], physical_name="pl")
+    monkeypatch.setattr(pl, "_create_wire_from_linestring", lambda _ls: 0)
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+    gmsh.model.add("zero_wire_test")
+    try:
+        dimtags = pl.instanciate()
+        assert (1, 0) not in dimtags
+        assert dimtags == []
+    finally:
+        gmsh.model.remove()
+
+
 if __name__ == "__main__":
     test_polyline_basic()

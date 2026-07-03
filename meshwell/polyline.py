@@ -155,7 +155,8 @@ class PolyLine(GeometryEntity):
         wires = []
         for linestring in self.linestrings:
             wire_id = self._create_wire_from_linestring(linestring)
-            wires.append(wire_id)
+            if wire_id != 0:
+                wires.append(wire_id)
 
         dimtags = [(1, wire) for wire in wires]
         rotation_point = self._get_rotation_point(self.linestrings)
@@ -198,21 +199,10 @@ class PolyLine(GeometryEntity):
             Dictionary containing serializable entity data
         """
         import shapely.wkt
-        from shapely.geometry import MultiLineString
 
-        if isinstance(self.linestrings, MultiLineString):
-            linestrings_wkt = [
-                shapely.wkt.dumps(ls, rounding_precision=12)
-                for ls in self.linestrings.geoms
-            ]
-        elif isinstance(self.linestrings, list):
-            linestrings_wkt = [
-                shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings
-            ]
-        else:
-            linestrings_wkt = [
-                shapely.wkt.dumps(self.linestrings, rounding_precision=12)
-            ]
+        linestrings_wkt = [
+            shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings
+        ]
 
         return {
             "type": "PolyLine",

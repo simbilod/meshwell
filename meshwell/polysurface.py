@@ -212,18 +212,10 @@ class PolySurface(GeometryEntity):
             Dictionary containing serializable entity data
         """
         import shapely.wkt
-        from shapely.geometry import MultiPolygon
 
-        if isinstance(self.polygons, MultiPolygon):
-            polygons_wkt = [
-                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
-            ]
-        elif isinstance(self.polygons, list):
-            polygons_wkt = [
-                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons
-            ]
-        else:
-            polygons_wkt = [shapely.wkt.dumps(self.polygons, rounding_precision=12)]
+        polygons_wkt = [
+            shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons
+        ]
 
         return {
             "type": "PolySurface",
