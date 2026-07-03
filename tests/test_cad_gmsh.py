@@ -236,3 +236,31 @@ def test_cad_gmsh_perturbation_below_or_equal_point_tolerance():
             assert abs(ymax - 1.0) < 2 * point_tol, ymax
     finally:
         mm.finalize()
+
+
+def test_prepared_flag_skips_double_buffering(monkeypatch):
+    """prepared=True must not re-run prepare_entities (double buffer compounds)."""
+    from shapely.geometry import Polygon
+
+    import meshwell.cad_gmsh as cad_gmsh_mod
+    from meshwell.cad_gmsh import CAD_GMSH
+    from meshwell.polysurface import PolySurface
+
+    calls = []
+    real = cad_gmsh_mod.prepare_entities
+    monkeypatch.setattr(
+        cad_gmsh_mod,
+        "prepare_entities",
+        lambda *a, **k: (calls.append(1), real(*a, **k))[1],
+    )
+    ent = [
+        PolySurface(
+            polygons=Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]), physical_name="a"
+        )
+    ]
+    proc = CAD_GMSH()
+    try:
+        proc.process_entities(ent, prepared=True)
+    finally:
+        proc.model_manager.finalize()
+    assert calls == [], "prepare_entities ran despite prepared=True"

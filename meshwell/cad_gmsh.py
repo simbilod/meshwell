@@ -407,12 +407,18 @@ class CAD_GMSH:
         progress_bars: bool = False,
         interface_delimiter: str = "___",
         boundary_delimiter: str = "None",
+        prepared: bool = False,
     ) -> list[GMSHLabeledEntity]:
         """Instantiate, fragment, and tag ``entities_list`` in gmsh.
 
         The gmsh model is populated with physicals by the time this
         returns; the returned :class:`GMSHLabeledEntity` list is provided
         for introspection (ownership checks, tests, plotting).
+
+        When ``prepared=True`` the caller has already invoked
+        :func:`meshwell.cad_common.prepare_entities` on the list (mirrors
+        ``CAD_OCC.process_entities``'s ``prepared`` flag). In that case the
+        internal call is skipped; ``prepare_entities`` is NOT idempotent.
         """
         if not entities_list:
             return []
@@ -424,11 +430,12 @@ class CAD_GMSH:
         # enough to produce non-degenerate panels (at least 2*point_tolerance
         # in each direction). The polygon perturbation (which can be
         # sub-tolerance) only shifts the boundary position, not the strip width.
-        prepare_entities(
-            entities_list,
-            perturbation=self.perturbation,
-            resolve_snap=max(self.perturbation, self.point_tolerance),
-        )
+        if not prepared:
+            prepare_entities(
+                entities_list,
+                perturbation=self.perturbation,
+                resolve_snap=max(self.perturbation, self.point_tolerance),
+            )
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
         indexed_entities = [(ent, i) for i, ent in enumerate(entities_list)]
