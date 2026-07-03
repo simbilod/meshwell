@@ -13,6 +13,7 @@ import shapely
 from shapely.geometry import Polygon
 from shapely.ops import polygonize, unary_union
 
+from meshwell.cad_common import normalize_mesh_order
 from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.exceptions import CanonicalArrangementError
 from meshwell.structured.types import (
@@ -32,7 +33,7 @@ def _policy_b_key(slab: StructuredSlab) -> tuple[float, int]:
     A ``None`` mesh_order sorts last (treated as +inf).
     """
     return (
-        slab.mesh_order if slab.mesh_order is not None else float("inf"),
+        normalize_mesh_order(slab.mesh_order),
         slab.source_index,
     )
 

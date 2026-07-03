@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from OCP.TopoDS import TopoDS_Compound
 
+from meshwell.cad_common import normalize_mesh_order
 from meshwell.structured.types import Cohort, ShapeKey, SlabMeta
 
 
@@ -34,10 +35,7 @@ class _CohortEntity:
 
     @property
     def mesh_order(self) -> float:
-        return min(
-            (s.mesh_order if s.mesh_order is not None else float("inf"))
-            for s in self.cohort.slabs
-        )
+        return min(normalize_mesh_order(s.mesh_order) for s in self.cohort.slabs)
 
     @property
     def physical_name(self) -> tuple[str, ...]:

@@ -78,7 +78,7 @@ class CAD_GMSH:
     def __init__(
         self,
         point_tolerance: float = 1e-3,
-        n_threads: int = cpu_count(),
+        n_threads: int | None = None,
         filename: str = "temp",
         model: ModelManager | None = None,
         perturbation: float | None = None,
@@ -124,7 +124,7 @@ class CAD_GMSH:
             self.model_manager = model
             self._owns_model = False
         self.point_tolerance = point_tolerance
-        self.n_threads = n_threads
+        self.n_threads = n_threads if n_threads is not None else (cpu_count() or 1)
 
     # ``self.model_manager.model`` is the ``gmsh.model`` object; we keep a
     # compatibility alias so entity ``instanciate(cad_model)`` calls that
@@ -501,7 +501,7 @@ def _add_physical_group(name: str, dimtags) -> None:
 def cad_gmsh(
     entities_list: list[Any],
     point_tolerance: float = 1e-3,
-    n_threads: int = cpu_count(),
+    n_threads: int | None = None,
     progress_bars: bool = False,
     filename: str = "temp",
     model: ModelManager | None = None,

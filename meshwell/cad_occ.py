@@ -102,7 +102,7 @@ class CAD_OCC:
     def __init__(
         self,
         point_tolerance: float = 1e-3,
-        n_threads: int = cpu_count(),
+        n_threads: int | None = None,
         cut_fuzzy_value: float | None = None,
         fragment_fuzzy_value: float | None = None,
         perturbation: float | None = None,
@@ -134,7 +134,7 @@ class CAD_OCC:
                 + InterfaceTag snap distance).
         """
         self.point_tolerance = point_tolerance
-        self.n_threads = n_threads
+        self.n_threads = n_threads if n_threads is not None else (cpu_count() or 1)
         self.perturbation = perturbation if perturbation is not None else 1e-5
         self.cut_fuzzy_value = (
             self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
@@ -568,7 +568,7 @@ class CAD_OCC:
 def cad_occ(
     entities_list: list[Any],
     point_tolerance: float = 1e-3,
-    n_threads: int = cpu_count(),
+    n_threads: int | None = None,
     progress_bars: bool = False,
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,

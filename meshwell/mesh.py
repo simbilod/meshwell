@@ -45,7 +45,7 @@ class Mesh:
 
     def __init__(
         self,
-        n_threads: int = cpu_count(),
+        n_threads: int | None = None,
         filename: str = "temp",
         model: ModelManager | None = None,
         point_tolerance: float | None = None,
@@ -59,10 +59,13 @@ class Mesh:
             point_tolerance: Optional point tolerance for the model
 
         """
+        # Resolve n_threads at call time
+        resolved_n_threads = n_threads if n_threads is not None else (cpu_count() or 1)
+
         # Use provided model or create new one
         if model is None:
             self.model_manager = ModelManager(
-                n_threads=n_threads,
+                n_threads=resolved_n_threads,
                 filename=filename,
                 point_tolerance=point_tolerance,
             )
@@ -398,9 +401,9 @@ class Mesh:
     def process_mesh(
         self,
         dim: int,
-        global_3D_algorithm: int,
+        global_3D_algorithm: int,  # noqa: ARG002
         global_scaling: float,
-        verbosity: int,
+        verbosity: int,  # noqa: ARG002
         optimization_flags: tuple[tuple[str, int]] | None,
         pre_2d_hook: Callable[[], None] | None = None,
         pre_3d_hook: Callable[[], None] | None = None,
@@ -416,9 +419,6 @@ class Mesh:
         """
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
         gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 1e-5)
-
-        if global_3D_algorithm == 1 and verbosity:
-            gmsh.logger.start()
 
         if dim >= 2 and (
             pre_2d_hook is not None
@@ -611,7 +611,7 @@ def mesh(
     verbosity: int | None = 0,
     optimization_flags: tuple[tuple[str, int]] | None = None,
     boundary_delimiter: str = "None",
-    n_threads: int = cpu_count(),
+    n_threads: int | None = None,
     filename: str = "temp",
     model: ModelManager | None = None,
     point_tolerance: float | None = None,

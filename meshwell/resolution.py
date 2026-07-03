@@ -305,7 +305,7 @@ class ThresholdField(SampledField):
             )
             model.mesh.field.setNumber(threshold_field_index, "SizeMin", self.sizemin)
             model.mesh.field.setNumber(threshold_field_index, "DistMin", self.distmin)
-            if self.sizemax and self.distmax:
+            if self.sizemax is not None and self.distmax is not None:
                 model.mesh.field.setNumber(
                     threshold_field_index, "SizeMax", self.sizemax
                 )
@@ -458,9 +458,9 @@ class DirectSizeSpecification(ResolutionSpec):
         sizes = r_data[:, 3]
 
         # 2. Clamp sizes
-        if self.min_size:
+        if self.min_size is not None:
             sizes = np.maximum(sizes, self.min_size)
-        if self.max_size:
+        if self.max_size is not None:
             sizes = np.minimum(sizes, self.max_size)
 
         # 3. Create PostView In-Memory

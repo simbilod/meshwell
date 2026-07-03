@@ -119,7 +119,7 @@ class Remesher:
 
     def __init__(
         self,
-        n_threads: int = cpu_count(),
+        n_threads: int | None = None,
         filename: str = "temp_remesh",
         model: ModelManager | None = None,
         verbosity: int = 0,
@@ -132,13 +132,14 @@ class Remesher:
             model: Optional Model instance to use (creates new if None)
             verbosity: Verbosity level
         """
-        self.n_threads = n_threads
+        resolved_n_threads = n_threads if n_threads is not None else (cpu_count() or 1)
+        self.n_threads = resolved_n_threads
         self.verbosity = verbosity
 
         # Use provided model or create new one
         if model is None:
             self.model_manager = ModelManager(
-                n_threads=n_threads,
+                n_threads=resolved_n_threads,
                 filename=filename,
             )
             self._owns_model = True
@@ -514,7 +515,7 @@ class RemeshMMG(Remesher):
         self,
         mmg_executable: str = "mmg2d_O3",
         verbosity: int = 0,
-        n_threads: int = cpu_count(),
+        n_threads: int | None = None,
         filename: str = "temp_remesh_mmg",
         model: ModelManager | None = None,
     ):
@@ -770,7 +771,7 @@ def remesh_gmsh(
     mesh_element_order: int = 1,
     optimization_flags: tuple[tuple[str, int]] | None = None,
     verbosity: int = 0,
-    n_threads: int = cpu_count(),
+    n_threads: int | None = None,
     filename: str = "temp_remesh",
     model: ModelManager | None = None,
     default_characteristic_length: float = 1.0,
@@ -824,7 +825,7 @@ def remesh_mmg(
 def compute_total_size_map(
     input_mesh: Path | meshio.Mesh | ModelManager,
     strategies: list[RemeshingStrategy],
-    n_threads: int = cpu_count(),
+    n_threads: int | None = None,
     verbosity: int = 0,
 ) -> np.ndarray:
     """Compute the combined size map from multiple strategies without remeshing."""

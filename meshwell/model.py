@@ -18,7 +18,7 @@ class ModelManager:
 
     def __init__(
         self,
-        n_threads: int = cpu_count(),
+        n_threads: int | None = None,
         filename: str = "temp",
         point_tolerance: float | None = 1e-3,
         geometry_tolerance: float | None = None,
@@ -44,7 +44,7 @@ class ModelManager:
                 face resolution without raising the vertex-snap threshold.
 
         """
-        self.n_threads = n_threads
+        self.n_threads = n_threads if n_threads is not None else (cpu_count() or 1)
         self.filename = Path(filename)
         self.point_tolerance = point_tolerance
         if geometry_tolerance is not None:
