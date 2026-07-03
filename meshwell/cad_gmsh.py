@@ -368,6 +368,10 @@ class CAD_GMSH:
                 if other.index == ent.index:
                     continue
                 others |= boundary_of[other.index]
+            # NOTE: same_material_interfaces is a subset of others (a shared
+            # face is by definition in the neighbour's boundary), so this
+            # subtraction is redundant -- kept for readability and parity
+            # with the OCC writer.
             exterior = my_bnd - others - same_material_interfaces - lower_dim_dimtags
 
             if not exterior:

@@ -75,6 +75,10 @@ A () default reached resolution_specs.get() and raised AttributeError."
 
 ### Task 2: Normalize `PolyPrism.polygons` to a flat list + clear empty-buffers error
 
+> **SUPERSEDED as implemented:** the flat-list target broke the structured pipeline
+> (footprint must be a shapely geometry). Landed as normalize-to-**MultiPolygon**
+> instead — see `.superpowers/sdd/progress.md` and commit `07523f0`.
+
 **Model:** sonnet
 
 **Files:**
@@ -428,6 +432,10 @@ git commit -m "fix(visualization): guard plot2D against missing cell blocks and 
 ---
 
 ### Task 6: Align gmsh backend — skip tie cuts, stop emitting `A___A` groups
+
+> **SUPERSEDED in part as implemented:** the `if ni == nj:` suppression below was
+> dead code (physical names carry `__#index` suffixes). Landed as a suffix-stripped
+> comparison — see `.superpowers/sdd/progress.md` and commit `4545d38`.
 
 **Model:** opus
 
