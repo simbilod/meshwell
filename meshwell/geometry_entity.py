@@ -1,6 +1,7 @@
 """Shared utilities for geometries."""
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -466,6 +467,86 @@ class GeometryEntity:
         loop_id = gmsh.model.occ.addCurveLoop(entities)
         return gmsh.model.occ.addPlaneSurface([loop_id])
 
+    def _create_surface_with_holes(
+        self,
+        polygon,
+        z: float = 0.0,
+        on_empty_cut: str = "warn_drop",
+    ) -> int:
+        """Create a planar GMSH surface (with holes cut out) from one polygon.
+
+        Shared by PolySurface (z=0 plane, ``on_empty_cut="warn_drop"``) and
+        PolyPrism's at-z extrusion base (``on_empty_cut="keep"``). The
+        exterior==0 short-circuit runs BEFORE any interior surface is built,
+        so degenerate exteriors never orphan interior surfaces in the model.
+
+        The two classes diverge ONLY in how an annihilating hole cut is
+        handled; that behavior is preserved verbatim via ``on_empty_cut``:
+
+        - ``"warn_drop"``: warn (naming ``self.physical_name``) and DROP the
+          surface, returning 0 -- PolySurface behavior.
+        - ``"keep"``: silently keep the pre-cut exterior tag -- PolyPrism's
+          ``_create_surfaces_with_holes_at_z`` behavior.
+
+        Args:
+            polygon: shapely Polygon supplying exterior + interior rings.
+            z: z-plane the surface is built on. z=0.0 reproduces the old
+                ``_parse_coords`` result for 2D polygon coords exactly.
+            on_empty_cut: empty-cut policy, see above.
+
+        Returns:
+            GMSH surface tag, or 0 if the surface was dropped/degenerate.
+        """
+        exterior_vertices = [(c[0], c[1], z) for c in polygon.exterior.coords]
+        exterior = self._create_surface_from_vertices(
+            exterior_vertices,
+            identify_arcs=self.identify_arcs,
+            min_arc_points=self.min_arc_points,
+            arc_tolerance=self.arc_tolerance,
+        )
+        # A degenerate exterior cannot host holes; bail out before creating
+        # interior surfaces that would otherwise be orphaned in the model.
+        if exterior == 0:
+            return 0
+
+        # Create interior surfaces (holes)
+        interior_surfaces = []
+        for interior in polygon.interiors:
+            interior_vertices = [(c[0], c[1], z) for c in interior.coords]
+            interior_surface = self._create_surface_from_vertices(
+                interior_vertices,
+                identify_arcs=self.identify_arcs,
+                min_arc_points=self.min_arc_points,
+                arc_tolerance=self.arc_tolerance,
+            )
+            if interior_surface != 0:
+                interior_surfaces.append(interior_surface)
+
+        # Cut holes from exterior surface
+        for interior_surface in interior_surfaces:
+            cut_result = gmsh.model.occ.cut(
+                [(2, exterior)],
+                [(2, interior_surface)],
+                removeObject=True,
+                removeTool=True,
+            )
+            gmsh.model.occ.synchronize()
+            if cut_result and cut_result[0]:
+                exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
+            elif on_empty_cut == "warn_drop":
+                warnings.warn(
+                    f"Hole cut annihilated surface for PolySurface "
+                    f"{self.physical_name}; this surface is DROPPED.",
+                    stacklevel=2,
+                )
+                self._clear_caches()
+                return 0
+            # else on_empty_cut == "keep": leave the pre-cut exterior in place.
+            # Clear caches after boolean operations that may invalidate geometry IDs
+            self._clear_caches()
+
+        return exterior
+
     def _clear_caches(self):
         """Clear the point and line caches - useful after boolean operations that may invalidate geometry."""
         if self._points is not None:
@@ -678,6 +759,72 @@ class GeometryEntity:
             show_centers=show_centers,
             **kwargs,
         )
+
+    def _ring_coords(
+        self, ring, z: float | None = None
+    ) -> list[tuple[float, float, float]]:
+        """Lift a shapely ring/linestring's coords to 3D vertices.
+
+        ``z=None`` reproduces the legacy ``_parse_coords`` result (z from the
+        coord if 3D, else 0); an explicit ``z`` pins every vertex to that
+        plane (the PolyPrism non-extrude case).
+        """
+        if z is None:
+            return [self._parse_coords(c) for c in ring.coords]
+        return [(x, y, z) for x, y in ring.coords]
+
+    def _plot_ring_decomposition(
+        self, vertices, ax, line_color, arc_color, show_centers, **kwargs
+    ):
+        """Render one ring's line/arc decomposition, threading ``ax``.
+
+        Shared skeleton of the three ``plot_decomposition`` overrides: fills
+        in this entity's arc-detection settings and dispatches to the base
+        ``plot_decomposition`` renderer (explicitly, so subclass overrides do
+        not recurse). Returns the (possibly newly created) Axes.
+        """
+        return GeometryEntity.plot_decomposition(
+            self,
+            vertices,
+            ax=ax,
+            line_color=line_color,
+            arc_color=arc_color,
+            show_centers=show_centers,
+            identify_arcs=self.identify_arcs,
+            min_arc_points=self.min_arc_points,
+            arc_tolerance=self.arc_tolerance,
+            **kwargs,
+        )
+
+    def _plot_polygon_decomposition(
+        self,
+        polygon,
+        ax,
+        line_color,
+        arc_color,
+        show_centers,
+        z: float | None = None,
+        **kwargs,
+    ):
+        """Plot a polygon's exterior then each interior ring, threading ``ax``."""
+        ax = self._plot_ring_decomposition(
+            self._ring_coords(polygon.exterior, z),
+            ax,
+            line_color,
+            arc_color,
+            show_centers,
+            **kwargs,
+        )
+        for interior in polygon.interiors:
+            ax = self._plot_ring_decomposition(
+                self._ring_coords(interior, z),
+                ax,
+                line_color,
+                arc_color,
+                show_centers,
+                **kwargs,
+            )
+        return ax
 
     @staticmethod
     def _wkt_list(geoms) -> list[str]:

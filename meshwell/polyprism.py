@@ -294,49 +294,19 @@ class PolyPrism(GeometryEntity):
         return exterior
 
     def _create_surfaces_with_holes_at_z(self, polygons, z) -> list[int]:
-        """Create surfaces with holes at given z level directly using GMSH calls."""
+        """Create surfaces with holes at given z level directly using GMSH calls.
+
+        Delegates each polygon to the shared
+        :meth:`GeometryEntity._create_surface_with_holes`; ``on_empty_cut=
+        "keep"`` reproduces this path's historical behavior of silently
+        retaining the pre-cut exterior when a hole cut annihilates it (as
+        opposed to PolySurface's warn-and-drop).
+        """
         surfaces = []
         for polygon in polygons.geoms:
-            # Create outer surface
-            exterior_vertices = [(x, y, z) for x, y in polygon.exterior.coords]
-            exterior = self._create_surface_from_vertices(
-                exterior_vertices,
-                identify_arcs=self.identify_arcs,
-                min_arc_points=self.min_arc_points,
-                arc_tolerance=self.arc_tolerance,
-            )
-            if exterior == 0:
-                continue
-
-            # Create interior surfaces (holes)
-            interior_surfaces = []
-            for interior in polygon.interiors:
-                interior_vertices = [(x, y, z) for x, y in interior.coords]
-                interior_surface = self._create_surface_from_vertices(
-                    interior_vertices,
-                    identify_arcs=self.identify_arcs,
-                    min_arc_points=self.min_arc_points,
-                    arc_tolerance=self.arc_tolerance,
-                )
-                if interior_surface != 0:
-                    interior_surfaces.append(interior_surface)
-
-            # Cut holes from exterior surface
-            for interior_surface in interior_surfaces:
-                cut_result = gmsh.model.occ.cut(
-                    [(2, exterior)],
-                    [(2, interior_surface)],
-                    removeObject=True,
-                    removeTool=True,
-                )
-                gmsh.model.occ.synchronize()
-                # Handle cut result - if cut succeeded, use the result, otherwise keep original
-                if cut_result and cut_result[0]:
-                    exterior = cut_result[0][0][1]
-                # Clear caches after boolean operations that may invalidate geometry IDs
-                self._clear_caches()
-
-            surfaces.append(exterior)
+            surface = self._create_surface_with_holes(polygon, z=z, on_empty_cut="keep")
+            if surface != 0:
+                surfaces.append(surface)
         return surfaces
 
     # MANUAL_NOTE: delete this
@@ -455,66 +425,29 @@ class PolyPrism(GeometryEntity):
         """Visualize the decomposition of the base cross-section."""
         # For PolyPrism, we plot the base polygon (buffered_polygons[0] or polygons)
         if self.extrude:
+            # z=None -> legacy _parse_coords result for the base polygons.
             for polygon in self.polygons.geoms:
-                vertices = [
-                    self._parse_coords(coords) for coords in polygon.exterior.coords
-                ]
-                ax = super().plot_decomposition(
-                    vertices,
-                    ax=ax,
-                    line_color=line_color,
-                    arc_color=arc_color,
-                    show_centers=show_centers,
-                    identify_arcs=self.identify_arcs,
-                    min_arc_points=self.min_arc_points,
-                    arc_tolerance=self.arc_tolerance,
+                ax = self._plot_polygon_decomposition(
+                    polygon,
+                    ax,
+                    line_color,
+                    arc_color,
+                    show_centers,
                     **kwargs,
                 )
-                for interior in polygon.interiors:
-                    vertices = [
-                        self._parse_coords(coords) for coords in interior.coords
-                    ]
-                    ax = super().plot_decomposition(
-                        vertices,
-                        ax=ax,
-                        line_color=line_color,
-                        arc_color=arc_color,
-                        show_centers=show_centers,
-                        identify_arcs=self.identify_arcs,
-                        min_arc_points=self.min_arc_points,
-                        arc_tolerance=self.arc_tolerance,
-                        **kwargs,
-                    )
         else:
-            # For buffered polygons, we plot the first layer
+            # For buffered polygons, we plot the first layer at its z.
             for entry in self.buffered_polygons:
-                # entry is list of (z, polygon)
-                z, polygon = entry[0]
-                vertices = [(x, y, z) for x, y in polygon.exterior.coords]
-                ax = super().plot_decomposition(
-                    vertices,
-                    ax=ax,
-                    line_color=line_color,
-                    arc_color=arc_color,
-                    show_centers=show_centers,
-                    identify_arcs=self.identify_arcs,
-                    min_arc_points=self.min_arc_points,
-                    arc_tolerance=self.arc_tolerance,
+                z, polygon = entry[0]  # entry is list of (z, polygon)
+                ax = self._plot_polygon_decomposition(
+                    polygon,
+                    ax,
+                    line_color,
+                    arc_color,
+                    show_centers,
+                    z=z,
                     **kwargs,
                 )
-                for interior in polygon.interiors:
-                    vertices = [(x, y, z) for x, y in interior.coords]
-                    ax = super().plot_decomposition(
-                        vertices,
-                        ax=ax,
-                        line_color=line_color,
-                        arc_color=arc_color,
-                        show_centers=show_centers,
-                        identify_arcs=self.identify_arcs,
-                        min_arc_points=self.min_arc_points,
-                        arc_tolerance=self.arc_tolerance,
-                        **kwargs,
-                    )
         return ax
 
     def _create_occ_volume_with_holes(

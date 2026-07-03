@@ -1,7 +1,6 @@
 """PolySurface definitions."""
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING, Any
 
 import gmsh
@@ -82,62 +81,6 @@ class PolySurface(GeometryEntity):
         self.identify_arcs = identify_arcs
         self.min_arc_points = min_arc_points
         self.arc_tolerance = arc_tolerance
-
-    def _create_surface_with_holes(self, polygon: Polygon) -> int:
-        """Create surface with holes directly using GMSH calls."""
-        # Create exterior surface
-        exterior_vertices = [
-            self._parse_coords(coords) for coords in polygon.exterior.coords
-        ]
-        exterior = self._create_surface_from_vertices(
-            exterior_vertices,
-            identify_arcs=self.identify_arcs,
-            min_arc_points=self.min_arc_points,
-            arc_tolerance=self.arc_tolerance,
-        )
-
-        # A degenerate exterior cannot host holes; bail out before creating
-        # interior surfaces that would otherwise be orphaned in the model.
-        if exterior == 0:
-            return 0
-
-        # Create interior surfaces (holes)
-        interior_surfaces = []
-        for interior in polygon.interiors:
-            interior_vertices = [
-                self._parse_coords(coords) for coords in interior.coords
-            ]
-            interior_surface = self._create_surface_from_vertices(
-                interior_vertices,
-                identify_arcs=self.identify_arcs,
-                min_arc_points=self.min_arc_points,
-                arc_tolerance=self.arc_tolerance,
-            )
-            if interior_surface != 0:
-                interior_surfaces.append(interior_surface)
-
-        # Cut holes from exterior surface
-        for interior_surface in interior_surfaces:
-            cut_result = gmsh.model.occ.cut(
-                [(2, exterior)],
-                [(2, interior_surface)],
-                removeObject=True,
-                removeTool=True,
-            )
-            gmsh.model.occ.synchronize()
-            if not cut_result[0]:
-                warnings.warn(
-                    f"Hole cut annihilated surface for PolySurface "
-                    f"{self.physical_name}; this surface is DROPPED.",
-                    stacklevel=2,
-                )
-                self._clear_caches()
-                return 0
-            exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
-            # Clear caches after boolean operations that may invalidate geometry IDs
-            self._clear_caches()
-
-        return exterior
 
     def instanciate(
         self,
@@ -260,33 +203,12 @@ class PolySurface(GeometryEntity):
     ):
         """Visualize the decomposition of all polygons into lines and arcs."""
         for polygon in self.polygons:
-            # Exterior
-            vertices = [
-                self._parse_coords(coords) for coords in polygon.exterior.coords
-            ]
-            ax = super().plot_decomposition(
-                vertices,
-                ax=ax,
-                line_color=line_color,
-                arc_color=arc_color,
-                show_centers=show_centers,
-                identify_arcs=self.identify_arcs,
-                min_arc_points=self.min_arc_points,
-                arc_tolerance=self.arc_tolerance,
+            ax = self._plot_polygon_decomposition(
+                polygon,
+                ax,
+                line_color,
+                arc_color,
+                show_centers,
                 **kwargs,
             )
-            # Interiors
-            for interior in polygon.interiors:
-                vertices = [self._parse_coords(coords) for coords in interior.coords]
-                ax = super().plot_decomposition(
-                    vertices,
-                    ax=ax,
-                    line_color=line_color,
-                    arc_color=arc_color,
-                    show_centers=show_centers,
-                    identify_arcs=self.identify_arcs,
-                    min_arc_points=self.min_arc_points,
-                    arc_tolerance=self.arc_tolerance,
-                    **kwargs,
-                )
         return ax
