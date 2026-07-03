@@ -69,20 +69,28 @@ class PolyPrism(GeometryEntity):
         # MANUAL_NOTE: properly validate point_tolerance instead of if
         # MANUAL_NOTE: shared shapely entity (like geometry entity) for
         # polygon preprocessing?
+        # Normalize every accepted input form (Polygon, list[Polygon],
+        # MultiPolygon, list[MultiPolygon], mixed lists) into ONE
+        # MultiPolygon. The structured pipeline (collect.py, cohort.py,
+        # decompose.py, validators.py) calls shapely geometry methods on
+        # `polygons` directly, so a plain list is not an option here.
+        if isinstance(polygons, (Polygon, MultiPolygon)):
+            flat = list(polygons.geoms if hasattr(polygons, "geoms") else [polygons])
+        else:
+            flat = []
+            for entry in polygons:
+                flat.extend(entry.geoms if hasattr(entry, "geoms") else [entry])
         if point_tolerance > 0:
             # Snap input polygons to user grid before storing / buffering.
-            if isinstance(polygons, list):
-                polygons = [
-                    shapely.set_precision(
-                        p, grid_size=point_tolerance, mode="pointwise"
-                    )
-                    for p in polygons
-                ]
-            else:
-                polygons = shapely.set_precision(
-                    polygons, grid_size=point_tolerance, mode="pointwise"
-                )
-        self.polygons = polygons
+            flat = [
+                shapely.set_precision(p, grid_size=point_tolerance, mode="pointwise")
+                for p in flat
+            ]
+        self.polygons = MultiPolygon(flat)
+        if not buffers:
+            raise ValueError(
+                "buffers must contain at least one {z: buffer} entry; got an empty dict."
+            )
         if all(buffer == 0 for buffer in buffers.values()):
             self.extrude = True
             self.zmin, self.zmax = min(buffers.keys()), max(buffers.keys())
@@ -90,7 +98,7 @@ class PolyPrism(GeometryEntity):
             self.extrude = False
             self.buffered_polygons: list[
                 tuple[float, Polygon]
-            ] = self._get_buffered_polygons(polygons, buffers)
+            ] = self._get_buffered_polygons(self.polygons, buffers)
 
         # Fail fast on direct misuse. entity_index=-1 because there is no
         # entity-list context at construction time; the structured collect
@@ -153,12 +161,12 @@ class PolyPrism(GeometryEntity):
         return [tag for dim, tag in fused_dimtags]
 
     def _get_buffered_polygons(
-        self, polygons: list[Polygon], buffers: dict[float, float]
+        self, polygons: MultiPolygon, buffers: dict[float, float]
     ) -> list[tuple[float, Polygon]]:
         """Break up polygons on each layer into lists of (z,polygon) tuples according to buffer entries.
 
         Arguments (implicit):
-            polygons: list of (Multi)Polygons to bufferize
+            polygons: MultiPolygon to bufferize
             buffers: {z: buffer} values to apply to the polygons
 
         Returns:
@@ -166,7 +174,7 @@ class PolyPrism(GeometryEntity):
 
         """
         all_polygons_list = []
-        for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
+        for polygon in polygons.geoms:
             current_buffers = []
             for z, width_buffer in buffers.items():
                 current_buffers.append((z, polygon.buffer(width_buffer, join_style=2)))
@@ -288,7 +296,7 @@ class PolyPrism(GeometryEntity):
     def _create_surfaces_with_holes_at_z(self, polygons, z) -> list[int]:
         """Create surfaces with holes at given z level directly using GMSH calls."""
         surfaces = []
-        for polygon in polygons.geoms if hasattr(polygons, "geoms") else [polygons]:
+        for polygon in polygons.geoms:
             # Create outer surface
             exterior_vertices = [(x, y, z) for x, y in polygon.exterior.coords]
             exterior = self._create_surface_from_vertices(
@@ -447,12 +455,7 @@ class PolyPrism(GeometryEntity):
         """Visualize the decomposition of the base cross-section."""
         # For PolyPrism, we plot the base polygon (buffered_polygons[0] or polygons)
         if self.extrude:
-            polygons = (
-                self.polygons.geoms
-                if hasattr(self.polygons, "geoms")
-                else [self.polygons]
-            )
-            for polygon in polygons:
+            for polygon in self.polygons.geoms:
                 vertices = [
                     self._parse_coords(coords) for coords in polygon.exterior.coords
                 ]
@@ -547,11 +550,7 @@ class PolyPrism(GeometryEntity):
 
         volumes = []
         if self.extrude:
-            polys = (
-                self.polygons.geoms
-                if hasattr(self.polygons, "geoms")
-                else [self.polygons]
-            )
+            polys = self.polygons.geoms
             build_z = self.zmin
             build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
@@ -616,18 +615,10 @@ class PolyPrism(GeometryEntity):
             Dictionary containing serializable entity data
         """
         import shapely.wkt
-        from shapely.geometry import MultiPolygon
 
-        if isinstance(self.polygons, MultiPolygon):
-            polygons_wkt = [
-                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
-            ]
-        elif isinstance(self.polygons, list):
-            polygons_wkt = [
-                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons
-            ]
-        else:
-            polygons_wkt = [shapely.wkt.dumps(self.polygons, rounding_precision=12)]
+        polygons_wkt = [
+            shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
+        ]
 
         return {
             "type": "PolyPrism",
@@ -660,10 +651,8 @@ class PolyPrism(GeometryEntity):
             PolyPrism instance
         """
         import shapely.wkt
-        from shapely.geometry import MultiPolygon
 
         polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
-        polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
 
         buffers = {float(k): v for k, v in data["buffers"].items()}
         subdivision = tuple(data["subdivision"]) if data["subdivision"] else None

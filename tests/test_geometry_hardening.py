@@ -150,8 +150,9 @@ def test_polyprism_applies_set_precision():
         buffers={0.0: 0.0, 1.0: 0.0},
         point_tolerance=1e-3,
     )
-    xs = [round(x, 6) for x, _ in pp.polygons.exterior.coords]
-    ys = [round(y, 6) for _, y in pp.polygons.exterior.coords]
+    # PolyPrism normalizes `polygons` to a MultiPolygon.
+    xs = [round(x, 6) for x, _ in pp.polygons.geoms[0].exterior.coords]
+    ys = [round(y, 6) for _, y in pp.polygons.geoms[0].exterior.coords]
     assert set(xs) == {0.0, 1.0}
     assert set(ys) == {0.0, 1.0}
 
@@ -174,9 +175,10 @@ def test_shapely_difference_seam_duplicate_is_stripped():
         identify_arcs=True,
     )
     # Fetch the (possibly stripped/snapped) hole and run decomposition.
-    # The hole is the single interior ring of the diffed polygon.
-    assert len(ps.polygons.interiors) == 1
-    hole_verts = [(x, y, 0.0) for x, y in ps.polygons.interiors[0].coords]
+    # The hole is the single interior ring of the diffed polygon
+    # (PolyPrism normalizes `polygons` to a MultiPolygon).
+    assert len(ps.polygons.geoms[0].interiors) == 1
+    hole_verts = [(x, y, 0.0) for x, y in ps.polygons.geoms[0].interiors[0].coords]
     entity = GeometryEntity(point_tolerance=1e-3)
     segs = entity.decompose_vertices(hole_verts, identify_arcs=True, min_arc_points=4)
     n_arcs = sum(1 for s in segs if s.is_arc)

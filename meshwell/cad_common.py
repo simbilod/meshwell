@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 import shapely
-from shapely.geometry import box
+from shapely.geometry import MultiPolygon, Polygon, box
 
 from meshwell.interface_tag import InterfaceTag
 
@@ -92,13 +92,20 @@ def prepare_entities(
                 for p in ent.polygons
             ]
         else:
-            ent.polygons = (
+            buffered = (
                 shapely.set_precision(
                     ent.polygons, grid_size=relaxed_grid, mode="pointwise"
                 )
                 .buffer(perturbation, join_style=2)
                 .intersection(global_bbox)
             )
+            # PolyPrism guarantees `polygons` is a MultiPolygon, but
+            # buffer() dissolves a single-part (or merged) MultiPolygon
+            # into a plain Polygon. Re-wrap so downstream `.geoms`
+            # consumers keep a MultiPolygon.
+            if isinstance(ent.polygons, MultiPolygon) and isinstance(buffered, Polygon):
+                buffered = MultiPolygon([buffered])
+            ent.polygons = buffered
 
     # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
     polygon_ents: dict[str, list[Any]] = {}
