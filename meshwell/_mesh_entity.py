@@ -13,6 +13,17 @@ import gmsh
 from meshwell.resolution import CURVE_SUBTYPE_MAP, ResolutionSpec
 
 
+def entity_name_set(physical_name: str | tuple[str, ...]) -> set[str]:
+    """Normalize a physical_name (str or tuple of str) to a set of exact names.
+
+    Matching between entities must always be by exact name — substring or
+    per-character containment makes "metal" match "metal2".
+    """
+    if isinstance(physical_name, str):
+        return {physical_name}
+    return set(physical_name)
+
+
 class _MeshEntity:
     """General class to track the gmsh entities that result from the geometry definition."""
 
@@ -373,12 +384,9 @@ class _MeshEntity:
                     superset -= set(resolutionspec.not_sharing)
 
                 # Use tag_to_entity_names for O(N) lookup instead of O(N^2)
-                if tag_to_entity_names:
+                if tag_to_entity_names is not None:
                     # Filter entities_mass_dict using the reverse index
-                    if isinstance(self.physical_name, str):
-                        self_names = {self.physical_name}
-                    else:
-                        self_names = set(self.physical_name)
+                    self_names = entity_name_set(self.physical_name)
 
                     boundary_tags = set()
 
@@ -422,7 +430,7 @@ class _MeshEntity:
                     # Legacy O(N^2) fallback
                     for other_name, other_entity in all_entities_dict.items():
                         # If itself
-                        if all(item in other_name for item in self.physical_name):
+                        if other_name in entity_name_set(self.physical_name):
                             tags = self.filter_tags_by_target_dimension(target_dim)
                             if not include_boundary:
                                 tags = set(tags) - set(
@@ -436,7 +444,7 @@ class _MeshEntity:
                                         tag
                                     ] = entities_mass_dict[tag]
                             continue
-                        if any(item in other_name for item in superset):
+                        if other_name in superset:
                             other_tags = other_entity.filter_tags_by_target_dimension(
                                 target_dim
                             )

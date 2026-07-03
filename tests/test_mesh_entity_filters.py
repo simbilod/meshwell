@@ -2,7 +2,7 @@
 import gmsh
 import pytest
 
-from meshwell._mesh_entity import _MeshEntity
+from meshwell._mesh_entity import _MeshEntity, entity_name_set
 
 
 def _make_entity(model, dim, tags, boundaries):
@@ -75,3 +75,17 @@ def test_target_above_dim_warns_and_returns_empty(box_entity):
     ent = _make_entity(box_entity.model, 1, [1], [])
     with pytest.warns(UserWarning, match="exceeds entity dimension"):
         assert ent.filter_tags_by_target_dimension(3) == []
+
+
+def test_entity_name_set_from_str():
+    assert entity_name_set("metal") == {"metal"}
+
+
+def test_entity_name_set_from_tuple():
+    assert entity_name_set(("metal", "conductor")) == {"metal", "conductor"}
+
+
+def test_no_substring_matching():
+    # "metal" must NOT be treated as matching "metal2"
+    assert "metal2" not in entity_name_set("metal")
+    assert not entity_name_set("metal") & entity_name_set("metal2")
