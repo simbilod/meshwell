@@ -178,41 +178,54 @@ class _MeshEntity:
             target_dimension: The desired geometric dimension
 
         Returns:
-            List of entity tags matching the target dimension
+            List of entity tags at the target dimension: the entity's own tags
+            when they coincide (diff 0); its boundaries one dimension below
+            (diff 1); recursive-boundary points when targeting dimension 0; and
+            the curves of each boundary surface's curve loops for a volume's
+            curves (dim 3, target 1). Returns an empty list (after a warning)
+            when the target dimension exceeds the entity's.
 
         Warnings:
             Issues warning if target dimension is incompatible
         """
-        match self.dim - target_dimension:
-            case 0:
-                tags = self.tags
-            case 1:
-                tags = self.boundaries
-            case 2 | 3:
-                if self.dim == 2:
-                    tags = self.boundaries  # boundaries are curves already
-                else:
-                    tags = []
-                    for b in self.boundaries:
-                        try:
-                            for cs in self.model.occ.getCurveLoops(b)[1]:
-                                tags.extend(cs)
-                        except Exception as e:
-                            # Entity might not be a surface or not known to OCC;
-                            # if we are targeting curves, it might already be a curve
-                            import logging
+        diff = self.dim - target_dimension
 
-                            logging.getLogger(__name__).debug(
-                                f"Failed to get curve loops for {b}: {e}"
-                            )
-            case -1:
-                warnings.warn(
-                    "Target dimension requested is 3, but entity is 2D; "
-                    "skipping resolution assignment.",
-                    stacklevel=2,
+        if diff < 0:
+            warnings.warn(
+                f"Target dimension {target_dimension} exceeds entity dimension "
+                f"{self.dim}; skipping resolution assignment.",
+                stacklevel=2,
+            )
+            return []
+        if diff == 0:
+            return list(self.tags)
+        if diff == 1:
+            return list(self.boundaries)
+        if target_dimension == 0:
+            # Points from a surface (diff 2) or volume (diff 3): recursive
+            # boundary walk straight to dimension 0.
+            dimtags = self.model.getBoundary(
+                [(self.dim, tag) for tag in self.tags],
+                combined=False,
+                oriented=False,
+                recursive=True,
+            )
+            return [tag for dim, tag in dimtags if dim == 0]
+
+        # Remaining case: dim 3, target 1 -- curves via each boundary
+        # surface's curve loops.
+        tags: list[int] = []
+        for b in self.boundaries:
+            try:
+                for cs in self.model.occ.getCurveLoops(b)[1]:
+                    tags.extend(cs)
+            except Exception as e:
+                # Surface may be unknown to OCC (e.g. discrete); skip it.
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    f"Failed to get curve loops for {b}: {e}"
                 )
-                return []
-
         return tags
 
     def filter_mesh_boundary_tags_by_target_dimension(
@@ -293,17 +306,20 @@ class _MeshEntity:
                 else {}
             )
 
-        # Filter the tags based on current dimension and target
-        tags = self.filter_tags_by_target_dimension(target_dimension)
-
         # If targeting points, need post-filtering filtering
         if target_dimension == 0:
-            filtered_tags = filter_by_target_and_tags(1, tags, min_mass, max_mass)
+            # Points are selected as the endpoints of curves whose LENGTH
+            # is within the mass bounds; fetch the curves explicitly.
+            curve_tags = self.filter_tags_by_target_dimension(1)
+            filtered_tags = filter_by_target_and_tags(1, curve_tags, min_mass, max_mass)
             points_boundaries_dimtags = [
                 self.model.getBoundary([(1, tag)]) for tag in filtered_tags
             ]
             points_dimtags = [x for xs in points_boundaries_dimtags for x in xs]
             return {p[1]: None for p in points_dimtags}
+
+        # Filter the tags based on current dimension and target
+        tags = self.filter_tags_by_target_dimension(target_dimension)
 
         result = filter_by_target_and_tags(target_dimension, tags, min_mass, max_mass)
 
