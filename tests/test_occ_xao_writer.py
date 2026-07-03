@@ -65,6 +65,62 @@ def test_xao_writer_produces_single_self_contained_file(tmp_path):
         gmsh.finalize()
 
 
+def test_write_xao_point_tolerance_derives_aabb_fallback_tolerance(tmp_path):
+    """``point_tolerance`` flows into write_xao's AABB fallback tolerance.
+
+    Two boxes separated by a 0.05 gap on x never share a TShape (they
+    don't touch), so interface detection depends entirely on the
+    spatial AABB fallback. With no ``point_tolerance`` given, write_xao
+    falls back to the legacy default (``10 * 1e-3 = 0.01``), too small
+    to bridge the gap -- no ``A___B`` interface. Passing
+    ``point_tolerance=0.1`` derives ``10 * 0.1 = 1.0`` via
+    :func:`meshwell.occ_xao_writer.default_interface_aabb_tolerance`,
+    comfortably bridging it.
+    """
+    gap = 0.05
+    a = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1, 1, 1).Shape(),
+        physical_name="A",
+        mesh_order=1,
+        dimension=3,
+    )
+    b = OCC_entity(
+        occ_function=lambda: BRepPrimAPI_MakeBox(
+            gp_Pnt(1 + gap, 0, 0), 1, 1, 1
+        ).Shape(),
+        physical_name="B",
+        mesh_order=2,
+        dimension=3,
+    )
+    ents = cad_occ([a, b])
+
+    xao_default = tmp_path / "default.xao"
+    write_xao(ents, xao_default)
+    gmsh.initialize()
+    try:
+        gmsh.open(str(xao_default))
+        gmsh.model.occ.synchronize()
+        default_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+    finally:
+        gmsh.finalize()
+    assert not (default_names & {"A___B", "B___A"}), default_names
+
+    xao_derived = tmp_path / "derived.xao"
+    write_xao(ents, xao_derived, point_tolerance=0.1)
+    gmsh.initialize()
+    try:
+        gmsh.open(str(xao_derived))
+        gmsh.model.occ.synchronize()
+        derived_names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+    finally:
+        gmsh.finalize()
+    assert derived_names & {"A___B", "B___A"}, derived_names
+
+
 def test_inject_full_mixed_scene():
     """Mixed 3D/2D/1D entities end up with correct physical groups + masses."""
     square_A = shapely.Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])

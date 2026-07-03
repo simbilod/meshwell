@@ -475,7 +475,8 @@ def write_xao(
     model_name: str = "meshwell",
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
-    interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
+    interface_aabb_tolerance: float | None = None,
+    point_tolerance: float | None = None,
 ) -> None:
     """Serialize ``entities`` into a self-contained XAO file.
 
@@ -489,7 +490,18 @@ def write_xao(
             by the spatial fallback when TShape-identity matching produces
             no shared boundaries. Should be at least the BOP
             ``fragment_fuzzy_value``; recommended ``10 * point_tolerance``
-            for safety against combined shapely + BOP drift.
+            for safety against combined shapely + BOP drift. When ``None``
+            (default), derived from ``point_tolerance`` via
+            :func:`default_interface_aabb_tolerance` if that is given,
+            else falls back to the historical ``10 * 1e-3`` constant.
+        point_tolerance: model point_tolerance used to derive
+            ``interface_aabb_tolerance`` when the latter is not given
+            explicitly. Callers with a point_tolerance in scope (the
+            cad_occ pipeline, via :meth:`meshwell.model.ModelManager.
+            load_occ_entities`) should pass this instead of
+            precomputing ``interface_aabb_tolerance`` themselves, so the
+            AABB fallback tolerance always tracks the model's actual
+            point_tolerance rather than the legacy default.
 
     keep=False entities are **not** serialized into the BREP -- only
     their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
@@ -497,6 +509,13 @@ def write_xao(
     entity's solid.
     """
     xao_path = Path(xao_path)
+
+    if interface_aabb_tolerance is None:
+        interface_aabb_tolerance = (
+            default_interface_aabb_tolerance(point_tolerance)
+            if point_tolerance is not None
+            else _DEFAULT_AABB_INTERFACE_TOL
+        )
 
     max_dim = max((e.dim for e in entities if e.shapes), default=0)
 

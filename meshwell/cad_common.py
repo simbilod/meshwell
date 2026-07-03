@@ -100,13 +100,20 @@ def prepare_entities(
         # No polygon-bearing entities; nothing to buffer or resolve.
         return
 
-    # Slight bbox inflation so the clip doesn't trim the buffer halo
-    # at the scene exterior.
+    # Bbox inflation so the clip doesn't trim the buffer halo at the
+    # scene exterior. join_style=2 (mitre) below can extend a sharp
+    # convex corner's offset well past 1x perturbation: mitre length is
+    # perturbation / sin(interior_angle / 2), capped by shapely's default
+    # mitre_limit=5 at 5x perturbation. Inflating by only 1x perturbation
+    # (as before) would shave mitre tips sharper than ~asin(1)=90 degrees
+    # wide back down to the scene bbox. Inflate by the full 5x so any
+    # mitre tip up to the cap survives the intersection below.
+    inflation = 5 * perturbation
     global_bbox = box(
-        xmin - perturbation,
-        ymin - perturbation,
-        xmax + perturbation,
-        ymax + perturbation,
+        xmin - inflation,
+        ymin - inflation,
+        xmax + inflation,
+        ymax + inflation,
     )
 
     # Sub-tolerance buffering requires relaxing the shapely precision
@@ -141,14 +148,20 @@ def prepare_entities(
             ent.polygons = buffered
 
     # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
+    # Register every polygon-bearing entity under EACH of its physical
+    # names, not just the first -- a two-name entity (e.g. a shared
+    # region carrying both a material name and an alias) must resolve
+    # for an InterfaceTag ``targets=`` referencing either name.
+    # InterfaceTag.resolve() deduplicates by identity, so an entity
+    # registered under multiple names is still only cut/counted once.
     polygon_ents: dict[str, list[Any]] = {}
     for ent in entities_list:
         if not hasattr(ent, "polygons"):
             continue
         name = ent.physical_name
-        if isinstance(name, tuple):
-            name = name[0]
-        polygon_ents.setdefault(name, []).append(ent)
+        names = name if isinstance(name, tuple) else (name,)
+        for n in names:
+            polygon_ents.setdefault(n, []).append(ent)
 
     snap = resolve_snap if resolve_snap is not None else perturbation
     for ent in entities_list:

@@ -189,17 +189,28 @@ class InterfaceTag(GeometryEntity):
         """
         snap = self.snap_distance if self.snap_distance is not None else default_snap
 
+        # Flatten by identity, deduplicating: an entity carrying multiple
+        # physical names is registered under each of them in
+        # ``polygon_ents`` (see cad_common.prepare_entities), so it can
+        # appear under more than one key -- e.g. explicit ``targets=``
+        # naming two aliases of the same entity, or the "any" branch
+        # below summing across every key. Without dedup the cut cascade
+        # would process that entity's polygon twice.
+        seen_ids: set[int] = set()
+        targets: list[Any] = []
         if self.targets is not None:
-            # Flatten lists for explicitly-named targets; skip names not
-            # present in the scene rather than KeyError-ing.
-            targets = [
-                ent
-                for n in self.targets
-                if n in polygon_ents
-                for ent in polygon_ents[n]
-            ]
+            # Skip names not present in the scene rather than KeyError-ing.
+            for n in self.targets:
+                for ent in polygon_ents.get(n, []):
+                    if id(ent) not in seen_ids:
+                        seen_ids.add(id(ent))
+                        targets.append(ent)
         else:
-            targets = [ent for ents in polygon_ents.values() for ent in ents]
+            for ents in polygon_ents.values():
+                for ent in ents:
+                    if id(ent) not in seen_ids:
+                        seen_ids.add(id(ent))
+                        targets.append(ent)
 
         # Stable sort by mesh_order; ties resolve to the entity that
         # appears earliest in `polygon_ents` iteration order (insertion
