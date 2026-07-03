@@ -318,7 +318,9 @@ class FaceRegistry:
 
     def key_for_polygon(self, polygon, z: float) -> tuple[int, tuple, frozenset]:
         """Return the cache key for a shapely Polygon at height z."""
-        z_q = round(z / self.point_tolerance)
+        # Single-axis quantization: take the z component of quantize_key so
+        # the face-cache key stays in the shared key space by construction.
+        z_q = quantize_key(0.0, 0.0, z, self.point_tolerance)[2]
         exterior = self._canonical_ring(list(polygon.exterior.coords), z)
         interiors = frozenset(
             self._canonical_ring(list(interior.coords), z)
@@ -539,7 +541,7 @@ def _replay_canonical_ring(
     # level hit the same topological lookup; callers re-apply their own
     # extrusion z when emitting geometry.
     arr_z = arrangement.canonical_edges[0].z if arrangement.canonical_edges else 0.0
-    keys = [(round(x / s), round(y / s), round(arr_z / s)) for x, y in coords]
+    keys = [quantize_key(x, y, arr_z, s) for x, y in coords]
     # Tolerate an accidental closing duplicate at the tail.
     if len(keys) >= 2 and keys[0] == keys[-1]:
         inner_keys = keys[:-1]
