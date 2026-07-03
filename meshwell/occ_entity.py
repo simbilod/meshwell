@@ -17,7 +17,8 @@ class OCC_entity:
         physical_name: name(s) of the physical this entity will belong to
         mesh_order: priority of the entity if it overlaps with others (lower numbers override higher numbers)
         mesh_bool: if True, entity will be meshed; if not, will not be meshed
-        additive: if True, entity will be added (fused) rather than subtracted (cut)
+        additive: reserved for future use; only False is currently accepted
+            (entities are always cut by higher-priority entities)
         dimension: dimension of the created entity
     """
 
@@ -30,6 +31,11 @@ class OCC_entity:
         additive: bool = False,
         dimension: int | None = None,
     ):
+        if additive:
+            raise NotImplementedError(
+                "additive=True is not implemented: entities are always cut by "
+                "higher-priority (lower mesh_order) entities. Remove the argument."
+            )
         self.occ_function = occ_function
         self.physical_name = format_physical_name(physical_name)
         self.mesh_order = mesh_order

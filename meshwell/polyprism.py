@@ -50,6 +50,11 @@ class PolyPrism(GeometryEntity):
         rotation_angle: float = 0.0,
         structured: bool = False,
     ):
+        if additive:
+            raise NotImplementedError(
+                "additive=True is not implemented: entities are always cut by "
+                "higher-priority (lower mesh_order) entities. Remove the argument."
+            )
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
             point_tolerance=point_tolerance,
@@ -112,7 +117,6 @@ class PolyPrism(GeometryEntity):
         # Format physical name
         self.physical_name = format_physical_name(physical_name)
         self.mesh_bool = mesh_bool
-        self.additive = additive
 
     def _create_volumes_directly(self) -> list[int]:
         """Create GMSH volumes directly without using CAD class methods."""

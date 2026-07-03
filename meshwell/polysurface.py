@@ -40,6 +40,11 @@ class PolySurface(GeometryEntity):
         rotation_point: tuple[float, float, float] | None = None,
         rotation_angle: float = 0.0,
     ):
+        if additive:
+            raise NotImplementedError(
+                "additive=True is not implemented: entities are always cut by "
+                "higher-priority (lower mesh_order) entities. Remove the argument."
+            )
         # Initialize parent class with point tracking and transformation parameters
         super().__init__(
             point_tolerance=point_tolerance,
