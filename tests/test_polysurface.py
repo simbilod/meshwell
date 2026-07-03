@@ -66,5 +66,30 @@ def test_coinciding_polysurface(tmp_path):
     compare_gmsh_files(msh_path)
 
 
+def test_hole_covering_exterior_warns_and_skips():
+    """A hole >= the exterior annihilates the surface; must warn, not IndexError."""
+    import gmsh
+    import pytest
+    from shapely.geometry import Polygon
+
+    from meshwell.polysurface import PolySurface
+
+    # shell == hole ring: zero-area surface; gmsh cut returns empty outDimTags
+    degenerate = Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10)],
+        holes=[[(0, 0), (10, 0), (10, 10), (0, 10)]],
+    )
+    ps = PolySurface(polygons=degenerate, physical_name="void")
+    if not gmsh.isInitialized():
+        gmsh.initialize()
+    gmsh.model.add("hole_annihilation_test")
+    try:
+        with pytest.warns(UserWarning, match="void"):
+            dimtags = ps.instanciate()
+        assert (2, 0) not in dimtags
+    finally:
+        gmsh.model.remove()
+
+
 if __name__ == "__main__":
     test_coinciding_polysurface()

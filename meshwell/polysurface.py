@@ -1,6 +1,7 @@
 """PolySurface definitions."""
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import gmsh
@@ -112,6 +113,10 @@ class PolySurface(GeometryEntity):
             if interior_surface != 0:
                 interior_surfaces.append(interior_surface)
 
+        # A degenerate exterior cannot host holes.
+        if exterior == 0:
+            return 0
+
         # Cut holes from exterior surface
         for interior_surface in interior_surfaces:
             cut_result = gmsh.model.occ.cut(
@@ -121,6 +126,14 @@ class PolySurface(GeometryEntity):
                 removeTool=True,
             )
             gmsh.model.occ.synchronize()
+            if not cut_result[0]:
+                warnings.warn(
+                    f"Hole cut annihilated surface for PolySurface "
+                    f"{self.physical_name}; this surface is DROPPED.",
+                    stacklevel=2,
+                )
+                self._clear_caches()
+                return 0
             exterior = cut_result[0][0][1]  # Parse `outDimTags', `outDimTagsMap'
             # Clear caches after boolean operations that may invalidate geometry IDs
             self._clear_caches()
