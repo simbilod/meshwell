@@ -26,10 +26,13 @@ user-visible result.
 
 Ownership semantics match :func:`meshwell.cad_gmsh._resolve_piece_ownership`
 exactly; tests that pin one pin the other. Both backends share the same
-tie policy: pieces claimed by same-mesh_order entities are not cut against
-each other pre-fragment (so no degenerate ``A___A`` self-interfaces are
-produced), and the final fragment resolves ownership of the shared overlap
-by lowest ``mesh_order``, with insertion order breaking ties.
+contract:
+
+* Same-mesh_order entities are not cut against each other pre-fragment;
+  the final fragment resolves ownership of the shared overlap by lowest
+  ``mesh_order``, with insertion order breaking ties.
+* Independently, same-physical-name pairs never produce an ``A___A``
+  interface group, regardless of mesh_order.
 """
 from __future__ import annotations
 
