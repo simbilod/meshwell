@@ -144,64 +144,65 @@ def plot2D(
         physical_groups_1D = [1]
 
     # Plot triangles for each 2D physical group
-    for i, group in enumerate(physical_groups_2D):
-        # Skip if physicals specified and this group not in them
-        if (
-            physicals is not None
-            and "gmsh:physical" in mesh.cell_data_dict
-            and not any(name in physicals for name in id_to_name[group])
-        ):
-            continue
+    if "triangle" in mesh.cells_dict:
+        for i, group in enumerate(physical_groups_2D):
+            # Skip if physicals specified and this group not in them
+            if (
+                physicals is not None
+                and "gmsh:physical" in mesh.cell_data_dict
+                and not any(name in physicals for name in id_to_name.get(group, []))
+            ):
+                continue
 
-        # Get cells for this physical group
-        if (
-            "gmsh:physical" in mesh.cell_data_dict
-            and "triangle" in mesh.cell_data_dict["gmsh:physical"]
-        ):
-            group_cells = mesh.cells_dict["triangle"][
-                mesh.cell_data_dict["gmsh:physical"]["triangle"] == group
-            ]
-        else:
-            group_cells = mesh.cells_dict["triangle"]
-
-        # Get color for this group
-        color = colors[i % len(colors)]
-
-        # Get group name for legend
-        group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
-
-        # Plot triangles
-        for triangle in group_cells:
-            x = mesh.points[triangle, 0]
-            y = mesh.points[triangle, 1]
-            # Close the triangle
-            x = np.append(x, x[0])
-            y = np.append(y, y[0])
-
-            if wireframe:
-                ax.plot(
-                    x,
-                    y,
-                    color=color,
-                    marker="o" if wireframe else None,
-                    markersize=3 if wireframe else None,
-                    label=group_name,
-                )
+            # Get cells for this physical group
+            if (
+                "gmsh:physical" in mesh.cell_data_dict
+                and "triangle" in mesh.cell_data_dict["gmsh:physical"]
+            ):
+                group_cells = mesh.cells_dict["triangle"][
+                    mesh.cell_data_dict["gmsh:physical"]["triangle"] == group
+                ]
             else:
-                ax.fill(x, y, color=color, alpha=0.5, label=group_name)
-                ax.plot(x, y, color=color, linewidth=0.5)
+                group_cells = mesh.cells_dict["triangle"]
 
-            # Only include label once in legend
-            group_name = "_nolegend_"
+            # Get color for this group
+            color = colors[i % len(colors)]
+
+            # Get group name for legend
+            group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
+
+            # Plot triangles
+            for triangle in group_cells:
+                x = mesh.points[triangle, 0]
+                y = mesh.points[triangle, 1]
+                # Close the triangle
+                x = np.append(x, x[0])
+                y = np.append(y, y[0])
+
+                if wireframe:
+                    ax.plot(
+                        x,
+                        y,
+                        color=color,
+                        marker="o" if wireframe else None,
+                        markersize=3 if wireframe else None,
+                        label=group_name,
+                    )
+                else:
+                    ax.fill(x, y, color=color, alpha=0.5, label=group_name)
+                    ax.plot(x, y, color=color, linewidth=0.5)
+
+                # Only include label once in legend
+                group_name = "_nolegend_"
 
     # Plot lines for each 1D physical group
-    if not ignore_lines:
+    if not ignore_lines and "line" in mesh.cells_dict:
         for i, group in enumerate(physical_groups_1D):
             # Skip if physicals specified and this group not in them
             if (
                 physicals is not None
                 and "gmsh:physical" in mesh.cell_data_dict
-                and not any(name in physicals for name in id_to_name[group])
+                and not any(name in physicals for name in id_to_name.get(group, []))
             ):
                 continue
 
