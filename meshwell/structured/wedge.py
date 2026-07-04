@@ -11,6 +11,7 @@ triangulation to top and emits wedge elements.
 from __future__ import annotations
 
 import logging
+import warnings
 from collections import defaultdict
 
 import gmsh
@@ -22,7 +23,6 @@ from meshwell.structured.exceptions import (
     StructuredLateralNLayersMismatchError,
     StructuredTransfiniteRejectedError,
     WedgeBotNodeMismatchError,
-    WedgeCountMismatchError,
 )
 from meshwell.structured.types import ShapeKey, SlabMeta
 
@@ -161,6 +161,70 @@ def _vertical_edge_layer_nodes(vertical_edge_tag: int) -> list[int]:
     return [t for t, _z in items]
 
 
+def _choose_left_right_verticals(
+    left_xy: tuple[float, float],
+    right_xy: tuple[float, float],
+    vert_reps: list[tuple[int, float, float]],
+) -> tuple[int, int] | None:
+    """Assign the two vertical edges to the left/right endpoints.
+
+    ``vert_reps`` is ``[(edge_tag, x, y), ...]`` (one representative XY
+    per vertical edge). The left slot takes the edge nearest ``left_xy``,
+    the right slot the edge nearest ``right_xy``. Returns
+    ``(left_edge, right_edge)`` or ``None`` when the assignment is
+    degenerate — i.e. the *same* edge is nearest to both endpoints, which
+    is the case that previously let both verticals collapse into one slot
+    (silently dropping the other) or leave a slot ``None``.
+    """
+    if len(vert_reps) != 2:
+        return None
+
+    def _d2(p: tuple[float, float], q: tuple[float, float]) -> float:
+        return (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2
+
+    left_edge = min(vert_reps, key=lambda r: _d2((r[1], r[2]), left_xy))[0]
+    right_edge = min(vert_reps, key=lambda r: _d2((r[1], r[2]), right_xy))[0]
+    if left_edge == right_edge:
+        return None
+    return left_edge, right_edge
+
+
+def _pick_noncollinear_triangle(
+    node_tags: list[int],
+    node_xy: dict[int, tuple[float, float]],
+    area_eps: float = 1e-12,
+) -> tuple[int, int, int] | None:
+    """Pick three non-collinear boundary nodes for a placeholder triangle.
+
+    The first three boundary nodes may all lie on one edge (collinear),
+    producing a zero-area triangle that gmsh rejects/ignores. Instead:
+    take the first node, the node farthest from it, and the node with the
+    greatest perpendicular distance from the line joining those two.
+    Returns ``None`` when every node is collinear (no valid triangle).
+    """
+    if len(node_tags) < 3:
+        return None
+    t0 = node_tags[0]
+    p0 = node_xy[t0]
+    t1 = max(
+        node_tags[1:],
+        key=lambda t: (node_xy[t][0] - p0[0]) ** 2 + (node_xy[t][1] - p0[1]) ** 2,
+    )
+    p1 = node_xy[t1]
+
+    def _twice_area(t: int) -> float:
+        px, py = node_xy[t]
+        return abs((p1[0] - p0[0]) * (py - p0[1]) - (p1[1] - p0[1]) * (px - p0[0]))
+
+    remaining = [t for t in node_tags if t not in (t0, t1)]
+    if not remaining:
+        return None
+    t2 = max(remaining, key=_twice_area)
+    if _twice_area(t2) <= area_eps:
+        return None
+    return t0, t1, t2
+
+
 def _emit_lateral_face_quads(
     face_tag: int,
     z_bot: float,
@@ -188,35 +252,45 @@ def _emit_lateral_face_quads(
     bot_row = _ordered_curve_nodes(bot_edge)
     top_row = _align_top_to_bot(bot_row, _ordered_curve_nodes(top_edge))
     if len(bot_row) < 2 or len(top_row) != len(bot_row):
-        logger.warning(
-            "Slab %s: lateral face %s skipped because bot_row len (%s) != "
-            "top_row len (%s)",
-            owners_per_face[face_tag][0][0],
-            face_tag,
-            len(bot_row),
-            len(top_row),
+        # Non-fatal: this face gets no explicit quad mesh, so the outer
+        # ``generate(2)`` (with Mesh.MeshOnlyEmpty=1) fills it with an
+        # unstructured triangulation — a working fallback, not a crash.
+        # Warn rather than raise so shipping scenes that rely on that
+        # fallback keep meshing, but never degrade silently.
+        warnings.warn(
+            f"Slab {owners_per_face[face_tag][0][0]}: lateral face {face_tag} "
+            f"has mismatched bot/top row lengths ({len(bot_row)} vs "
+            f"{len(top_row)}); falling back to unstructured meshing for "
+            "this face.",
+            stacklevel=2,
         )
         return
 
     # Pick left/right vertical edges by (x, y) proximity to bot row endpoints.
     left_xy = (bot_row[0][1], bot_row[0][2])
     right_xy = (bot_row[-1][1], bot_row[-1][2])
-    left_vert = right_vert = None
+    vert_reps: list[tuple[int, float, float]] = []
     for ve in verticals:
         ev = gmsh.model.getBoundary([(1, ve)], oriented=False, recursive=False)
-        x_v = y_v = None
         for _vd, vt in ev:
             pos = gmsh.model.getValue(0, vt, [])
-            x_v, y_v = pos[0], pos[1]
+            vert_reps.append((ve, pos[0], pos[1]))
             break
-        d_left = (x_v - left_xy[0]) ** 2 + (y_v - left_xy[1]) ** 2
-        d_right = (x_v - right_xy[0]) ** 2 + (y_v - right_xy[1]) ** 2
-        if d_left < d_right:
-            left_vert = ve
-        else:
-            right_vert = ve
-    if left_vert is None or right_vert is None:
+    assignment = _choose_left_right_verticals(left_xy, right_xy, vert_reps)
+    if assignment is None:
+        # Ambiguous assignment (same vertical nearest to both endpoints, or
+        # a vertical without a resolvable endpoint). Previously both edges
+        # could collapse into one slot / a slot stayed None and we returned
+        # with no trace. Warn + fall back to unstructured meshing instead.
+        warnings.warn(
+            f"Slab {owners_per_face[face_tag][0][0]}: lateral face {face_tag} "
+            "has an ambiguous vertical-edge assignment (both verticals "
+            "nearest the same endpoint); falling back to unstructured "
+            "meshing for this face.",
+            stacklevel=2,
+        )
         return
+    left_vert, right_vert = assignment
 
     # Reuse transfinite-placed vertical-edge nodes (no duplicates).
     left_layer_nodes = _vertical_edge_layer_nodes(left_vert)
@@ -404,6 +478,18 @@ def freeze_lateral_mesh(
     # We will mesh them in stamp_wedges. If generate(2) meshes them,
     # its interior nodes become orphaned when we overwrite the elements,
     # causing PLC errors in the 3D mesher.
+    #
+    # Re-stamp invariant: the placeholder is a throwaway single triangle
+    # whose ONLY job is to make the face non-empty so Mesh.MeshOnlyEmpty=1
+    # skips it. It is always overwritten in ``_stamp_one`` via
+    # ``removeElements(2, top_tag)`` + ``addElementsByType(top_tag, 2, ...)``.
+    # Both loops iterate the SAME set of ``keep`` slabs and address the top
+    # face by the same ``meta.top_face_key`` tag, so every face that gets a
+    # placeholder here is re-stamped there. The one exception is a slab whose
+    # bot face carries no triangles (``_stamp_one`` early-returns): that slab
+    # produces no wedges regardless, so its lone placeholder triangle is a
+    # harmless artefact on an already-degenerate face rather than a corruption
+    # of a valid mesh.
     for meta in slab_meta.values():
         if not meta.keep:
             continue
@@ -415,21 +501,30 @@ def freeze_lateral_mesh(
             edges = gmsh.model.getBoundary(
                 [(2, top_tag)], oriented=False, recursive=False
             )
-            boundary_nodes = []
+            boundary_nodes: list[int] = []
+            boundary_xy: dict[int, tuple[float, float]] = {}
             for _, etag in edges:
-                tags, _, _ = gmsh.model.mesh.getNodes(1, etag)
-                boundary_nodes.extend(tags)
-            boundary_nodes = list(set(boundary_nodes))
-            if len(boundary_nodes) >= 3:
+                tags, coords, _ = gmsh.model.mesh.getNodes(
+                    1, etag, includeBoundary=True
+                )
+                for i, t in enumerate(tags):
+                    ti = int(t)
+                    if ti not in boundary_xy:
+                        boundary_nodes.append(ti)
+                        boundary_xy[ti] = (
+                            float(coords[3 * i]),
+                            float(coords[3 * i + 1]),
+                        )
+            # Three collinear boundary nodes give a zero-area triangle that
+            # gmsh silently drops, leaving the face empty and re-exposing it
+            # to generate(2). Pick a genuinely non-collinear triple.
+            triangle = _pick_noncollinear_triangle(boundary_nodes, boundary_xy)
+            if triangle is not None:
                 gmsh.model.mesh.addElementsByType(
                     top_tag,
                     2,
                     [],
-                    [
-                        int(boundary_nodes[0]),
-                        int(boundary_nodes[1]),
-                        int(boundary_nodes[2]),
-                    ],
+                    [int(triangle[0]), int(triangle[1]), int(triangle[2])],
                 )
 
     # Step 5: tell outer generate(2) to skip already-meshed faces.
@@ -663,6 +758,21 @@ def _stamp_one(
     for idx, tag in top_idx_to_tag.items():
         bot_to_top[int(bot_node_tags[idx])] = tag
 
+    # Fail before mutation (b): the bot->top node match is fully determined
+    # by the step-3a call above, whose only side effect is *creating* new
+    # top-face nodes (non-destructive — it never removes or rewrites existing
+    # mesh). If any boundary bot node failed to match, raise NOW, before the
+    # first element-level mutation (removeElements / addElementsByType), so
+    # the gmsh model is never left with the top face stripped of elements and
+    # the volume half-filled with wedges. (Buffering every element batch and
+    # committing post-validation was the alternative; moving this single
+    # check earlier is the strictly smaller change and needs no new state.)
+    if mismatched:
+        raise WedgeBotNodeMismatchError(
+            slab_index=meta.slab_index,
+            mismatched_count=mismatched,
+        )
+
     # Remove existing top-face elements WITHOUT removing nodes (so we do
     # not orphan interior nodes that are shared with adjacent volumes).
     # Then re-stamp with the bot-matched triangulation.
@@ -670,6 +780,11 @@ def _stamp_one(
     top_tri_nodes: list[int] = []
     for tri in tris:
         top_tri_nodes.extend(bot_to_top[int(t)] for t in tri)
+    # Re-stamp invariant (e): ``top_tri_nodes`` holds exactly three node tags
+    # per bot triangle by construction (the loop above appends one triple per
+    # ``tri``), so this single addElementsByType fully replaces the throwaway
+    # placeholder emitted in freeze_lateral_mesh step 4.5 — every placeholder
+    # face reached by _stamp_one is re-stamped with the real triangulation.
     gmsh.model.mesh.addElementsByType(top_tag, 2, [], top_tri_nodes)
 
     # 4) Intermediate layer nodes (for n_layers > 1).
@@ -692,6 +807,13 @@ def _stamp_one(
     layer_maps: list[dict[int, int]] = [
         {i: int(bot_node_tags[i]) for i in range(len(bot_node_tags))}
     ]
+    # (c) The intermediate-layer boundary-match count was previously
+    # discarded (``this_map, _ = ...``). A non-zero count means a boundary
+    # bot node failed to snap to its lateral-face node at z_layer and a
+    # DUPLICATE node was created in the volume — exactly the non-deterministic
+    # merge hazard the reuse logic exists to avoid. Accumulate it and raise
+    # before emitting wedges (below) rather than silently shipping duplicates.
+    intermediate_mismatch = 0
     if n_layers > 1:
         # Resolve lateral face tags for this slab.
         lateral_face_tags = [
@@ -737,7 +859,7 @@ def _stamp_one(
 
             # Boundary nodes reuse this slab's lateral-face nodes already
             # placed at z_layer; interior nodes are created in the volume.
-            this_map, _ = _match_and_create_layer_nodes(
+            this_map, layer_mismatch = _match_and_create_layer_nodes(
                 bot_pts,
                 bot_node_tags,
                 boundary_node_tags,
@@ -748,14 +870,16 @@ def _stamp_one(
                 add_tag=vol_tag,
                 snap_tolerance=snap_tolerance,
             )
+            intermediate_mismatch += layer_mismatch
             layer_maps.append(this_map)
     layer_maps.append(
         {i: bot_to_top[int(bot_node_tags[i])] for i in range(len(bot_node_tags))}
     )
 
-    # 5) Emit wedges (gmsh element type 6 = 6-node prism).
+    # 5) Build wedges (gmsh element type 6 = 6-node prism). Assemble the
+    # node-tag list in pure Python first (no gmsh mutation), so the
+    # intermediate-mismatch guard below can abort before anything is emitted.
     wedge_node_tags: list[int] = []
-    expected = 0
     for layer in range(n_layers):
         bot_map = layer_maps[layer]
         top_map = layer_maps[layer + 1]
@@ -784,17 +908,18 @@ def _stamp_one(
                     top_map[b2_p],
                 ]
             )
-            expected += 1
-    gmsh.model.mesh.addElementsByType(vol_tag, 6, [], wedge_node_tags)
-    emitted = len(wedge_node_tags) // 6
-    if emitted != expected:
-        raise WedgeCountMismatchError(
-            slab_index=meta.slab_index,
-            expected=expected,
-            got=emitted,
-        )
-    if mismatched:
+
+    # (c) Fail before mutation: surface a non-zero intermediate-layer
+    # boundary mismatch before committing any wedge element to the volume.
+    if intermediate_mismatch:
         raise WedgeBotNodeMismatchError(
             slab_index=meta.slab_index,
-            mismatched_count=mismatched,
+            mismatched_count=intermediate_mismatch,
         )
+
+    # (a) The former ``emitted != expected`` (WedgeCountMismatchError) check
+    # was mathematically unreachable and has been removed: the loop above
+    # appends exactly six node tags per (layer, triangle) with no conditional
+    # skip, and a bad index would raise KeyError rather than drop a wedge, so
+    # ``len(wedge_node_tags) // 6`` is identically ``n_layers * len(tris)``.
+    gmsh.model.mesh.addElementsByType(vol_tag, 6, [], wedge_node_tags)

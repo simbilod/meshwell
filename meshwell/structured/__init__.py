@@ -23,7 +23,6 @@ from meshwell.structured.exceptions import (
     StructuredVolumetricOverlapError,
     StructuredZStackError,
     WedgeBotNodeMismatchError,
-    WedgeCountMismatchError,
 )
 
 __all__ = [
@@ -39,5 +38,4 @@ __all__ = [
     "StructuredVolumetricOverlapError",
     "StructuredZStackError",
     "WedgeBotNodeMismatchError",
-    "WedgeCountMismatchError",
 ]

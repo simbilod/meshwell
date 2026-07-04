@@ -3,11 +3,11 @@ def test_public_imports():
         MixedIdentifyArcsError,
         StructuredError,
         StructuredZStackError,
-        WedgeCountMismatchError,
+        WedgeBotNodeMismatchError,
     )
 
     assert issubclass(StructuredZStackError, StructuredError)
-    assert issubclass(WedgeCountMismatchError, StructuredError)
+    assert issubclass(WedgeBotNodeMismatchError, StructuredError)
     assert issubclass(MixedIdentifyArcsError, StructuredError)
 
 

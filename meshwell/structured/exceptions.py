@@ -125,19 +125,6 @@ class StructuredTransfiniteRejectedError(StructuredError):
         )
 
 
-class WedgeCountMismatchError(StructuredError):
-    """Raised when the number of emitted wedges does not match expectations."""
-
-    def __init__(self, slab_index: int, expected: int, got: int):
-        self.slab_index = slab_index
-        self.expected = expected
-        self.got = got
-        super().__init__(
-            f"Wedge stamp for slab #{slab_index}: expected {expected} "
-            f"wedges (bot triangles x n_layers), emitted {got}."
-        )
-
-
 class WedgeBotNodeMismatchError(StructuredError):
     """Raised when bot vertices do not match the bot face mesh node tags."""
 
