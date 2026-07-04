@@ -124,28 +124,6 @@ class _MeshEntity:
 
         return self.boundaries
 
-    def _fuse_self(self, dimtags: list[int | str]) -> list[int | str]:
-        """Fuse multiple geometric entities into a single entity.
-
-        Args:
-            dimtags: List of entity identifiers to fuse
-
-        Returns:
-            List containing the fused entity identifier(s)
-        """
-        if len(dimtags) == 0:
-            return []
-
-        if len(dimtags) != 1:
-            dimtags = gmsh.model.occ.fuse(
-                [dimtags[0]],
-                dimtags[1:],
-                removeObject=True,
-                removeTool=True,
-            )[0]
-            self.model.occ.synchronize()
-        return dimtags
-
     @property
     def tags(self) -> list[int]:
         """Extract entity tags from dimension-tag pairs.
@@ -173,14 +151,6 @@ class _MeshEntity:
             return -1  # Invalid dimension for empty entities
 
         return next(dim for dim, tag in self.dimtags)
-
-    def boundaries(self) -> list[int]:
-        """Get boundary entity tags.
-
-        Returns:
-            List of boundary entity tags using safe update logic
-        """
-        return self.update_boundaries()
 
     def filter_tags_by_target_dimension(self, target_dimension: int) -> list[int]:
         """Filter entity tags based on target dimension.

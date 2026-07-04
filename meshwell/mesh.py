@@ -157,18 +157,6 @@ class Mesh:
         """
         return self.model_manager.get_physical_dimtags(physical_name)
 
-    def _restore_structured_sweeps(self, blueprint: dict) -> None:
-        """Analyze structured sweeps."""
-        top_names = self.get_top_physical_names()
-        for p_name in top_names:
-            if p_name in blueprint and blueprint[p_name].get("mesh_structured", False):
-                logger.warning(
-                    f"Physical group '{p_name}' requested mesh_structured=True. "
-                    "Note: Native OpenCASCADE structured sweeping via 'removeAllDuplicates' "
-                    "cannot guarantee conformality in hybrid Gmsh meshes without stripping ExtrudeParams. "
-                    "Proceeding with unstructured or recombined fallback."
-                )
-
     def _append_interface_group(
         self,
         entities: _MeshEntity,
