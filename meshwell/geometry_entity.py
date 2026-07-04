@@ -346,10 +346,6 @@ class GeometryEntity:
         if point1_id == point2_id:
             return 0
 
-        # Initialize local cache if no shared cache is set
-        if self._lines is None:
-            self._lines = {}
-
         # Create ordered key (smaller point ID first for consistency)
         key = tuple(sorted([point1_id, point2_id]))
 
