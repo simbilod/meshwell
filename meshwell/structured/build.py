@@ -301,7 +301,6 @@ class EdgeRegistry:
         for segments in replayed:
             edges.extend(self._emit_edges_for_segments(segments, z))
         return edges
-        return edges
 
 
 @dataclass
@@ -651,31 +650,6 @@ def _replay_canonical_ring(
         b_key = inner_keys[(i + 1) % n]
         edge_idx = arrangement.edge_by_vertex_pair[frozenset({a_key, b_key})]
         canon = arrangement.canonical_edges[edge_idx]
-
-        if canon.is_closed:
-            idx = canon.vertex_keys.index(a_key)
-            n_canon = len(canon.vertex_keys)
-            if canon.vertex_keys[(idx + 1) % n_canon] == b_key:
-                forward = True
-            elif canon.vertex_keys[(idx - 1) % n_canon] == b_key:
-                forward = False
-            else:
-                raise CanonicalArrangementError(
-                    cohort_index=arrangement.cohort_index,
-                    reason=(
-                        f"vertex {a_key} is in closed canonical edge "
-                        f"{edge_idx} but the {ring_label} is traversing "
-                        f"to {b_key} which is not adjacent."
-                    ),
-                )
-            segments = list(canon.segments)
-            if not forward:
-                segments = list(reversed(segments))
-            out.append(segments)
-            step = n_canon
-            i += step
-            consumed += step
-            continue
 
         # Open canonical edge: enter at one of its two endpoints.
         if canon.vertex_keys[0] == a_key:
