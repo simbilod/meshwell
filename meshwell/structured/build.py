@@ -11,6 +11,7 @@ is what makes cohort internal interfaces conformal without BOP.
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 
 from OCP.BRep import BRep_Builder
@@ -22,6 +23,12 @@ from OCP.BRepBuilderAPI import (
 )
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.gp import gp_Pnt
+from OCP.Standard import (
+    Standard_ConstructionError,
+    Standard_DomainError,
+    Standard_Failure,
+    Standard_NoSuchObject,
+)
 from OCP.TopoDS import (
     TopoDS_Compound,
     TopoDS_Edge,
@@ -44,6 +51,21 @@ from meshwell.structured.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# OCC geometry exceptions that curve/adaptor inspection can raise for a
+# degenerate or non-inspectable edge curve. These are the "expected" failure
+# modes we treat as "not a (circular) arc"; anything else is a real bug and is
+# surfaced (warned + re-raised) rather than silently swallowed. OCP flattens
+# the OCC exception hierarchy (each Standard_* derives directly from
+# ``Exception``, not from ``Standard_Failure``), so the family is enumerated
+# explicitly rather than caught via a common base. Empirically probed:
+# ``GeomAdaptor_Curve.Circle()`` on a non-circle raises ``Standard_NoSuchObject``.
+_OCC_CURVE_EXCEPTIONS = (
+    Standard_Failure,
+    Standard_NoSuchObject,
+    Standard_ConstructionError,
+    Standard_DomainError,
+)
 
 
 @dataclass
@@ -96,7 +118,15 @@ class EdgeRegistry:
         """Return the unique vertical edge at (x, y) between z_a and z_b."""
         a = self.vertices.get_or_create(x, y, z_a)
         b = self.vertices.get_or_create(x, y, z_b)
-        key = ("V", self.vertices._key(x, y, z_a), self.vertices._key(x, y, z_b))
+        # Endpoint-order-invariant, like ``line_xy``: a vertical edge built
+        # z_a->z_b and one built z_b->z_a share one underlying TShape, so two
+        # sub-pieces meeting at a shared vertical seam reference the same edge.
+        key = (
+            "V",
+            tuple(
+                sorted([self.vertices._key(x, y, z_a), self.vertices._key(x, y, z_b)])
+            ),
+        )
         if key not in self._store:
             self._store[key] = BRepBuilderAPI_MakeEdge(a, b).Edge()
         return self._store[key]
@@ -780,12 +810,23 @@ def _is_arc_edge(edge: "TopoDS_Edge") -> bool:
     fp, lp = 0.0, 1.0
     curv = BRep_Tool.Curve_s(edge, fp, lp)
     if curv is None:
+        # No 3D curve (e.g. a degenerate edge): not a circular arc.
         return False
     try:
         adaptor = GeomAdaptor_Curve(curv)
         return adaptor.GetType() == GeomAbs_Circle
-    except Exception:
+    except _OCC_CURVE_EXCEPTIONS:
+        # OCC couldn't classify this curve — treat as not-an-arc.
         return False
+    except Exception as exc:
+        # Anything else is unexpected: surface it (do NOT silently claim
+        # "not an arc") with edge context, then propagate.
+        warnings.warn(
+            f"_is_arc_edge: unexpected non-OCC error classifying edge "
+            f"curve {curv!r}: {exc!r}",
+            stacklevel=2,
+        )
+        raise
 
 
 def _build_lateral_face(
@@ -878,7 +919,18 @@ def _build_cylindrical_lateral_face(
         if adaptor.GetType() != GeomAbs_Circle:
             return _ruled_fallback()
         gp_circ = adaptor.Circle()
-    except Exception:
+    except _OCC_CURVE_EXCEPTIONS:
+        # OCC couldn't extract a circle — fall back to a ruled surface.
+        return _ruled_fallback()
+    except Exception as exc:
+        # Unexpected (non-OCC) failure: surface it with edge context before
+        # falling back, so a real bug isn't hidden behind the ruled path.
+        warnings.warn(
+            f"_build_cylindrical_lateral_face: unexpected non-OCC error "
+            f"extracting arc circle from edge {edge_low!r}: {exc!r}; "
+            f"using ruled-surface fallback",
+            stacklevel=2,
+        )
         return _ruled_fallback()
 
     # z of the bot edge (vertical cylinder origin).
@@ -1058,15 +1110,27 @@ def build_cohort_compound(
         s.source_index: s for s in cohort.slabs
     }
 
+    def _zkey(z: float) -> int:
+        """Quantize a z-plane to its integer key (shared quantization grid).
+
+        Raw floats are unsafe dict keys: a subpiece's z and a slab's zhi that
+        differ only by ULP noise would land in different buckets, silently
+        breaking cross-plane arc-parameter propagation and shared-plane
+        detection. Keying every z-plane dict through ``quantize_key`` makes
+        those lookups tolerant to sub-``point_tolerance`` float noise.
+        """
+        return quantize_key(0.0, 0.0, z, point_tolerance)[2]
+
     # Pre-compute, for each z-plane in the cohort, whether ANY source slab
     # active AT that plane (either touching from below or from above) has
     # identify_arcs=True.  A subpiece's bottom face uses the z=zlo plane
     # setting and its top face uses the z=zhi plane setting.
-    z_plane_id_arcs: dict[float, bool] = {}
-    z_plane_min_arc_pts: dict[float, int] = {}
-    z_plane_arc_tol: dict[float, float] = {}
+    z_plane_id_arcs: dict[int, bool] = {}
+    z_plane_min_arc_pts: dict[int, int] = {}
+    z_plane_arc_tol: dict[int, float] = {}
     for slab in cohort.slabs:
-        for z in (slab.zlo, slab.zhi):
+        for z_raw in (slab.zlo, slab.zhi):
+            z = _zkey(z_raw)
             if slab.identify_arcs:
                 z_plane_id_arcs[z] = True
                 # Use the most sensitive (smallest) arc_tolerance and
@@ -1087,15 +1151,15 @@ def build_cohort_compound(
     # Two subpieces share an interior face when their z_intervals are
     # adjacent (one's zhi == other's zlo) and their sub_polygons
     # intersect with non-zero area.
-    sub_idx_by_z: dict[float, list[int]] = {}
+    sub_idx_by_z: dict[int, list[int]] = {}
     for i, sp in enumerate(subpieces):
-        sub_idx_by_z.setdefault(sp.z_interval[0], []).append(i)
-        sub_idx_by_z.setdefault(sp.z_interval[1], []).append(i)
+        sub_idx_by_z.setdefault(_zkey(sp.z_interval[0]), []).append(i)
+        sub_idx_by_z.setdefault(_zkey(sp.z_interval[1]), []).append(i)
 
     shared_horizontal: dict[tuple[int, int], object] = {}
     for z in sorted(sub_idx_by_z.keys()):
-        below = [i for i in sub_idx_by_z[z] if subpieces[i].z_interval[1] == z]
-        above = [i for i in sub_idx_by_z[z] if subpieces[i].z_interval[0] == z]
+        below = [i for i in sub_idx_by_z[z] if _zkey(subpieces[i].z_interval[1]) == z]
+        above = [i for i in sub_idx_by_z[z] if _zkey(subpieces[i].z_interval[0]) == z]
         for b in below:
             for a in above:
                 inter = subpieces[b].sub_polygon.intersection(subpieces[a].sub_polygon)
@@ -1107,10 +1171,14 @@ def build_cohort_compound(
     horiz_faces: dict[tuple[int, str], TopoDS_Face] = {}
 
     def arc_params_for_z(z: float, sp_idx: int):
+        # Quantize the query z to the shared grid so ULP noise between a
+        # subpiece's z_interval and the registered plane z can't miss the
+        # entry and silently fall back to per-slab arc params.
+        zk = _zkey(z)
         s = slab_by_source[subpieces[sp_idx].source_slab_indices[0]]
-        id_arcs = z_plane_id_arcs.get(z, s.identify_arcs)
-        min_p = z_plane_min_arc_pts.get(z, s.min_arc_points)
-        arc_tol = z_plane_arc_tol.get(z, s.arc_tolerance)
+        id_arcs = z_plane_id_arcs.get(zk, s.identify_arcs)
+        min_p = z_plane_min_arc_pts.get(zk, s.min_arc_points)
+        arc_tol = z_plane_arc_tol.get(zk, s.arc_tolerance)
         return id_arcs, min_p, arc_tol
 
     # Build shared interior faces first.

@@ -28,6 +28,13 @@ from meshwell.structured.types import ShapeKey, SlabMeta
 
 logger = logging.getLogger(__name__)
 
+# FP-noise epsilon for classifying a gmsh node's z against a slab's bot/top
+# plane. This is an independent numerical guard on gmsh-emitted coordinates
+# (not the vertex-quantization grid): two z-planes closer than this would be
+# the same plane, so it is a genuine constant rather than a point_tolerance
+# derivative. Kept at the value validated by the existing structured suite.
+_Z_PLANE_MATCH_EPS = 1e-7
+
 
 def resolve_n_layers(
     physical_name: tuple[str, ...] | str,
@@ -65,7 +72,7 @@ def _classify_lateral_face_edges(
     face_tag: int,
     z_bot: float,
     z_top: float,
-    z_tol: float = 1e-7,
+    z_tol: float = _Z_PLANE_MATCH_EPS,
 ) -> tuple[int | None, int | None, list[int]]:
     """Return (bot_edge_tag, top_edge_tag, [vertical_edge_tags])."""
     edges = gmsh.model.getBoundary([(2, face_tag)], oriented=False, recursive=False)
@@ -366,7 +373,16 @@ def freeze_lateral_mesh(
             ]
             try:
                 gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
+            except gmsh.ArgumentError:
+                # Wrong argument shape/types is a programming bug in this
+                # call, not a gmsh runtime limitation — surface it.
+                raise
             except Exception as per_err:
+                # gmsh reports genuine runtime failures (e.g. non-matching
+                # meshes) as a bare ``Exception`` via logger.getLastError().
+                # A failed periodic constraint is non-fatal here — the cohort
+                # lateral quads are emitted explicitly, not by gmsh's periodic
+                # mesher — so warn and continue.
                 logger.warning(
                     "Failed to set periodic constraint for top_edge %s -> "
                     "bot_edge %s: %s",
@@ -562,7 +578,12 @@ def _stamp_one(
     face_tag_by_key: dict[ShapeKey, int],
 ) -> None:
     """Read bot triangulation, stamp on top, emit wedges into volume."""
-    snap_tolerance = 1e-6
+    # XY snap tolerance for reusing an existing mesh node (lateral/top face)
+    # in place of creating a duplicate at the same grid position. It gates
+    # geometric matching of nodes that live on the point_tolerance grid, so
+    # it scales with it: point_tolerance * 1e-3 == 1e-6 at the default
+    # point_tolerance=1e-3, reproducing the value validated by the suite.
+    snap_tolerance = point_tolerance * 1e-3
     # 1) Read bot triangulation.
     elem_types, _elem_tags, node_tags = gmsh.model.mesh.getElements(2, bot_tag)
     if 2 not in elem_types:  # type 2 = 3-node triangle

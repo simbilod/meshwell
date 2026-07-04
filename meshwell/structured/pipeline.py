@@ -31,6 +31,16 @@ from meshwell.structured.validators import (
     validate_z_stacks,
 )
 
+# Per-axis tolerance for matching a post-BOP shape's bounding box back to its
+# pre-BOP fingerprint (solid and per-role face lookups). This absorbs the
+# floating-point perturbation BOPAlgo_Builder introduces when it regenerates
+# TShapes for geometrically-unchanged shapes; it is an independent BOP-noise
+# guard, NOT a function of the vertex-quantization grid (a finer
+# point_tolerance does not tighten BOP's bbox reproducibility), so it is a
+# named constant rather than a point_tolerance derivative. Equals the default
+# point_tolerance (1e-3) — the value the structured suite validated.
+_BBOX_MATCH_TOL = 1e-3
+
 
 @dataclass
 class StructuredState:
@@ -366,7 +376,7 @@ def _match_role_face(
     role_key: "ShapeKey",
     pre_fp_for_meta: "dict[ShapeKey, tuple[float, ...]]",
     solid_faces: "list[tuple[ShapeKey, Any]]",
-    tol: float = 1e-3,
+    tol: float = _BBOX_MATCH_TOL,
 ):
     """Find the post-BOP TopoDS_Face whose bbox best matches a SlabMeta role key.
 
@@ -426,7 +436,7 @@ def _match_by_bbox(
     shape,
     slab_fp_by_key: dict[ShapeKey, tuple[float, ...]],
     slab_meta: "dict[ShapeKey, SlabMeta]",
-    tol: float = 1e-3,
+    tol: float = _BBOX_MATCH_TOL,
 ) -> "SlabMeta | None":
     """Match a post-BOP solid to a slab_meta entry by bounding box.
 
