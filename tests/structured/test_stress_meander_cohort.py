@@ -297,15 +297,21 @@ def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
         entities,
         interface_delimiter,
         boundary_delimiter,
+        registry,
         interface_aabb_tolerance=xao_mod._DEFAULT_AABB_INTERFACE_TOL,
     ):
+        # Independent local registry for the instrumentation's own leaf
+        # enumeration; the real per-run registry is threaded to ``original``.
+        local_registry = xao_mod.IndexedShapeRegistry()
         max_dim = max((e.dim for e in entities if e.shapes), default=0)
         ebs = []
         for ent in entities:
             b = {}
             if ent.dim == max_dim and ent.dim > 0:
                 for s in ent.shapes:
-                    for sub, sid in xao_mod._leaf_subshapes(s, ent.dim - 1):
+                    for sub, sid in xao_mod._leaf_subshapes(
+                        s, ent.dim - 1, local_registry
+                    ):
                         b.setdefault(sid, sub)
             ebs.append(b)
         eas = []
@@ -338,6 +344,7 @@ def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
             entities,
             interface_delimiter,
             boundary_delimiter,
+            registry,
             interface_aabb_tolerance=interface_aabb_tolerance,
         )
 

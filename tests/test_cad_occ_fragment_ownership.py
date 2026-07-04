@@ -10,11 +10,11 @@ from meshwell.cad_occ import (
     CAD_OCC,
     OCCLabeledEntity,
     _resolve_piece_ownership,
-    _shape_key,
     cad_occ,
 )
 from meshwell.model import ModelManager
 from meshwell.occ_entity import OCC_entity
+from meshwell.occ_util import IndexedShapeRegistry
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
@@ -77,19 +77,25 @@ def test_resolve_piece_ownership_inf_mesh_order():
 
 
 def test_shape_key_same_shape_equal():
-    """Two handles to the same underlying shape must compare equal."""
+    """Two handles to the same underlying shape must compare equal.
+
+    Fragment ownership now keys on ``IndexedShapeRegistry.oriented_key``
+    (collision-free index + orientation) rather than a raw hash tuple.
+    """
     box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
-    k1 = _shape_key(box)
-    k2 = _shape_key(box)
+    reg = IndexedShapeRegistry()
+    k1 = reg.oriented_key(box)
+    k2 = reg.oriented_key(box)
     assert k1 == k2
     assert hash(k1) == hash(k2)
 
 
 def test_shape_key_different_shapes_differ():
-    """Distinct shape constructions produce distinct keys."""
+    """Distinct shape constructions produce distinct keys within one registry."""
     b1 = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1.0, 1.0, 1.0).Shape()
     b2 = BRepPrimAPI_MakeBox(gp_Pnt(2, 0, 0), 1.0, 1.0, 1.0).Shape()
-    assert _shape_key(b1) != _shape_key(b2)
+    reg = IndexedShapeRegistry()
+    assert reg.oriented_key(b1) != reg.oriented_key(b2)
 
 
 def _make_ent(idx, shape, mesh_order, name, dim=3, keep=True):

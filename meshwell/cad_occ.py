@@ -53,12 +53,11 @@ from OCP.TopAbs import (
     TopAbs_VERTEX,
 )
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
 from meshwell.cad_common import normalize_mesh_order, prepare_entities
 from meshwell.cad_common import resolve_piece_ownership as _resolve_piece_ownership
-from meshwell.occ_util import shape_bbox
+from meshwell.occ_util import IndexedShapeRegistry, shape_bbox
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -88,21 +87,6 @@ class OCCLabeledEntity:
     # to detect purely-synthetic annotators -- WITHOUT keying on the name text.
     is_interface_helper: bool = False
     synthetic_names: frozenset[str] = field(default_factory=frozenset)
-
-
-_SHAPE_HASHER = TopTools_ShapeMapHasher()
-
-
-def _shape_key(shape: TopoDS_Shape) -> tuple[int, int]:
-    """Return a hashable identity key for a TopoDS_Shape.
-
-    Uses the TShape pointer plus orientation so reversed shapes compare
-    distinct when BOPAlgo differentiates them and equal when it does not.
-    OCP returns a fresh Python wrapper each time ``TShape()`` is called,
-    so ``id()``/default ``__hash__`` isn't stable -- ``TopTools_ShapeMapHasher``
-    hashes on the underlying ``TShape*`` pointer instead.
-    """
-    return (_SHAPE_HASHER(shape), int(shape.Orientation()))
 
 
 class CAD_OCC:
@@ -344,6 +328,12 @@ class CAD_OCC:
             )
         builder.Perform()
 
+        # Per-run collision-free shape identity. Created here (never module
+        # global) so identities cannot leak across fragment passes. Orientation
+        # matters here: BOPAlgo can differentiate a piece from its reverse, so
+        # the key carries orientation alongside the collision-free index.
+        registry = IndexedShapeRegistry()
+
         piece_candidates: dict[tuple[int, int], list[tuple[int, float]]] = defaultdict(
             list
         )
@@ -365,7 +355,7 @@ class CAD_OCC:
                 else:
                     pieces = list(modified)
                 for piece in pieces:
-                    k = _shape_key(piece)
+                    k = registry.oriented_key(piece)
                     piece_shapes.setdefault(k, piece)
                     piece_candidates[k].append((ent_idx, mo))
 

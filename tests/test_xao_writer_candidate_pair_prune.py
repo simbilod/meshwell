@@ -191,6 +191,7 @@ def test_compute_physical_groups_two_stacked_prisms_has_expected_interface():
     refactor that breaks the output contract (key set, shape counts).
     """
     from meshwell.cad_occ import cad_occ
+    from meshwell.occ_util import IndexedShapeRegistry
     from meshwell.occ_xao_writer import _compute_physical_groups
     from meshwell.polyprism import PolyPrism
 
@@ -211,6 +212,7 @@ def test_compute_physical_groups_two_stacked_prisms_has_expected_interface():
         occ_entities,
         interface_delimiter="___",
         boundary_delimiter="None",
+        registry=IndexedShapeRegistry(),
         interface_aabb_tolerance=1e-2,
     )
     # Entity groups.
@@ -232,6 +234,7 @@ def test_compute_physical_groups_two_disjoint_prisms_no_interface():
     (no ``a___b`` group, just entity + exterior groups).
     """
     from meshwell.cad_occ import cad_occ
+    from meshwell.occ_util import IndexedShapeRegistry
     from meshwell.occ_xao_writer import _compute_physical_groups
     from meshwell.polyprism import PolyPrism
 
@@ -252,6 +255,7 @@ def test_compute_physical_groups_two_disjoint_prisms_no_interface():
         occ_entities,
         interface_delimiter="___",
         boundary_delimiter="None",
+        registry=IndexedShapeRegistry(),
         interface_aabb_tolerance=1e-2,
     )
     assert (3, "a") in groups

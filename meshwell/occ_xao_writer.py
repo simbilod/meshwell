@@ -56,15 +56,14 @@ from OCP.BRepTools import BRepTools
 from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound
-from OCP.TopTools import TopTools_IndexedMapOfShape, TopTools_ShapeMapHasher
+from OCP.TopTools import TopTools_IndexedMapOfShape
 
+from meshwell.occ_util import IndexedShapeRegistry, validated_find_index
 from meshwell.occ_util import shape_bbox as _shape_aabb
 
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
 
-
-_HASHER = TopTools_ShapeMapHasher()
 
 _DIM_TO_TOPABS = {
     3: TopAbs_SOLID,
@@ -175,19 +174,20 @@ def _candidate_pair_mask(
 # ---------------------------------------------------------------------------
 
 
-def _leaf_subshapes(shape, dim):
-    """Yield ``(sub_shape, tshape_id)`` pairs at the TopAbs class for ``dim``.
+def _leaf_subshapes(shape, dim, registry: IndexedShapeRegistry):
+    """Yield ``(sub_shape, shape_id)`` pairs at the TopAbs class for ``dim``.
 
     Mirrors the leaf-enumeration gmsh's ``_multiBind`` does when binding
     imported OCC shapes (one gmsh entity per leaf TopAbs). Dedupe by
-    TShape identity.
+    collision-free ``registry`` identity (``IsSame``), not a hash that could
+    collide and silently merge distinct sub-shapes.
     """
     topabs = _DIM_TO_TOPABS[dim]
     seen: set[int] = set()
     exp = TopExp_Explorer(shape, topabs)
     while exp.More():
         sub = exp.Current()
-        key = _HASHER(sub)
+        key = registry.index_of(sub)
         if key not in seen:
             seen.add(key)
             yield sub, key
@@ -244,6 +244,7 @@ def _compute_physical_groups(
     entities: list[OCCLabeledEntity],
     interface_delimiter: str,
     boundary_delimiter: str,
+    registry: IndexedShapeRegistry,
     interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
 ) -> dict[tuple[int, str], list]:
     """OCP reconstruction of ``tag_entities``/``tag_interfaces``/``tag_boundaries``.
@@ -269,18 +270,22 @@ def _compute_physical_groups(
     entity_leaves: list[list] = []
     entity_boundary: list[dict[int, object]] = []
     for ent in entities:
-        leaves = [leaf for s in ent.shapes for leaf, _ in _leaf_subshapes(s, ent.dim)]
+        leaves = [
+            leaf
+            for s in ent.shapes
+            for leaf, _ in _leaf_subshapes(s, ent.dim, registry)
+        ]
         boundaries: dict[int, object] = {}
         if ent.dim == max_dim and ent.dim > 0:
             for s in ent.shapes:
-                for sub, sid in _leaf_subshapes(s, ent.dim - 1):
+                for sub, sid in _leaf_subshapes(s, ent.dim - 1, registry):
                     boundaries.setdefault(sid, sub)
         elif ent.dim == max_dim - 1 and ent.dim > 0:
             # Lower-dim entity: its own leaves act as the boundary index
             # so the interface pass can match them against a parent's
             # faces (embedded internal surface case).
             for s in ent.shapes:
-                for sub, sid in _leaf_subshapes(s, ent.dim):
+                for sub, sid in _leaf_subshapes(s, ent.dim, registry):
                     boundaries.setdefault(sid, sub)
         entity_leaves.append(leaves)
         entity_boundary.append(boundaries)
@@ -453,7 +458,7 @@ def _compute_physical_groups(
             if _is_purely_synthetic(ent):
                 continue
             for leaf in leaves:
-                lower_dim_ids.add(_HASHER(leaf))
+                lower_dim_ids.add(registry.index_of(leaf))
 
     for i, ent in enumerate(entities):
         if ent.dim != max_dim or not ent.keep:
@@ -562,10 +567,17 @@ def write_xao(
     shape_reference_map = TopTools_IndexedMapOfShape()
     TopExp.MapShapes_s(brep_compound, shape_reference_map)
 
+    # Per-run, collision-free shape identity. Created here (never module
+    # global) so identities cannot leak across ``write_xao`` calls. Shared
+    # with ``_compute_physical_groups`` and the topology/group dedup below so
+    # every site keys shapes on the same collision-free integers.
+    registry = IndexedShapeRegistry()
+
     physical_groups = _compute_physical_groups(
         entities,
         interface_delimiter,
         boundary_delimiter,
+        registry,
         interface_aabb_tolerance=interface_aabb_tolerance,
     )
 
@@ -574,15 +586,17 @@ def write_xao(
     # ``reference`` is the index into the BREP's TopExp shape map.
     topology_local_index: dict[int, dict[int, int]] = {0: {}, 1: {}, 2: {}, 3: {}}
     topology_entries: dict[int, list[tuple[int, int]]] = {0: [], 1: [], 2: [], 3: []}
-    for (dim, _), shapes in physical_groups.items():
+    for (dim, name), shapes in physical_groups.items():
         for shape in shapes:
-            sid = _HASHER(shape)
+            sid = registry.index_of(shape)
             if sid not in topology_local_index[dim]:
+                # Validate the BREP reference before serializing: a shape
+                # absent from the map yields FindIndex == 0, which would write
+                # a dangling reference="0" and silently corrupt the group.
+                reference = validated_find_index(shape_reference_map, shape, name)
                 local = len(topology_entries[dim])
                 topology_local_index[dim][sid] = local
-                topology_entries[dim].append(
-                    (local, shape_reference_map.FindIndex(shape))
-                )
+                topology_entries[dim].append((local, reference))
 
     root = ET.Element("XAO", version="1.0", author="meshwell")
     geometry_el = ET.SubElement(root, "geometry", name=model_name)
@@ -613,7 +627,7 @@ def write_xao(
         seen_ids: set[int] = set()
         local_indices: list[int] = []
         for shape in shapes:
-            sid = _HASHER(shape)
+            sid = registry.index_of(shape)
             if sid in seen_ids:
                 continue
             seen_ids.add(sid)
