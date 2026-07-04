@@ -33,9 +33,9 @@ def quantize_key(
 class ShapeKey:
     """Stable identity for a TopoDS_Shape used as a dict key.
 
-    TShape pointer + orientation matches cad_occ._shape_key. We
-    redeclare it here as a frozen dataclass so it's pickle-safe and
-    type-checkable.
+    TShape pointer + orientation; created by _shape_key in
+    structured/build.py. We redeclare it here as a frozen dataclass so
+    it's pickle-safe and type-checkable.
     """
 
     tshape_id: int

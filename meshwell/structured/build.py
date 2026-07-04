@@ -1117,7 +1117,10 @@ def build_cohort_compound(
         differ only by ULP noise would land in different buckets, silently
         breaking cross-plane arc-parameter propagation and shared-plane
         detection. Keying every z-plane dict through ``quantize_key`` makes
-        those lookups tolerant to sub-``point_tolerance`` float noise.
+        those lookups tolerant to sub-``point_tolerance`` float noise. As a
+        side effect, genuinely distinct z-planes within point_tolerance of
+        each other are merged in the keying—a deliberate trade consistent
+        with the vertex quantization grid.
         """
         return quantize_key(0.0, 0.0, z, point_tolerance)[2]
 

@@ -195,7 +195,6 @@ def _leaf_subshapes(shape, dim, registry: IndexedShapeRegistry):
 
 
 # MANUAL_NOTE: revise use of synthetic physical group for structured tags
-# or at least revise/validate the hardcoded string used for it
 def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
     """True if ``ent`` is a structured-pipeline bookkeeping companion only.
 

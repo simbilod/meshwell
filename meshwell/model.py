@@ -202,7 +202,10 @@ class ModelManager:
             **write_xao_kwargs: forwarded to
                 :func:`meshwell.occ_xao_writer.write_xao`
                 (``interface_delimiter``, ``boundary_delimiter``,
-                ``model_name``).
+                ``model_name``, ``point_tolerance``,
+                ``interface_aabb_tolerance``). If ``point_tolerance`` is
+                not supplied, this model's ``point_tolerance`` is passed
+                through to derive the writer's AABB interface tolerance.
         """
         import tempfile
 
