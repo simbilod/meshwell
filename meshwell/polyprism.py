@@ -309,32 +309,14 @@ class PolyPrism(GeometryEntity):
                 surfaces.append(surface)
         return surfaces
 
-    # MANUAL_NOTE: delete this
     def subdivide(self, model, prisms, subdivision):
         """Split the prisms into subprisms according to subdivision."""
         subdivided_prisms = []
         import numpy as np
 
-        global_xmin = np.inf
-        global_ymin = np.inf
-        global_zmin = np.inf
-        global_xmax = -np.inf
-        global_ymax = -np.inf
-        global_zmax = -np.inf
-        for prism in prisms:
-            xmin, ymin, zmin, xmax, ymax, zmax = model.occ.getBoundingBox(3, prism)
-            if xmin < global_xmin:
-                global_xmin = xmin
-            if ymin < global_ymin:
-                global_ymin = ymin
-            if zmin < global_zmin:
-                global_zmin = zmin
-            if xmax > global_xmax:
-                global_xmax = xmax
-            if ymax > global_ymax:
-                global_ymax = ymax
-            if zmax > global_zmax:
-                global_zmax = zmax
+        bounds = np.array([model.occ.getBoundingBox(3, prism) for prism in prisms])
+        global_xmin, global_ymin, global_zmin = bounds[:, :3].min(axis=0)
+        global_xmax, global_ymax, global_zmax = bounds[:, 3:].max(axis=0)
         dx = (global_xmax - global_xmin) / subdivision[0]
         dy = (global_ymax - global_ymin) / subdivision[1]
         dz = (global_zmax - global_zmin) / subdivision[2]
@@ -580,51 +562,3 @@ class PolyPrism(GeometryEntity):
             subdivision=subdivision,
             **cls._common_kwargs_from_dict(data),
         )
-
-    def _validate_polygon_buffers(self) -> bool:
-        """Check if any buffering operation changes the topology of the polygon."""
-        # Get first polygon or multipolygon
-        first_geom = self.buffered_polygons[0][0][1]
-
-        # Handle both single polygons and multipolygons
-        first_polygons = (
-            first_geom.geoms if hasattr(first_geom, "geoms") else [first_geom]
-        )
-
-        # Get reference counts from first polygon(s)
-        reference_counts = []
-        for polygon in first_polygons:
-            # Store exterior vertex count and interior vertex counts for this polygon
-            polygon_counts = {
-                "exterior": len(polygon.exterior.coords),
-                "interiors": [len(interior.coords) for interior in polygon.interiors],
-            }
-            reference_counts.append(polygon_counts)
-
-        # Check each buffered polygon matches reference counts
-        for buffered_polygon in self.buffered_polygons[0][1:]:
-            geom = buffered_polygon[1]
-            polygons = geom.geoms if hasattr(geom, "geoms") else [geom]
-
-            if len(polygons) != len(reference_counts):
-                return False
-
-            for polygon, ref_counts in zip(polygons, reference_counts):
-                # Check exterior vertices match
-                if len(polygon.exterior.coords) != ref_counts["exterior"]:
-                    return False
-
-                # Check interior vertices match
-                polygon_interior_counts = [
-                    len(interior.coords) for interior in polygon.interiors
-                ]
-                if len(polygon_interior_counts) != len(ref_counts["interiors"]):
-                    return False
-
-                for count, ref_count in zip(
-                    polygon_interior_counts, ref_counts["interiors"]
-                ):
-                    if count != ref_count:
-                        return False
-
-        return True
