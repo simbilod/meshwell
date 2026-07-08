@@ -138,12 +138,13 @@ class CAD_OCC:
                 lower entity and erases the carved face. It must also clear
                 the sub-perturbation grazing gap the buffer itself leaves
                 where a straight edge runs tangent to a fitted arc -- at
-                ``perturbation / 2`` (the value cad_gmsh's boolean tolerance
-                uses) that gap survives and OCC's cut emits a spurious sliver
-                solid at the tangency; ``0.8 * perturbation`` clears it while
-                staying inside the ladder. (Intentional divergence from
-                cad_gmsh: gmsh's XAO loader snaps points to curves and does
-                not need the wider cut fuzzy.)
+                ``perturbation / 2`` that gap survives and OCC's cut emits a
+                spurious sliver solid at the tangency; ``0.8 * perturbation``
+                clears it while staying inside the ladder. cad_gmsh's
+                ``tolerance_boolean`` uses the same ``0.8 * perturbation`` to
+                keep the backends numerically aligned (gmsh has no sliver of
+                its own -- its XAO loader snaps points to curves -- but the
+                shared value is harmless there).
             fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
                 all-fragment pass. Defaults to ``point_tolerance``,
                 intentionally LOOSER than the cut fuzzy: cad_occ tags
