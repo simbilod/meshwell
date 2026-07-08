@@ -121,7 +121,7 @@ def validate_tolerance_ladder(
             f"cut_fuzzy_value ({cut_fuzzy_value:g}): the final fragment must "
             f"be at least as permissive as the per-entity cuts."
         )
-    if perturbation > 0 and fragment_fuzzy_value < 2 * perturbation:
+    if perturbation > 0 and 0 < fragment_fuzzy_value < 2 * perturbation:
         warnings.warn(
             f"fragment_fuzzy_value ({fragment_fuzzy_value:g}) is below "
             f"2*perturbation ({2 * perturbation:g}): faces separated by the "

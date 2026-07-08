@@ -40,3 +40,11 @@ def test_validate_function_direct():
     validate_tolerance_ladder(
         perturbation=0.0, cut_fuzzy_value=1e-6, fragment_fuzzy_value=1e-3
     )
+
+
+def test_negative_fragment_fuzzy_does_not_warn(recwarn):
+    # -1e-4 > -1e-3 so no raise; contract: negative fragment must not warn
+    validate_tolerance_ladder(
+        perturbation=1e-5, cut_fuzzy_value=-1e-3, fragment_fuzzy_value=-1e-4
+    )
+    assert not [w for w in recwarn.list if "2*perturbation" in str(w.message)]
