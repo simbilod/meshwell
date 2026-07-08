@@ -57,7 +57,9 @@ def prepare_entities(
             f"(first: {type(already[0]).__name__} "
             f"{getattr(already[0], 'physical_name', '?')}): the perturbation "
             f"buffer would compound. Pass prepared=True to the CAD processor "
-            f"when an earlier stage already prepared this list."
+            f"when an earlier stage already prepared this list, or rebuild the "
+            f"entities from scratch for a fresh run (e.g. a parameter sweep or "
+            f"re-mesh on the same inputs)."
         )
 
     # ----- Pass A: buffer all polygon-bearing entities (shapely only) -----
