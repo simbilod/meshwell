@@ -498,20 +498,15 @@ _SCENES: list[tuple[str, Callable[[], list], dict, str | None]] = [
             "ignore_entity_count_dims": {0, 1},
             "check_boundary_signature": False,
         },
-        # Deferred follow-up (2026-07-08): after the arc-wire buffer-
-        # preservation fix (stop rounding OCC arc-wire coords), the outer
-        # arc-prism's straight edge shared with the inner box now sits at
-        # its perturbation-buffered position (~4-7e-6 off grid) instead of
-        # grid-snapped. OCC's BOPAlgo fragment/fuse pass fails to merge the
-        # near-coincident arc-adjacent face pair cleanly and emits a
-        # spurious sliver solid (occ=15 vs gmsh=12 dim-2 faces). The buffer
-        # preservation is correct; the fragment/fuse pass needs hardening
-        # for near-coincident faces well within point_tolerance. strict
-        # xfail so this XPASS-fails loudly once that hardening lands.
-        "OCC fragment pass emits a sliver solid for the arc-adjacent shared "
-        "face once the perturbation buffer is preserved (occ=15 vs gmsh=12 "
-        "dim-2 faces); needs fragment/fuse hardening for near-coincident "
-        "arc-adjacent faces.",
+        # Previously strict-xfailed: preserving the perturbation buffer for
+        # arc entities exposed a tangency between the inner box's straight
+        # +x edge and the outer disc's fitted arc at (5,0). The buffer left
+        # a sub-perturbation grazing gap (~4-7e-6) that the old cut fuzzy
+        # (perturbation/2 = 5e-6) sat just below, so OCC's cut emitted a
+        # sliver solid. Fixed by widening the default cut fuzzy to
+        # 0.8*perturbation (8e-6), which clears the gap while staying inside
+        # the tolerance ladder. Now backend-equivalent again.
+        None,
     ),
     (
         "embedded_internal_surface",

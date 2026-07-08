@@ -133,10 +133,17 @@ class CAD_OCC:
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
             cut_fuzzy_value: Fuzzy passed to ``BRepAlgoAPI_Cut`` in the
                 sequential per-entity cut cascade. Defaults to
-                ``perturbation / 2`` (mirrors cad_gmsh's
-                ``tolerance_boolean = perturbation / 2``). Tight by design --
-                a loose cut fuzzy merges the buffered overlap into the lower
-                entity and erases the carved face.
+                ``0.8 * perturbation``. Must stay below ``perturbation``: a
+                cut fuzzy at/above it merges the buffered overlap into the
+                lower entity and erases the carved face. It must also clear
+                the sub-perturbation grazing gap the buffer itself leaves
+                where a straight edge runs tangent to a fitted arc -- at
+                ``perturbation / 2`` (the value cad_gmsh's boolean tolerance
+                uses) that gap survives and OCC's cut emits a spurious sliver
+                solid at the tangency; ``0.8 * perturbation`` clears it while
+                staying inside the ladder. (Intentional divergence from
+                cad_gmsh: gmsh's XAO loader snaps points to curves and does
+                not need the wider cut fuzzy.)
             fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
                 all-fragment pass. Defaults to ``point_tolerance``,
                 intentionally LOOSER than the cut fuzzy: cad_occ tags
@@ -153,7 +160,7 @@ class CAD_OCC:
         self.n_threads = n_threads
         self.perturbation = perturbation if perturbation is not None else 1e-5
         self.cut_fuzzy_value = (
-            self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
+            0.8 * self.perturbation if cut_fuzzy_value is None else cut_fuzzy_value
         )
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
