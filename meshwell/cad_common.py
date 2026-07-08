@@ -46,6 +46,20 @@ def prepare_entities(
     if not entities_list:
         return
 
+    already = [
+        ent
+        for ent in entities_list
+        if hasattr(ent, "polygons") and getattr(ent, "_meshwell_prepared", False)
+    ]
+    if already:
+        raise RuntimeError(
+            f"prepare_entities called twice on already-prepared entities "
+            f"(first: {type(already[0]).__name__} "
+            f"{getattr(already[0], 'physical_name', '?')}): the perturbation "
+            f"buffer would compound. Pass prepared=True to the CAD processor "
+            f"when an earlier stage already prepared this list."
+        )
+
     # ----- Pass A: buffer all polygon-bearing entities (shapely only) -----
     xmin, ymin, xmax, ymax = (
         float("inf"),
@@ -99,6 +113,7 @@ def prepare_entities(
                 .buffer(perturbation, join_style=2)
                 .intersection(global_bbox)
             )
+        ent._meshwell_prepared = True
 
     # ----- Pass B: resolve each InterfaceTag against the buffered polygons -----
     polygon_ents: dict[str, list[Any]] = {}
