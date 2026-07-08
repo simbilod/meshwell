@@ -370,5 +370,30 @@ def test_cad_occ_perturbation_below_point_tolerance():
     assert abs(ymax - 1.0) < point_tol, ymax
 
 
+def test_cohort_cut_skip_is_logged(caplog):
+    """Skipping the unsafe cohort cut must leave an audit trail."""
+    import logging
+
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_occ import CAD_OCC
+
+    a = PolySurface(
+        polygons=Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+        physical_name="cohortish",
+        mesh_order=1,
+    )
+    a.is_cohort = True
+    b = PolySurface(
+        polygons=Polygon([(1, 1), (3, 1), (3, 3), (1, 3)]),
+        physical_name="plain",
+        mesh_order=2,
+    )
+    proc = CAD_OCC()
+    with caplog.at_level(logging.DEBUG, logger="meshwell.cad_occ"):
+        proc.process_entities_cut_only([a, b])
+    assert any("skipping" in r.message.lower() for r in caplog.records)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

@@ -271,7 +271,6 @@ class EdgeRegistry:
         for segments in replayed:
             edges.extend(self._emit_edges_for_segments(segments, z))
         return edges
-        return edges
 
 
 @dataclass

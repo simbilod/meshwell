@@ -29,6 +29,7 @@ exactly; tests that pin one pin the other.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
@@ -73,6 +74,8 @@ class OCCLabeledEntity:
     mesh_order: float | None = None
     _is_cohort: bool = False
 
+
+logger = logging.getLogger(__name__)
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
 
@@ -493,7 +496,15 @@ class CAD_OCC:
                 # be a no-op in volume but corrupts via fuzzy. fragment_all
                 # handles their boundary-plane merging cleanly.
                 if prev._is_cohort or labeled._is_cohort:
-                    # MANUAL_NOTE: don't do this silently, log it?
+                    logger.debug(
+                        "cad_occ: skipping pre-fragment cut between %s and %s "
+                        "(cohort involved; cut is unsafe on shared-TShape "
+                        "sub-solids and unnecessary since cohorts are "
+                        "disjoint by invariant). Boundary merging deferred "
+                        "to fragment.",
+                        prev.physical_name,
+                        labeled.physical_name,
+                    )
                     # MANUAL_NOTE: treat cohort hull as its own solid to cut
                     # unstructured around? Then only need to validate higher
                     # priority cohort mesh order
