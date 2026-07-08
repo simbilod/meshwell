@@ -543,24 +543,29 @@ class GeometryEntity:
 
         ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
 
-        # Quantize coordinates once up front, then re-strip at the
-        # grid level: ``_strip_consecutive_duplicates`` compares raw
-        # coords with a strict-inequality Euclidean threshold, but
-        # rounding later in the loop can still collapse pairs that
-        # were just far enough apart to survive the strip. Feeding
-        # ``decompose_vertices`` (and the downstream arc fitter)
-        # already-quantized coords avoids fitting arcs through pairs
-        # of points that will later produce a zero-length edge.
-        quantized: list[tuple[float, float, float]] = []
+        def _key(coords):
+            return tuple(round(c, ndigits) for c in coords)
+
+        # Deduplicate at the point_tolerance grid WITHOUT moving surviving
+        # coordinates. Rounding actual coordinates would undo the
+        # sub-tolerance perturbation buffer applied by
+        # cad_common.prepare_entities (buffered coords sit ~perturbation off
+        # grid vertices and round straight back), silently disabling the
+        # pre-cut overlap strategy for arc-identified entities. Only the
+        # dedup KEY is quantized -- the same scheme
+        # _add_point_with_tolerance uses on the gmsh side.
+        deduped: list[tuple[float, float, float]] = []
+        last_key: tuple[float, float, float] | None = None
         for v in vertices:
-            q = tuple(round(c, ndigits) for c in v)
-            if quantized and q == quantized[-1]:
+            k = _key(v)
+            if last_key is not None and k == last_key:
                 continue
-            quantized.append(q)
+            deduped.append(v)
+            last_key = k
         was_closed = vertices[0] == vertices[-1]
-        if was_closed and len(quantized) >= 2 and quantized[0] != quantized[-1]:
-            quantized.append(quantized[0])
-        vertices = quantized
+        if was_closed and len(deduped) >= 2 and deduped[0] != deduped[-1]:
+            deduped.append(deduped[0])
+        vertices = deduped
 
         segments = self.decompose_vertices(
             vertices,
@@ -571,33 +576,25 @@ class GeometryEntity:
 
         wire_builder = BRepBuilderAPI_MakeWire()
 
-        def _rounded_pnt(coords):
-            rc = [round(c, ndigits) for c in coords]
-            return gp_Pnt(*rc)
-
         for seg in segments:
             if seg.is_arc:
-                start_coords = tuple(round(c, ndigits) for c in seg.points[0])
                 mid_idx = len(seg.points) // 2
-                mid_coords = tuple(round(c, ndigits) for c in seg.points[mid_idx])
-                end_coords = tuple(round(c, ndigits) for c in seg.points[-1])
+                is_closed = seg.points[0] == seg.points[-1]
                 # Drop degenerate arcs whose endpoints collapse under the
                 # quantization grid -- BRepBuilderAPI_MakeEdge raises
-                # StdFail_NotDone on a zero-length edge.
-                is_closed = seg.points[0] == seg.points[-1]
-                if not is_closed and start_coords == end_coords:
+                # StdFail_NotDone on a (near-)zero-length edge.
+                if not is_closed and _key(seg.points[0]) == _key(seg.points[-1]):
                     continue
-                p_start = gp_Pnt(*start_coords)
-                p_mid = gp_Pnt(*mid_coords)
-                p_end = gp_Pnt(*end_coords)
-                _center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
+                p_start = gp_Pnt(*seg.points[0])
+                p_mid = gp_Pnt(*seg.points[mid_idx])
+                p_end = gp_Pnt(*seg.points[-1])
 
                 if is_closed:
                     # Full circle: split into two 180-degree arcs.
                     quarter_idx = len(seg.points) // 4
                     three_quarter_idx = (len(seg.points) * 3) // 4
-                    p1 = _rounded_pnt(seg.points[quarter_idx])
-                    p3 = _rounded_pnt(seg.points[three_quarter_idx])
+                    p1 = gp_Pnt(*seg.points[quarter_idx])
+                    p3 = gp_Pnt(*seg.points[three_quarter_idx])
                     arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
                     edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
                     arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
@@ -615,18 +612,13 @@ class GeometryEntity:
                     arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
                     edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
-                p1_coords = [round(c, ndigits) for c in seg.points[0]]
-                p2_coords = [round(c, ndigits) for c in seg.points[1]]
-                # Coords within `point_tolerance` that survive the
-                # Python-tuple dedup can still collapse to the same
-                # quantized point here (rounding bins wider than the
-                # strict inequality used by _strip_consecutive_duplicates);
-                # skip the resulting zero-length segment rather than let
-                # BRepBuilderAPI_MakeEdge raise StdFail_NotDone.
-                if p1_coords == p2_coords:
+                # Consecutive points that collapse to the same grid key are
+                # already removed by the dedup pass above; guard anyway so a
+                # zero-length segment can never reach MakeEdge.
+                if _key(seg.points[0]) == _key(seg.points[1]):
                     continue
                 edge = BRepBuilderAPI_MakeEdge(
-                    gp_Pnt(*p1_coords), gp_Pnt(*p2_coords)
+                    gp_Pnt(*seg.points[0]), gp_Pnt(*seg.points[1])
                 ).Edge()
             wire_builder.Add(edge)
         return wire_builder.Wire()

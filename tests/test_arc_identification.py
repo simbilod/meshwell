@@ -244,3 +244,43 @@ def test_plot_decomposition_returns_axes():
     ax = pl.plot_decomposition()
     assert isinstance(ax, plt.Axes)
     plt.close()
+
+
+def test_occ_arc_wire_preserves_subtolerance_offsets():
+    """The OCC arc path must not round coordinates to the point_tolerance grid.
+
+    Rounding undoes the sub-tolerance perturbation buffer applied by
+    cad_common.prepare_entities (buffered coords sit ~1e-5 off grid points
+    and round straight back), silently disabling the pre-cut overlap
+    strategy for arc-identified entities. Only the dedup KEY may be
+    quantized -- the same scheme _add_point_with_tolerance uses for gmsh.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshwell.geometry_entity import GeometryEntity
+
+    # Pythagorean lattice points on the r=5 circle (all grid-exact at 1e-3),
+    # then shift everything by 1e-5 in x: still a perfect circle, but every
+    # coordinate is now sub-tolerance off the grid.
+    lattice = [(5, 0), (4, 3), (3, 4), (0, 5), (-3, 4), (-4, 3), (-5, 0)]
+    verts = [(x + 1e-5, float(y), 0.0) for x, y in lattice]
+
+    ge = GeometryEntity(point_tolerance=1e-3)
+    wire = ge._make_occ_wire_from_vertices(
+        verts, identify_arcs=True, min_arc_points=5, arc_tolerance=1e-3
+    )
+
+    xs = []
+    exp = TopExp_Explorer(wire, TopAbs_VERTEX)
+    while exp.More():
+        p = BRep_Tool.Pnt_s(TopoDS.Vertex_s(exp.Current()))
+        xs.append(p.X())
+        exp.Next()
+    assert xs, "wire has no vertices"
+    offsets = [abs(x - round(x, 3)) for x in xs]
+    assert max(offsets) == pytest.approx(
+        1e-5, rel=0.05
+    ), f"sub-tolerance offset was rounded away: offsets={offsets}"
