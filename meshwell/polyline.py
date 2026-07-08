@@ -120,11 +120,32 @@ class PolyLine(GeometryEntity):
         entities = []
         for seg in segments:
             if seg.is_arc:
-                # Create arc
+                # Three-point form (center=False): the arc through start,
+                # mid-sample, and end. The center form requires
+                # |center-start| == |center-end| within OCC precision,
+                # which grid-snapped samples and a grid-rounded fitted
+                # center cannot guarantee (mismatch up to ~sqrt(2)*grid).
+                # Mirrors GeometryEntity._create_surface_from_vertices.
                 start_pt = self._add_point_with_tolerance(*seg.points[0])
-                center_pt = self._add_point_with_tolerance(*seg.center)
+                mid_idx = len(seg.points) // 2
+                mid_pt = self._add_point_with_tolerance(*seg.points[mid_idx])
                 end_pt = self._add_point_with_tolerance(*seg.points[-1])
-                arc_id = gmsh.model.occ.addCircleArc(start_pt, center_pt, end_pt)
+                if start_pt == end_pt:
+                    # Full circle: split into two 180-degree arcs through
+                    # the quarter-point samples.
+                    quarter_idx = len(seg.points) // 4
+                    three_quarter_idx = (len(seg.points) * 3) // 4
+                    p1 = self._add_point_with_tolerance(*seg.points[quarter_idx])
+                    p3 = self._add_point_with_tolerance(*seg.points[three_quarter_idx])
+                    arc1 = gmsh.model.occ.addCircleArc(
+                        start_pt, p1, mid_pt, center=False
+                    )
+                    arc2 = gmsh.model.occ.addCircleArc(mid_pt, p3, end_pt, center=False)
+                    entities.extend(arc_id for arc_id in (arc1, arc2) if arc_id != 0)
+                    continue
+                arc_id = gmsh.model.occ.addCircleArc(
+                    start_pt, mid_pt, end_pt, center=False
+                )
                 if arc_id != 0:
                     entities.append(arc_id)
             else:

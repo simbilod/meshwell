@@ -115,6 +115,33 @@ def test_polyline_arc_instantiate_occ():
     assert shape is not None
 
 
+def test_polyline_arc_instantiate_gmsh_offgrid():
+    """PolyLine arcs must instantiate even when endpoints are off the grid.
+
+    Regression: center-form addCircleArc(start, center, end) failed with
+    'Could not create circle arc' because grid-snapped endpoints sit at
+    unequal distances from the (grid-rounded) fitted center.
+    """
+    cx, cy, r = 0.0004437, 0.0007213, 2.0
+    theta = np.linspace(0.3, 1.9, 9)
+    vertices = [(cx + r * np.cos(t), cy + r * np.sin(t), 0) for t in theta]
+    pl = PolyLine(
+        LineString(vertices),
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+    )
+
+    gmsh.initialize()
+    try:
+        gmsh.model.add("test_pl_offgrid")
+        dimtags = pl.instanciate()
+        assert len(dimtags) == 1
+        assert dimtags[0][0] == 1
+    finally:
+        gmsh.finalize()
+
+
 def test_polysurface_arc_instantiate_gmsh():
     """Test PolySurface arc instantiation in GMSH."""
     theta = np.linspace(0, np.pi / 2, 10)
