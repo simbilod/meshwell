@@ -51,6 +51,7 @@ from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
 from meshwell.cad_common import prepare_entities
+from meshwell.validation import validate_tolerance_ladder
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -153,6 +154,11 @@ class CAD_OCC:
         )
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
+        )
+        validate_tolerance_ladder(
+            perturbation=self.perturbation,
+            cut_fuzzy_value=self.cut_fuzzy_value,
+            fragment_fuzzy_value=self.fragment_fuzzy_value,
         )
         # Set by the final fragment pass in ``_fragment_all`` so callers (e.g.
         # the orchestrator's cohort-shell check) can query ``Modified()``.
