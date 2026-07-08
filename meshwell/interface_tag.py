@@ -88,6 +88,25 @@ def _extend_linestring_endpoints(ls: LineString, dist: float) -> LineString:
     return LineString(coords)
 
 
+def _target_z_extent(ent) -> tuple[float, float] | None:
+    """Best-effort z-extent of a polygon-bearing entity.
+
+    Extruded prisms expose ``zmin``/``zmax``; buffered prisms expose their
+    z-planes as ``buffers`` keys. Returns ``None`` when no z information
+    is available (the caller keeps such entities, preserving pre-filter
+    behavior for plain 2D surfaces).
+    """
+    zmin = getattr(ent, "zmin", None)
+    zmax = getattr(ent, "zmax", None)
+    if zmin is not None and zmax is not None:
+        return float(zmin), float(zmax)
+    buffers = getattr(ent, "buffers", None)
+    if buffers:
+        zs = [float(z) for z in buffers]
+        return min(zs), max(zs)
+    return None
+
+
 class InterfaceTag(GeometryEntity):
     """Snap-to-boundary interface tag for ``cad_gmsh``.
 
@@ -200,6 +219,19 @@ class InterfaceTag(GeometryEntity):
             ]
         else:
             targets = [ent for ents in polygon_ents.values() for ent in ents]
+
+        # The tag is a vertical panel spanning [zmin, zmax]; the real 3D
+        # cut cascade only carves between entities whose z-extents overlap.
+        # Without this filter the XY-only shapely replication lets an
+        # entity at a disjoint z-level shadow the polygon the tag sits on.
+        def _z_overlaps(ent) -> bool:
+            extent = _target_z_extent(ent)
+            if extent is None:
+                return True
+            lo, hi = extent
+            return hi >= self.zmin and lo <= self.zmax
+
+        targets = [t for t in targets if _z_overlaps(t)]
 
         # Stable sort by mesh_order; ties resolve to the entity that
         # appears earliest in `polygon_ents` iteration order (insertion
