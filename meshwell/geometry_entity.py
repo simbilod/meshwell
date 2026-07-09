@@ -179,10 +179,64 @@ def _decompose_vertices_3d(
             for i in range(len(vertices) - 1)
         ]
 
+    ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
+
+    # Up-front closed-circle primitive. If the whole closed ring fits ONE
+    # circle within arc_tolerance, emit it directly as a single closed arc
+    # and skip the greedy per-window scan. The emission layer already
+    # special-cases closed circles (a 360-degree arc can't be one edge, so
+    # it's split into two 180-degree arcs); detecting them here keeps the
+    # two layers consistent and, crucially, keeps the greedy emitted-circle
+    # gate from ever seeing a window that wraps toward closure -- where
+    # start ~= end makes the 3-point circle ill-conditioned and the gate
+    # would fragment the ring into an arc + chords, yielding an
+    # untriangulatable face. A full-ring least-squares fit is the
+    # best-conditioned case; non-circular closed rings (rounded rectangles,
+    # ellipses) fail the fit and fall through to the greedy scan below.
+    if vertices[0] == vertices[-1] and len(vertices) >= min_arc_points + 1:
+        ring = np.array(vertices[:-1])
+        c_center, c_radius, c_residual = fit_circle_2d(ring[:, :2])
+        if c_residual <= arc_tolerance and c_radius < 1e6:
+            c_dev = np.abs(
+                np.hypot(ring[:, 0] - c_center[0], ring[:, 1] - c_center[1]) - c_radius
+            ).max()
+            # Same sharp-corner gate the greedy path applies (``valid_arc``):
+            # a coarsely sampled ring (e.g. a hexagon) fits a circle with low
+            # residual but turns too sharply at each vertex to be a genuine
+            # arc. Without this the primitive would promote coarse polygonal
+            # rings to circles that the greedy path (and the emission layer)
+            # would otherwise keep as line segments, producing degenerate
+            # faces. Ring is closed, so check the wrap-around corner too.
+            m = len(ring)
+            smooth = True
+            for k in range(m):
+                a = ring[(k - 1) % m][:2]
+                b = ring[k][:2]
+                cc = ring[(k + 1) % m][:2]
+                v1 = b - a
+                v2 = cc - b
+                n1 = np.hypot(v1[0], v1[1])
+                n2 = np.hypot(v2[0], v2[1])
+                if n1 > 1e-6 and n2 > 1e-6 and float(np.dot(v1, v2) / (n1 * n2)) < 0.5:
+                    smooth = False
+                    break
+            if c_dev <= arc_tolerance and smooth:
+                return [
+                    DecompositionSegment(
+                        points=vertices,
+                        is_arc=True,
+                        center=(
+                            round(c_center[0], ndigits),
+                            round(c_center[1], ndigits),
+                            vertices[0][2],
+                        ),
+                        radius=round(c_radius, ndigits),
+                    )
+                ]
+
     segments = []
     i = 0
     n = len(vertices)
-    ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
 
     while i < n - 1:
         # Try to find an arc starting at i
@@ -194,7 +248,36 @@ def _decompose_vertices_3d(
                 # For simplicity, we assume the arc is in the XY plane
                 center, radius, residual = fit_circle_2d(pts[:, :2])
 
-                if residual <= arc_tolerance and radius < 1e6:
+                accepted = residual <= arc_tolerance and radius < 1e6
+                if accepted:
+                    # The RMSE above validates the least-squares fit, but
+                    # emission interpolates only 3 samples (start, mid, end)
+                    # -- or the quarter samples for a closed window. Gate on
+                    # the MAX deviation of every window sample from both the
+                    # fitted circle and (for open windows) the 3-point
+                    # circle actually emitted: sagitta-starved windows
+                    # amplify a half-grid midpoint error into radius errors
+                    # far beyond arc_tolerance.
+                    xy = pts[:, :2]
+                    dev_fit = np.abs(
+                        np.hypot(xy[:, 0] - center[0], xy[:, 1] - center[1]) - radius
+                    ).max()
+                    accepted = dev_fit <= arc_tolerance
+                    window_closed = vertices[i] == vertices[j - 1]
+                    if accepted and not window_closed:
+                        mid_k = len(xy) // 2
+                        emitted = _three_point_circle_2d(
+                            tuple(xy[0]), tuple(xy[mid_k]), tuple(xy[-1])
+                        )
+                        if emitted is None:
+                            accepted = False
+                        else:
+                            (ecx, ecy), er = emitted
+                            dev_emit = np.abs(
+                                np.hypot(xy[:, 0] - ecx, xy[:, 1] - ecy) - er
+                            ).max()
+                            accepted = dev_emit <= arc_tolerance
+                if accepted:
                     # Ensure it's not a polygon with sharp corners (like a rectangle)
                     valid_arc = True
                     for k in range(1, len(pts) - 1):
@@ -271,6 +354,37 @@ def fit_circle_2d(points: np.ndarray) -> tuple[tuple[float, float], float, float
     residual = np.sqrt(np.mean((distances - radius) ** 2))
 
     return (xc, yc), radius, residual
+
+
+def _three_point_circle_2d(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+) -> tuple[tuple[float, float], float] | None:
+    """Center and radius of the circle through three 2D points.
+
+    This is the circle the downstream arc emitters actually build
+    (gmsh ``addCircleArc(..., center=False)`` / OCC ``GC_MakeArcOfCircle``
+    through start, mid-sample, end). Returns ``None`` for (near-)collinear
+    points.
+    """
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-30:
+        return None
+    ux = (
+        (ax * ax + ay * ay) * (by - cy)
+        + (bx * bx + by * by) * (cy - ay)
+        + (cx * cx + cy * cy) * (ay - by)
+    ) / d
+    uy = (
+        (ax * ax + ay * ay) * (cx - bx)
+        + (bx * bx + by * by) * (ax - cx)
+        + (cx * cx + cy * cy) * (bx - ax)
+    ) / d
+    return (ux, uy), float(np.hypot(ax - ux, ay - uy))
 
 
 class GeometryEntity:

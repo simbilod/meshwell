@@ -284,3 +284,71 @@ def test_occ_arc_wire_preserves_subtolerance_offsets():
     assert max(offsets) == pytest.approx(
         1e-5, rel=0.05
     ), f"sub-tolerance offset was rounded away: offsets={offsets}"
+
+
+def test_arc_acceptance_bounds_emitted_deviation():
+    """Acceptance must bound the emitted circle's MAX sample deviation.
+
+    Detection gates the least-squares RMSE, but the emitted edge only
+    interpolates 3 samples; on shallow (sagitta-starved) windows the
+    emitted circle deviated from the other samples by more than
+    arc_tolerance.
+    """
+    from meshwell.geometry_entity import (
+        _decompose_vertices_3d,
+        _three_point_circle_2d,
+    )
+
+    rng = np.random.default_rng(7)
+    arc_tol = 1e-3
+    worst = 0.0
+    for _ in range(300):
+        r = rng.uniform(5, 100)
+        cx, cy = rng.uniform(-1, 1, 2)
+        a0 = rng.uniform(0, 2 * np.pi)
+        span = rng.uniform(0.05, 0.5)
+        n = rng.integers(6, 15)
+        t = np.linspace(a0, a0 + span, n)
+        pts = np.column_stack([cx + r * np.cos(t), cy + r * np.sin(t)])
+        pts = np.round(pts / 1e-3) * 1e-3  # constructor grid snap
+        verts = [(x, y, 0.0) for x, y in pts]
+        segs = _decompose_vertices_3d(
+            verts,
+            point_tolerance=1e-3,
+            identify_arcs=True,
+            min_arc_points=5,
+            arc_tolerance=arc_tol,
+        )
+        for seg in segs:
+            if not seg.is_arc:
+                continue
+            w = np.array([(p[0], p[1]) for p in seg.points])
+            mid = len(w) // 2
+            emitted = _three_point_circle_2d(tuple(w[0]), tuple(w[mid]), tuple(w[-1]))
+            assert emitted is not None
+            (ecx, ecy), er = emitted
+            dev = np.abs(np.hypot(w[:, 0] - ecx, w[:, 1] - ecy) - er).max()
+            worst = max(worst, dev)
+    assert worst <= arc_tol, f"emitted arc deviates {worst:.2e} > {arc_tol:g}"
+
+
+def test_full_circle_still_detected_with_max_dev_gate():
+    """The max-deviation gate must not break closed-circle detection.
+
+    Emission splits closed windows through quarter samples, not the
+    start/mid/end 3-point circle.
+    """
+    from meshwell.geometry_entity import _decompose_vertices_3d
+
+    t = np.linspace(0, 2 * np.pi, 33)
+    pts = np.column_stack([2.0 * np.cos(t), 2.0 * np.sin(t)])
+    pts = np.round(pts / 1e-3) * 1e-3
+    verts = [(x, y, 0.0) for x, y in pts]
+    segs = _decompose_vertices_3d(
+        verts,
+        point_tolerance=1e-3,
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+    )
+    assert any(s.is_arc for s in segs)
