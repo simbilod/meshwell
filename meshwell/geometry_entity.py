@@ -12,6 +12,38 @@ if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
 
 
+# --- Arc-detection heuristics -------------------------------------------------
+# A run of vertices is accepted as a circular arc only if it is smooth and
+# genuinely curved. These thresholds are heuristic; collecting them here gives
+# the greedy detector (``_decompose_vertices_3d``), the closed-circle primitive,
+# and the seam finder ONE shared definition instead of scattered bare literals.
+
+# cos(60 deg): if any interior turn along a candidate run is sharper than 60
+# degrees the run is treated as polygon corners (e.g. a rectangle), not an arc.
+_ARC_MAX_TURN_COS = 0.5
+
+# A least-squares circle fit whose radius exceeds this is a near-straight line
+# masquerading as a huge-radius arc; reject it and emit line segments instead.
+# Absolute, hence scale-limited: fine for the O(1)-O(1e3) coordinates meshwell
+# targets; extreme-coordinate models would need this raised.
+_ARC_MAX_RADIUS = 1e6
+
+# ``|2 * signed triangle area|`` below this means three points are collinear, so
+# no unique circle passes through them (guards the division in
+# ``_three_point_circle_2d``). Absolute FP floor; area scales with length^2, so
+# this is likewise scale-limited at extreme coordinate magnitudes.
+_COLLINEAR_DET_EPS = 1e-30
+
+# An edge shorter than ``point_tolerance * _DEGENERATE_EDGE_REL`` is treated as
+# zero-length when measuring a turn angle (its direction is meaningless).
+# Vertices are already deduplicated at ``point_tolerance`` upstream, so in
+# practice this only catches floating-point-coincident survivors. Expressing it
+# relative to ``point_tolerance`` keeps the guard correct at any coordinate
+# scale -- a fixed 1e-6 would wrongly reject real edges in nanometre-scale
+# models, and a fixed 1e-12 is inconsistent with the coarser grid.
+_DEGENERATE_EDGE_REL = 1e-3
+
+
 @dataclass
 class DecompositionSegment:
     """Dataclass to represent a geometry segment (line or arc)."""
@@ -50,7 +82,8 @@ def _strip_consecutive_duplicates(
 
 def _find_canonical_seam(
     vertices: list[tuple[float, float, float]],
-    sharp_cos_threshold: float = 0.5,
+    point_tolerance: float = 1e-3,
+    sharp_cos_threshold: float = _ARC_MAX_TURN_COS,
 ) -> int:
     """Return index at which to start a closed polyline so arc runs don't straddle the seam.
 
@@ -63,6 +96,7 @@ def _find_canonical_seam(
     if n < 3:
         return 0
 
+    degenerate_edge = point_tolerance * _DEGENERATE_EDGE_REL
     best_idx = 0
     best_cos = 2.0
     best_key: tuple | None = None
@@ -74,7 +108,7 @@ def _find_canonical_seam(
         v2x, v2y = nxt[0] - cur[0], nxt[1] - cur[1]
         n1 = (v1x * v1x + v1y * v1y) ** 0.5
         n2 = (v2x * v2x + v2y * v2y) ** 0.5
-        if n1 < 1e-12 or n2 < 1e-12:
+        if n1 < degenerate_edge or n2 < degenerate_edge:
             continue
         cos_a = (v1x * v2x + v1y * v2y) / (n1 * n2)
         key = (cos_a, tuple(round(c, 9) for c in cur))
@@ -169,7 +203,7 @@ def _decompose_vertices_3d(
         and len(vertices) >= max(min_arc_points + 1, 4)
         and vertices[0] == vertices[-1]
     ):
-        seam = _find_canonical_seam(vertices)
+        seam = _find_canonical_seam(vertices, point_tolerance)
         vertices = _rotate_closed(vertices, seam)
 
     if not identify_arcs or len(vertices) < min_arc_points:
@@ -180,6 +214,7 @@ def _decompose_vertices_3d(
         ]
 
     ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
+    degenerate_edge = point_tolerance * _DEGENERATE_EDGE_REL
 
     # Up-front closed-circle primitive. If the whole closed ring fits ONE
     # circle within arc_tolerance, emit it directly as a single closed arc
@@ -196,7 +231,7 @@ def _decompose_vertices_3d(
     if vertices[0] == vertices[-1] and len(vertices) >= min_arc_points + 1:
         ring = np.array(vertices[:-1])
         c_center, c_radius, c_residual = fit_circle_2d(ring[:, :2])
-        if c_residual <= arc_tolerance and c_radius < 1e6:
+        if c_residual <= arc_tolerance and c_radius < _ARC_MAX_RADIUS:
             c_dev = np.abs(
                 np.hypot(ring[:, 0] - c_center[0], ring[:, 1] - c_center[1]) - c_radius
             ).max()
@@ -217,7 +252,11 @@ def _decompose_vertices_3d(
                 v2 = cc - b
                 n1 = np.hypot(v1[0], v1[1])
                 n2 = np.hypot(v2[0], v2[1])
-                if n1 > 1e-6 and n2 > 1e-6 and float(np.dot(v1, v2) / (n1 * n2)) < 0.5:
+                if (
+                    n1 > degenerate_edge
+                    and n2 > degenerate_edge
+                    and float(np.dot(v1, v2) / (n1 * n2)) < _ARC_MAX_TURN_COS
+                ):
                     smooth = False
                     break
             if c_dev <= arc_tolerance and smooth:
@@ -248,7 +287,7 @@ def _decompose_vertices_3d(
                 # For simplicity, we assume the arc is in the XY plane
                 center, radius, residual = fit_circle_2d(pts[:, :2])
 
-                accepted = residual <= arc_tolerance and radius < 1e6
+                accepted = residual <= arc_tolerance and radius < _ARC_MAX_RADIUS
                 if accepted:
                     # The RMSE above validates the least-squares fit, but
                     # emission interpolates only 3 samples (start, mid, end)
@@ -285,9 +324,11 @@ def _decompose_vertices_3d(
                         v2 = pts[k + 1][:2] - pts[k][:2]
                         n1 = np.linalg.norm(v1)
                         n2 = np.linalg.norm(v2)
-                        if n1 > 1e-6 and n2 > 1e-6:
+                        if n1 > degenerate_edge and n2 > degenerate_edge:
                             cos_angle = np.dot(v1, v2) / (n1 * n2)
-                            if cos_angle < 0.5:  # Turn angle > 60 degrees
+                            if (
+                                cos_angle < _ARC_MAX_TURN_COS
+                            ):  # turn sharper than 60 deg
                                 valid_arc = False
                                 break
 
@@ -372,7 +413,7 @@ def _three_point_circle_2d(
     bx, by = p2
     cx, cy = p3
     d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    if abs(d) < 1e-30:
+    if abs(d) < _COLLINEAR_DET_EPS:
         return None
     ux = (
         (ax * ax + ay * ay) * (by - cy)
