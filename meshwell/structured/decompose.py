@@ -215,6 +215,7 @@ def build_cohort_arrangement(
     cohort: Cohort,
     adjacent_unstructured: list,
     point_tolerance: float = 1e-3,
+    interface_lines: list | None = None,
 ) -> Arrangement:
     """One shapely polygonize over the union of all relevant boundaries.
 
@@ -282,6 +283,9 @@ def build_cohort_arrangement(
             if residual.is_empty or residual.length < point_tolerance:
                 continue
         linework.append(line)
+
+    if interface_lines:
+        linework.extend(interface_lines)
     merged = unary_union(linework)
     pieces = tuple(polygonize(merged))
 
@@ -389,40 +393,73 @@ def decompose_cohorts(
           replays these canonical edges so sub-pieces sharing a boundary
           consume the same OCC TShapes by construction.
     """
+    from shapely.geometry import MultiLineString
+
+    from meshwell.interface_tag import InterfaceTag
     from meshwell.polyprism import PolyPrism
 
     # 1. For each cohort, collect adjacent unstructured boundaries to
     # include in the cohort's arrangement linework.
     adjacency_lines_per_cohort: list[list] = []
+    interface_lines_per_cohort: list[list] = []
     for cohort in cohorts:
         lines = []
+        iface_lines = []
         for ent in unstructured_entities:
-            if not isinstance(ent, PolyPrism) or not ent.extrude:
-                continue
-            z_keys = sorted(ent.buffers.keys())
-            touches = False
-            for z in (z_keys[0], z_keys[-1]):
-                z_snap = _snap_to_cohort_plane(z, cohort)
-                if z_snap is None:
-                    continue
-                if _cohort_xy_at(cohort, z_snap).intersects(ent.polygons):
-                    touches = True
-                    break
-            if touches:
-                # Snap to the same grid the cohort slab footprints were
-                # snapped to in structured_pre_pass. Without this, the
-                # 1e-5 perturbation from prepare_entities makes the
-                # cladding boundary live on a different grid than the
-                # cohort, and polygonize produces a thin annulus that no
-                # cohort sub-piece covers.
-                lines.append(
-                    shapely.set_precision(
-                        ent.polygons.boundary,
-                        grid_size=point_tolerance,
-                        mode="valid_output",
+            if isinstance(ent, PolyPrism) and ent.extrude:
+                z_keys = sorted(ent.buffers.keys())
+                touches = False
+                for z in (z_keys[0], z_keys[-1]):
+                    z_snap = _snap_to_cohort_plane(z, cohort)
+                    if z_snap is None:
+                        continue
+                    if _cohort_xy_at(cohort, z_snap).intersects(ent.polygons):
+                        touches = True
+                        break
+                if touches:
+                    # Snap to the same grid the cohort slab footprints were
+                    # snapped to in structured_pre_pass. Without this, the
+                    # 1e-5 perturbation from prepare_entities makes the
+                    # cladding boundary live on a different grid than the
+                    # cohort, and polygonize produces a thin annulus that no
+                    # cohort sub-piece covers.
+                    lines.append(
+                        shapely.set_precision(
+                            ent.polygons.boundary,
+                            grid_size=point_tolerance,
+                            mode="valid_output",
+                        )
                     )
-                )
+            elif isinstance(ent, InterfaceTag):
+                if (
+                    ent.zmin < cohort.zmax
+                    and ent.zmax > cohort.zmin
+                    and ent.resolved_linestrings
+                ):
+                    # Snap to grid to match the cohort footprint precision
+                    # (otherwise perturbation makes them disjoint).
+                    snapped_lss = [
+                        shapely.set_precision(
+                            ls,
+                            grid_size=point_tolerance,
+                            mode="valid_output",
+                        )
+                        for ls in ent.resolved_linestrings
+                    ]
+                    snapped_lss = [ls for ls in snapped_lss if not ls.is_empty]
+                    if snapped_lss:
+                        tag_geom = MultiLineString(snapped_lss)
+                        touches = False
+                        for z in cohort.z_planes:
+                            if ent.zmin <= z <= ent.zmax and _cohort_xy_at(
+                                cohort, z
+                            ).intersects(tag_geom):
+                                touches = True
+                                break
+                        if touches:
+                            iface_lines.extend(snapped_lss)
         adjacency_lines_per_cohort.append(lines)
+        interface_lines_per_cohort.append(iface_lines)
 
     # 2. Build one arrangement per cohort.
     arrangements: list[Arrangement] = []
@@ -433,6 +470,7 @@ def decompose_cohorts(
                 cohort=cohort,
                 adjacent_unstructured=adjacency_lines_per_cohort[ci],
                 point_tolerance=point_tolerance,
+                interface_lines=interface_lines_per_cohort[ci],
             )
         )
 
