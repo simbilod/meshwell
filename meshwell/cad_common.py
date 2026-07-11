@@ -149,12 +149,16 @@ def apply_arc_params(
     entities sharing a circular boundary must agree on arc-vs-chord
     classification or their booleans graze (sliver source). It is
     therefore a scene-level setting stamped uniformly here, not a
-    per-entity constructor flag. Entities without polygons are skipped.
+    per-entity constructor flag. Entities carrying either ``.polygons``
+    (PolySurface/PolyPrism) or ``.linestrings`` (PolyLine) are stamped;
+    entities with neither are skipped.
     Non-extrude PolyPrisms (z-varying buffers) do not support arcs: they
     are left at identify_arcs=False with a warning instead of raising.
     """
     for e in entities:
-        if getattr(e, "polygons", None) is None:
+        has_polygons = getattr(e, "polygons", None) is not None
+        has_linestrings = getattr(e, "linestrings", None) is not None
+        if not (has_polygons or has_linestrings):
             continue
         wants_arcs = identify_arcs
         if wants_arcs and not getattr(e, "extrude", True):

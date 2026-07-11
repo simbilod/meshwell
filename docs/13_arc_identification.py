@@ -56,11 +56,7 @@ line_vertices = [(1, 0), (2, 0), (2, 1)]
 all_vertices = line_vertices + arc_vertices
 
 pl = PolyLine(shapely.LineString(all_vertices), physical_name="curved_wire")
-# PolyLine has no ``polygons`` attribute, so it falls outside
-# ``apply_arc_params``'s cross-entity boundary bookkeeping (which only
-# stamps polygon-bearing entities); set the (now pipeline-level)
-# attributes directly for this standalone-wire demo.
-pl.identify_arcs = True
+apply_arc_params([pl], identify_arcs=True)
 
 # %%
 ax = pl.plot_decomposition()

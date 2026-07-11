@@ -90,11 +90,8 @@ def test_polyline_arc_instantiate_gmsh():
     vertices = [(np.cos(t), np.sin(t), 0) for t in theta]
     ls = LineString(vertices)
 
-    # PolyLine has no ``polygons`` attribute, so it falls outside
-    # ``apply_arc_params``'s cross-entity boundary bookkeeping; set the
-    # (now pipeline-level) attributes directly for this standalone wire.
     pl = PolyLine(ls)
-    pl.identify_arcs, pl.min_arc_points, pl.arc_tolerance = True, 4, 1e-3
+    apply_arc_params([pl], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
     gmsh.initialize()
     gmsh.model.add("test_pl")
@@ -115,7 +112,7 @@ def test_polyline_arc_instantiate_occ():
     ls = LineString(vertices)
 
     pl = PolyLine(ls)
-    pl.identify_arcs, pl.min_arc_points, pl.arc_tolerance = True, 4, 1e-3
+    apply_arc_params([pl], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
     # This calls instanciate_occ
     shape = pl.instanciate_occ()
@@ -134,7 +131,7 @@ def test_polyline_arc_instantiate_gmsh_offgrid():
     theta = np.linspace(0.3, 1.9, 9)
     vertices = [(cx + r * np.cos(t), cy + r * np.sin(t), 0) for t in theta]
     pl = PolyLine(LineString(vertices))
-    pl.identify_arcs, pl.min_arc_points, pl.arc_tolerance = True, 5, 1e-3
+    apply_arc_params([pl], identify_arcs=True, min_arc_points=5, arc_tolerance=1e-3)
 
     gmsh.initialize()
     try:
@@ -241,7 +238,7 @@ def test_plot_decomposition_returns_axes():
     theta = np.linspace(0, np.pi / 2, 10)
     vertices = [(np.cos(t), np.sin(t), 0) for t in theta]
     pl = PolyLine(LineString(vertices))
-    pl.identify_arcs = True
+    apply_arc_params([pl], identify_arcs=True)
 
     ax = pl.plot_decomposition()
     assert isinstance(ax, plt.Axes)

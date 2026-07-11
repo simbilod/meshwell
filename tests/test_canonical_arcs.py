@@ -32,6 +32,20 @@ def test_apply_arc_params_stamps_entities():
     assert p.arc_tolerance == 2e-3
 
 
+def test_apply_arc_params_stamps_polyline():
+    from shapely.geometry import LineString
+
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.polyline import PolyLine
+
+    pl = PolyLine(LineString([(0, 0), (1, 0), (1, 1)]), physical_name="pl")
+    assert pl.identify_arcs is False  # GeometryEntity class default
+    apply_arc_params([pl], identify_arcs=True, min_arc_points=6, arc_tolerance=2e-3)
+    assert pl.identify_arcs is True
+    assert pl.min_arc_points == 6
+    assert pl.arc_tolerance == 2e-3
+
+
 def test_apply_arc_params_skips_non_extrude_prism():
     from meshwell.cad_common import apply_arc_params
     from meshwell.polyprism import PolyPrism
