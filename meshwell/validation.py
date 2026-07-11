@@ -97,15 +97,25 @@ def validate_tolerance_ladder(
 ) -> None:
     """Enforce the cad_occ tolerance-ladder invariants.
 
-    The OCC pipeline relies on::
+    Two regimes, depending on ``perturbation``:
 
-        cut_fuzzy_value < perturbation < 2*perturbation < fragment_fuzzy_value
+    * ``perturbation > 0`` (analytic offset, non-degenerate): the existing
+      ladder::
 
-    * A cut fuzzy at or above the perturbation can merge the buffered
-      overlap into the lower-priority entity and erase the carved face.
-    * A fragment fuzzy below ``2*perturbation`` leaves the buffered
-      face gap unmerged: coincident faces keep distinct TShapes and
-      ``A___B`` interface groups are silently dropped by the XAO writer.
+          cut_fuzzy_value < perturbation < 2*perturbation < fragment_fuzzy_value
+
+      * A cut fuzzy at or above the perturbation can merge the buffered
+        overlap into the lower-priority entity and erase the carved face.
+      * A fragment fuzzy below ``2*perturbation`` leaves the buffered
+        face gap unmerged: coincident faces keep distinct TShapes and
+        ``A___B`` interface groups are silently dropped by the XAO writer.
+
+    * ``perturbation == 0`` (canonical-exact mode: both sides of a shared
+      boundary emit the IDENTICAL geometry, no offset strip): the ladder
+      collapses to ``0 < cut_fuzzy_value < fragment_fuzzy_value``. There is
+      no overlap strip to protect, so ``cut_fuzzy_value`` only needs to
+      heal grid-snap / T-junction noise while staying below the fragment's
+      merge authority.
 
     Raises:
         ValueError: when the ladder is inverted
@@ -113,7 +123,9 @@ def validate_tolerance_ladder(
 
     Warns:
         UserWarning: when ``fragment_fuzzy_value < 2*perturbation`` or
-            ``cut_fuzzy_value >= perturbation`` (with ``perturbation > 0``).
+            ``cut_fuzzy_value >= perturbation`` (with ``perturbation > 0``);
+            or when ``perturbation == 0`` and ``cut_fuzzy_value == 0``
+            (degenerate canonical-exact mode: no noise healing at all).
     """
     if fragment_fuzzy_value <= cut_fuzzy_value:
         raise ValueError(
@@ -136,5 +148,13 @@ def validate_tolerance_ladder(
             f"({perturbation:g}): a loose cut fuzzy can merge the buffered "
             f"overlap into the lower-priority entity and erase the carved "
             f"face.",
+            stacklevel=3,
+        )
+    if perturbation == 0 and cut_fuzzy_value == 0:
+        warnings.warn(
+            "perturbation=0 with cut_fuzzy_value=0: the cut cascade cannot "
+            "heal grid-snap or T-junction noise. The CAD_OCC default "
+            "derives cut_fuzzy_value=0.5*fragment_fuzzy_value in this "
+            "regime; pass an explicit value if zero is intended.",
             stacklevel=3,
         )

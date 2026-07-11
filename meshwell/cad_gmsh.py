@@ -413,10 +413,16 @@ class CAD_GMSH:
         # enough to produce non-degenerate panels (at least 2*point_tolerance
         # in each direction). The polygon perturbation (which can be
         # sub-tolerance) only shifts the boundary position, not the strip width.
+        # ``buffer_polygons=True`` (explicit): unlike cad_occ, this backend
+        # has no analytic-offset wire emission, so it still relies on the
+        # shapely round-join buffer to realize ``perturbation``. This is the
+        # one remaining caller of the buffer path -- a legacy mirror kept
+        # for head-to-head comparison against cad_occ.
         prepare_entities(
             entities_list,
             perturbation=self.perturbation,
             resolve_snap=max(self.perturbation, self.point_tolerance),
+            buffer_polygons=True,
         )
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----

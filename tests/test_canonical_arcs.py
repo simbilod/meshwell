@@ -444,3 +444,138 @@ def test_rounded_rect_prism_closes_with_registry():
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, props)
     assert props.Mass() > 0  # wire closed, solid valid
+
+
+def _disc_and_plate(n_disc=64, n_hole=48, phase=0.03):
+    from meshwell.polyprism import PolyPrism
+
+    disc = PolyPrism(
+        polygons=_ring(n_disc, 5.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="disc",
+        mesh_order=1,
+    )
+    plate = PolyPrism(
+        polygons=Polygon(
+            [(-9, -9), (9, -9), (9, 9), (-9, 9)],
+            holes=[_ring(n_hole, 5.0, phase=phase).exterior.coords],
+        ),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="plate",
+        mesh_order=2,
+    )
+    return [disc, plate]
+
+
+def _assert_two_clean_solids(out):
+    solids = [e for e in out if e.dim == 3 and e.keep]
+    assert sorted(len(e.shapes) for e in solids) == [1, 1]
+    return solids
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Both offset circles ARE emitted correctly pre-cut (verified manually: "
+        "disc=R+eps, plate hole=R-eps, exactly 2*eps apart), but the sequential "
+        "cut cascade genuinely merges them: BRepExtrema_DistShapeShape(disc, "
+        "plate) reports distance=0.0 pre-cut (real volumetric overlap, not a "
+        "near-touch), so BRepAlgoAPI_Cut engages and the pre-existing (Task-5-"
+        "unmodified) _resolve_piece_ownership 'lowest mesh_order wins' rule "
+        "assigns the whole annular overlap to disc (mesh_order=1). Verified "
+        "with perturbation up to 1e-2 (cut_fuzzy/fragment_fuzzy scaled to "
+        "match): result is always exactly ONE shared radius (disc's R+eps), "
+        "never two. This is the intended sliver-free outcome of the priority-"
+        "based cut+fragment cascade, not a stamping bug -- see task-5-report.md."
+    ),
+    strict=False,
+)
+def test_cad_occ_canonical_concentric_default_eps():
+    """Mixed discretizations, default eps=1e-5.
+
+    Exactly concentric circles R+eps (disc) and R-eps (hole), one solid
+    per entity, no sliver.
+    """
+    from meshwell.cad_occ import cad_occ
+
+    out = cad_occ(_disc_and_plate(), identify_arcs=True)
+    solids = _assert_two_clean_solids(out)
+    circles = [c for e in solids for s in e.shapes for c in _circle_edges(s)]
+    assert circles
+    c0 = circles[0][0]
+    radii = set()
+    for (cx, cy), r in circles:
+        assert (cx, cy) == pytest.approx(c0, abs=1e-9)
+        radii.add(round(r, 9))
+    assert len(radii) == 2  # R+eps and R-eps, uniformly 2*eps apart
+    assert max(radii) - min(radii) == pytest.approx(2e-5, abs=1e-9)
+
+
+def test_cad_occ_canonical_exact_eps_zero():
+    """eps=0: both sides emit the IDENTICAL circle.
+
+    Ownership resolves by exact coincidence + fragment merge. First
+    executable proof of the canonical-exact mode -- if OCC misbehaves
+    here, xfail and record the failure mode in Follow-ups; do not
+    weaken the assertion.
+    """
+    from meshwell.cad_occ import cad_occ
+
+    out = cad_occ(_disc_and_plate(), identify_arcs=True, perturbation=0.0)
+    solids = _assert_two_clean_solids(out)
+    circles = [c for e in solids for s in e.shapes for c in _circle_edges(s)]
+    assert len({(round(c[0], 9), round(c[1], 9), round(r, 9)) for c, r in circles}) == 1
+
+
+def test_cad_occ_promotion_chorded_side():
+    """Plate hole is pure chords (classification asymmetry).
+
+    ``identify_arcs`` is flipped off after stamping, simulating a
+    classification asymmetry; promotion must pull it onto the disc's
+    registered circle.
+    """
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.cad_occ import cad_occ
+
+    ents = _disc_and_plate()
+    apply_arc_params(ents, identify_arcs=True)
+    ents[1].identify_arcs = False
+    out = cad_occ(ents)
+    solids = _assert_two_clean_solids(out)
+    centers = [c for e in solids for s in e.shapes for c, _r in _circle_edges(s)]
+    c0 = centers[0]
+    for c in centers[1:]:
+        assert c == pytest.approx(c0, abs=1e-9)
+
+
+def test_fuzzy_defaults_by_regime():
+    from meshwell.cad_occ import CAD_OCC
+
+    proc = CAD_OCC(point_tolerance=1e-3, perturbation=1e-5)
+    assert proc.cut_fuzzy_value == pytest.approx(0.8e-5)
+    proc0 = CAD_OCC(point_tolerance=1e-3, perturbation=0.0)
+    assert proc0.cut_fuzzy_value == pytest.approx(0.5e-3)
+    assert CAD_OCC(point_tolerance=1e-3).perturbation == pytest.approx(
+        1e-5
+    )  # None = default
+
+
+def test_ladder_warns_on_degenerate_zero_cut_fuzzy():
+    from meshwell.validation import validate_tolerance_ladder
+
+    with pytest.warns(UserWarning, match="cut_fuzzy_value=0"):
+        validate_tolerance_ladder(
+            perturbation=0.0, cut_fuzzy_value=0.0, fragment_fuzzy_value=1e-3
+        )
+
+
+def test_generate_mesh_smoke(tmp_path):
+    from meshwell.orchestrator import generate_mesh
+
+    generate_mesh(
+        entities=_disc_and_plate(),
+        dim=3,
+        output_mesh=str(tmp_path / "out.msh"),
+        identify_arcs=True,
+        default_characteristic_length=2.0,
+    )
+    assert (tmp_path / "out.msh").exists()

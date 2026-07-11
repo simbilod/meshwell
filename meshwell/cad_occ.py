@@ -132,19 +132,31 @@ class CAD_OCC:
                 get snapped before the TopoDS graph is built.
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
             cut_fuzzy_value: Fuzzy passed to ``BRepAlgoAPI_Cut`` in the
-                sequential per-entity cut cascade. Defaults to
-                ``0.8 * perturbation``. Must stay below ``perturbation``: a
-                cut fuzzy at/above it merges the buffered overlap into the
-                lower entity and erases the carved face. It must also clear
-                the sub-perturbation grazing gap the buffer itself leaves
-                where a straight edge runs tangent to a fitted arc -- at
-                ``perturbation / 2`` that gap survives and OCC's cut emits a
-                spurious sliver solid at the tangency; ``0.8 * perturbation``
-                clears it while staying inside the ladder. cad_gmsh's
-                ``tolerance_boolean`` uses the same ``0.8 * perturbation`` to
-                keep the backends numerically aligned (gmsh has no sliver of
-                its own -- its XAO loader snaps points to curves -- but the
-                shared value is harmless there).
+                sequential per-entity cut cascade. Two default regimes,
+                fragment_fuzzy_value resolved first since the
+                ``perturbation == 0`` branch depends on it:
+
+                * ``perturbation > 0`` (default): ``0.8 * perturbation``.
+                  Must stay below ``perturbation``: a cut fuzzy at/above it
+                  merges the buffered overlap into the lower entity and
+                  erases the carved face. It must also clear the
+                  sub-perturbation grazing gap the buffer itself leaves
+                  where a straight edge runs tangent to a fitted arc -- at
+                  ``perturbation / 2`` that gap survives and OCC's cut emits
+                  a spurious sliver solid at the tangency; ``0.8 *
+                  perturbation`` clears it while staying inside the ladder.
+                  cad_gmsh's ``tolerance_boolean`` uses the same ``0.8 *
+                  perturbation`` to keep the backends numerically aligned
+                  (gmsh has no sliver of its own -- its XAO loader snaps
+                  points to curves -- but the shared value is harmless
+                  there).
+                * ``perturbation == 0`` (canonical-exact mode): ``0.5 *
+                  fragment_fuzzy_value``. There is no overlap strip to
+                  protect (both sides emit the identical canonical
+                  geometry), so the ceiling is the fragment fuzzy instead;
+                  ``0.5 * fragment_fuzzy_value`` heals grid-snap / T-junction
+                  noise while staying strictly below the fragment's merge
+                  authority.
             fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
                 all-fragment pass. Defaults to ``point_tolerance``,
                 intentionally LOOSER than the cut fuzzy: cad_occ tags
@@ -160,12 +172,19 @@ class CAD_OCC:
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
         self.perturbation = perturbation if perturbation is not None else 1e-5
-        self.cut_fuzzy_value = (
-            0.8 * self.perturbation if cut_fuzzy_value is None else cut_fuzzy_value
-        )
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
         )
+        if cut_fuzzy_value is not None:
+            self.cut_fuzzy_value = cut_fuzzy_value
+        elif self.perturbation > 0:
+            self.cut_fuzzy_value = 0.8 * self.perturbation
+        else:
+            # Canonical-exact mode (perturbation=0): no overlap strip to
+            # protect; ceiling is the fragment fuzzy. 0.5*fragment heals
+            # grid-snap / T-junction noise while staying strictly below
+            # the fragment's merge authority.
+            self.cut_fuzzy_value = 0.5 * self.fragment_fuzzy_value
         validate_tolerance_ladder(
             perturbation=self.perturbation,
             cut_fuzzy_value=self.cut_fuzzy_value,
@@ -449,7 +468,28 @@ class CAD_OCC:
                 entities_list,
                 perturbation=self.perturbation,
                 resolve_snap=max(self.perturbation, self.point_tolerance),
+                buffer_polygons=False,
             )
+
+        # Build the cross-entity circle registry (if any entity opted into
+        # arc identification) and stamp ``perturbation`` / ``circle_registry``
+        # onto extrude polygon entities. This replaces the shapely buffer:
+        # entities stay at NOMINAL coordinates and the offset + canonical
+        # circle snap now happen analytically at OCC wire-emission time
+        # (``GeometryEntity._make_occ_wire_from_vertices``).
+        registry = None
+        if any(getattr(e, "identify_arcs", False) for e in entities_list):
+            from meshwell.circle_registry import build_circle_registry
+
+            registry = build_circle_registry(entities_list)
+        for ent in entities_list:
+            if getattr(ent, "polygons", None) is None:
+                continue
+            ent.perturbation = self.perturbation
+            if getattr(ent, "extrude", True):
+                ent.circle_registry = registry
+            # Non-extrude prisms get the line offset only: promotion onto
+            # circles would desynchronize their per-z loft wire counts.
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))

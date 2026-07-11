@@ -538,10 +538,25 @@ _SCENES: list[tuple[str, Callable[[], list], dict, str | None]] = [
         # invariant; the n_entities + per-entity boundary structure
         # legitimately differs. The same applies to A___B / B___A
         # which sits on the same face. Edge counts also differ for
-        # the same reason.
+        # the same reason, and (since Task 5) so do vertex counts:
+        # cad_gmsh still realizes ``perturbation`` via a shared shapely
+        # buffer (Pass A of ``prepare_entities``), while cad_occ now
+        # offsets each entity's boundary analytically and independently
+        # at wire-emission time -- the two constructions no longer share
+        # topology at the offset boundary, so the vertices bounding the
+        # differently-split edges/faces above also diverge in count. The
+        # mass-based check below still confirms the geometry itself
+        # (area) is equivalent -- widened to 5e-3 (from the 1e-3
+        # default) for the same reason ``test_backend_cross_compare.py``
+        # ``test_polyprism_with_interface_tag_match`` widens its own
+        # rel_tol: the thin ``iface`` panel sits exactly on the now-
+        # independently-offset boundary, picking up a slightly larger
+        # (observed ~2.4e-3) but still perturbation-scale cross-backend
+        # mass discrepancy.
         {
-            "ignore_entity_count_dims": {1, 2},
+            "ignore_entity_count_dims": {0, 1, 2},
             "mass_only_groups": {"iface", "A___B"},
+            "rel_tol": 5e-3,
         },
         None,
     ),

@@ -1070,18 +1070,25 @@ class GeometryEntity:
                             GC_MakeArcOfCircle(circ, pm, p0, s2).Value()
                         ).Edge()
                     else:
-                        sense = _arc_sense_ccw(
-                            (ccx, ccy),
-                            seg.points[0][:2],
-                            seg.points[mid_idx][:2],
-                            seg.points[-1][:2],
-                        )
+                        # NOT the (circle, p_start, p_end, sense) form: OCC's
+                        # ``Sense`` argument does not reliably pick the short
+                        # vs. long arc here -- empirically it can return the
+                        # SAME (wrong-way, 270-degree) arc for both
+                        # Sense=True and Sense=False when p_start's raw
+                        # circle-parameter exceeds p_end's (the common case
+                        # on a CW-oriented hole ring, where the offset
+                        # junction endpoints wrap "backwards" relative to
+                        # the circle's own CCW parametrization). The 3-point
+                        # form is unambiguous, so project the run's mid
+                        # sample onto the canonical circle (mirrors the
+                        # closed-arc branch's ``_on_circle`` use above) and
+                        # build through it instead of trusting ``sense``.
+                        p_mid_on_circle = _on_circle(seg.points[mid_idx])
                         edge = BRepBuilderAPI_MakeEdge(
                             GC_MakeArcOfCircle(
-                                circ,
                                 gp_Pnt(*seg.points[0]),
+                                p_mid_on_circle,
                                 gp_Pnt(*seg.points[-1]),
-                                sense,
                             ).Value()
                         ).Edge()
                 else:

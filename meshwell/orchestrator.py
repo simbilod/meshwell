@@ -100,6 +100,19 @@ def generate_mesh(
             - ``arc_tolerance`` (float, default 1e-3): circle-fit
               tolerance, forwarded to
               :func:`meshwell.cad_common.apply_arc_params`.
+            - ``perturbation`` (float, default ``1e-5``): outward offset
+              disambiguating overlapping same-mesh_order boundaries so the
+              per-entity cut cascade has a non-degenerate strip to carve.
+              Applied ANALYTICALLY at OCC wire-emission time (canonical
+              circle/line offsets keyed off the pipeline's circle
+              registry) rather than via a shapely buffer -- entities stay
+              at nominal coordinates through the structured pre-pass and
+              registry build. ``perturbation=0.0`` is supported
+              (canonical-exact mode: both sides of a shared boundary emit
+              the identical geometry; ownership resolves by exact
+              coincidence plus the final fragment merge). Only the legacy
+              cad_gmsh mirror still realizes this via the shapely
+              round-join buffer.
 
     Returns:
         meshio.Mesh: The generated mesh object (or ``None`` if
@@ -154,15 +167,21 @@ def generate_mesh(
         perturbation = 1e-5
 
     # --- Stage 1a: shapely intake pre-pass. -----------------------------
-    # Apply the polygon-buffer + InterfaceTag resolve BEFORE the
-    # structured pre-pass so the cohort compound is built from the same
-    # perturbed XY that unstructured neighbours see at BOP time.
+    # Resolve InterfaceTags against NOMINAL polygon coordinates before the
+    # structured pre-pass, so the cohort compound is built from the same
+    # coordinates the unstructured neighbours see at BOP time. Unlike the
+    # legacy cad_gmsh mirror, cad_occ no longer buffers polygons here
+    # (``buffer_polygons=False``): entities stay nominal through this
+    # pre-pass and the structured pre-pass / registry build, and
+    # ``perturbation`` is applied analytically at OCC wire-emission time
+    # (canonical circle/line offsets keyed off the circle registry).
     # ``prepare_entities`` is NOT idempotent; cad_occ is invoked with
-    # ``prepared=True`` below to skip the duplicate buffer.
+    # ``prepared=True`` below to skip the duplicate call.
     prepare_entities(
         entities,
         perturbation=perturbation,
         resolve_snap=max(perturbation, point_tolerance),
+        buffer_polygons=False,
     )
 
     # --- Stage 1b: structured pre-pass. ---------------------------------
