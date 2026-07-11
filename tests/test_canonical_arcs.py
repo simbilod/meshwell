@@ -446,6 +446,74 @@ def test_rounded_rect_prism_closes_with_registry():
     assert props.Mass() > 0  # wire closed, solid valid
 
 
+def test_two_arc_ring_emits_both_canonical_circles():
+    """Arc<->arc junction on the INTERSECTING (exact) path emits BOTH circles.
+
+    The open-arc emitter in ``_make_occ_wire_from_vertices`` reconstructs an
+    arc's canonical circle via the 3-point form ``GC_MakeArcOfCircle(start,
+    mid_on_circle, end)``, which is exact only when ``start``/``end`` (the
+    junction points set by ``canonicalize_ring_segments``) lie ON the
+    canonical circle. For an arc<->arc junction that holds when the two
+    offset circles genuinely INTERSECT (``_circle_circle_junction``'s exact
+    root, not its non-intersecting midpoint-of-two-projections fallback).
+
+    Lens (vesica) shape = disk(center=(-3, 0), r=5) ∩ disk(center=(3, 0),
+    r=5): d=6 between centers, r1+r2=10, so the circles intersect at
+    (0, +-4) and BOTH of the ring's two arc<->arc junctions land on the
+    exact-root path. Each arc's endpoints therefore lie exactly on its own
+    canonical circle, so this exercises exactly the gap Finding 2 closes:
+    with two arcs (rather than one arc between line segments), the wire's
+    only two junctions are both arc<->arc, and both must reconstruct their
+    canonical circle exactly for this test to pass.
+    """
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.circle_registry import build_circle_registry
+    from meshwell.polyprism import PolyPrism
+
+    c1, c2, radius = (-3.0, 0.0), (3.0, 0.0), 5.0
+    half_angle = np.arcsin(4.0 / 5.0)  # circle-circle intersections at (0, +-4)
+    n = 24
+    arc1 = [
+        (c1[0] + radius * np.cos(t), c1[1] + radius * np.sin(t))
+        for t in np.linspace(-half_angle, half_angle, n)
+    ]
+    arc2 = [
+        (c2[0] + radius * np.cos(t), c2[1] + radius * np.sin(t))
+        for t in np.linspace(np.pi - half_angle, np.pi + half_angle, n)
+    ]
+    lens = Polygon(arc1 + arc2)
+    assert lens.is_valid
+
+    pad = PolyPrism(
+        polygons=lens,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="lens",
+        mesh_order=1,
+    )
+    apply_arc_params([pad], identify_arcs=True)
+    pad.circle_registry = build_circle_registry([pad])
+    assert len(pad.circle_registry.clusters) == 2  # two distinct arcs
+    pad.perturbation = 1e-5
+    shape = pad.instanciate_occ()
+
+    circles = _circle_edges(shape)
+    distinct = {(round(cx, 9), round(cy, 9), round(r, 9)) for (cx, cy), r in circles}
+    assert len(distinct) == 2  # both canonical circles survived, not one
+
+    clusters = pad.circle_registry.clusters
+    for cx, cy, r in distinct:
+        cluster = min(
+            clusters, key=lambda cl: np.hypot(cx - cl.center[0], cy - cl.center[1])
+        )
+        assert (cx, cy) == pytest.approx(cluster.center, abs=1e-9)
+        # The lens lies INSIDE both full disks, so each arc behaves like a
+        # plain disc's outer boundary (material on the center's side of the
+        # curve, per the CCW-disc case in test_wire_emits_offset_canonical_
+        # circle) -- both offset R+eps, never R-eps. Verified numerically;
+        # asserting the concrete relationship (not a hardcoded sign guess).
+        assert r - cluster.radius == pytest.approx(1e-5, abs=1e-9)
+
+
 def _disc_and_plate(n_disc=64, n_hole=48, phase=0.03):
     from meshwell.polyprism import PolyPrism
 
@@ -473,31 +541,38 @@ def _assert_two_clean_solids(out):
     return solids
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Both offset circles ARE emitted correctly pre-cut (verified manually: "
-        "disc=R+eps, plate hole=R-eps, exactly 2*eps apart), but the sequential "
-        "cut cascade genuinely merges them: BRepExtrema_DistShapeShape(disc, "
-        "plate) reports distance=0.0 pre-cut (real volumetric overlap, not a "
-        "near-touch), so BRepAlgoAPI_Cut engages and the pre-existing (Task-5-"
-        "unmodified) _resolve_piece_ownership 'lowest mesh_order wins' rule "
-        "assigns the whole annular overlap to disc (mesh_order=1). Verified "
-        "with perturbation up to 1e-2 (cut_fuzzy/fragment_fuzzy scaled to "
-        "match): result is always exactly ONE shared radius (disc's R+eps), "
-        "never two. This is the intended sliver-free outcome of the priority-"
-        "based cut+fragment cascade, not a stamping bug -- see task-5-report.md."
-    ),
-    strict=False,
-)
 def test_cad_occ_canonical_concentric_default_eps():
-    """Mixed discretizations, default eps=1e-5.
+    """Mixed discretizations, default eps=1e-5, post-cut boundary.
 
-    Exactly concentric circles R+eps (disc) and R-eps (hole), one solid
-    per entity, no sliver.
+    Pre-cut, disc and plate-hole each independently emit their OWN
+    offset circle (disc=R+eps, plate hole=R-eps) -- uniformly 2*eps
+    apart. That 2*eps separation is the PRE-cut invariant: it is what
+    guarantees a genuine (non-degenerate) volumetric overlap for
+    ``BRepAlgoAPI_Cut`` to engage on, rather than a graze.
+
+    The sequential cut cascade (lower ``mesh_order`` acts as the tool --
+    see ``cad_occ.py`` ~line 494-611) then cuts the plate (mesh_order=2)
+    against the disc (mesh_order=1): the plate's hole boundary is
+    replaced by the disc's (the tool's) surface. This is the designed
+    "clean cut" outcome -- the shared interface is the tool's boundary,
+    not a re-averaged or re-split radius -- and it collapses the scene
+    to exactly ONE surviving circle radius: the disc's offset circle
+    R+eps, where R is the registry's canonical (cross-entity fitted)
+    nominal radius (~5.0, not exactly 5.0 -- the algebraic circle fit
+    over point-tolerance-grid-snapped vertices carries a small, expected
+    bias of the same order as the grid). This is a materially different
+    (and correct) claim from the removed xfail's premise that both
+    offset radii would survive 2*eps apart; the two-radii expectation
+    was a plan-authoring error that ignored the cut cascade entirely.
+    Note: this collapse is a property of the sequential cut, not of
+    ``_resolve_piece_ownership`` (that function only assigns ownership
+    of faces already shared/coincident during the final fragment pass;
+    it never touches these already-non-overlapping post-cut boundaries).
     """
     from meshwell.cad_occ import cad_occ
 
-    out = cad_occ(_disc_and_plate(), identify_arcs=True)
+    ents = _disc_and_plate()
+    out = cad_occ(ents, identify_arcs=True)
     solids = _assert_two_clean_solids(out)
     circles = [c for e in solids for s in e.shapes for c in _circle_edges(s)]
     assert circles
@@ -506,8 +581,26 @@ def test_cad_occ_canonical_concentric_default_eps():
     for (cx, cy), r in circles:
         assert (cx, cy) == pytest.approx(c0, abs=1e-9)
         radii.add(round(r, 9))
-    assert len(radii) == 2  # R+eps and R-eps, uniformly 2*eps apart
-    assert max(radii) - min(radii) == pytest.approx(2e-5, abs=1e-9)
+    assert len(radii) == 1  # sequential cut collapses to ONE shared boundary
+
+    # The survivor is the disc's registered circle offset outward by eps
+    # (disc is mesh_order=1, so it is the tool in the cut cascade; a CCW
+    # solid ring offsets +eps -- see test_wire_emits_offset_canonical_circle).
+    # Compare against the ACTUAL registry radius (not a literal 5.0)
+    # since fitting circles on point_tolerance-grid-snapped vertices
+    # (default point_tolerance=1e-3) introduces a small algebraic-fit
+    # bias of its own -- observed here as ~1.3e-5, i.e. comparable to
+    # eps itself. abs=1e-9 is tight because this is a direct comparison
+    # against the SAME registry value the pipeline used internally, not
+    # an independent re-derivation, so only floating-point noise from
+    # the intervening OCC round-trip is expected.
+    registry = ents[0].circle_registry
+    assert registry is not None
+    assert len(registry.clusters) == 1
+    expected_radius = registry.clusters[0].radius + 1e-5
+    (radius,) = radii
+    assert radius == pytest.approx(expected_radius, abs=1e-9)
+    assert radius == pytest.approx(5.0 + 1e-5, abs=1e-4)  # sanity: near nominal
 
 
 def test_cad_occ_canonical_exact_eps_zero():

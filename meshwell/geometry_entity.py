@@ -1083,6 +1083,31 @@ class GeometryEntity:
                         # sample onto the canonical circle (mirrors the
                         # closed-arc branch's ``_on_circle`` use above) and
                         # build through it instead of trusting ``sense``.
+                        #
+                        # NOTE this 3-point form (start, mid-on-circle, end)
+                        # reconstructs the canonical circle EXACTLY only when
+                        # both endpoints already lie on it. ``seg.points[0]``
+                        # / ``seg.points[-1]`` are junction points set by
+                        # ``canonicalize_ring_segments``'s junction loop
+                        # (~line 628 above), which guarantees on-circle
+                        # endpoints for line<->arc junctions (exact root, or
+                        # ``_project_to_circle``) and for arc<->arc junctions
+                        # whose two offset circles INTERSECT
+                        # (``_circle_circle_junction``'s exact root). Only the
+                        # arc<->arc NON-intersecting fallback
+                        # (``_circle_circle_junction``'s midpoint-of-two-
+                        # projections branch, ~line 466) leaves a junction
+                        # point that lies on NEITHER circle -- there the
+                        # reconstructed circle here deviates from the
+                        # canonical one by at most that junction's off-circle
+                        # distance (half the inter-circle gap). By
+                        # construction the two circles are nearly touching
+                        # (they were offset apart specifically to still
+                        # overlap for the boolean), so this gap -- and the
+                        # resulting deviation -- is sub-tolerance. It is a
+                        # deliberate trade favoring exact wire closure (the
+                        # wire must still close through this junction) over
+                        # perfect circle fidelity in this one fallback case.
                         p_mid_on_circle = _on_circle(seg.points[mid_idx])
                         edge = BRepBuilderAPI_MakeEdge(
                             GC_MakeArcOfCircle(
