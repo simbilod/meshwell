@@ -52,6 +52,10 @@ class DecompositionSegment:
     is_arc: bool
     center: tuple[float, float, float] | None = None
     radius: float | None = None
+    # Set by canonicalize_ring_segments: the OFFSET canonical circle
+    # ((cx, cy), R +/- eps) this arc must be emitted on. None -> legacy
+    # 3-point emission (passthrough path only).
+    canonical: tuple[tuple[float, float], float] | None = None
 
 
 def _strip_consecutive_duplicates(
@@ -503,6 +507,161 @@ def _offset_point(p_prev, p, eps):
     if n == 0.0 or eps == 0.0:
         return (p[0], p[1])
     return (p[0] + eps * dy / n, p[1] - eps * dx / n)
+
+
+def _promote_chord_runs(segments, registry, *, tolerance):
+    """Replace line runs whose vertices all track one canonical circle with an arc.
+
+    Closes the classification cliffs (min_arc_points remnants, detector
+    gate rejections) where one entity keeps chords -- midpoint sag
+    R*theta^2/8, far above any boolean clearance -- against another
+    entity's arc. Keys on vertex proximity to a registered circle; never
+    re-fits. Single-segment runs (no interior vertex) stay untouched:
+    two points near a circle are indistinguishable from a straight edge
+    grazing it (the probe reports them).
+    """
+    if not segments or registry is None:
+        return segments
+
+    # Rotate so index 0 is an arc when one exists; line runs then never
+    # wrap the list seam. (All-line rings may split a seam-wrapping span
+    # into two promoted arcs on the same circle -- harmless: same-circle
+    # junctions are exact.)
+    first_arc = next((i for i, s in enumerate(segments) if s.is_arc), None)
+    if first_arc:
+        segments = segments[first_arc:] + segments[:first_arc]
+
+    out: list[DecompositionSegment] = []
+    i, n = 0, len(segments)
+    while i < n:
+        if segments[i].is_arc:
+            out.append(segments[i])
+            i += 1
+            continue
+        j = i
+        while j < n and not segments[j].is_arc:
+            j += 1
+        run = segments[i:j]
+        run_pts = [s.points[0] for s in run] + [run[-1].points[-1]]
+        # Greedy sub-run scan INSIDE the line run: a remnant arc can be
+        # embedded between genuine straight edges, so whole-run matching
+        # would be poisoned by the corners. Monotone: adding a vertex can
+        # only raise the max deviation, so break-on-first-miss finds the
+        # longest matching window exactly.
+        k, m = 0, len(run_pts)
+        while k < m - 1:
+            hit_k, best_end = None, None
+            end = k + 2  # >= 3 vertices: require an interior vertex
+            while end < m:
+                h = registry.match_chord_run(
+                    [(p[0], p[1]) for p in run_pts[k : end + 1]],
+                    tolerance=tolerance,
+                )
+                if h is None:
+                    break
+                hit_k, best_end = h, end
+                end += 1
+            if hit_k is not None:
+                (cx, cy), r = hit_k
+                z = run_pts[k][2]
+                out.append(
+                    DecompositionSegment(
+                        points=run_pts[k : best_end + 1],
+                        is_arc=True,
+                        center=(cx, cy, z),
+                        radius=r,
+                    )
+                )
+                k = best_end
+            else:
+                out.append(run[k])
+                k += 1
+        i = j
+    return out
+
+
+def canonicalize_ring_segments(segments, registry, *, eps, match_tolerance, slack):
+    """Canonicalize one OGC-oriented ring: promote, assign circles, offset, re-join.
+
+    OGC orientation (CCW exterior, CW holes) puts material LEFT of
+    travel: lines offset eps to the RIGHT of travel; an arc whose center
+    is left of travel offsets to R+eps, else R-eps. Junction vertices are
+    re-derived as intersections of the ADJACENT OFFSET primitives (miter
+    for line/line, root selection nearest the original vertex otherwise),
+    so every emitted vertex lies exactly on both incident curves.
+    """
+    segments = _promote_chord_runs(segments, registry, tolerance=match_tolerance)
+    n = len(segments)
+    if n == 0:
+        return segments
+
+    # Assign offset canonical circles to arcs.
+    for seg in segments:
+        if not seg.is_arc or seg.center is None:
+            continue
+        hit = None
+        if registry is not None:
+            hit = registry.lookup(
+                (seg.center[0], seg.center[1]), seg.radius, slack=slack
+            )
+        (cx, cy), r = (
+            hit if hit is not None else ((seg.center[0], seg.center[1]), seg.radius)
+        )
+        p0, p1 = seg.points[0], seg.points[1]
+        cross = (p1[0] - p0[0]) * (cy - p0[1]) - (p1[1] - p0[1]) * (cx - p0[0])
+        seg.canonical = ((cx, cy), r + eps if cross > 0 else r - eps)
+
+    if eps != 0.0:
+        # Offset line endpoints along their own right-of-travel normals.
+        for seg in segments:
+            if seg.is_arc:
+                continue
+            a, b = seg.points[0], seg.points[-1]
+            z = a[2]
+            oa = _offset_point((2 * a[0] - b[0], 2 * a[1] - b[1]), a, eps)
+            ob = _offset_point(a, b, eps)
+            seg.points = [(oa[0], oa[1], z), (ob[0], ob[1], z)]
+
+    # Re-derive every junction as the exact intersection of the two
+    # adjacent offset primitives (arcs keep their original points as trim
+    # references; only their endpoints move here).
+    if n > 1 or (n == 1 and not segments[0].is_arc):
+        for i, seg in enumerate(segments):
+            nxt = segments[(i + 1) % n]
+            p_orig = nxt.points[0]
+            z = p_orig[2]
+            if seg.is_arc and seg.canonical and nxt.is_arc and nxt.canonical:
+                (c1, r1), (c2, r2) = seg.canonical, nxt.canonical
+                j = _circle_circle_junction(c1, r1, c2, r2, (p_orig[0], p_orig[1]))
+            elif seg.is_arc and seg.canonical:
+                (c1, r1) = seg.canonical
+                j = _line_circle_junction(
+                    c1,
+                    r1,
+                    (nxt.points[0][0], nxt.points[0][1]),
+                    (nxt.points[-1][0], nxt.points[-1][1]),
+                )
+            elif nxt.is_arc and nxt.canonical:
+                (c2, r2) = nxt.canonical
+                j = _line_circle_junction(
+                    c2,
+                    r2,
+                    (seg.points[-1][0], seg.points[-1][1]),
+                    (seg.points[0][0], seg.points[0][1]),
+                )
+            elif not seg.is_arc and not nxt.is_arc:
+                j = _line_line_junction(
+                    (seg.points[0][0], seg.points[0][1]),
+                    (seg.points[-1][0], seg.points[-1][1]),
+                    (nxt.points[0][0], nxt.points[0][1]),
+                    (nxt.points[-1][0], nxt.points[-1][1]),
+                    (seg.points[-1][0], seg.points[-1][1]),
+                )
+            else:
+                continue  # arc without canonical: legacy passthrough
+            seg.points[-1] = (j[0], j[1], z)
+            nxt.points[0] = (j[0], j[1], z)
+    return segments
 
 
 def _three_point_circle_2d(

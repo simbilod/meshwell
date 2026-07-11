@@ -1,4 +1,6 @@
 """Tests for pipeline-level arc identification + the canonical geometry pipeline."""
+import itertools
+
 import numpy as np
 import pytest
 from shapely.geometry import Polygon
@@ -221,3 +223,131 @@ def test_offset_point_right_of_travel():
     assert _offset_point((0.0, 0.0), (1.0, 0.0), 0.1) == pytest.approx((1.0, -0.1))
     # eps=0 is the identity.
     assert _offset_point((0.0, 0.0), (1.0, 0.0), 0.0) == pytest.approx((1.0, 0.0))
+
+
+def test_promote_short_arc_remnant():
+    """A 4-vertex arc span below min_arc_points=5 stays chords in the detector.
+
+    It must still be promoted onto the registry circle.
+    """
+    from meshwell.geometry_entity import _promote_chord_runs, decompose_vertices_2d
+
+    arc_pts = [
+        (5 * np.cos(np.deg2rad(a)), 5 * np.sin(np.deg2rad(a))) for a in (10, 20, 30, 40)
+    ]
+    ring = [(-6.0, -6.0), (6.0, -6.0), *arc_pts, (-6.0, 6.0), (-6.0, -6.0)]
+    segments = decompose_vertices_2d(
+        ring,
+        z=0.0,
+        point_tolerance=1e-3,
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+    )
+    assert not any(s.is_arc for s in segments)
+    reg = CircleRegistry.from_fits(
+        [ArcFit(center=(0.0, 0.0), radius=5.0, npoints=32)], cluster_tolerance=1e-3
+    )
+    promoted = _promote_chord_runs(segments, reg, tolerance=2e-3)
+    arcs = [s for s in promoted if s.is_arc]
+    assert len(arcs) == 1
+    assert len(arcs[0].points) == 4
+    for a, b in itertools.pairwise(promoted):
+        assert a.points[-1] == b.points[0]  # connectivity preserved
+
+
+def test_no_promotion_of_genuine_straight_edge():
+    from meshwell.geometry_entity import DecompositionSegment, _promote_chord_runs
+
+    segs = [
+        DecompositionSegment(points=[(3.0, 4.0, 0.0), (3.0, 0.0, 0.0)], is_arc=False),
+        DecompositionSegment(points=[(3.0, 0.0, 0.0), (3.0, -4.0, 0.0)], is_arc=False),
+    ]
+    reg = CircleRegistry.from_fits(
+        [ArcFit(center=(0.0, 0.0), radius=5.0, npoints=32)], cluster_tolerance=1e-3
+    )
+    assert not any(s.is_arc for s in _promote_chord_runs(segs, reg, tolerance=2e-3))
+
+
+def test_canonicalize_offsets_full_circle():
+    """CCW disc ring at eps=0.01: canonical circle offsets to R+eps."""
+    from meshwell.geometry_entity import (
+        canonicalize_ring_segments,
+        decompose_vertices_2d,
+    )
+
+    segments = decompose_vertices_2d(
+        list(_ring(64, 5.0).exterior.coords),
+        z=0.0,
+        point_tolerance=1e-3,
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+    )
+    reg = CircleRegistry.from_fits(
+        [ArcFit(center=(0.0, 0.0), radius=5.0, npoints=64)], cluster_tolerance=1e-3
+    )
+    out = canonicalize_ring_segments(
+        segments, reg, eps=0.01, match_tolerance=2e-3, slack=1e-3
+    )
+    arcs = [s for s in out if s.is_arc]
+    assert arcs
+    assert all(s.canonical == ((0.0, 0.0), pytest.approx(5.01)) for s in arcs)
+
+
+def test_canonicalize_offsets_hole_ring_inward():
+    """CW hole ring at eps=0.01: the hole SHRINKS -> R-eps."""
+    from meshwell.geometry_entity import (
+        canonicalize_ring_segments,
+        decompose_vertices_2d,
+    )
+
+    cw_coords = list(_ring(64, 5.0).exterior.coords)[::-1]  # CW = OGC hole
+    segments = decompose_vertices_2d(
+        cw_coords,
+        z=0.0,
+        point_tolerance=1e-3,
+        identify_arcs=True,
+        min_arc_points=5,
+        arc_tolerance=1e-3,
+    )
+    reg = CircleRegistry.from_fits(
+        [ArcFit(center=(0.0, 0.0), radius=5.0, npoints=64)], cluster_tolerance=1e-3
+    )
+    out = canonicalize_ring_segments(
+        segments, reg, eps=0.01, match_tolerance=2e-3, slack=1e-3
+    )
+    arcs = [s for s in out if s.is_arc]
+    assert arcs
+    assert all(s.canonical == ((0.0, 0.0), pytest.approx(4.99)) for s in arcs)
+
+
+def test_canonicalize_line_ring_miter_offset():
+    """Pure-line CCW unit square at eps=0.1: corners land at exact miter points.
+
+    Also checks that eps=0 is the identity (+-1.1 corners either way).
+    """
+    from meshwell.geometry_entity import (
+        canonicalize_ring_segments,
+        decompose_vertices_2d,
+    )
+
+    square = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
+    segments = decompose_vertices_2d(square, z=0.0, point_tolerance=1e-3)
+    out = canonicalize_ring_segments(
+        segments, None, eps=0.1, match_tolerance=2e-3, slack=1e-3
+    )
+    xs = [abs(p[0]) for s in out for p in s.points]
+    ys = [abs(p[1]) for s in out for p in s.points]
+    assert max(xs) == pytest.approx(1.1)
+    assert max(ys) == pytest.approx(1.1)
+    assert min(xs) == pytest.approx(1.1)
+    assert min(ys) == pytest.approx(1.1)
+
+    segments = decompose_vertices_2d(square, z=0.0, point_tolerance=1e-3)
+    out0 = canonicalize_ring_segments(
+        segments, None, eps=0.0, match_tolerance=2e-3, slack=1e-3
+    )
+    assert [s.points for s in out0] == [
+        [(p[0], p[1], 0.0) for p in pair] for pair in itertools.pairwise(square)
+    ]
