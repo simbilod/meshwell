@@ -4,6 +4,14 @@ import pytest
 from shapely.geometry import Polygon
 
 from meshwell.circle_registry import ArcFit, CircleRegistry, build_circle_registry
+from meshwell.geometry_entity import (
+    _arc_sense_ccw,
+    _circle_circle_junction,
+    _line_circle_junction,
+    _line_line_junction,
+    _offset_point,
+    _project_to_circle,
+)
 
 
 def _ring(n: int, radius: float, phase: float = 0.0) -> Polygon:
@@ -168,3 +176,48 @@ def test_build_registry_from_entities():
     assert hit is not None
     assert hit[0] == pytest.approx((0.0, 0.0), abs=1e-4)
     assert hit[1] == pytest.approx(5.0, abs=1e-4)
+
+
+def test_arc_sense_ccw():
+    c = (0.0, 0.0)
+    assert _arc_sense_ccw(c, (1, 0), (0, 1), (-1, 0)) is True  # CCW upper half
+    assert _arc_sense_ccw(c, (1, 0), (0, -1), (-1, 0)) is False  # CW lower half
+    assert _arc_sense_ccw(c, (-1, 0), (0, -1), (1, 0)) is True  # crosses atan2 seam
+
+
+def test_project_to_circle():
+    assert _project_to_circle((0.0, 0.0), 2.0, (3.0, 4.0)) == pytest.approx((1.2, 1.6))
+    assert _project_to_circle((1.0, 1.0), 2.0, (1.0, 1.0)) == (1.0, 1.0)  # degenerate
+
+
+def test_line_circle_junction_transversal_and_tangent():
+    j = _line_circle_junction((0.0, 0.0), 1.0, (1.05, 0.0), (5.0, 0.0))
+    assert j == pytest.approx((1.0, 0.0), abs=1e-12)
+    # y=1 tangent to unit circle: must return the tangency foot.
+    j = _line_circle_junction((0.0, 0.0), 1.0, (0.02, 1.0000001), (5.0, 1.0000001))
+    assert j == pytest.approx((0.0, 1.0), abs=1e-6)
+
+
+def test_circle_circle_junction():
+    j = _circle_circle_junction((0.0, 0.0), 1.0, (1.0, 0.0), 1.0, (0.5, 0.9))
+    assert j == pytest.approx((0.5, np.sqrt(3) / 2), abs=1e-12)
+
+
+def test_line_line_junction_miter():
+    # Offset edges of a 90-degree corner: x=1 line meets y=1 line at (1,1).
+    j = _line_line_junction(
+        (1.0, -5.0), (1.0, 0.0), (0.0, 1.0), (-5.0, 1.0), (0.0, 0.0)
+    )
+    assert j == pytest.approx((1.0, 1.0), abs=1e-12)
+    # Near-parallel: falls back to the provided point.
+    j = _line_line_junction(
+        (0.0, 0.0), (1.0, 0.0), (2.0, 1e-15), (3.0, 2e-15), (9.0, 9.0)
+    )
+    assert j == (9.0, 9.0)
+
+
+def test_offset_point_right_of_travel():
+    # Traveling +x, right of travel is -y.
+    assert _offset_point((0.0, 0.0), (1.0, 0.0), 0.1) == pytest.approx((1.0, -0.1))
+    # eps=0 is the identity.
+    assert _offset_point((0.0, 0.0), (1.0, 0.0), 0.0) == pytest.approx((1.0, 0.0))

@@ -397,6 +397,114 @@ def fit_circle_2d(points: np.ndarray) -> tuple[tuple[float, float], float, float
     return (xc, yc), radius, residual
 
 
+def _arc_sense_ccw(center, p_start, p_mid, p_end) -> bool:
+    """True iff the arc start->mid->end runs counterclockwise about center.
+
+    Resolves the two-arc trim ambiguity by ANGULAR position of the
+    midpoint -- NOT by distance projection, which is degenerate (the
+    midpoint lies on the full circle for both trims; see the 3-point-form
+    comment in _make_occ_wire_from_vertices).
+    """
+    two_pi = 2.0 * np.pi
+    a0 = np.arctan2(p_start[1] - center[1], p_start[0] - center[0])
+    am = np.arctan2(p_mid[1] - center[1], p_mid[0] - center[0])
+    a1 = np.arctan2(p_end[1] - center[1], p_end[0] - center[0])
+    sweep_ccw = (a1 - a0) % two_pi
+    mid_rel = (am - a0) % two_pi
+    if sweep_ccw == 0.0:
+        return True
+    return bool(mid_rel <= sweep_ccw)
+
+
+def _project_to_circle(center, radius, p):
+    dx, dy = p[0] - center[0], p[1] - center[1]
+    d = float(np.hypot(dx, dy))
+    if d == 0.0:
+        return p
+    return (center[0] + radius * dx / d, center[1] + radius * dy / d)
+
+
+def _line_circle_junction(center, radius, p_junction, p_far):
+    """Junction of line (p_far -> p_junction) with the circle, nearest p_junction.
+
+    Tangent/degenerate cases return the tangency foot.
+    """
+    fx, fy = p_far
+    dx, dy = p_junction[0] - fx, p_junction[1] - fy
+    a = dx * dx + dy * dy
+    if a == 0.0:
+        return _project_to_circle(center, radius, p_junction)
+    ex, ey = fx - center[0], fy - center[1]
+    b = 2.0 * (dx * ex + dy * ey)
+    c = ex * ex + ey * ey - radius * radius
+    disc = b * b - 4.0 * a * c
+    if disc <= 0.0:
+        t = -(ex * dx + ey * dy) / a
+        return _project_to_circle(center, radius, (fx + t * dx, fy + t * dy))
+    sq = float(np.sqrt(disc))
+    candidates = [
+        (fx + t * dx, fy + t * dy) for t in ((-b - sq) / (2 * a), (-b + sq) / (2 * a))
+    ]
+    return min(
+        candidates,
+        key=lambda q: (q[0] - p_junction[0]) ** 2 + (q[1] - p_junction[1]) ** 2,
+    )
+
+
+def _circle_circle_junction(c1, r1, c2, r2, p_junction):
+    """Intersection of two circles nearest p_junction.
+
+    Midpoint of the two radial projections when they don't intersect
+    (same-circle case included: both projections coincide).
+    """
+    dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+    d = float(np.hypot(dx, dy))
+    if d == 0.0 or d > r1 + r2 or d < abs(r1 - r2):
+        p1 = _project_to_circle(c1, r1, p_junction)
+        p2 = _project_to_circle(c2, r2, p_junction)
+        return (0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1]))
+    a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d)
+    h = float(np.sqrt(max(r1 * r1 - a * a, 0.0)))
+    mx, my = c1[0] + a * dx / d, c1[1] + a * dy / d
+    candidates = [
+        (mx + h * dy / d, my - h * dx / d),
+        (mx - h * dy / d, my + h * dx / d),
+    ]
+    return min(
+        candidates,
+        key=lambda q: (q[0] - p_junction[0]) ** 2 + (q[1] - p_junction[1]) ** 2,
+    )
+
+
+def _line_line_junction(a1, a2, b1, b2, p_fallback):
+    """Intersection (miter point) of infinite lines a1->a2 and b1->b2.
+
+    Return p_fallback when near-parallel (collinear offset edges keep their
+    shared endpoint).
+    """
+    d1x, d1y = a2[0] - a1[0], a2[1] - a1[1]
+    d2x, d2y = b2[0] - b1[0], b2[1] - b1[1]
+    denom = d1x * d2y - d1y * d2x
+    scale = max(abs(d1x), abs(d1y), abs(d2x), abs(d2y), 1e-300)
+    if abs(denom) <= 1e-12 * scale * scale:
+        return p_fallback
+    t = ((b1[0] - a1[0]) * d2y - (b1[1] - a1[1]) * d2x) / denom
+    return (a1[0] + t * d1x, a1[1] + t * d1y)
+
+
+def _offset_point(p_prev, p, eps):
+    """Shift ``p`` by ``eps`` along the right-of-travel normal of the segment.
+
+    For segment p_prev -> p: with OGC ring orientation (CCW exterior, CW
+    holes) material is LEFT of travel, so right-of-travel is outward.
+    """
+    dx, dy = p[0] - p_prev[0], p[1] - p_prev[1]
+    n = float(np.hypot(dx, dy))
+    if n == 0.0 or eps == 0.0:
+        return (p[0], p[1])
+    return (p[0] + eps * dy / n, p[1] - eps * dx / n)
+
+
 def _three_point_circle_2d(
     p1: tuple[float, float],
     p2: tuple[float, float],
