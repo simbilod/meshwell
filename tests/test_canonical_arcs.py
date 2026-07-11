@@ -3,6 +3,8 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
+from meshwell.circle_registry import ArcFit, CircleRegistry, build_circle_registry
+
 
 def _ring(n: int, radius: float, phase: float = 0.0) -> Polygon:
     pts = [
@@ -89,3 +91,80 @@ def test_from_dict_ignores_legacy_arc_keys():
     d["arc_tolerance"] = 1e-3
     p2 = PolyPrism.from_dict(d)
     assert p2.identify_arcs is False
+
+
+def test_cluster_unifies_center_and_radius():
+    fits = [
+        ArcFit(center=(0.0001, -0.0001), radius=5.0002, npoints=64),
+        ArcFit(center=(-0.0001, 0.0002), radius=4.9998, npoints=48),
+    ]
+    reg = CircleRegistry.from_fits(fits, cluster_tolerance=1e-3)
+    hit_a = reg.lookup((0.0001, -0.0001), 5.0002)
+    hit_b = reg.lookup((-0.0001, 0.0002), 4.9998)
+    assert hit_a == hit_b  # ONE canonical circle
+    wx = (64 * 0.0001 + 48 * -0.0001) / 112
+    wy = (64 * -0.0001 + 48 * 0.0002) / 112
+    wr = (64 * 5.0002 + 48 * 4.9998) / 112
+    assert hit_a[0] == pytest.approx((wx, wy), abs=1e-12)
+    assert hit_a[1] == pytest.approx(wr, abs=1e-12)
+
+
+def test_distinct_circles_do_not_cluster():
+    fits = [
+        ArcFit(center=(0.0, 0.0), radius=5.0, npoints=32),
+        ArcFit(center=(0.0, 0.0), radius=5.2, npoints=32),  # concentric, distinct
+        ArcFit(center=(20.0, 0.0), radius=5.0, npoints=32),
+    ]
+    reg = CircleRegistry.from_fits(fits, cluster_tolerance=1e-3)
+    assert reg.lookup((0.0, 0.0), 5.0)[1] == pytest.approx(5.0)
+    assert reg.lookup((0.0, 0.0), 5.2)[1] == pytest.approx(5.2)
+    assert reg.lookup((20.0, 0.0), 5.0)[0] == pytest.approx((20.0, 0.0))
+
+
+def test_lookup_miss_returns_none():
+    reg = CircleRegistry.from_fits(
+        [ArcFit(center=(0.0, 0.0), radius=5.0, npoints=32)], cluster_tolerance=1e-3
+    )
+    assert reg.lookup((3.0, 3.0), 5.0) is None
+    assert reg.lookup((0.0, 0.0), 7.0) is None
+
+
+def test_match_chord_run():
+    reg = CircleRegistry.from_fits(
+        [ArcFit(center=(0.0, 0.0), radius=5.0, npoints=32)], cluster_tolerance=1e-3
+    )
+    on_circle = [(5 * np.cos(t), 5 * np.sin(t)) for t in (0.1, 0.2, 0.3)]
+    assert reg.match_chord_run(on_circle, tolerance=1e-3) == ((0.0, 0.0), 5.0)
+    # Straight edge whose ENDPOINTS graze the circle: interior vertex is
+    # on the chord, 2.0 off the circle -> no match.
+    straight = [(3.0, 4.0), (3.0, 0.0), (3.0, -4.0)]
+    assert reg.match_chord_run(straight, tolerance=1e-3) is None
+
+
+def test_build_registry_from_entities():
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.polyprism import PolyPrism
+
+    disc = PolyPrism(
+        polygons=_ring(64, 5.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="disc",
+        mesh_order=1,
+    )
+    plate = PolyPrism(
+        polygons=Polygon(
+            [(-9, -9), (9, -9), (9, 9), (-9, 9)],
+            holes=[_ring(48, 5.0, phase=0.03).exterior.coords],
+        ),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="plate",
+        mesh_order=2,
+    )
+    apply_arc_params([disc, plate], identify_arcs=True)
+    reg = build_circle_registry([disc, plate])
+    # Both rings discretize the SAME nominal circle -> one cluster.
+    # Loose tolerances: PolyPrism snaps inputs to the 1e-3 grid.
+    hit = reg.lookup((0.0, 0.0), 5.0)
+    assert hit is not None
+    assert hit[0] == pytest.approx((0.0, 0.0), abs=1e-4)
+    assert hit[1] == pytest.approx(5.0, abs=1e-4)
