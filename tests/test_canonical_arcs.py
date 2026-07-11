@@ -351,3 +351,96 @@ def test_canonicalize_line_ring_miter_offset():
     assert [s.points for s in out0] == [
         [(p[0], p[1], 0.0) for p in pair] for pair in itertools.pairwise(square)
     ]
+
+
+def _circle_edges(shape):
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_CurveType
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out = []
+    exp = TopExp_Explorer(shape, TopAbs_EDGE)
+    while exp.More():
+        ad = BRepAdaptor_Curve(TopoDS.Edge_s(exp.Current()))
+        if ad.GetType() == GeomAbs_CurveType.GeomAbs_Circle:
+            circ = ad.Circle()
+            loc = circ.Location()
+            out.append(((loc.X(), loc.Y()), circ.Radius()))
+        exp.Next()
+    return out
+
+
+def test_wire_emits_offset_canonical_circle():
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.circle_registry import build_circle_registry
+    from meshwell.polyprism import PolyPrism
+
+    disc = PolyPrism(
+        polygons=_ring(64, 5.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="d",
+        mesh_order=1,
+    )
+    apply_arc_params([disc], identify_arcs=True)
+    disc.circle_registry = build_circle_registry([disc])
+    disc.perturbation = 1e-2  # exaggerated for a visible assertion
+    shape = disc.instanciate_occ()
+    circles = _circle_edges(shape)
+    assert circles
+    canonical = disc.circle_registry.clusters[0]
+    for (cx, cy), r in circles:
+        assert (cx, cy) == pytest.approx(canonical.center, abs=1e-9)
+        assert r == pytest.approx(canonical.radius + 1e-2, abs=1e-9)  # CCW disc: R+eps
+
+
+def test_wire_passthrough_without_registry_or_eps():
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.polyprism import PolyPrism
+
+    disc = PolyPrism(
+        polygons=_ring(64, 5.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="d",
+        mesh_order=1,
+    )
+    apply_arc_params([disc], identify_arcs=True)
+    assert disc.circle_registry is None
+    assert disc.perturbation == 0.0
+    for _c, r in _circle_edges(disc.instanciate_occ()):
+        assert r == pytest.approx(5.0, abs=1e-6)  # legacy 3-point arcs
+
+
+def test_rounded_rect_prism_closes_with_registry():
+    from meshwell.cad_common import apply_arc_params
+    from meshwell.circle_registry import build_circle_registry
+    from meshwell.polyprism import PolyPrism
+
+    def rounded_rect(a, b, r, n=12):
+        pts = []
+        for i, (cx, cy) in enumerate([(a, b), (-a, b), (-a, -b), (a, -b)]):
+            pts.extend(
+                (cx + r * np.cos(t), cy + r * np.sin(t))
+                for t in np.linspace(np.pi / 2 * i, np.pi / 2 * (i + 1), n)
+            )
+        return Polygon(pts)
+
+    pad = PolyPrism(
+        polygons=rounded_rect(3.0, 2.0, 0.8),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="pad",
+        mesh_order=1,
+    )
+    apply_arc_params([pad], identify_arcs=True)
+    pad.circle_registry = build_circle_registry([pad])
+    pad.perturbation = 1e-5
+    shape = pad.instanciate_occ()
+    assert shape is not None
+    assert len(_circle_edges(shape)) >= 4
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, props)
+    assert props.Mass() > 0  # wire closed, solid valid

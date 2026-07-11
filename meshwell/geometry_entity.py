@@ -960,7 +960,11 @@ class GeometryEntity:
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
 
         vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
-        if not identify_arcs:
+        if (
+            not identify_arcs
+            and self.circle_registry is None
+            and self.perturbation == 0.0
+        ):
             points = self._make_occ_points(vertices)
             wire_builder = BRepBuilderAPI_MakeWire()
             for i in range(len(points) - 1):
@@ -1005,6 +1009,15 @@ class GeometryEntity:
             arc_tolerance=arc_tolerance,
         )
 
+        if self.circle_registry is not None or self.perturbation != 0.0:
+            segments = canonicalize_ring_segments(
+                segments,
+                self.circle_registry,
+                eps=self.perturbation,
+                match_tolerance=arc_tolerance + self.point_tolerance,
+                slack=self.point_tolerance,
+            )
+
         wire_builder = BRepBuilderAPI_MakeWire()
 
         for seg in segments:
@@ -1016,32 +1029,90 @@ class GeometryEntity:
                 # StdFail_NotDone on a (near-)zero-length edge.
                 if not is_closed and _key(seg.points[0]) == _key(seg.points[-1]):
                     continue
-                p_start = gp_Pnt(*seg.points[0])
-                p_mid = gp_Pnt(*seg.points[mid_idx])
-                p_end = gp_Pnt(*seg.points[-1])
 
-                if is_closed:
-                    # Full circle: split into two 180-degree arcs.
-                    quarter_idx = len(seg.points) // 4
-                    three_quarter_idx = (len(seg.points) * 3) // 4
-                    p1 = gp_Pnt(*seg.points[quarter_idx])
-                    p3 = gp_Pnt(*seg.points[three_quarter_idx])
-                    arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
-                    edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
-                    arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
-                    edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
-                    wire_builder.Add(edge1)
+                if seg.canonical is not None:
+                    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
+
+                    (ccx, ccy), cr = seg.canonical
+                    z = seg.points[0][2]
+                    circ = gp_Circ(
+                        gp_Ax2(gp_Pnt(ccx, ccy, z), gp_Dir(0.0, 0.0, 1.0)), cr
+                    )
+
+                    def _on_circle(p, _ccx=ccx, _ccy=ccy, _cr=cr, _z=z):
+                        q = _project_to_circle((_ccx, _ccy), _cr, (p[0], p[1]))
+                        return gp_Pnt(q[0], q[1], _z)
+
+                    if is_closed:
+                        quarter = len(seg.points) // 4
+                        three_q = (len(seg.points) * 3) // 4
+                        p0, pm = _on_circle(seg.points[0]), _on_circle(
+                            seg.points[mid_idx]
+                        )
+                        s1 = _arc_sense_ccw(
+                            (ccx, ccy),
+                            (p0.X(), p0.Y()),
+                            seg.points[quarter][:2],
+                            (pm.X(), pm.Y()),
+                        )
+                        s2 = _arc_sense_ccw(
+                            (ccx, ccy),
+                            (pm.X(), pm.Y()),
+                            seg.points[three_q][:2],
+                            (p0.X(), p0.Y()),
+                        )
+                        wire_builder.Add(
+                            BRepBuilderAPI_MakeEdge(
+                                GC_MakeArcOfCircle(circ, p0, pm, s1).Value()
+                            ).Edge()
+                        )
+                        edge = BRepBuilderAPI_MakeEdge(
+                            GC_MakeArcOfCircle(circ, pm, p0, s2).Value()
+                        ).Edge()
+                    else:
+                        sense = _arc_sense_ccw(
+                            (ccx, ccy),
+                            seg.points[0][:2],
+                            seg.points[mid_idx][:2],
+                            seg.points[-1][:2],
+                        )
+                        edge = BRepBuilderAPI_MakeEdge(
+                            GC_MakeArcOfCircle(
+                                circ,
+                                gp_Pnt(*seg.points[0]),
+                                gp_Pnt(*seg.points[-1]),
+                                sense,
+                            ).Value()
+                        ).Edge()
                 else:
-                    # Three-point arc form: GC_MakeArcOfCircle(p_start, p_mid,
-                    # p_end) builds the unique arc passing through all three
-                    # points, in that order. This avoids the CCW-vs-CW
-                    # ambiguity of the (circle, p_start, p_end, sense) form
-                    # -- the latter cannot be disambiguated by projecting
-                    # p_mid, since p_mid lies on the underlying full circle
-                    # and projection ignores the parametric trim of the arc
-                    # (gives LowerDistance == 0 for both senses).
-                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
-                    edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
+                    # Legacy passthrough: 3-point arcs through the vertices
+                    # (unchanged code from today, including its comment).
+                    p_start = gp_Pnt(*seg.points[0])
+                    p_mid = gp_Pnt(*seg.points[mid_idx])
+                    p_end = gp_Pnt(*seg.points[-1])
+
+                    if is_closed:
+                        # Full circle: split into two 180-degree arcs.
+                        quarter_idx = len(seg.points) // 4
+                        three_quarter_idx = (len(seg.points) * 3) // 4
+                        p1 = gp_Pnt(*seg.points[quarter_idx])
+                        p3 = gp_Pnt(*seg.points[three_quarter_idx])
+                        arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
+                        edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
+                        arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
+                        wire_builder.Add(edge1)
+                    else:
+                        # Three-point arc form: GC_MakeArcOfCircle(p_start, p_mid,
+                        # p_end) builds the unique arc passing through all three
+                        # points, in that order. This avoids the CCW-vs-CW
+                        # ambiguity of the (circle, p_start, p_end, sense) form
+                        # -- the latter cannot be disambiguated by projecting
+                        # p_mid, since p_mid lies on the underlying full circle
+                        # and projection ignores the parametric trim of the arc
+                        # (gives LowerDistance == 0 for both senses).
+                        arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
                 # Consecutive points that collapse to the same grid key are
                 # already removed by the dedup pass above; guard anyway so a

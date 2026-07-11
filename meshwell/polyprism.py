@@ -529,19 +529,17 @@ class PolyPrism(GeometryEntity):
             build_z = self.zmin
             build_vec = gp_Vec(0, 0, self.zmax - self.zmin)
             for poly in polys:
-                # For polygons with holes, canonicalize to OGC convention
-                # (CCW exterior + CW interiors) so OCC's face-with-hole
+                # Canonicalize to OGC convention (CCW exterior + CW
+                # interiors) unconditionally. This is required both for
+                # polygons with holes -- so OCC's face-with-hole
                 # construction works regardless of the input's shapely
-                # orientation. ``cad_common.prepare_entities`` runs a
+                # orientation (``cad_common.prepare_entities`` runs a
                 # ``buffer(...).intersection(bbox)`` that silently flips
-                # the exterior to CW while leaving interiors CCW; without
-                # this orient pass the resulting BRep face has both wires
-                # CCW and the prism's volume includes the hole. Skipped
-                # when there are no interiors to keep mesh output
-                # bit-identical to pre-fix reference files for the common
-                # no-hole case.
-                if poly.interiors:
-                    poly = orient(poly, sign=1.0)
+                # the exterior to CW while leaving interiors CCW) -- and by
+                # the canonical arc offset rule, which defines "outward"
+                # as material-left-of-travel and therefore needs a fixed
+                # ring orientation on every polygon, hole or not.
+                poly = orient(poly, sign=1.0)
 
                 exterior_vertices = [(x, y, build_z) for x, y in poly.exterior.coords]
                 outer_wire = self._make_occ_wire_from_vertices(
