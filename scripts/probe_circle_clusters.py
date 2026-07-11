@@ -13,7 +13,15 @@ from pathlib import Path
 
 from meshwell.cad_common import apply_arc_params
 from meshwell.circle_registry import build_circle_registry
-from meshwell.geometry_entity import decompose_vertices_2d
+from meshwell.geometry_entity import (
+    # Private, but the probe must run the pipeline's EXACT promotion scan
+    # (greedy sub-window growth inside each line run) to stay predictive --
+    # re-implementing it as a whole-run match would miss embedded remnants
+    # (arc in the middle of a run, corners at the ends) that the real
+    # pipeline still promotes.
+    _promote_chord_runs,
+    decompose_vertices_2d,
+)
 from meshwell.orchestrator import deserialize
 
 
@@ -51,23 +59,27 @@ def main() -> None:
                     min_arc_points=getattr(e, "min_arc_points", 5),
                     arc_tolerance=getattr(e, "arc_tolerance", 1e-3),
                 )
-                i, n = 0, len(segments)
-                while i < n:
-                    if segments[i].is_arc:
-                        i += 1
+                # Run the REAL pipeline promotion scan (greedy sub-window
+                # growth inside each maximal line run), not a whole-run
+                # match: only this reproduces embedded-remnant promotions.
+                arcs_before = sum(1 for s in segments if s.is_arc)
+                promoted = _promote_chord_runs(segments, reg, tolerance=tol)
+                arcs_after = sum(1 for s in promoted if s.is_arc)
+                promotable += arcs_after - arcs_before
+                # Ambiguous: single-chord (2-vertex) line segments that
+                # survive promotion untouched but whose own two endpoints
+                # alone already match a registered circle -- the pipeline
+                # deliberately never auto-promotes these (indistinguishable
+                # from a straight edge grazing the circle).
+                for seg in promoted:
+                    if seg.is_arc:
                         continue
-                    j = i
-                    while j < n and not segments[j].is_arc:
-                        j += 1
-                    pts = [s.points[0] for s in segments[i:j]]
-                    pts.append(segments[j - 1].points[-1])
-                    xy = [(p[0], p[1]) for p in pts]
-                    if reg.match_chord_run(xy, tolerance=tol) is not None:
-                        if len(xy) >= 3:
-                            promotable += 1
-                        else:
-                            ambiguous += 1
-                    i = j
+                    xy = [(p[0], p[1]) for p in seg.points]
+                    if (
+                        len(xy) == 2
+                        and reg.match_chord_run(xy, tolerance=tol) is not None
+                    ):
+                        ambiguous += 1
     print(
         f"chord-run exposure: {promotable} promotable run(s) (auto-fixed), "
         f"{ambiguous} ambiguous single-chord candidate(s) (manual review)"
