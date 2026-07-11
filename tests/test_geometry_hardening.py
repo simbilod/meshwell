@@ -171,7 +171,6 @@ def test_shapely_difference_seam_duplicate_is_stripped():
         polygons=diffed,
         buffers={0.0: 0.0, 1.0: 0.0},
         point_tolerance=1e-3,
-        identify_arcs=True,
     )
     # Fetch the (possibly stripped/snapped) hole and run decomposition.
     # The hole is the single interior ring of the diffed polygon.

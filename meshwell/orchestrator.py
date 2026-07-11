@@ -9,7 +9,7 @@ from typing import Any
 
 import gmsh
 
-from meshwell.cad_common import prepare_entities
+from meshwell.cad_common import apply_arc_params, prepare_entities
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
@@ -89,6 +89,17 @@ def generate_mesh(
             - ``pre_2d_hook`` / ``pre_3d_hook`` (callables): composed with
               the structured wedge hooks (run after the structured pass),
               not replacing them.
+            - ``identify_arcs`` (bool | None, default ``None``): stamp
+              pipeline-level arc identification onto every polygon
+              entity before the structured pre-pass. ``None`` leaves
+              entities untouched (scene-level semantics: both sides of
+              a shared circular boundary must classify it identically).
+            - ``min_arc_points`` (int, default 5): minimum run length
+              considered for arc fitting, forwarded to
+              :func:`meshwell.cad_common.apply_arc_params`.
+            - ``arc_tolerance`` (float, default 1e-3): circle-fit
+              tolerance, forwarded to
+              :func:`meshwell.cad_common.apply_arc_params`.
 
     Returns:
         meshio.Mesh: The generated mesh object (or ``None`` if
@@ -102,6 +113,19 @@ def generate_mesh(
         )
 
     entities = deserialize(entities, registry=registry)
+
+    # Pipeline-level arc identification (scene-level semantics: both
+    # sides of a shared circular boundary must classify it identically).
+    identify_arcs = mesh_kwargs.pop("identify_arcs", None)
+    arc_min_points = mesh_kwargs.pop("min_arc_points", 5)
+    arc_fit_tolerance = mesh_kwargs.pop("arc_tolerance", 1e-3)
+    if identify_arcs is not None:
+        apply_arc_params(
+            entities,
+            identify_arcs=identify_arcs,
+            min_arc_points=arc_min_points,
+            arc_tolerance=arc_fit_tolerance,
+        )
 
     # --- Stage 1: OCC fragmentation (cad_occ kwargs). -------------------
     cad_kwargs: dict[str, Any] = {}

@@ -6,11 +6,11 @@ unstructured neighbours above and below, mesh_order carving.
 """
 from __future__ import annotations
 
-import meshio
 import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
+import meshio
 from meshwell.orchestrator import generate_mesh
 from meshwell.polyprism import PolyPrism
 from meshwell.resolution import StructuredExtrusionResolutionSpec
@@ -58,7 +58,6 @@ def complex_scene_entities():
             physical_name="A_square",
             structured=True,
             mesh_order=3.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             CIRCLE_A,
@@ -66,7 +65,6 @@ def complex_scene_entities():
             physical_name="A_circle",
             structured=True,
             mesh_order=3.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             RECT_HOLE_A,
@@ -74,7 +72,6 @@ def complex_scene_entities():
             physical_name="A_recth",
             structured=True,
             mesh_order=3.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             CIRCLE_B,
@@ -82,7 +79,6 @@ def complex_scene_entities():
             physical_name="B_circle",
             structured=True,
             mesh_order=3.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             ANNULUS_B,
@@ -90,7 +86,6 @@ def complex_scene_entities():
             physical_name="B_annulus",
             structured=True,
             mesh_order=3.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             HEX_C,
@@ -98,7 +93,6 @@ def complex_scene_entities():
             physical_name="C_hex",
             structured=True,
             mesh_order=3.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             VOID_C,
@@ -107,7 +101,6 @@ def complex_scene_entities():
             structured=True,
             mesh_order=1.0,
             mesh_bool=False,
-            identify_arcs=True,
         ),
         # Note: solid base (no hole). The cohort wrapping invariant requires
         # the neighbour union at z=0 to cover every cohort sub-piece footprint;
@@ -117,7 +110,6 @@ def complex_scene_entities():
             {-2.0: 0.0, 0.0: 0.0},
             physical_name="base",
             mesh_order=5.0,
-            identify_arcs=True,
         ),
         # Cladding above the A_circle / B_annulus cohort, which ends at z=2
         # (its outer cohort z-plane). Without this, the wrapping invariant
@@ -129,21 +121,18 @@ def complex_scene_entities():
             {2.0: 0.0, 3.0: 0.0},
             physical_name="mid_cladding",
             mesh_order=5.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             BIG_CAP,
             {3.0: 0.0, 5.0: 0.0},
             physical_name="cap",
             mesh_order=5.0,
-            identify_arcs=True,
         ),
         PolyPrism(
             CAP_ARCH,
             {3.0: 0.0, 5.0: 0.0},
             physical_name="cap_arch",
             mesh_order=2.0,
-            identify_arcs=True,
         ),
     ]
 
@@ -169,6 +158,7 @@ def test_complex_scene_meshes_without_error(complex_scene_entities, tmp_path):
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.8,
         resolution_specs=_resolution_specs(),
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "out.msh")
     wedges = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
@@ -184,6 +174,7 @@ def test_complex_scene_all_physical_groups_present(complex_scene_entities, tmp_p
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.8,
         resolution_specs=_resolution_specs(),
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "out.msh")
     expected = {

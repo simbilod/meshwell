@@ -32,9 +32,6 @@ class PolySurface(GeometryEntity):
         mesh_bool: bool = True,
         additive: bool = False,
         point_tolerance: float = 1e-3,
-        identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
@@ -75,9 +72,6 @@ class PolySurface(GeometryEntity):
         self.mesh_bool = mesh_bool
         self.dimension = 2
         self.additive = additive
-        self.identify_arcs = identify_arcs
-        self.min_arc_points = min_arc_points
-        self.arc_tolerance = arc_tolerance
 
     def _create_surface_with_holes(self, polygon: Polygon) -> int:
         """Create surface with holes directly using GMSH calls."""
@@ -228,9 +222,6 @@ class PolySurface(GeometryEntity):
             "mesh_bool": self.mesh_bool,
             "additive": self.additive,
             "point_tolerance": self.point_tolerance,
-            "identify_arcs": self.identify_arcs,
-            "min_arc_points": self.min_arc_points,
-            "arc_tolerance": self.arc_tolerance,
             "translation": self.translation,
             "rotation_axis": self.rotation_axis,
             "rotation_point": self.rotation_point,
@@ -260,9 +251,6 @@ class PolySurface(GeometryEntity):
             mesh_bool=data["mesh_bool"],
             additive=data["additive"],
             point_tolerance=data["point_tolerance"],
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
             translation=data.get("translation"),
             rotation_axis=data.get("rotation_axis"),
             rotation_point=data.get("rotation_point"),

@@ -435,6 +435,15 @@ class GeometryEntity:
     to ensure consistent geometry creation across PolyLine, PolySurface, and PolyPrism.
     """
 
+    # Pipeline-level parameters, stamped by cad_common.apply_arc_params /
+    # CAD_OCC.process_entities. Class defaults keep standalone entity use
+    # working (no arcs, no offset, no registry).
+    identify_arcs = False
+    min_arc_points = 5
+    arc_tolerance = 1e-3
+    circle_registry = None
+    perturbation = 0.0
+
     def __init__(
         self,
         point_tolerance: float = 1e-3,

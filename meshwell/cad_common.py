@@ -17,12 +17,15 @@ for backend-specific instantiation.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import shapely
 from shapely.geometry import box
 
 from meshwell.interface_tag import InterfaceTag
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_entities(
@@ -131,3 +134,36 @@ def prepare_entities(
     for ent in entities_list:
         if isinstance(ent, InterfaceTag):
             ent.resolve(polygon_ents, default_snap=snap)
+
+
+def apply_arc_params(
+    entities: list,
+    *,
+    identify_arcs: bool,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
+) -> None:
+    """Stamp pipeline-level arc-identification parameters onto entities.
+
+    Arc identification determines CROSS-entity interface geometry: two
+    entities sharing a circular boundary must agree on arc-vs-chord
+    classification or their booleans graze (sliver source). It is
+    therefore a scene-level setting stamped uniformly here, not a
+    per-entity constructor flag. Entities without polygons are skipped.
+    Non-extrude PolyPrisms (z-varying buffers) do not support arcs: they
+    are left at identify_arcs=False with a warning instead of raising.
+    """
+    for e in entities:
+        if getattr(e, "polygons", None) is None:
+            continue
+        wants_arcs = identify_arcs
+        if wants_arcs and not getattr(e, "extrude", True):
+            logger.warning(
+                "identify_arcs: skipping %s (z-varying buffers; arc "
+                "identification requires extrude=True)",
+                getattr(e, "physical_name", "?"),
+            )
+            wants_arcs = False
+        e.identify_arcs = wants_arcs
+        e.min_arc_points = min_arc_points
+        e.arc_tolerance = arc_tolerance

@@ -496,13 +496,31 @@ def cad_gmsh(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     perturbation: float | None = None,
+    identify_arcs: bool | None = None,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
 ) -> tuple[list[GMSHLabeledEntity], ModelManager]:
     """Build + fragment + tag ``entities_list`` in a gmsh model.
 
     Returns ``(labeled_entities, model_manager)``. Pass
     ``model_manager`` on to :func:`meshwell.mesh.mesh` (with
     ``model=model_manager``) to mesh without round-tripping through XAO.
+
+    ``identify_arcs`` / ``min_arc_points`` / ``arc_tolerance`` stamp
+    pipeline-level arc identification onto ``entities_list`` via
+    :func:`meshwell.cad_common.apply_arc_params` before processing.
+    ``identify_arcs=None`` (default) leaves entities untouched.
     """
+    if identify_arcs is not None:
+        from meshwell.cad_common import apply_arc_params
+
+        apply_arc_params(
+            entities_list,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+
     processor = CAD_GMSH(
         point_tolerance=point_tolerance,
         n_threads=n_threads,

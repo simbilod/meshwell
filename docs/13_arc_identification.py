@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import shapely
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
@@ -23,16 +24,17 @@ poly = shapely.Polygon(vertices)
 
 # %% [markdown]
 # ## PolySurface with Arc Identification
-# We enable `identify_arcs=True` to recover the true curved boundary.
+# `identify_arcs` is now a pipeline-level setting (it must agree across
+# any entities sharing a circular boundary), stamped onto entities via
+# `apply_arc_params` rather than passed to the constructor. We enable it
+# here to recover the true curved boundary.
 
 # %%
 ps = PolySurface(
     poly,
-    identify_arcs=True,
-    min_arc_points=4,
-    arc_tolerance=1e-3,
     physical_name="curved_surface",
 )
+apply_arc_params([ps], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
 # %% [markdown]
 # ### Visualize Decomposition
@@ -53,9 +55,12 @@ arc_vertices = [(np.cos(t_val), np.sin(t_val)) for t_val in t]
 line_vertices = [(1, 0), (2, 0), (2, 1)]
 all_vertices = line_vertices + arc_vertices
 
-pl = PolyLine(
-    shapely.LineString(all_vertices), identify_arcs=True, physical_name="curved_wire"
-)
+pl = PolyLine(shapely.LineString(all_vertices), physical_name="curved_wire")
+# PolyLine has no ``polygons`` attribute, so it falls outside
+# ``apply_arc_params``'s cross-entity boundary bookkeeping (which only
+# stamps polygon-bearing entities); set the (now pipeline-level)
+# attributes directly for this standalone-wire demo.
+pl.identify_arcs = True
 
 # %%
 ax = pl.plot_decomposition()

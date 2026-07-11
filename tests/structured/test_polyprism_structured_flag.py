@@ -1,6 +1,7 @@
 import pytest
 from shapely.geometry import Polygon
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.polyprism import PolyPrism
 from meshwell.structured.exceptions import StructuredExtrudeRequiredError
 
@@ -34,8 +35,8 @@ def test_structured_identify_arcs_user_override():
         buffers={0.0: 0.0, 1.0: 0.0},
         physical_name="x",
         structured=True,
-        identify_arcs=True,
     )
+    apply_arc_params([p], identify_arcs=True)
     assert p.identify_arcs is True
 
 

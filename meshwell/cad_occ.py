@@ -622,6 +622,9 @@ def cad_occ(
     perturbation: float | None = None,
     return_processor: bool = False,
     prepared: bool = False,
+    identify_arcs: bool | None = None,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
 ) -> list[OCCLabeledEntity] | tuple[list[OCCLabeledEntity], CAD_OCC]:
     """Utility function for OCC-based CAD processing.
 
@@ -635,7 +638,22 @@ def cad_occ(
     ``processor.last_fragment_builder`` and query ``Modified()`` on
     pre-BOP shapes (used by the structured shell-invariance validator).
     See :class:`CAD_OCC` for the rest of the parameter semantics.
+
+    ``identify_arcs`` / ``min_arc_points`` / ``arc_tolerance`` stamp
+    pipeline-level arc identification onto ``entities_list`` via
+    :func:`meshwell.cad_common.apply_arc_params` before processing.
+    ``identify_arcs=None`` (default) leaves entities untouched.
     """
+    if identify_arcs is not None:
+        from meshwell.cad_common import apply_arc_params
+
+        apply_arc_params(
+            entities_list,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,

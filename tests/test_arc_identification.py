@@ -1,8 +1,11 @@
+import logging
+
 import gmsh
 import numpy as np
 import pytest
 from shapely.geometry import LineString, Polygon
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.geometry_entity import GeometryEntity
 from meshwell.polyline import PolyLine
 from meshwell.polyprism import PolyPrism
@@ -87,7 +90,11 @@ def test_polyline_arc_instantiate_gmsh():
     vertices = [(np.cos(t), np.sin(t), 0) for t in theta]
     ls = LineString(vertices)
 
-    pl = PolyLine(ls, identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
+    # PolyLine has no ``polygons`` attribute, so it falls outside
+    # ``apply_arc_params``'s cross-entity boundary bookkeeping; set the
+    # (now pipeline-level) attributes directly for this standalone wire.
+    pl = PolyLine(ls)
+    pl.identify_arcs, pl.min_arc_points, pl.arc_tolerance = True, 4, 1e-3
 
     gmsh.initialize()
     gmsh.model.add("test_pl")
@@ -107,7 +114,8 @@ def test_polyline_arc_instantiate_occ():
     vertices = [(np.cos(t), np.sin(t), 0) for t in theta]
     ls = LineString(vertices)
 
-    pl = PolyLine(ls, identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
+    pl = PolyLine(ls)
+    pl.identify_arcs, pl.min_arc_points, pl.arc_tolerance = True, 4, 1e-3
 
     # This calls instanciate_occ
     shape = pl.instanciate_occ()
@@ -125,12 +133,8 @@ def test_polyline_arc_instantiate_gmsh_offgrid():
     cx, cy, r = 0.0004437, 0.0007213, 2.0
     theta = np.linspace(0.3, 1.9, 9)
     vertices = [(cx + r * np.cos(t), cy + r * np.sin(t), 0) for t in theta]
-    pl = PolyLine(
-        LineString(vertices),
-        identify_arcs=True,
-        min_arc_points=5,
-        arc_tolerance=1e-3,
-    )
+    pl = PolyLine(LineString(vertices))
+    pl.identify_arcs, pl.min_arc_points, pl.arc_tolerance = True, 5, 1e-3
 
     gmsh.initialize()
     try:
@@ -149,7 +153,8 @@ def test_polysurface_arc_instantiate_gmsh():
     vertices += [(0, 1), (0, 0), (1, 0)]
     poly = Polygon(vertices)
 
-    ps = PolySurface(poly, identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
+    ps = PolySurface(poly)
+    apply_arc_params([ps], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
     gmsh.initialize()
     gmsh.model.add("test_ps")
@@ -169,7 +174,8 @@ def test_polysurface_arc_instantiate_occ():
     vertices += [(0, 1), (0, 0), (1, 0)]
     poly = Polygon(vertices)
 
-    ps = PolySurface(poly, identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
+    ps = PolySurface(poly)
+    apply_arc_params([ps], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
     shape = ps.instanciate_occ()
 
@@ -183,13 +189,8 @@ def test_polyprism_arc_instantiate_gmsh():
     vertices += [(0, 1), (0, 0), (1, 0)]
     poly = Polygon(vertices)
 
-    pp = PolyPrism(
-        poly,
-        buffers={0: 0, 1: 0},
-        identify_arcs=True,
-        min_arc_points=4,
-        arc_tolerance=1e-3,
-    )
+    pp = PolyPrism(poly, buffers={0: 0, 1: 0})
+    apply_arc_params([pp], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
     gmsh.initialize()
     gmsh.model.add("test_pp")
@@ -210,27 +211,27 @@ def test_polyprism_arc_instantiate_occ():
     vertices += [(0, 1), (0, 0), (1, 0)]
     poly = Polygon(vertices)
 
-    pp = PolyPrism(
-        poly,
-        buffers={0: 0, 1: 0},
-        identify_arcs=True,
-        min_arc_points=4,
-        arc_tolerance=1e-3,
-    )
+    pp = PolyPrism(poly, buffers={0: 0, 1: 0})
+    apply_arc_params([pp], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
 
     shape = pp.instanciate_occ()
 
     assert shape is not None
 
 
-def test_polyprism_arc_error_no_extrude():
-    """Test that PolyPrism raises error if identify_arcs=True and extrude=False."""
+def test_polyprism_arc_error_no_extrude(caplog):
+    """apply_arc_params skips non-extrude PolyPrisms (arcs unsupported) with a warning.
+
+    Arc identification is now a pipeline-level stamp (apply_arc_params),
+    not a constructor-time guard: a non-extrude PolyPrism is left at
+    identify_arcs=False with a logged warning instead of raising.
+    """
     poly = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
-    with pytest.raises(
-        NotImplementedError,
-        match="Arc identification is currently only supported for PolyPrism when extrude=True",
-    ):
-        PolyPrism(poly, buffers={0: 0, 1: 0.1}, identify_arcs=True)
+    pp = PolyPrism(poly, buffers={0: 0, 1: 0.1})
+    with caplog.at_level(logging.WARNING):
+        apply_arc_params([pp], identify_arcs=True)
+    assert pp.identify_arcs is False
+    assert "z-varying buffers" in caplog.text
 
 
 def test_plot_decomposition_returns_axes():
@@ -239,7 +240,8 @@ def test_plot_decomposition_returns_axes():
 
     theta = np.linspace(0, np.pi / 2, 10)
     vertices = [(np.cos(t), np.sin(t), 0) for t in theta]
-    pl = PolyLine(LineString(vertices), identify_arcs=True)
+    pl = PolyLine(LineString(vertices))
+    pl.identify_arcs = True
 
     ax = pl.plot_decomposition()
     assert isinstance(ax, plt.Axes)

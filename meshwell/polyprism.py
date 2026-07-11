@@ -41,9 +41,6 @@ class PolyPrism(GeometryEntity):
         additive: bool = False,
         subdivision: tuple[int, int, int] | None = None,
         point_tolerance: float = 1e-3,
-        identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
@@ -93,12 +90,6 @@ class PolyPrism(GeometryEntity):
         if structured and not self.extrude:
             raise StructuredExtrudeRequiredError(entity_index=-1)
         self.structured = structured
-        self.identify_arcs = identify_arcs
-
-        if self.identify_arcs and not self.extrude:
-            raise NotImplementedError(
-                "Arc identification is currently only supported for PolyPrism when extrude=True."
-            )
 
         # Store other attributes
         self.buffers = buffers
@@ -106,8 +97,6 @@ class PolyPrism(GeometryEntity):
         self.additive = additive
         self.dimension = 3
         self.subdivision = subdivision
-        self.min_arc_points = min_arc_points
-        self.arc_tolerance = arc_tolerance
 
         # Format physical name
         self.physical_name = format_physical_name(physical_name)
@@ -624,9 +613,6 @@ class PolyPrism(GeometryEntity):
             "additive": self.additive,
             "point_tolerance": self.point_tolerance,
             "structured": self.structured,
-            "identify_arcs": self.identify_arcs,
-            "min_arc_points": self.min_arc_points,
-            "arc_tolerance": self.arc_tolerance,
             "subdivision": list(self.subdivision) if self.subdivision else None,
             "translation": self.translation,
             "rotation_axis": self.rotation_axis,
@@ -662,9 +648,6 @@ class PolyPrism(GeometryEntity):
             additive=data["additive"],
             point_tolerance=data["point_tolerance"],
             structured=data.get("structured", False),
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
             subdivision=subdivision,
             translation=data.get("translation"),
             rotation_axis=data.get("rotation_axis"),

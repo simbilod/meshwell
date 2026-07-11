@@ -35,6 +35,7 @@ import pytest
 import shapely
 from shapely.geometry import LineString
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.interface_tag import InterfaceTag
@@ -333,16 +334,15 @@ def _arc_polygon(n_arc_pts: int = 24, radius: float = 5.0) -> shapely.Polygon:
 
 def _scene_arc_polysurface() -> list:
     """2D arc-bearing surface with ``identify_arcs=True``."""
-    return [
+    entities = [
         PolySurface(
             polygons=_arc_polygon(),
             physical_name="quarter_disc",
             mesh_order=1,
-            identify_arcs=True,
-            min_arc_points=4,
-            arc_tolerance=1e-3,
         ),
     ]
+    apply_arc_params(entities, identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
+    return entities
 
 
 def _scene_arc_polyprism_with_inner_box() -> list:
@@ -356,16 +356,17 @@ def _scene_arc_polyprism_with_inner_box() -> list:
     """
     outer = _arc_polygon(n_arc_pts=24, radius=5.0)
     inner = shapely.Polygon([(3, 0), (5, 0), (5, 2), (3, 2)])
+    outer_entity = PolyPrism(
+        polygons=outer,
+        buffers=_NO_TAPER,
+        physical_name="outer",
+        mesh_order=2,
+    )
+    apply_arc_params(
+        [outer_entity], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3
+    )
     return [
-        PolyPrism(
-            polygons=outer,
-            buffers=_NO_TAPER,
-            physical_name="outer",
-            mesh_order=2,
-            identify_arcs=True,
-            min_arc_points=4,
-            arc_tolerance=1e-3,
-        ),
+        outer_entity,
         PolyPrism(
             polygons=inner,
             buffers=_NO_TAPER,

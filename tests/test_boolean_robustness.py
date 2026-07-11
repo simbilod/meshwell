@@ -91,14 +91,12 @@ def test_rounded_rect_in_rect_shapely_diff_meshes_3d():
             buffers={0.0: 0.0, 1.0: 0.0},
             physical_name="outer",
             mesh_order=2,
-            identify_arcs=True,
         ),
         PolyPrism(
             polygons=inner,
             buffers={0.0: 0.0, 1.0: 0.0},
             physical_name="inner",
             mesh_order=1,
-            identify_arcs=True,
         ),
     ]
 
@@ -108,6 +106,7 @@ def test_rounded_rect_in_rect_shapely_diff_meshes_3d():
         backend="occ",
         default_characteristic_length=0.3,
         n_threads=1,
+        identify_arcs=True,
     )
 
     physical_names = list(m.field_data.keys())
