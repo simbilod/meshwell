@@ -103,6 +103,44 @@ def test_from_dict_ignores_legacy_arc_keys():
     assert p2.identify_arcs is False
 
 
+def test_from_dict_warns_on_legacy_arc_keys(caplog):
+    """Migration signal: legacy per-entity arc keys log a warning, not silence."""
+    import logging
+
+    from shapely.geometry import LineString
+
+    from meshwell.polyline import PolyLine
+    from meshwell.polyprism import PolyPrism
+    from meshwell.polysurface import PolySurface
+
+    prism = PolyPrism(
+        polygons=_ring(16, 5.0),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="p",
+        mesh_order=1,
+    )
+    surf = PolySurface(polygons=_ring(16, 5.0), physical_name="s", mesh_order=1)
+    line = PolyLine(LineString([(0, 0), (1, 0), (1, 1)]), physical_name="pl")
+
+    for cls, entity in (
+        (PolyPrism, prism),
+        (PolySurface, surf),
+        (PolyLine, line),
+    ):
+        d = entity.to_dict()
+        d["identify_arcs"] = True
+        d["min_arc_points"] = 5
+        d["arc_tolerance"] = 1e-3
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="meshwell.geometry_entity"):
+            reloaded = cls.from_dict(d)
+        assert reloaded is not None  # loading still succeeds
+        assert any(
+            "legacy" in rec.message and cls.__name__ in rec.message
+            for rec in caplog.records
+        )
+
+
 def test_cluster_unifies_center_and_radius():
     fits = [
         ArcFit(center=(0.0001, -0.0001), radius=5.0002, npoints=64),
@@ -600,7 +638,10 @@ def test_cad_occ_canonical_concentric_default_eps():
     expected_radius = registry.clusters[0].radius + 1e-5
     (radius,) = radii
     assert radius == pytest.approx(expected_radius, abs=1e-9)
-    assert radius == pytest.approx(5.0 + 1e-5, abs=1e-4)  # sanity: near nominal
+    # sanity: near nominal -- abs=1e-4 is loose enough to absorb the
+    # point_tolerance=1e-3 grid-snap bias in the circle fit itself (the
+    # ~1.3e-5 bias noted above), not just floating-point noise.
+    assert radius == pytest.approx(5.0 + 1e-5, abs=1e-4)
 
 
 def test_cad_occ_canonical_exact_eps_zero():
@@ -672,3 +713,80 @@ def test_generate_mesh_smoke(tmp_path):
         default_characteristic_length=2.0,
     )
     assert (tmp_path / "out.msh").exists()
+
+
+def _face_area(shape):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(shape, props)
+    return props.Mass()
+
+
+def _solid_volume(shape):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, props)
+    return props.Mass()
+
+
+def test_polysurface_instanciate_occ_orients_cw_input():
+    """CW-wound PolySurface input must still offset OUTWARD, not invert.
+
+    ``PolySurface.instanciate_occ`` never canonicalized ring orientation
+    before offsetting (unlike ``PolyPrism.instanciate_occ``'s extrude
+    path), so a CW-wound input silently inverted the canonical offset
+    direction (material-left-of-travel is orientation-relative): the
+    face would SHRINK instead of grow. Build a deliberately CW 2x2
+    square (area 4.0), stamp an exaggerated perturbation directly, and
+    confirm the emitted face area grows to (2+2*eps)**2.
+    """
+    from meshwell.polysurface import PolySurface
+
+    cw_square = Polygon([(-1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (1.0, -1.0)])
+    assert cw_square.exterior.is_ccw is False
+    assert cw_square.area == pytest.approx(4.0)
+
+    surf = PolySurface(polygons=cw_square, physical_name="s", mesh_order=1)
+    surf.perturbation = 0.1  # exaggerated for a visible assertion
+    shape = surf.instanciate_occ()
+
+    expected_area = (2.0 + 2 * 0.1) ** 2
+    assert _face_area(shape) == pytest.approx(expected_area, abs=1e-9)
+
+
+def test_polyprism_non_extrude_loft_orients_buffered_polygons():
+    """Non-extrude (tapered) loft must offset OUTWARD, not invert.
+
+    ``PolyPrism._create_occ_volume`` (the OCC ``BRepOffsetAPI_
+    ThruSections`` loft used when buffers vary with z) fed
+    ``xy_surface_vertices`` straight from the GEOS-buffered polygon
+    without canonicalizing ring orientation first. GEOS buffer output is
+    uniformly CW regardless of input winding, so the canonical offset
+    (material-left-of-travel) inverted: a perturbation stamp would
+    shrink the loft instead of growing it. Compare a stamped vs.
+    unstamped tapered prism (buffers vary with z -> extrude=False) and
+    confirm the stamped one is LARGER.
+    """
+    from meshwell.polyprism import PolyPrism
+
+    square = Polygon([(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)])
+    buffers = {0.0: 0.0, 1.0: -0.2}
+
+    baseline = PolyPrism(
+        polygons=square, buffers=buffers, physical_name="p", mesh_order=1
+    )
+    assert baseline.extrude is False
+    assert baseline.perturbation == 0.0  # class default
+    baseline_volume = _solid_volume(baseline.instanciate_occ())
+
+    stamped = PolyPrism(
+        polygons=square, buffers=buffers, physical_name="p", mesh_order=1
+    )
+    stamped.perturbation = 0.1  # exaggerated for a visible assertion
+    stamped_volume = _solid_volume(stamped.instanciate_occ())
+
+    assert stamped_volume > baseline_volume

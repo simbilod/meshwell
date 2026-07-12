@@ -1,6 +1,7 @@
 """Shared utilities for geometries."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +11,35 @@ import numpy as np
 if TYPE_CHECKING:
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
+
+logger = logging.getLogger(__name__)
+
+# Legacy per-entity dict keys from before arc identification became a
+# pipeline-level stamp (``cad_common.apply_arc_params``, driven by
+# ``generate_mesh``/``cad_occ`` kwargs). Old serialized scenes may still
+# carry these; ``from_dict`` never reads them since the constructors no
+# longer accept them.
+_LEGACY_ARC_DICT_KEYS = ("identify_arcs", "min_arc_points", "arc_tolerance")
+
+
+def warn_legacy_arc_keys(data: dict, entity_name: str) -> None:
+    """Warn when a serialized entity dict carries legacy per-entity arc keys.
+
+    Called once per ``from_dict`` invocation by PolyPrism/PolySurface/
+    PolyLine. The keys are silently ignored either way -- arcs are
+    enabled via the ``generate_mesh``/``cad_occ`` ``identify_arcs`` kwarg
+    today, not per entity -- this only makes the drop visible instead of
+    silent.
+    """
+    present = [k for k in _LEGACY_ARC_DICT_KEYS if k in data]
+    if present:
+        logger.warning(
+            "%s.from_dict: ignoring legacy per-entity arc key(s) %s -- arc "
+            "identification is enabled via generate_mesh/cad_occ kwargs now, "
+            "not per entity.",
+            entity_name,
+            present,
+        )
 
 
 # --- Arc-detection heuristics -------------------------------------------------
@@ -1031,43 +1061,36 @@ class GeometryEntity:
                     continue
 
                 if seg.canonical is not None:
-                    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir
-
                     (ccx, ccy), cr = seg.canonical
                     z = seg.points[0][2]
-                    circ = gp_Circ(
-                        gp_Ax2(gp_Pnt(ccx, ccy, z), gp_Dir(0.0, 0.0, 1.0)), cr
-                    )
 
                     def _on_circle(p, _ccx=ccx, _ccy=ccy, _cr=cr, _z=z):
                         q = _project_to_circle((_ccx, _ccy), _cr, (p[0], p[1]))
                         return gp_Pnt(q[0], q[1], _z)
 
                     if is_closed:
+                        # Unified onto the same 3-point form the open-arc
+                        # branch below uses (rather than the
+                        # (circle, p_start, p_end, sense) form this used to
+                        # build): OCC's ``Sense`` argument does not reliably
+                        # pick the intended half here either, so trust the
+                        # actual quarter/three-quarter samples (projected
+                        # onto the canonical circle) as through-points
+                        # instead. This also removes the asymmetry of only
+                        # this branch depending on ``_arc_sense_ccw``.
                         quarter = len(seg.points) // 4
                         three_q = (len(seg.points) * 3) // 4
-                        p0, pm = _on_circle(seg.points[0]), _on_circle(
-                            seg.points[mid_idx]
-                        )
-                        s1 = _arc_sense_ccw(
-                            (ccx, ccy),
-                            (p0.X(), p0.Y()),
-                            seg.points[quarter][:2],
-                            (pm.X(), pm.Y()),
-                        )
-                        s2 = _arc_sense_ccw(
-                            (ccx, ccy),
-                            (pm.X(), pm.Y()),
-                            seg.points[three_q][:2],
-                            (p0.X(), p0.Y()),
-                        )
+                        p0 = _on_circle(seg.points[0])
+                        pm = _on_circle(seg.points[mid_idx])
+                        p_quarter = _on_circle(seg.points[quarter])
+                        p_three_q = _on_circle(seg.points[three_q])
                         wire_builder.Add(
                             BRepBuilderAPI_MakeEdge(
-                                GC_MakeArcOfCircle(circ, p0, pm, s1).Value()
+                                GC_MakeArcOfCircle(p0, p_quarter, pm).Value()
                             ).Edge()
                         )
                         edge = BRepBuilderAPI_MakeEdge(
-                            GC_MakeArcOfCircle(circ, pm, p0, s2).Value()
+                            GC_MakeArcOfCircle(pm, p_three_q, p0).Value()
                         ).Edge()
                     else:
                         # NOT the (circle, p_start, p_end, sense) form: OCC's
@@ -1104,7 +1127,7 @@ class GeometryEntity:
                         # construction the two circles are nearly touching
                         # (they were offset apart specifically to still
                         # overlap for the boolean), so this gap -- and the
-                        # resulting deviation -- is sub-tolerance. It is a
+                        # resulting curve deviation -- is sub-tolerance. It is a
                         # deliberate trade favoring exact wire closure (the
                         # wire must still close through this junction) over
                         # perfect circle fidelity in this one fallback case.

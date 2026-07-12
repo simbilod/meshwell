@@ -7,7 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
-from meshwell.geometry_entity import GeometryEntity
+from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 from meshwell.structured.exceptions import StructuredExtrudeRequiredError
 from meshwell.validation import format_physical_name
 
@@ -389,11 +389,24 @@ class PolyPrism(GeometryEntity):
         All wires must have the same vertex count (true for any
         consistently-buffered polygon, which is the only case meshwell
         currently supports). OCC raises during ``Build()`` if violated.
+
+        Each per-z polygon is canonicalized to OGC convention (CCW
+        exterior + CW interiors) before ring extraction, same rule as
+        the extrude path in :meth:`instanciate_occ`: the canonical arc
+        offset defines "outward" as material-left-of-travel, so a
+        CW-wound buffered polygon (GEOS ``buffer()`` output is uniformly
+        CW) would otherwise invert the offset. This orientation is
+        applied ONLY in this OCC loft path -- the gmsh
+        ``_create_volume_directly`` path is untouched. GEOS's CW-ness is
+        uniform across z-layers, so flipping every layer the same way
+        preserves per-layer vertex counts and loft correspondence.
         """
         from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+        from shapely.geometry.polygon import orient
 
         loft = BRepOffsetAPI_ThruSections(True, True)  # isSolid, isRuled
         for z, polygon in entry:
+            polygon = orient(polygon, sign=1.0)
             vertices = self.xy_surface_vertices(
                 polygon=polygon,
                 polygon_z=z,
@@ -630,6 +643,8 @@ class PolyPrism(GeometryEntity):
         """
         import shapely.wkt
         from shapely.geometry import MultiPolygon
+
+        warn_legacy_arc_keys(data, cls.__name__)
 
         polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
         polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]

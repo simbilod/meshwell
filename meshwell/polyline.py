@@ -7,7 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import LineString, MultiLineString
 
-from meshwell.geometry_entity import GeometryEntity
+from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -250,6 +250,8 @@ class PolyLine(GeometryEntity):
         """
         import shapely.wkt
         from shapely.geometry import MultiLineString
+
+        warn_legacy_arc_keys(data, cls.__name__)
 
         linestrings = [shapely.wkt.loads(wkt) for wkt in data["linestrings_wkt"]]
         if len(linestrings) > 1:

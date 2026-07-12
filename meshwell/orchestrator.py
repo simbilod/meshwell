@@ -168,15 +168,25 @@ def generate_mesh(
 
     # --- Stage 1a: shapely intake pre-pass. -----------------------------
     # Resolve InterfaceTags against NOMINAL polygon coordinates before the
-    # structured pre-pass, so the cohort compound is built from the same
-    # coordinates the unstructured neighbours see at BOP time. Unlike the
-    # legacy cad_gmsh mirror, cad_occ no longer buffers polygons here
-    # (``buffer_polygons=False``): entities stay nominal through this
-    # pre-pass and the structured pre-pass / registry build, and
-    # ``perturbation`` is applied analytically at OCC wire-emission time
-    # (canonical circle/line offsets keyed off the circle registry).
-    # ``prepare_entities`` is NOT idempotent; cad_occ is invoked with
-    # ``prepared=True`` below to skip the duplicate call.
+    # structured pre-pass. Cohort solids are baked (bottom-up, via
+    # ``structured/wedge.py``) directly from these NOMINAL coordinates --
+    # they never see a buffer. Unstructured neighbours, by contrast, are
+    # emitted by cad_occ with the analytic canonical epsilon (eps) offset
+    # applied at OCC wire-emission time (canonical circle/line offsets
+    # keyed off the circle registry; see
+    # ``GeometryEntity._make_occ_wire_from_vertices``). That offset is
+    # XY-only, so a shared z-plane face between a cohort and an
+    # unstructured neighbour still coincides exactly; only the LATERAL
+    # (vertical) footprint differs, by eps. That eps-sized lateral gap
+    # is what the fragment fuzzy (1e-3, orders of magnitude larger than
+    # the default eps=1e-5) is relied on to absorb during the final BOP
+    # fragment pass -- it is not a coincidence, it's the designed
+    # tolerance ladder. ``cad_occ`` is called here with
+    # ``buffer_polygons=False`` so entities stay nominal through this
+    # pre-pass and the structured pre-pass / registry build.
+    # ``prepare_entities`` is NOT idempotent when ``buffer_polygons=True``
+    # (the compounding buffer case); cad_occ is invoked with
+    # ``prepared=True`` below to skip its own duplicate call regardless.
     prepare_entities(
         entities,
         perturbation=perturbation,

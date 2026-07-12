@@ -7,7 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
-from meshwell.geometry_entity import GeometryEntity
+from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -149,9 +149,18 @@ class PolySurface(GeometryEntity):
     def instanciate_occ(self) -> TopoDS_Shape:
         """Create OCC surfaces directly using OCP."""
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+        from shapely.geometry.polygon import orient
 
         surfaces = []
         for polygon in self.polygons:
+            # Canonicalize to OGC convention (CCW exterior + CW interiors)
+            # unconditionally, mirroring PolyPrism.instanciate_occ. The
+            # canonical arc offset rule defines "outward" as
+            # material-left-of-travel, so it requires a fixed ring
+            # orientation; on a CW-wound input the offset would otherwise
+            # invert (grow instead of shrink, or vice versa).
+            polygon = orient(polygon, sign=1.0)
+
             # Create exterior face
             exterior_vertices = [
                 self._parse_coords(coords) for coords in polygon.exterior.coords
@@ -240,6 +249,8 @@ class PolySurface(GeometryEntity):
         """
         import shapely.wkt
         from shapely.geometry import MultiPolygon
+
+        warn_legacy_arc_keys(data, cls.__name__)
 
         polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
         polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]

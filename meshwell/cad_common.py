@@ -46,7 +46,12 @@ def prepare_entities(
     """In-place pre-pass shared by cad_gmsh and cad_occ.
 
     Mutates polygon entities and InterfaceTags. Must NOT be called
-    twice on the same list -- the second buffer would compound.
+    twice on the same list with ``buffer_polygons=True`` -- the second
+    buffer would compound (the ``_meshwell_prepared`` guard below only
+    ever gets set on that path, so it can only catch a double call
+    there). With ``buffer_polygons=False`` (the cad_occ path) Pass A is
+    skipped entirely and nothing is mutated in a way that compounds, so
+    this guard does not apply.
 
     Args:
         entities_list: List of entities to process.
@@ -176,6 +181,12 @@ def apply_arc_params(
     entities with neither are skipped.
     Non-extrude PolyPrisms (z-varying buffers) do not support arcs: they
     are left at identify_arcs=False with a warning instead of raising.
+
+    ``InterfaceTag`` also carries ``.linestrings`` and so matches this
+    guard and gets stamped like a PolyLine, but the stamp is inert for
+    it today: InterfaceTag's own wire/face emission never reads
+    ``identify_arcs`` / ``min_arc_points`` / ``arc_tolerance``, so arc
+    identification has no effect on interface geometry.
     """
     for e in entities:
         has_polygons = getattr(e, "polygons", None) is not None

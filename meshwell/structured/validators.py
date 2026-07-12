@@ -88,6 +88,16 @@ def validate_no_volumetric_cohort_overlap(
     between cohorts and non-cohorts (cohort sub-solids are OCC-invalid
     bottom-up builds), so any genuine 3D overlap would corrupt the
     fragment pass.
+
+    Caveat: this check validates NOMINAL shapely geometry (``ent.polygons``
+    / the cohort's own footprint), not the geometry cad_occ actually
+    emits. Unstructured solids are emitted with a +eps analytic XY
+    offset (see the Stage 1a comment in ``orchestrator.py``), so an
+    exact lateral touch at the nominal level becomes an eps-deep
+    volumetric overlap at BOP time once both sides are built. That
+    overlap is relied on to be absorbed by the fragment fuzzy (1e-3,
+    orders of magnitude larger than eps), not caught -- or needing to be
+    caught -- by this nominal-geometry check.
     """
     for cohort_idx, cohort in enumerate(cohorts):
         for ent_idx, ent in enumerate(entities):
