@@ -86,7 +86,18 @@ def _as_straight_segment(geom, point_tolerance: float, context: str):
         geom = shapely.GeometryCollection(lineal)
     try:
         merged = geom if geom.geom_type == "LineString" else shapely.line_merge(geom)
-        if merged.geom_type != "LineString" or merged.is_empty:
+        if merged.is_empty:
+            raise SweepCurvedSourceError(context, merged.geom_type)
+        if merged.geom_type == "MultiLineString":
+            # Collinear pieces separated by an imprinted vertex on the seam
+            # (e.g. a ridge corner splitting an interface into two aligned
+            # sub-segments): collapse to the overall straight extent. The
+            # clip pass re-subtracts any genuine gap by full-normal-extent.
+            ends = _collinear_extent(merged, point_tolerance)
+            if ends is None:
+                raise SweepCurvedSourceError(context, merged.geom_type)
+            return ends
+        if merged.geom_type != "LineString":
             raise SweepCurvedSourceError(context, merged.geom_type)
         simple = merged.simplify(point_tolerance)
         coords = list(simple.coords)
@@ -97,6 +108,29 @@ def _as_straight_segment(geom, point_tolerance: float, context: str):
     if len(coords) != 2:
         raise SweepCurvedSourceError(context, f"{len(coords)}-point polyline")
     return np.asarray(coords[0]), np.asarray(coords[1])
+
+
+def _collinear_extent(multiline, point_tolerance: float):
+    """Extreme endpoints of a collinear MultiLineString, or None if not collinear.
+
+    Every vertex must lie (within ``point_tolerance``) on the line through
+    the cloud's principal axis; returns ``(p_min, p_max)`` by projection.
+    """
+    pts = np.asarray(
+        [c for part in multiline.geoms for c in part.coords], dtype=float
+    )
+    d = pts.max(axis=0) - pts.min(axis=0)
+    n = np.linalg.norm(d)
+    if n == 0:
+        return None
+    u = d / n
+    p0 = pts[0]
+    for p in pts:
+        v = p - p0
+        if abs(u[0] * v[1] - u[1] * v[0]) > 10 * point_tolerance:
+            return None  # not collinear -> genuine curved/branching source
+    proj = pts @ u
+    return pts[int(np.argmin(proj))], pts[int(np.argmax(proj))]
 
 
 def resolve_attachment(sweep, entities, region_polys: dict, point_tolerance: float):

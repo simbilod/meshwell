@@ -354,20 +354,21 @@ def _stamp_curve(ctag, pts, tol):
     gmsh.model.mesh.addElementsByType(ctag, 1, [], conn)
 
 
-def _tangential_coords(tangential, t0f, t1f, groups, face_tag, tol):
+def _tangential_coords(tangential, edge_ts, groups, face_tag, tol):
     """Tangential grid coordinates for one face.
 
     The global sweep extent ``[T0, T1]`` (cached on ``groups["_extent"]``)
-    anchors the grid. Face ends strictly inside ``(T0, T1)`` are BOP splits
-    and must fall on a grid coordinate (else
-    :class:`SweepSplitCoordinateError`); ends at the global extent are
-    clip/attachment ends and are auto-inserted.
+    anchors the grid. ``edge_ts`` is the sorted list of every distinct
+    boundary-curve endpoint tangential coordinate of the face: its extremes
+    span the face, and any value strictly inside ``(T0, T1)`` marks a BOP
+    split (e.g. a ridge corner imprinted on the seam) that must fall on a
+    grid coordinate (else :class:`SweepSplitCoordinateError`). Endpoints at
+    the global extent are clip/attachment ends and are auto-inserted.
 
     Args:
         tangential: ``None`` (rejected in 2D), a scalar target size, or an
             explicit array of offsets measured from ``T0``.
-        t0f: Minimum tangential coordinate of this face.
-        t1f: Maximum tangential coordinate of this face.
+        edge_ts: Sorted distinct boundary-curve endpoint tangential coords.
         groups: The sweep's discovery dict (carries ``_extent``).
         face_tag: Surface tag, for error reporting.
         tol: Membership tolerance.
@@ -376,6 +377,7 @@ def _tangential_coords(tangential, t0f, t1f, groups, face_tag, tol):
         Sorted list of tangential coordinates spanning ``[t0f, t1f]``.
     """
     T0, T1 = groups["_extent"]
+    t0f, t1f = edge_ts[0], edge_ts[-1]
 
     if tangential is None:
         raise SweepPairingError(
@@ -389,15 +391,17 @@ def _tangential_coords(tangential, t0f, t1f, groups, face_tag, tol):
     else:
         arr = [T0 + t for t in np.asarray(tangential, dtype=float)]
         inside = [t for t in arr if t0f - tol <= t <= t1f + tol]
-    for end, is_global in (
-        (t0f, abs(t0f - T0) <= tol),
-        (t1f, abs(t1f - T1) <= tol),
-    ):
-        if not any(abs(t - end) <= tol for t in inside):
-            if is_global:
-                inside.append(end)  # clip/attachment end: auto-insert
-            else:
-                raise SweepSplitCoordinateError(end, face_tag)
+    # Every boundary-curve endpoint must coincide with a grid coordinate.
+    # Endpoints at the global sweep extent are clip/attachment ends and are
+    # auto-inserted; endpoints interior to the sweep are BOP splits that the
+    # caller's grid must align with, else the stamped seam is non-conformal.
+    for end in edge_ts:
+        if any(abs(t - end) <= tol for t in inside):
+            continue
+        if abs(end - T0) <= tol or abs(end - T1) <= tol:
+            inside.append(end)  # clip/attachment end: auto-insert
+        else:
+            raise SweepSplitCoordinateError(end, face_tag)
     ts = sorted(set(round(t, 12) for t in inside))
     return [t for t in ts if t0f - tol <= t <= t1f + tol]
 
@@ -425,7 +429,8 @@ def _stamp_face(face_tag, side, spec, frame, groups, stamped_curves, tol):
         return float(v @ t_hat), float(v @ n_hat)
 
     all_tn = [_tn(p) for c in curves for p in _curve_endpoints(c)]
-    t0f, t1f = min(t for t, _ in all_tn), max(t for t, _ in all_tn)
+    edge_ts = sorted({round(t, 12) for t, _ in all_tn})
+    t0f, t1f = edge_ts[0], edge_ts[-1]
     n_vals = sorted({round(n, 12) for _, n in all_tn})
     n_lo, n_hi = n_vals[0], n_vals[-1]
     src_here = [c for c in curves if c in groups["src_curves"]]
@@ -442,7 +447,7 @@ def _stamp_face(face_tag, side, spec, frame, groups, stamped_curves, tol):
         thickness,
         tol,
     )
-    ts = _tangential_coords(spec.tangential, t0f, t1f, groups, face_tag, tol)
+    ts = _tangential_coords(spec.tangential, edge_ts, groups, face_tag, tol)
 
     grid_xy = np.array(
         [
