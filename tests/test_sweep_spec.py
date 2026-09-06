@@ -7,7 +7,7 @@ from meshwell.resolution import (
     StructuredSweepResolutionSpec,
     resolve_normal_offsets,
 )
-from meshwell.structured.exceptions import SweepNormalExtentError
+from meshwell.structured.exceptions import StructuredError, SweepNormalExtentError
 
 
 def test_resolve_int_uniform():
@@ -52,6 +52,15 @@ def test_graded_validation():
         Graded(h0=-1.0, ratio=1.3)
     with pytest.raises(Exception):
         Graded(h0=1e-3, ratio=0.5)
+
+
+def test_sweep_normal_extent_error_is_structured_error():
+    assert issubclass(SweepNormalExtentError, StructuredError)
+
+
+def test_resolve_int_below_one_raises():
+    with pytest.raises(SweepNormalExtentError):
+        resolve_normal_offsets(0, thickness=1.0, atol=1e-9)
 
 
 def test_extrusion_spec_alias_unchanged():

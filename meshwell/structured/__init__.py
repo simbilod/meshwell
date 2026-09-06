@@ -22,6 +22,7 @@ from meshwell.structured.exceptions import (
     StructuredVoidMeshOrderRequiredError,
     StructuredVolumetricOverlapError,
     StructuredZStackError,
+    SweepNormalExtentError,
     WedgeBotNodeMismatchError,
     WedgeCountMismatchError,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "StructuredVoidMeshOrderRequiredError",
     "StructuredVolumetricOverlapError",
     "StructuredZStackError",
+    "SweepNormalExtentError",
     "WedgeBotNodeMismatchError",
     "WedgeCountMismatchError",
 ]

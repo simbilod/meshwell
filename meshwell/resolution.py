@@ -510,6 +510,8 @@ def resolve_normal_offsets(normal_spec, thickness: float, atol: float) -> "np.nd
     from meshwell.structured.exceptions import SweepNormalExtentError
 
     if isinstance(normal_spec, int):
+        if normal_spec < 1:
+            raise SweepNormalExtentError(normal_spec, thickness)
         return np.linspace(0.0, thickness, normal_spec + 1)
     if isinstance(normal_spec, Graded):
         offsets = [0.0]
