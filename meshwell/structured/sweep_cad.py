@@ -14,6 +14,7 @@ import numpy as np
 import shapely
 from shapely.geometry import LineString, Point
 
+from meshwell.structured._zmath import signed_axis
 from meshwell.structured.exceptions import (
     SweepAttachmentNotFoundError,
     SweepCurvedSourceError,
@@ -119,7 +120,10 @@ def _collinear_extent(multiline, point_tolerance: float):
     pts = np.asarray(
         [c for part in multiline.geoms for c in part.coords], dtype=float
     )
-    d = pts.max(axis=0) - pts.min(axis=0)
+    # Signed vector between the two farthest-apart points: the true line
+    # direction for ANY orientation (a bounding-box diagonal ``max - min``
+    # y-reflects a negative-slope source and mis-flags it non-collinear).
+    d = signed_axis(pts)
     n = np.linalg.norm(d)
     if n == 0:
         return None

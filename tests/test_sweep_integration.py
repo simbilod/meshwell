@@ -78,6 +78,48 @@ def test_polyline_two_sided_different_grading(tmp_path):
     assert 1.05 in set(ys)
 
 
+def test_polyline_diagonal_two_sided(tmp_path):
+    """The working axis-aligned polyline sweep, rigidly rotated to a
+    negative slope: a congruent scene must mesh identically. The buggy
+    bounding-box-diagonal tangent y-reflects the frame for negative slopes
+    and raises a sweep error; the signed endpoint tangent handles it."""
+    import shapely.affinity as aff
+
+    ang = -30.0  # negative slope after rotation
+    box = aff.rotate(shapely.box(0.0, 0.0, 4.0, 2.0), ang, origin=(0.0, 0.0))
+    line = aff.rotate(
+        shapely.LineString([(0.0, 1.0), (4.0, 1.0)]), ang, origin=(0.0, 0.0)
+    )
+    entities = [
+        PolySurface(polygons=box, physical_name="bulk", mesh_order=1),
+        PolyLine(linestrings=line, physical_name="jn"),
+    ]
+    m = generate_mesh(
+        entities=entities,
+        sweeps=[StructuredSweep(name="j", on="jn", thickness={"left": 0.4, "right": 0.4})],
+        dim=2,
+        output_mesh=str(tmp_path / "diag.msh"),
+        default_characteristic_length=0.5,
+        resolution_specs={
+            "j": [StructuredSweepResolutionSpec(tangential=1.0, normal={"left": 2, "right": 2})],
+        },
+    )
+    # Rotated band: nodes on both sides of the diagonal interface, measured
+    # in the interface's own (signed) frame.
+    e0, e1 = np.asarray(line.coords[0]), np.asarray(line.coords[-1])
+    t_hat = (e1 - e0) / np.linalg.norm(e1 - e0)
+    assert t_hat[1] < 0  # genuinely negative slope
+    n_hat = np.array([-t_hat[1], t_hat[0]])
+    v = m.points[:, :2] - e0
+    tan, nrm = v @ t_hat, v @ n_hat
+    length = np.linalg.norm(e1 - e0)
+    band = (tan >= -1e-6) & (tan <= length + 1e-6) & (np.abs(nrm) <= 0.5)
+    levels = np.unique(np.round(nrm[band], 6))
+    assert (levels > 1e-6).any() and (levels < -1e-6).any()  # band both sides
+    assert levels.max() >= 0.4 - 1e-3  # full thickness reached (CAD perturbs ~1e-5)
+    assert levels.min() <= -0.4 + 1e-3
+
+
 def test_clip_corner_falls_back_to_unstructured(tmp_path):
     """Band would exit its region near x in [3,4] (notched region):
     that shadow has no band; the mesh still generates and is conformal."""

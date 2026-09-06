@@ -28,6 +28,7 @@ from meshwell.resolution import (
     StructuredSweepResolutionSpec,
     resolve_normal_offsets,
 )
+from meshwell.structured._zmath import signed_axis
 from meshwell.structured.exceptions import (
     SweepPairingError,
     SweepSeamMismatchError,
@@ -239,7 +240,10 @@ def _sweep_frame(src_curve_tags):
             xyz = gmsh.model.getValue(0, abs(ptag), [])
             pts.append(np.array(xyz[:2]))
     pts = np.array(pts)
-    d = pts.max(axis=0) - pts.min(axis=0)
+    # Signed endpoint-to-endpoint direction (not the bounding-box diagonal,
+    # which y-reflects a negative-slope source) so the reconstructed frame
+    # matches the real imprinted rectangle at any orientation.
+    d = signed_axis(pts)
     t_hat = d / np.linalg.norm(d)
     proj = pts @ t_hat
     origin = pts[int(np.argmin(proj))]
