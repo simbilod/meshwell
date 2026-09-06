@@ -18,16 +18,46 @@ The band is **pure mesh structure**: it owns no material and defines no
 new region. It subdivides existing regions, as if imprinted with the
 highest mesh priority after all structural CAD is done.
 
+## Relation to the existing structured pipeline
+
+A band is not a new kind of meshing — it is the existing **structured
+sweep** concept one dimension down. Both pipelines sweep a dim-(N-1)
+source along a direction, build conformal structure ahead of gmsh,
+freeze the shared boundaries, stamp elements by hand, and let
+`Mesh.MeshOnlyEmpty` fill the rest unstructured:
+
+| concept | 3D structured (shipped) | 2D band (this design) |
+|---|---|---|
+| source being swept | prism footprint (2D) | interface/boundary/PolyLine (1D) |
+| sweep direction | z | curve normal |
+| sweep discretization | `n_layers` | `Graded` / explicit array |
+| in-source discretization | unstructured triangulation | tangential coords |
+| consistency grouping | cohort (touching slabs, shared lateral faces) | cohort (touching bands, shared seams) |
+| frozen pre-mesh | lateral-face quads | seam-curve nodes |
+| stamped elements | wedges | triangle pairs / quads |
+| synthetic XAO groups | `__cohort_*` | `__band_*` |
+
+Accordingly the implementation reuses the structured package and
+vocabulary: code in `meshwell/structured/band.py`, records in
+`structured/types.py`, exceptions in `structured/exceptions.py`; the
+terms *cohort*, *seam*, *freeze*, *stamp* mean the same thing in both.
+
+One difference is deliberate: a prism declares structure by **flagging
+itself** (`structured=True`) because the swept region is an entity; a
+band declares structure by **referencing its source** (`on=...`)
+because the swept region is carved out of other entities. Same
+CAD/mesh stage split, two declaration forms.
+
 ## API
 
 Two objects, split exactly along the CAD/mesh stage boundary (the same
 split the 3D structured pipeline uses: `structured=True` is a CAD-side
 flag; `n_layers` is a mesh-side spec).
 
-### `Band` — CAD input, geometry only
+### `StructuredBand` — CAD input, geometry only
 
 ```python
-Band(
+StructuredBand(
     name="qw_band",                 # pairing key for the mesh-side spec
     on="sch_top___well_1",          # a dim-(N-1) physical name
     thickness={"well_1": 0.02,      # per-side growth distance
@@ -48,16 +78,16 @@ Band(
 
   One key = one-sided band; two keys = two-sided. Mixed or invalid keys
   are a hard error naming the admissible key set.
-- `Band` is not an entity: it produces no physical group of its own, so
+- `StructuredBand` is not an entity: it produces no physical group of its own, so
   it is passed via a separate `bands=[...]` argument, preserving the
   "everything in `entities` yields a physical group" invariant. It
   serializes via `to_dict`/`from_dict` like entities do.
 
-### `BandDiscretizationSpec` — mesh input, discretization only
+### `StructuredBandResolutionSpec` — mesh input, discretization only
 
 ```python
 resolution_specs={
-    "qw_band": [BandDiscretizationSpec(
+    "qw_band": [StructuredBandResolutionSpec(
         tangential=0.05,            # float (uniform spacing) | explicit array (arclength from curve start)
         normal={"well_1": Graded(h0=1e-3, ratio=1.3),
                 "sch_top": np.array([0.0, 1e-3, 2.5e-3, 6e-3])},
@@ -66,9 +96,13 @@ resolution_specs={
 }
 ```
 
-- Keyed by `Band.name` in the existing `resolution_specs` dict (string
+- Sibling of the existing `StructuredExtrusionResolutionSpec`; both sit
+  under a common `StructuredResolutionSpec` base that owns the no-op
+  `apply()` (structured specs are consumed by stamping hooks, not by
+  gmsh size fields — that exception then exists in exactly one place).
+- Keyed by `StructuredBand.name` in the existing `resolution_specs` dict (string
   keys survive serialization; object identity would not).
-- `normal` keys follow the same rule as `Band.thickness` keys.
+- `normal` keys follow the same rule as `StructuredBand.thickness` keys.
 - `Graded(h0, ratio)` carries **no thickness** — it fills whatever
   thickness the CAD declared (last cell adjusted), so the one field both
   stages care about is stated once. Explicit arrays restate the extent
@@ -94,7 +128,7 @@ interface naming, which happens at write time, sees final topology).
    collisions with other interfaces) are left to unstructured fill.
    Clip ends land wherever geometry puts them — they become explicit
    stamped nodes, NOT snapped to the tangential grid, so imprint
-   geometry depends only on `Band` fields, never on the discretization.
+   geometry depends only on `StructuredBand` fields, never on the discretization.
    Overlapping band footprints: hard error (phase 1).
 2. **Imprint (OCC).** A second fragment pass with the clipped band
    rectangles as tools — "highest mesh order, last". Band sub-faces
@@ -189,7 +223,7 @@ Laser integration gate (lives in laser repo, plan 02): `transport_b`/
   bands ≈ existing structured prisms with grading retrofitted onto
   `StructuredExtrusionResolutionSpec`.
 - **Phase 3 (curved bands)**: data-derived curves enter as embedded
-  `PolyLine` entities; `Band.on` already points at them. Marching,
+  `PolyLine` entities; `StructuredBand.on` already points at them. Marching,
   arclength redistribution, and fan terminations extend the clip/imprint
   pass; the API does not change.
 - **Wedge harmonization**: migrate the 3D pipeline to the
