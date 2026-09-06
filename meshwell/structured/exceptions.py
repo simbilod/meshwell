@@ -239,3 +239,13 @@ class SweepNormalExtentError(StructuredError):
                 f"thickness {thickness!r}; got first={offsets[0]!r}, last={offsets[-1]!r}. "
                 "Use Graded(h0, ratio) or an int layer count to avoid restating thickness."
             )
+
+
+class SweepKeyError(StructuredError):
+    """thickness/normal keys invalid for the sweep's attachment kind."""
+
+    def __init__(self, name, kind, bad_keys, admissible):
+        super().__init__(
+            f"Sweep {name!r} ({kind} attachment): invalid side keys {sorted(bad_keys)}; "
+            f"admissible keys are {sorted(admissible)}."
+        )
