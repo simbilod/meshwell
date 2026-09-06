@@ -99,6 +99,31 @@ def test_interface_side_normals_point_into_regions():
     assert n_lo[1] == pytest.approx(-1.0)
 
 
+def test_resolve_interface_attachment_rejects_stray_point_contact():
+    # lower/upper each have a second lobe that only touches at one far
+    # corner. boundary.intersection then returns a GeometryCollection
+    # mixing the shared straight edge (LineString) with the stray corner
+    # touch (Point) -> must raise SweepCurvedSourceError, not silently
+    # merge to the edge and drop the extra contact.
+    lower = PolySurface(
+        polygons=[shapely.box(0, 0, 4, 1), shapely.box(6, 1, 7, 2)],
+        physical_name="lower",
+        mesh_order=2,
+    )
+    upper = PolySurface(
+        polygons=[shapely.box(0, 1, 4, 2), shapely.box(7, 2, 8, 3)],
+        physical_name="upper",
+        mesh_order=1,
+    )
+    entities = [lower, upper]
+    sweep = StructuredSweep(name="s", on="lower___upper", thickness={"upper": 0.5})
+    regions = final_region_polygons(entities)
+    shared = regions["lower"].boundary.intersection(regions["upper"].boundary)
+    assert shared.geom_type == "GeometryCollection"  # sanity: mixed intersection
+    with pytest.raises(SweepCurvedSourceError):
+        resolve_attachment(sweep, entities, regions, point_tolerance=1e-6)
+
+
 def test_curved_polyline_rejected():
     entities = _stack()
     pl = PolyLine(

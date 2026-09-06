@@ -74,11 +74,25 @@ def _as_straight_segment(geom, point_tolerance: float, context: str):
     Raises:
         SweepCurvedSourceError: geometry is not a single straight segment.
     """
-    merged = geom if geom.geom_type == "LineString" else shapely.line_merge(geom)
-    if merged.geom_type != "LineString" or merged.is_empty:
-        raise SweepCurvedSourceError(context, merged.geom_type)
-    simple = merged.simplify(point_tolerance)
-    coords = list(simple.coords)
+    if geom.geom_type == "GeometryCollection":
+        # boundary intersections can mix a shared edge (LineString) with a
+        # stray touching corner (Point) elsewhere; only lineal parts are
+        # eligible, and any non-lineal part disqualifies the attachment.
+        parts = shapely.get_parts(geom)
+        lineal = [p for p in parts if p.geom_type in ("LineString", "MultiLineString")]
+        if not lineal or len(lineal) != len(parts):
+            raise SweepCurvedSourceError(context, geom.geom_type)
+        geom = shapely.GeometryCollection(lineal)
+    try:
+        merged = geom if geom.geom_type == "LineString" else shapely.line_merge(geom)
+        if merged.geom_type != "LineString" or merged.is_empty:
+            raise SweepCurvedSourceError(context, merged.geom_type)
+        simple = merged.simplify(point_tolerance)
+        coords = list(simple.coords)
+    except SweepCurvedSourceError:
+        raise
+    except Exception as exc:
+        raise SweepCurvedSourceError(context, str(exc)) from exc
     if len(coords) != 2:
         raise SweepCurvedSourceError(context, f"{len(coords)}-point polyline")
     return np.asarray(coords[0]), np.asarray(coords[1])
