@@ -141,11 +141,16 @@ interface naming, which happens at write time, sees final topology).
    rectangles as tools — "highest mesh order, last". Sweep sub-faces
    inherit the underlying region's physical name via the fragment
    `Modified()` maps (a sweep owns no material; it only subdivides).
-3. **Synthetic groups.** Each sweep sub-face and seam curve gets a
-   synthetic physical group written INTO the XAO —
-   `__sweep_<name>__<side>__<i>` — following the `__cohort_*`
-   precedent. Seam curves get no `a___b` interface names (both sides
-   share a physical name). Synthetics are stripped before `.msh` write.
+3. **Synthetic groups.** Each sweep sub-face gets a synthetic physical
+   group written INTO the XAO — `__sweep|<name>|<side>|<i>` (the `|`
+   separator is parse-safe against `_`/`___` inside user names) —
+   following the `__cohort_*` precedent. Additionally the source-curve
+   fragments get one dim-1 group `__sweepsrc|<name>`: the mesh stage
+   must know which seam is n=0 (grading direction), and that is not
+   recoverable from the face groups alone. Other seam curves need no
+   synthetics (the stamper finds them via `getBoundary` on the face)
+   and get no `a___b` interface names (both sides share a physical
+   name). Synthetics are stripped before `.msh` write.
 
 Note: the shipped 3D path instead pre-builds cohort compounds BEFORE
 BOP (performance-motivated) and threads in-memory state. That is
