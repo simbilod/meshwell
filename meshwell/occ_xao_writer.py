@@ -229,7 +229,7 @@ def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
     annotator (flavour 2) is correctly identified as bookkeeping-only.
     """
     return bool(ent.physical_name) and all(
-        n.startswith("__cohort_") for n in ent.physical_name
+        n.startswith(("__cohort_", "__sweep")) for n in ent.physical_name
     )
 
 

@@ -12,11 +12,12 @@ import logging
 
 import numpy as np
 import shapely
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
 from meshwell.structured.exceptions import (
     SweepAttachmentNotFoundError,
     SweepCurvedSourceError,
+    SweepOverlapError,
 )
 
 logger = logging.getLogger(__name__)
@@ -257,4 +258,179 @@ def sweep_rectangles(p0, p1, n_dir, thickness, intervals):
         a = p0 + t_hat * lo
         b = p0 + t_hat * hi
         out.append(shapely.Polygon([a, b, b + n_dir * thickness, a + n_dir * thickness]))
+    return out
+
+
+def _polyline_target_region(p0, p1, n_dir, region_polys):
+    """For left/right sides: the region containing a probe point off the line."""
+    mid = (np.asarray(p0) + np.asarray(p1)) / 2.0
+    seg = float(np.linalg.norm(np.asarray(p1) - np.asarray(p0)))
+    probe = Point(*(mid + n_dir * seg * 1e-4))
+    for poly in region_polys.values():
+        if poly.contains(probe):
+            return poly
+    raise SweepAttachmentNotFoundError("<polyline sweep>", f"no region contains {probe.wkt}")
+
+
+def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
+    """Clip + imprint every sweep; emit synthetic __sweep/__sweepsrc entities.
+
+    A second, sweeps-only BOP fragment over all dim-2 entity shapes with the
+    clipped sweep rectangles as tool faces ("highest mesh order, last").
+    Sub-faces inherit their entity's physical name (shapes are replaced by
+    their Modified() pieces in place); pieces inside a sweep rectangle
+    additionally get a synthetic dim-2 annotator entity, and edges of those
+    pieces lying on the source segment get one dim-1 __sweepsrc entity.
+    """
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+    )
+    from OCP.BRepGProp import BRepGProp
+    from OCP.gp import gp_Pnt
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_ShapeEnum
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshwell.cad_occ import OCCLabeledEntity
+
+    if not sweeps:
+        return occ_entities
+
+    region_polys = final_region_polygons(entities)
+
+    # ---- resolve every sweep side into rectangles -----------------------
+    resolved = []  # (sweep, side, rect_polygon, p0, p1, n_dir)
+    all_rects = []
+    for sweep in sweeps:
+        p0, p1 = resolve_attachment(sweep, entities, region_polys, point_tolerance)
+        for side, thick in sweep.thickness.items():
+            n_dir = side_normal(p0, p1, side, sweep, region_polys, point_tolerance)
+            target = (
+                region_polys[side]
+                if side in region_polys
+                else _polyline_target_region(p0, p1, n_dir, region_polys)
+            )
+            intervals = clip_sweep_side(p0, p1, n_dir, thick, target, point_tolerance)
+            for rect in sweep_rectangles(p0, p1, n_dir, thick, intervals):
+                for other_sweep, _os, other_rect, *_ in resolved:
+                    if rect.intersection(other_rect).area > (10 * point_tolerance) ** 2:
+                        raise SweepOverlapError(sweep.name, other_sweep.name)
+                resolved.append((sweep, side, rect, p0, p1, n_dir))
+                all_rects.append(rect)
+
+    if not resolved:
+        return occ_entities
+
+    # ---- tool faces -----------------------------------------------------
+    def _face_from_polygon(poly):
+        wire = BRepBuilderAPI_MakeWire()
+        coords = list(poly.exterior.coords)[:-1]
+        for a, b in zip(coords, coords[1:] + coords[:1]):
+            edge = BRepBuilderAPI_MakeEdge(
+                gp_Pnt(a[0], a[1], 0.0), gp_Pnt(b[0], b[1], 0.0)
+            ).Edge()
+            wire.Add(edge)
+        return BRepBuilderAPI_MakeFace(wire.Wire()).Face()
+
+    tools = [_face_from_polygon(r) for r in all_rects]
+
+    # ---- fragment -------------------------------------------------------
+    builder = BOPAlgo_Builder()
+    for ent in occ_entities:
+        if ent.dim != 2:
+            continue
+        for shape in ent.shapes:
+            builder.AddArgument(shape)
+    for tool in tools:
+        builder.AddArgument(tool)
+    builder.SetFuzzyValue(point_tolerance)
+    builder.Perform()
+
+    def _pieces(shape):
+        modified = builder.Modified(shape)
+        if modified.IsEmpty() and not builder.IsDeleted(shape):
+            return [shape]
+        return list(modified)
+
+    # replace each dim-2 entity's shapes by their pieces (faces only)
+    for ent in occ_entities:
+        if ent.dim != 2:
+            continue
+        new_shapes = []
+        for shape in ent.shapes:
+            for piece in _pieces(shape):
+                if piece.ShapeType() == TopAbs_ShapeEnum.TopAbs_FACE:
+                    new_shapes.append(piece)
+                else:
+                    exp = TopExp_Explorer(piece, TopAbs_FACE)
+                    while exp.More():
+                        new_shapes.append(exp.Current())
+                        exp.Next()
+        ent.shapes = new_shapes
+
+    # ---- synthetic annotators ------------------------------------------
+    def _face_centroid(face):
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        p = props.CentreOfMass()
+        return np.array([p.X(), p.Y()])
+
+    def _edge_midpoint(edge):
+        props = GProp_GProps()
+        BRepGProp.LinearProperties_s(edge, props)
+        p = props.CentreOfMass()
+        return np.array([p.X(), p.Y()])
+
+    next_index = max((e.index for e in occ_entities), default=-1) + 1
+    out = list(occ_entities)
+    per_sweep_counter: dict = {}
+    for sweep, side, rect, p0, p1, n_dir in resolved:
+        i = per_sweep_counter.get((sweep.name, side), 0)
+        source = LineString([p0, p1])
+        band_faces = []
+        for ent in occ_entities:
+            if ent.dim != 2 or not ent.keep:
+                continue
+            for face in ent.shapes:
+                c = _face_centroid(face)
+                if rect.contains(Point(*c)):
+                    band_faces.append(face)
+        for face in band_faces:
+            out.append(
+                OCCLabeledEntity(
+                    shapes=[face],
+                    physical_name=(f"__sweep|{sweep.name}|{side}|{i}",),
+                    index=next_index,
+                    keep=True,
+                    dim=2,
+                    mesh_order=None,
+                )
+            )
+            next_index += 1
+            i += 1
+            # source edges of this face
+            src_edges = []
+            exp = TopExp_Explorer(face, TopAbs_EDGE)
+            while exp.More():
+                edge = TopoDS.Edge_s(exp.Current())
+                if source.distance(Point(*_edge_midpoint(edge))) < 10 * point_tolerance:
+                    src_edges.append(edge)
+                exp.Next()
+            if src_edges:
+                out.append(
+                    OCCLabeledEntity(
+                        shapes=src_edges,
+                        physical_name=(f"__sweepsrc|{sweep.name}",),
+                        index=next_index,
+                        keep=True,
+                        dim=1,
+                        mesh_order=None,
+                    )
+                )
+                next_index += 1
+        per_sweep_counter[(sweep.name, side)] = i
     return out

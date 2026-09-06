@@ -26,6 +26,7 @@ from meshwell.structured.exceptions import (
     SweepCurvedSourceError,
     SweepKeyError,
     SweepNormalExtentError,
+    SweepOverlapError,
     WedgeBotNodeMismatchError,
     WedgeCountMismatchError,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "SweepCurvedSourceError",
     "SweepKeyError",
     "SweepNormalExtentError",
+    "SweepOverlapError",
     "WedgeBotNodeMismatchError",
     "WedgeCountMismatchError",
 ]
