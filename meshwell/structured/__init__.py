@@ -28,6 +28,8 @@ from meshwell.structured.exceptions import (
     SweepNormalExtentError,
     SweepOverlapError,
     SweepPairingError,
+    SweepSeamMismatchError,
+    SweepSplitCoordinateError,
     WedgeBotNodeMismatchError,
     WedgeCountMismatchError,
 )
@@ -50,6 +52,8 @@ __all__ = [
     "SweepNormalExtentError",
     "SweepOverlapError",
     "SweepPairingError",
+    "SweepSeamMismatchError",
+    "SweepSplitCoordinateError",
     "WedgeBotNodeMismatchError",
     "WedgeCountMismatchError",
 ]

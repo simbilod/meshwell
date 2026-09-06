@@ -293,3 +293,35 @@ class SweepPairingError(StructuredError):
     or when a sweep spec's name has no matching ``__sweep`` group in the
     loaded CAD.
     """
+
+
+class SweepSeamMismatchError(StructuredError):
+    """Adjacent sweep faces disagree on shared-seam node coordinates.
+
+    Raised by the 2D stamping kernel when a boundary curve already stamped
+    by one face would receive different node positions from another face
+    sharing that curve (the frozen seam is not conformal).
+    """
+
+    def __init__(self, curve_tag):
+        self.curve_tag = curve_tag
+        super().__init__(
+            f"Sweep seam mismatch on curve {curve_tag}: a neighbouring face "
+            "would stamp node positions that do not match the already-frozen "
+            "nodes on this shared curve. Tangential grids of adjacent sweep "
+            "faces must agree on their shared seam."
+        )
+
+
+class SweepSplitCoordinateError(StructuredError):
+    """A BOP split point on a sweep edge is not a tangential grid member."""
+
+    def __init__(self, t, face_tag):
+        self.t = t
+        self.face_tag = face_tag
+        super().__init__(
+            f"Sweep face {face_tag}: fragment boundary at tangential coordinate "
+            f"{t!r} is not a member of the tangential grid. Add this coordinate "
+            "to the explicit tangential array (BOP splits mark user geometry the "
+            "grid must align with)."
+        )
