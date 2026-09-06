@@ -283,3 +283,13 @@ class SweepOverlapError(StructuredError):
             f"Sweep footprints of {name_a!r} and {name_b!r} overlap; "
             "overlapping sweeps are not supported in phase 1."
         )
+
+
+class SweepPairingError(StructuredError):
+    """``__sweep`` groups and ``StructuredSweepResolutionSpec``s must pair 1:1.
+
+    Raised at the mesh stage, either when a sweep group discovered in the
+    loaded CAD has no matching spec under its name in ``resolution_specs``,
+    or when a sweep spec's name has no matching ``__sweep`` group in the
+    loaded CAD.
+    """

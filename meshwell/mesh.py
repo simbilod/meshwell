@@ -548,6 +548,36 @@ class Mesh:
             _normalize_algo(global_3D_algorithm),
         )
 
+        # Structured-sweep mesh-stage discovery: scans the loaded gmsh
+        # model for synthetic ``__sweep|...``/``__sweepsrc|...`` groups
+        # the CAD stage wrote into the XAO. A no-op when the model has no
+        # sweep groups, so non-sweep meshes are unaffected. This makes
+        # sweep handling identical whether the caller went through
+        # ``generate_mesh(...)`` in one shot or through a separate
+        # ``mesh(input_file=xao, ...)`` step -- both flow through here.
+        # Composed once, before the (possibly multi-attempt) retry loop,
+        # so a fallback retry doesn't stamp/validate more than once.
+        from meshwell.structured.sweep2d import (
+            discover_sweeps,
+            make_sweep_pre_2d_hook,
+            validate_sweep_pairing,
+        )
+
+        discovered = discover_sweeps()
+        if discovered:
+            specs_by_name = validate_sweep_pairing(discovered, resolution_specs)
+            sweep_hook = make_sweep_pre_2d_hook(
+                discovered,
+                specs_by_name,
+                self.model_manager.point_tolerance or 1e-3,
+            )
+            user_pre_2d = pre_2d_hook
+
+            def pre_2d_hook() -> None:  # noqa: F811 - deliberate rebind
+                if user_pre_2d is not None:
+                    user_pre_2d()
+                sweep_hook()
+
         def _run_once(algo2d: int, algo3d: int) -> meshio.Mesh:
             self._initialize_mesh_settings(
                 verbosity=verbosity,
