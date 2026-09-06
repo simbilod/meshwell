@@ -249,3 +249,27 @@ class SweepKeyError(StructuredError):
             f"Sweep {name!r} ({kind} attachment): invalid side keys {sorted(bad_keys)}; "
             f"admissible keys are {sorted(admissible)}."
         )
+
+
+class SweepAttachmentNotFoundError(StructuredError):
+    """The sweep's ``on`` name doesn't resolve to geometry in the model."""
+
+    def __init__(self, name, on):
+        self.name = name
+        self.on = on
+        super().__init__(
+            f"Sweep {name!r}: attachment {on!r} not found/adjacent in model."
+        )
+
+
+class SweepCurvedSourceError(StructuredError):
+    """Attachment resolved to a non-straight source (phase 3 territory)."""
+
+    def __init__(self, on, got):
+        self.on = on
+        self.got = got
+        super().__init__(
+            f"Sweep attachment {on!r} is not a single straight segment (got {got}). "
+            "Curved/multi-segment sources are not supported in phase 1; for a "
+            "straight subset of a boundary, attach to an embedded PolyLine instead."
+        )
