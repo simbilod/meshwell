@@ -185,3 +185,76 @@ def side_normal(p0, p1, side: str, sweep, region_polys: dict, point_tolerance: f
     if region_polys[side].contains(Point(*(mid - left * eps))):
         return -left
     raise SweepAttachmentNotFoundError(sweep.name, f"{sweep.on} (side {side} not adjacent)")
+
+
+def clip_sweep_side(p0, p1, n_dir, thickness, region_poly, point_tolerance):
+    """Kept tangential intervals where the FULL normal extent fits in region.
+
+    Any deficit piece (rect minus region) blocks its entire tangential
+    shadow — per the design's full-normal-extent rule.
+
+    Args:
+        p0: first endpoint of the attachment segment.
+        p1: second endpoint of the attachment segment.
+        n_dir: unit outward normal for this side.
+        thickness: sweep thickness on this side.
+        region_poly: the adjacent region's final polygon, used to test
+            where the full-thickness band actually has material.
+        point_tolerance: absolute distance tolerance for treating a
+            deficit piece as a real gap vs. a boundary sliver.
+
+    Returns:
+        List of (lo, hi) tangential-arclength intervals (from p0) that
+        keep their full normal extent inside ``region_poly``.
+    """
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    t_hat = (p1 - p0) / np.linalg.norm(p1 - p0)
+    length = float(np.linalg.norm(p1 - p0))
+    rect = shapely.Polygon(
+        [p0, p1, p1 + n_dir * thickness, p0 + n_dir * thickness]
+    )
+    deficit = rect.difference(region_poly.buffer(point_tolerance))
+    kept = [(0.0, length)]
+    pieces = getattr(deficit, "geoms", [deficit]) if not deficit.is_empty else []
+    for piece in pieces:
+        if piece.area <= (10 * point_tolerance) ** 2:
+            continue  # tolerance sliver, not a real deficit
+        ts = [float(np.dot(np.asarray(c) - p0, t_hat)) for c in piece.exterior.coords]
+        blo, bhi = min(ts), max(ts)
+        nxt = []
+        for lo, hi in kept:
+            if bhi <= lo or blo >= hi:
+                nxt.append((lo, hi))
+                continue
+            if blo > lo:
+                nxt.append((lo, blo))
+            if bhi < hi:
+                nxt.append((bhi, hi))
+        kept = nxt
+    return [(lo, hi) for lo, hi in kept if hi - lo > 10 * point_tolerance]
+
+
+def sweep_rectangles(p0, p1, n_dir, thickness, intervals):
+    """Shapely rectangles for the kept intervals, in the (t, n) frame.
+
+    Args:
+        p0: first endpoint of the attachment segment.
+        p1: second endpoint of the attachment segment.
+        n_dir: unit outward normal for this side.
+        thickness: sweep thickness on this side.
+        intervals: (lo, hi) tangential-arclength intervals, as returned
+            by :func:`clip_sweep_side`.
+
+    Returns:
+        List of shapely Polygons, one per interval.
+    """
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    t_hat = (p1 - p0) / np.linalg.norm(p1 - p0)
+    out = []
+    for lo, hi in intervals:
+        a = p0 + t_hat * lo
+        b = p0 + t_hat * hi
+        out.append(shapely.Polygon([a, b, b + n_dir * thickness, a + n_dir * thickness]))
+    return out

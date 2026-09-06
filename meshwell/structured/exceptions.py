@@ -273,3 +273,13 @@ class SweepCurvedSourceError(StructuredError):
             "Curved/multi-segment sources are not supported in phase 1; for a "
             "straight subset of a boundary, attach to an embedded PolyLine instead."
         )
+
+
+class SweepOverlapError(StructuredError):
+    """Two sweep footprints overlap (unsupported in phase 1)."""
+
+    def __init__(self, name_a, name_b):
+        super().__init__(
+            f"Sweep footprints of {name_a!r} and {name_b!r} overlap; "
+            "overlapping sweeps are not supported in phase 1."
+        )
