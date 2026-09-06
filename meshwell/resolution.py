@@ -467,23 +467,75 @@ class DirectSizeSpecification(ResolutionSpec):
         return field_index
 
 
-class StructuredExtrusionResolutionSpec(ResolutionSpec):
-    """Number of z-layers per structured slab for wedge stamping.
+class Graded(BaseModel):
+    """Geometric grading for a structured sweep's normal direction.
 
-    Attached to a structured PolyPrism's physical_name via the
-    standard ``resolution_specs={name: [spec, ...]}`` dict passed to
-    generate_mesh. Read by meshwell.structured.wedge at mesh time;
-    has no gmsh-field apply() because wedge stamping doesn't go
-    through the mesh-size field machinery.
+    Cell k has size ``h0 * ratio**k``; cells are emitted until the sweep
+    thickness (known only to the CAD stage) is filled, with the last
+    cell adjusted to land exactly on the thickness. Carries NO thickness
+    on purpose — see the structured-sweeps design doc.
     """
 
-    apply_to: Literal["volumes"] = "volumes"
-    n_layers: int = Field(default=1, ge=1)
+    h0: float = Field(gt=0)
+    ratio: float = Field(ge=1)
+
+
+class StructuredSweepResolutionSpec(ResolutionSpec):
+    """Discretization of a structured sweep (2D band today, 3D later).
+
+    Consumed by the sweep stamping kernel, not by gmsh size fields,
+    hence the no-op ``apply()``. Keyed in ``resolution_specs`` by the
+    ``StructuredSweep.name`` it discretizes.
+    """
+
+    apply_to: Literal["surfaces"] = "surfaces"
+    tangential: float | list[float] | None = None
+    normal: dict[str, int | Graded | list[float]] = Field(default_factory=dict)
+    element_type: Literal["triangle", "quad"] = "triangle"
+
+    class Config:
+        arbitrary_types_allowed = True
 
     def apply(self, **_kwargs) -> None:
-        """No-op.
+        """No-op: consumed by the sweep stamping kernel."""
 
-        StructuredExtrusionResolutionSpec is consumed by the wedge hook,
-        not by the gmsh mesh-size field machinery.
-        """
-        return
+
+def resolve_normal_offsets(normal_spec, thickness: float, atol: float) -> "np.ndarray":
+    """Resolve a per-side normal spec into offsets [0, ..., thickness].
+
+    ``int n`` -> n uniform layers. ``Graded`` -> geometric cells, last
+    cell adjusted to land on thickness. Explicit array -> validated to
+    span [0, thickness] within ``atol`` (SweepNormalExtentError).
+    """
+    from meshwell.structured.exceptions import SweepNormalExtentError
+
+    if isinstance(normal_spec, int):
+        return np.linspace(0.0, thickness, normal_spec + 1)
+    if isinstance(normal_spec, Graded):
+        offsets = [0.0]
+        h = normal_spec.h0
+        while offsets[-1] + h < thickness - atol:
+            offsets.append(offsets[-1] + h)
+            h *= normal_spec.ratio
+        offsets.append(thickness)
+        # merge a sliver last cell into its neighbour for quality
+        if len(offsets) >= 3 and (offsets[-1] - offsets[-2]) < 0.5 * (
+            offsets[-2] - offsets[-3]
+        ):
+            del offsets[-2]
+        return np.asarray(offsets)
+    offsets = np.asarray(normal_spec, dtype=float)
+    if abs(offsets[0]) > atol or abs(offsets[-1] - thickness) > atol:
+        raise SweepNormalExtentError(offsets, thickness)
+    return offsets
+
+
+class StructuredExtrusionResolutionSpec(StructuredSweepResolutionSpec):
+    """Number of z-layers per structured slab for wedge stamping.
+
+    Deprecated alias of ``StructuredSweepResolutionSpec(normal=n_layers)``;
+    kept because the 3D wedge kernel reads ``n_layers`` directly.
+    """
+
+    apply_to: Literal["volumes"] = "volumes"  # type: ignore[assignment]
+    n_layers: int = Field(default=1, ge=1)

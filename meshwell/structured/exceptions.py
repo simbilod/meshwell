@@ -219,3 +219,14 @@ class CanonicalArrangementError(StructuredError):
         self.cohort_index = cohort_index
         self.reason = reason
         super().__init__(f"cohort {cohort_index}: {reason}")
+
+
+class SweepNormalExtentError(ValueError):
+    """Explicit normal offset array does not span [0, thickness]."""
+
+    def __init__(self, offsets, thickness: float):
+        super().__init__(
+            f"Explicit normal offsets must start at 0.0 and end at the sweep "
+            f"thickness {thickness!r}; got first={offsets[0]!r}, last={offsets[-1]!r}. "
+            "Use Graded(h0, ratio) or an int layer count to avoid restating thickness."
+        )
