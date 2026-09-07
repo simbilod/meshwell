@@ -341,3 +341,58 @@ class TestBandFrames:
         np.testing.assert_allclose(ctx.n0, 1.0, atol=1e-5)
         assert ctx.normal_sign == {"upper": 1.0}
         assert ctx.thickness == {"upper": 0.4}
+        assert ctx.required_ts == ()
+
+    def test_ridge_splits_in_required_ts(self, tmp_path):
+        """Ridge imprints the band seam at x=1.5, 2.5: must appear in required_ts."""
+        sweep = StructuredSweep(name="top", on="layer___clad", thickness={"layer": 0.3})
+        xao = tmp_path / "ridge.xao"
+        generate_mesh(
+            entities=[
+                PolySurface(
+                    polygons=shapely.box(0, 0, 4, 1),
+                    physical_name="layer",
+                    mesh_order=3,
+                ),
+                PolySurface(
+                    polygons=shapely.box(1.5, 1, 2.5, 2),
+                    physical_name="ridge",
+                    mesh_order=1,
+                ),
+                PolySurface(
+                    polygons=shapely.box(0, 1, 4, 2),
+                    physical_name="clad",
+                    mesh_order=2,
+                ),
+            ],
+            sweeps=[sweep],
+            dim=2,
+            output_mesh=str(tmp_path / "ridge.msh"),
+            checkpoint_cad=str(xao),
+            default_characteristic_length=0.5,
+            resolution_specs={
+                "top": [
+                    StructuredSweepResolutionSpec(
+                        tangential=[0.0, 0.75, 1.5, 2.0, 2.5, 3.25, 4.0],
+                        normal={"layer": 3},
+                    )
+                ],
+            },
+        )
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+        gmsh.model.add("ridge_frames_test")
+        gmsh.model.setCurrent("ridge_frames_test")
+        try:
+            gmsh.open(str(xao))
+            frames = _sweep_band_frames([sweep])
+        finally:
+            gmsh.model.remove()
+        ctx = frames["top"]
+        # 5e-5: split offsets compound the endpoint's and t0's CAD
+        # perturbation (1e-5 each); downstream matching uses point_tolerance
+        # (1e-3 default), so this noise level is harmless.
+        for split in (1.5, 2.5):
+            assert any(
+                abs(t - split) <= 5e-5 for t in ctx.required_ts
+            ), f"split {split} missing from required_ts={ctx.required_ts}"

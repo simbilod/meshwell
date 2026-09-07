@@ -861,13 +861,20 @@ def gradation_limit_size_map(
     return size_map
 
 
-def _sweep_band_frames(sweeps, tol: float = 1e-9) -> dict:
+def _sweep_band_frames(sweeps, tol: float = 1e-4) -> dict:
     """Recover axis-aligned band frames from the loaded .xao's sweep groups.
 
     Uses the synthetic ``__sweepsrc|name`` attachment curves for the
     tangential axis/extent and attachment coordinate, and the
     ``__sweep|name|side|i`` faces for per-side signs and interior split
-    coordinates. Requires the geometry to be loaded in the current gmsh model.
+    coordinates (boundary-curve endpoints strictly inside the extent -- the
+    same signal ``_stamp_all`` reads). Requires the geometry to be loaded in
+    the current gmsh model.
+
+    ``tol`` excludes extent-end endpoints. It must exceed the CAD
+    perturbation (default 1e-5), which offsets face corner points from the
+    src-curve bounding box by up to that amount; splits closer than ``tol``
+    to a band end are dropped.
     """
     from meshwell.structured.sweep2d import discover_sweeps
 
@@ -894,9 +901,16 @@ def _sweep_band_frames(sweeps, tol: float = 1e-9) -> dict:
             b = gmsh.model.getBoundingBox(2, ftag)
             center_n = 0.5 * (b[n_axis] + b[n_axis + 3])
             signs[side] = 1.0 if center_n > n0 else -1.0
-            for t in (b[t_axis], b[t_axis + 3]):
-                if t0 + tol < t < t1 - tol:
-                    splits.add(round(t - t0, 12))
+            # Interior BOP/seam splits: boundary-curve endpoint coordinates
+            # strictly inside the extent (a face's bbox cannot see seam
+            # splits on a single-face band).
+            for _dc, ct in gmsh.model.getBoundary(
+                [(2, ftag)], oriented=False, recursive=False
+            ):
+                for _dp, pt in gmsh.model.getBoundary([(1, abs(ct))], oriented=False):
+                    t = gmsh.model.getValue(0, abs(pt), [])[t_axis]
+                    if t0 + tol < t < t1 - tol:
+                        splits.add(round(t - t0, 12))
         frames[sweep.name] = SweepAdaptContext(
             thickness=dict(sweep.thickness),
             t_axis=t_axis,
