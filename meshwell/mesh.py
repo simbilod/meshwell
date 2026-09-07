@@ -336,7 +336,8 @@ class Mesh:
                 field_index = spec.apply(
                     self.model_manager.model, {}, restrict_to_tags=None
                 )
-                refinement_field_indices.append(field_index)
+                if field_index is not None:
+                    refinement_field_indices.append(field_index)
 
         # Collect constant fields for batching
         constant_collector = defaultdict(lambda: defaultdict(list))

@@ -91,3 +91,32 @@ def test_boundary_layer_validation():
         BoundaryLayerResolutionSpec(size=0.01, thickness=0.0)
     with pytest.raises(Exception):
         BoundaryLayerResolutionSpec(size=0.01, thickness=0.05, ratio=0.5)
+
+
+def test_global_none_returning_spec_does_not_crash(tmp_path):
+    """A None-returning spec under the global (None) key must not corrupt the Min field.
+
+    In this gmsh build, an unguarded None in the Min field's FieldsList doesn't
+    raise -- numpy silently coerces it to NaN, which gmsh casts to an out-of-range
+    int and logs "Unknown Field <garbage>" instead of crashing. We capture the
+    gmsh logger to catch that silent corruption, in addition to the basic
+    not-None check.
+    """
+    import gmsh
+
+    if not gmsh.is_initialized():
+        gmsh.initialize()
+    gmsh.logger.start()
+    mesh = generate_mesh(
+        entities=_sheet(),
+        dim=2,
+        output_mesh=str(tmp_path / "glob.msh"),
+        default_characteristic_length=0.1,
+        resolution_specs={
+            None: [BoundaryLayerResolutionSpec(size=0.01, thickness=0.05)],
+        },
+    )
+    log = gmsh.logger.get()
+    gmsh.logger.stop()
+    assert mesh is not None
+    assert not any("Unknown Field" in line for line in log)
