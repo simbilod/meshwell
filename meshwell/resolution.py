@@ -534,6 +534,61 @@ def resolve_normal_offsets(normal_spec, thickness: float, atol: float) -> "np.nd
     return offsets
 
 
+def _gradation_limit(h: "np.ndarray", max_ratio: float) -> "np.ndarray":
+    """Cap neighbor cell-size ratios at ``max_ratio`` (standard two-pass sweep)."""
+    h = np.asarray(h, dtype=float).copy()
+    for i in range(1, len(h)):
+        h[i] = min(h[i], h[i - 1] * max_ratio)
+    for i in range(len(h) - 2, -1, -1):
+        h[i] = min(h[i], h[i + 1] * max_ratio)
+    return h
+
+
+def _equidistribute(
+    offsets: "np.ndarray", h_cells: "np.ndarray", min_cells: int = 2
+) -> "np.ndarray":
+    """Redistribute ``offsets`` so each new cell holds an equal share of ∫ dη / h.
+
+    ``h_cells`` is the piecewise-constant target size on the old cells.
+    Endpoints are pinned exactly; at least ``min_cells`` cells are emitted.
+    """
+    offsets = np.asarray(offsets, dtype=float)
+    d = np.diff(offsets)
+    density = d / np.asarray(h_cells, dtype=float)
+    cum = np.concatenate([[0.0], np.cumsum(density)])
+    n = max(min_cells, int(np.ceil(cum[-1] - 1e-9)))
+    new = np.interp(np.linspace(0.0, cum[-1], n + 1), cum, offsets)
+    new[0], new[-1] = offsets[0], offsets[-1]
+    return new
+
+
+def _insert_required(
+    offsets: "np.ndarray", required: tuple, tol: float = 1e-9
+) -> "np.ndarray":
+    """Snap the nearest interior offset onto each required coordinate.
+
+    An interior offset already pinned to another required coordinate is not
+    reused; a new offset is inserted instead so every required point survives.
+    """
+    off = np.asarray(offsets, dtype=float).copy()
+    req = np.asarray(required, dtype=float)
+    for r in required:
+        if off.size and np.min(np.abs(off - r)) <= tol:
+            continue  # already present
+        # interior offsets not already pinned to a required coordinate
+        free = [
+            i
+            for i in range(1, len(off) - 1)
+            if np.min(np.abs(req - off[i])) > tol
+        ]
+        if free:
+            i = free[int(np.argmin(np.abs(off[free] - r)))]
+            off[i] = r
+        else:
+            off = np.append(off, r)
+    return np.sort(off)
+
+
 class StructuredExtrusionResolutionSpec(StructuredSweepResolutionSpec):
     """Number of z-layers per structured slab for wedge stamping.
 
