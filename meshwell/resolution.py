@@ -73,6 +73,25 @@ class ResolutionSpec(BaseModel):
             return 0
         return None
 
+    def adapt(
+        self,
+        size_map: "np.ndarray",  # noqa: ARG002
+        context: Any = None,  # noqa: ARG002
+        *,
+        change_max: float = 2.0,  # noqa: ARG002
+        max_ratio: float = 1.3,  # noqa: ARG002
+    ) -> "ResolutionSpec":
+        """Project a pointwise (x, y, z, size) map onto this spec's parameters.
+
+        Base implementation: this spec type does not support adaptation;
+        return self unchanged (documented, not silent).
+        """
+        warnings.warn(
+            f"{type(self).__name__} does not support adapt(); returning unchanged.",
+            stacklevel=2,
+        )
+        return self
+
 
 class ConstantInField(ResolutionSpec):
     """Provides constant resolution within specified entities.
@@ -466,6 +485,27 @@ class DirectSizeSpecification(ResolutionSpec):
 
         return field_index
 
+    def adapt(
+        self,
+        size_map: "np.ndarray",
+        context: Any = None,  # noqa: ARG002
+        *,
+        change_max: float = 2.0,  # noqa: ARG002
+        max_ratio: float = 1.3,  # noqa: ARG002
+    ) -> "DirectSizeSpecification":
+        """Replace the carried size map with the new one."""
+        result = copy.copy(self)
+        result.refinement_data = np.asarray(size_map, dtype=float)
+        return result
+
+    def refine(self, resolution_factor: float) -> "DirectSizeSpecification":
+        """Create a copy with the size column scaled by ``resolution_factor``."""
+        result = copy.copy(self)
+        data = np.asarray(self.refinement_data, dtype=float).copy()
+        data[:, 3] *= resolution_factor
+        result.refinement_data = data
+        return result
+
 
 class Graded(BaseModel):
     """Geometric grading for a structured sweep's normal direction.
@@ -500,6 +540,36 @@ class StructuredSweepResolutionSpec(ResolutionSpec):
 
     def apply(self, **_kwargs) -> None:
         """No-op: consumed by the sweep stamping kernel."""
+
+    def refine(self, resolution_factor: float) -> "StructuredSweepResolutionSpec":
+        """Create a copy with all sizes scaled by ``resolution_factor``.
+
+        Follows the existing convention (see ConstantInField.refine):
+        sizes are multiplied by the factor, so refine(0.5) is finer.
+        """
+        import math
+
+        result = copy.copy(self)
+        if isinstance(self.tangential, (int, float)):
+            result.tangential = float(self.tangential) * resolution_factor
+        elif self.tangential is not None:
+            off = np.asarray(self.tangential, dtype=float)
+            result.tangential = _equidistribute(
+                off, np.diff(off) * resolution_factor
+            ).tolist()
+        new_normal: dict = {}
+        for side, n in self.normal.items():
+            if isinstance(n, int):
+                new_normal[side] = max(1, math.ceil(n / resolution_factor))
+            elif isinstance(n, Graded):
+                new_normal[side] = Graded(h0=n.h0 * resolution_factor, ratio=n.ratio)
+            else:
+                off = np.asarray(n, dtype=float)
+                new_normal[side] = _equidistribute(
+                    off, np.diff(off) * resolution_factor
+                ).tolist()
+        result.normal = new_normal
+        return result
 
 
 def resolve_normal_offsets(normal_spec, thickness: float, atol: float) -> "np.ndarray":

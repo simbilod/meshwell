@@ -1,7 +1,13 @@
 """Tests for the adapt() protocol and structured-sweep adaptation."""
+import warnings
+
 import numpy as np
 
 from meshwell.resolution import (
+    DirectSizeSpecification,
+    Graded,
+    StructuredSweepResolutionSpec,
+    ThresholdField,
     _equidistribute,
     _gradation_limit,
     _insert_required,
@@ -82,3 +88,56 @@ class TestInsertRequired:
         assert out[0] == 0.0 and out[-1] == 2.0
         assert all(r in out for r in (0.1, 0.2, 0.3))
         assert np.all(np.diff(out) > 0)  # strictly sorted, no duplicates
+
+
+class TestAdaptProtocol:
+    def test_base_returns_self_and_warns(self):
+        spec = ThresholdField(apply_to="curves", sizemin=0.1, sizemax=1.0, distmax=1.0)
+        size_map = np.array([[0.0, 0.0, 0.0, 0.05]])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            out = spec.adapt(size_map)
+        assert out is spec
+        assert any("adapt" in str(x.message) for x in w)
+
+    def test_direct_spec_swaps_map(self):
+        old = np.array([[0.0, 0.0, 0.0, 0.5]])
+        new = np.array([[0.0, 0.0, 0.0, 0.1], [1.0, 0.0, 0.0, 0.2]])
+        spec = DirectSizeSpecification(refinement_data=old)
+        out = spec.adapt(new)
+        assert out is not spec
+        np.testing.assert_allclose(out.refinement_data, new)
+        np.testing.assert_allclose(spec.refinement_data, old)  # original intact
+
+
+class TestRefine:
+    def test_sweep_refine_scalar_and_int(self):
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 2})
+        out = spec.refine(0.5)
+        assert out.tangential == 0.5
+        assert out.normal["upper"] == 4
+        # original untouched
+        assert spec.tangential == 1.0 and spec.normal["upper"] == 2
+
+    def test_sweep_refine_graded(self):
+        spec = StructuredSweepResolutionSpec(
+            tangential=1.0, normal={"upper": Graded(h0=0.1, ratio=1.5)}
+        )
+        out = spec.refine(0.5)
+        assert out.normal["upper"].h0 == 0.05
+        assert out.normal["upper"].ratio == 1.5
+
+    def test_sweep_refine_arrays(self):
+        spec = StructuredSweepResolutionSpec(
+            tangential=[0.0, 1.0, 2.0], normal={"upper": [0.0, 0.2, 0.4]}
+        )
+        out = spec.refine(0.5)
+        # uniform arrays double their cell count, endpoints pinned
+        np.testing.assert_allclose(out.tangential, np.linspace(0.0, 2.0, 5))
+        np.testing.assert_allclose(out.normal["upper"], np.linspace(0.0, 0.4, 5))
+
+    def test_direct_refine_scales_sizes(self):
+        data = np.array([[0.0, 0.0, 0.0, 0.4], [1.0, 0.0, 0.0, 0.2]])
+        out = DirectSizeSpecification(refinement_data=data).refine(0.5)
+        np.testing.assert_allclose(out.refinement_data[:, 3], [0.2, 0.1])
+        np.testing.assert_allclose(out.refinement_data[:, :3], data[:, :3])
