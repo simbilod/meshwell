@@ -25,7 +25,6 @@ parts:
     - file: 21_resolution_advanced
     - file: 22_direct_size_specification
     - file: 23_structured
-    - file: 23_structured
     - file: 24_structured_sweeps
     - file: 25_boundary_layer
 
