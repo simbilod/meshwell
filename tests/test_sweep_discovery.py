@@ -10,8 +10,12 @@ from meshwell.structured.sweep import StructuredSweep
 
 
 def _entities():
-    lower = PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2)
-    upper = PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1)
+    lower = PolySurface(
+        polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+    )
+    upper = PolySurface(
+        polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+    )
     return [lower, upper]
 
 
@@ -19,12 +23,16 @@ def _cad(tmp_path):
     xao = tmp_path / "model.xao"
     generate_mesh(
         entities=_entities(),
-        sweeps=[StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})],
+        sweeps=[
+            StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})
+        ],
         dim=2,
         checkpoint_cad=xao,
         output_mesh=str(tmp_path / "cadstep.msh"),
         default_characteristic_length=0.5,
-        resolution_specs={"qw": [StructuredSweepResolutionSpec(tangential=0.5, normal={"upper": 2})]},
+        resolution_specs={
+            "qw": [StructuredSweepResolutionSpec(tangential=0.5, normal={"upper": 2})]
+        },
     )
     return xao
 
@@ -50,8 +58,12 @@ def test_unpaired_spec_raises(tmp_path):
             output_file=str(tmp_path / "out.msh"),
             default_characteristic_length=0.5,
             resolution_specs={
-                "qw": [StructuredSweepResolutionSpec(tangential=0.5, normal={"upper": 2})],
-                "ghost": [StructuredSweepResolutionSpec(tangential=0.5, normal={"upper": 2})],
+                "qw": [
+                    StructuredSweepResolutionSpec(tangential=0.5, normal={"upper": 2})
+                ],
+                "ghost": [
+                    StructuredSweepResolutionSpec(tangential=0.5, normal={"upper": 2})
+                ],
             },
         )
 

@@ -31,8 +31,12 @@ from meshwell.resolution import Graded, StructuredSweepResolutionSpec
 from meshwell.structured.sweep import StructuredSweep
 from meshwell.visualization import plot2D
 
-lower = PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2)
-upper = PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1)
+lower = PolySurface(
+    polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+)
+upper = PolySurface(
+    polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+)
 
 qw_sweep = StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})
 
@@ -107,7 +111,7 @@ graded_mesh = generate_mesh(
         ],
     },
 )
-ys = sorted(set(round(y, 9) for y in graded_mesh.points[:, 1]))
+ys = sorted({round(y, 9) for y in graded_mesh.points[:, 1]})
 print("y coordinates near the junction:", [y for y in ys if 0.7 <= y <= 1.3])
 
 # %% [markdown]
@@ -175,7 +179,9 @@ two_step = mesh(
 import numpy as np  # noqa: E402
 
 band = lambda m: np.unique(  # noqa: E731
-    np.round(m.points[(m.points[:, 1] >= 1 - 1e-9) & (m.points[:, 1] <= 1.4 + 1e-9), :2], 9),
+    np.round(
+        m.points[(m.points[:, 1] >= 1 - 1e-9) & (m.points[:, 1] <= 1.4 + 1e-9), :2], 9
+    ),
     axis=0,
 )
 np.testing.assert_array_equal(band(one_step), band(two_step))

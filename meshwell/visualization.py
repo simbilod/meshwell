@@ -138,10 +138,7 @@ def plot2D(
             for t in cell_types_2D
             if t in mesh.cell_data_dict["gmsh:physical"]
         ]
-        if phys_2D:
-            physical_groups_2D = np.unique(np.concatenate(phys_2D))
-        else:
-            physical_groups_2D = [1]
+        physical_groups_2D = np.unique(np.concatenate(phys_2D)) if phys_2D else [1]
         if "line" in mesh.cell_data_dict["gmsh:physical"]:
             physical_groups_1D = np.unique(mesh.cell_data_dict["gmsh:physical"]["line"])
         else:

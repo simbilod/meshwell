@@ -21,7 +21,8 @@ def test_corner_notch_blocks_its_shadow():
     kept = clip_sweep_side(P0, P1, UP, 0.5, region, 1e-6)
     assert len(kept) == 1
     lo, hi = kept[0]
-    assert lo == pytest.approx(0.0) and hi == pytest.approx(3.0)
+    assert lo == pytest.approx(0.0)
+    assert hi == pytest.approx(3.0)
 
 
 def test_mid_obstacle_splits_interval():

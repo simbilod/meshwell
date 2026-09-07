@@ -17,12 +17,16 @@ class StructuredSweep:
 
     def __init__(self, name: str, on: str, thickness: dict[str, float]):
         if "|" in name or "|" in on:
-            raise ValueError(f"'|' not allowed in sweep name/attachment: {name!r}, {on!r}")
+            raise ValueError(
+                f"'|' not allowed in sweep name/attachment: {name!r}, {on!r}"
+            )
         if not thickness:
             raise ValueError(f"Sweep {name!r}: thickness dict must not be empty")
         for side, t in thickness.items():
             if not t > 0:
-                raise ValueError(f"Sweep {name!r}: thickness[{side!r}] must be > 0, got {t!r}")
+                raise ValueError(
+                    f"Sweep {name!r}: thickness[{side!r}] must be > 0, got {t!r}"
+                )
         self.name = name
         self.on = on
         self.thickness = dict(thickness)
@@ -30,6 +34,7 @@ class StructuredSweep:
 
     @property
     def attachment_kind(self) -> str:
+        """Classify ``on`` as ``interface``, ``boundary``, or ``polyline``."""
         parts = self.on.split(_INTERFACE_DELIMITER)
         if len(parts) == 2:
             return "boundary" if parts[1] == _BOUNDARY_SUFFIX else "interface"
@@ -51,9 +56,11 @@ class StructuredSweep:
             raise SweepKeyError(self.name, self.attachment_kind, bad, admissible)
 
     def sides(self) -> list[str]:
+        """Return the side keys this sweep specifies a thickness for."""
         return list(self.thickness)
 
     def to_dict(self) -> dict:
+        """Serialize to a plain dict."""
         return {
             "type": "StructuredSweep",
             "name": self.name,
@@ -63,4 +70,5 @@ class StructuredSweep:
 
     @classmethod
     def from_dict(cls, data: dict) -> "StructuredSweep":
+        """Reconstruct from a dict produced by :meth:`to_dict`."""
         return cls(name=data["name"], on=data["on"], thickness=data["thickness"])

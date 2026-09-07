@@ -16,6 +16,7 @@ groups, so the whole path is a no-op for non-sweep meshes.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import logging
 from collections import defaultdict
 from collections.abc import Callable
@@ -338,9 +339,7 @@ def _stamp_curve(ctag, pts, tol):
             # Relocate the reused corner point node onto the snapped grid so
             # every entity sharing it (this curve, adjacent edges, neighbour
             # surfaces meshed later) sees the same nominal coordinate.
-            gmsh.model.mesh.setNode(
-                end_nodes[key], [float(p[0]), float(p[1]), 0.0], []
-            )
+            gmsh.model.mesh.setNode(end_nodes[key], [float(p[0]), float(p[1]), 0.0], [])
             seq.append(end_nodes[key])
         else:
             seq.append(next_tag)
@@ -353,7 +352,7 @@ def _stamp_curve(ctag, pts, tol):
             1, ctag, interior_tags, interior_coords, interior_params
         )
     conn = []
-    for a, b in zip(seq[:-1], seq[1:]):
+    for a, b in itertools.pairwise(seq):
         conn += [int(a), int(b)]
     gmsh.model.mesh.addElementsByType(ctag, 1, [], conn)
 
@@ -406,7 +405,7 @@ def _tangential_coords(tangential, edge_ts, groups, face_tag, tol):
             inside.append(end)  # clip/attachment end: auto-insert
         else:
             raise SweepSplitCoordinateError(end, face_tag)
-    ts = sorted(set(round(t, 12) for t in inside))
+    ts = sorted({round(t, 12) for t in inside})
     return [t for t in ts if t0f - tol <= t <= t1f + tol]
 
 
@@ -434,7 +433,6 @@ def _stamp_face(face_tag, side, spec, frame, groups, stamped_curves, tol):
 
     all_tn = [_tn(p) for c in curves for p in _curve_endpoints(c)]
     edge_ts = sorted({round(t, 12) for t, _ in all_tn})
-    t0f, t1f = edge_ts[0], edge_ts[-1]
     n_vals = sorted({round(n, 12) for _, n in all_tn})
     n_lo, n_hi = n_vals[0], n_vals[-1]
     src_here = [c for c in curves if c in groups["src_curves"]]

@@ -17,8 +17,12 @@ from meshwell.structured.sweep_cad import (
 
 
 def _stack():
-    lower = PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2)
-    upper = PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1)
+    lower = PolySurface(
+        polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+    )
+    upper = PolySurface(
+        polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+    )
     return [lower, upper]
 
 
@@ -90,7 +94,9 @@ def test_missing_attachment_raises():
 
 def test_interface_side_normals_point_into_regions():
     entities = _stack()
-    sweep = StructuredSweep(name="s", on="lower___upper", thickness={"upper": 0.5, "lower": 0.3})
+    sweep = StructuredSweep(
+        name="s", on="lower___upper", thickness={"upper": 0.5, "lower": 0.3}
+    )
     regions = final_region_polygons(entities)
     p0, p1 = resolve_attachment(sweep, entities, regions, point_tolerance=1e-6)
     n_up = side_normal(p0, p1, "upper", sweep, regions, point_tolerance=1e-6)

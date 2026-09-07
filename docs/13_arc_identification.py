@@ -10,6 +10,7 @@ import shapely
 
 from meshwell.cad_common import apply_arc_params
 from meshwell.cad_occ import cad_occ
+from meshwell.circle_registry import build_circle_registry
 from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyline import PolyLine
@@ -67,8 +68,6 @@ plt.show()
 # the fits cluster into a single canonical circle.
 
 # %%
-from meshwell.circle_registry import build_circle_registry
-
 theta_full = np.linspace(0, 2 * np.pi, 100, endpoint=False)
 circle_pts = [(np.cos(t), np.sin(t)) for t in theta_full]
 

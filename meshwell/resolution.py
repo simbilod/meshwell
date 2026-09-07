@@ -494,6 +494,8 @@ class StructuredSweepResolutionSpec(ResolutionSpec):
     element_type: Literal["triangle", "quad"] = "triangle"
 
     class Config:
+        """Pydantic model config."""
+
         arbitrary_types_allowed = True
 
     def apply(self, **_kwargs) -> None:

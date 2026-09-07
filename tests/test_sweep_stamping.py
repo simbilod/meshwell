@@ -11,16 +11,29 @@ from meshwell.structured.sweep import StructuredSweep
 def _run(tmp_path, element_type="triangle", tangential=1.0, normal=2, thickness=0.4):
     return generate_mesh(
         entities=[
-            PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2),
-            PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1),
+            PolySurface(
+                polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+            ),
+            PolySurface(
+                polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+            ),
         ],
-        sweeps=[StructuredSweep(name="qw", on="lower___upper", thickness={"upper": thickness})],
+        sweeps=[
+            StructuredSweep(
+                name="qw", on="lower___upper", thickness={"upper": thickness}
+            )
+        ],
         dim=2,
         output_mesh=str(tmp_path / "out.msh"),
         default_characteristic_length=0.5,
         resolution_specs={
-            "qw": [StructuredSweepResolutionSpec(
-                tangential=tangential, normal={"upper": normal}, element_type=element_type)],
+            "qw": [
+                StructuredSweepResolutionSpec(
+                    tangential=tangential,
+                    normal={"upper": normal},
+                    element_type=element_type,
+                )
+            ],
         },
     )
 
@@ -64,7 +77,8 @@ def test_quad_variant(tmp_path):
 def test_interface_groups_survive(tmp_path):
     m = _run(tmp_path)
     assert "lower___upper" in m.cell_sets
-    assert "lower" in m.cell_sets and "upper" in m.cell_sets
+    assert "lower" in m.cell_sets
+    assert "upper" in m.cell_sets
     assert not any(k.startswith("__sweep") for k in m.cell_sets)
 
 

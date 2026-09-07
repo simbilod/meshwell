@@ -31,7 +31,9 @@ def test_plot2d_renders_quad_cells(tmp_path):
     )
     mesh = generate_mesh(
         entities=[lower, upper],
-        sweeps=[StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})],
+        sweeps=[
+            StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})
+        ],
         dim=2,
         output_mesh=str(tmp_path / "quad.msh"),
         default_characteristic_length=0.5,

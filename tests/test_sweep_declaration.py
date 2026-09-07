@@ -27,9 +27,9 @@ def test_polyline_keys():
 
 
 def test_name_validation():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not allowed"):
         StructuredSweep(name="bad|name", on="a___b", thickness={"a": 0.1})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="must be > 0"):
         StructuredSweep(name="qw", on="a___b", thickness={"a": -0.1})
 
 
@@ -38,4 +38,6 @@ def test_roundtrip_serialization():
     d = s.to_dict()
     assert d["type"] == "StructuredSweep"
     s2 = StructuredSweep.from_dict(d)
-    assert s2.name == s.name and s2.on == s.on and s2.thickness == s.thickness
+    assert s2.name == s.name
+    assert s2.on == s.on
+    assert s2.thickness == s.thickness

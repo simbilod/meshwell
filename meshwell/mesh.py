@@ -573,7 +573,7 @@ class Mesh:
             )
             user_pre_2d = pre_2d_hook
 
-            def pre_2d_hook() -> None:  # noqa: F811 - deliberate rebind
+            def pre_2d_hook() -> None:
                 if user_pre_2d is not None:
                     user_pre_2d()
                 sweep_hook()

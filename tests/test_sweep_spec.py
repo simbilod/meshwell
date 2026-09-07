@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from meshwell.resolution import (
     Graded,
@@ -48,9 +49,9 @@ def test_sweep_spec_fields_and_noop_apply():
 
 
 def test_graded_validation():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         Graded(h0=-1.0, ratio=1.3)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         Graded(h0=1e-3, ratio=0.5)
 
 

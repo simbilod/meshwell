@@ -117,9 +117,7 @@ def _collinear_extent(multiline, point_tolerance: float):
     Every vertex must lie (within ``point_tolerance``) on the line through
     the cloud's principal axis; returns ``(p_min, p_max)`` by projection.
     """
-    pts = np.asarray(
-        [c for part in multiline.geoms for c in part.coords], dtype=float
-    )
+    pts = np.asarray([c for part in multiline.geoms for c in part.coords], dtype=float)
     # Signed vector between the two farthest-apart points: the true line
     # direction for ANY orientation (a bounding-box diagonal ``max - min``
     # y-reflects a negative-slope source and mis-flags it non-collinear).
@@ -170,7 +168,9 @@ def resolve_attachment(sweep, entities, region_polys: dict, point_tolerance: flo
                     # allow collinear multi-point lines
                     coords = list(line.simplify(point_tolerance).coords)
                 if len(coords) != 2:
-                    raise SweepCurvedSourceError(sweep.on, f"{len(coords)}-point polyline")
+                    raise SweepCurvedSourceError(
+                        sweep.on, f"{len(coords)}-point polyline"
+                    )
                 return np.asarray(coords[0]), np.asarray(coords[1])
         raise SweepAttachmentNotFoundError(sweep.name, sweep.on)
 
@@ -223,7 +223,9 @@ def side_normal(p0, p1, side: str, sweep, region_polys: dict, point_tolerance: f
         return left
     if region_polys[side].contains(Point(*(mid - left * eps))):
         return -left
-    raise SweepAttachmentNotFoundError(sweep.name, f"{sweep.on} (side {side} not adjacent)")
+    raise SweepAttachmentNotFoundError(
+        sweep.name, f"{sweep.on} (side {side} not adjacent)"
+    )
 
 
 def clip_sweep_side(p0, p1, n_dir, thickness, region_poly, point_tolerance):
@@ -250,9 +252,7 @@ def clip_sweep_side(p0, p1, n_dir, thickness, region_poly, point_tolerance):
     p1 = np.asarray(p1, dtype=float)
     t_hat = (p1 - p0) / np.linalg.norm(p1 - p0)
     length = float(np.linalg.norm(p1 - p0))
-    rect = shapely.Polygon(
-        [p0, p1, p1 + n_dir * thickness, p0 + n_dir * thickness]
-    )
+    rect = shapely.Polygon([p0, p1, p1 + n_dir * thickness, p0 + n_dir * thickness])
     deficit = rect.difference(region_poly.buffer(point_tolerance))
     kept = [(0.0, length)]
     pieces = getattr(deficit, "geoms", [deficit]) if not deficit.is_empty else []
@@ -295,7 +295,9 @@ def sweep_rectangles(p0, p1, n_dir, thickness, intervals):
     for lo, hi in intervals:
         a = p0 + t_hat * lo
         b = p0 + t_hat * hi
-        out.append(shapely.Polygon([a, b, b + n_dir * thickness, a + n_dir * thickness]))
+        out.append(
+            shapely.Polygon([a, b, b + n_dir * thickness, a + n_dir * thickness])
+        )
     return out
 
 
@@ -307,7 +309,9 @@ def _polyline_target_region(p0, p1, n_dir, region_polys):
     for poly in region_polys.values():
         if poly.contains(probe):
             return poly
-    raise SweepAttachmentNotFoundError("<polyline sweep>", f"no region contains {probe.wkt}")
+    raise SweepAttachmentNotFoundError(
+        "<polyline sweep>", f"no region contains {probe.wkt}"
+    )
 
 
 def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
@@ -426,7 +430,7 @@ def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
     next_index = max((e.index for e in occ_entities), default=-1) + 1
     out = list(occ_entities)
     per_sweep_counter: dict = {}
-    for sweep, side, rect, p0, p1, n_dir in resolved:
+    for sweep, side, rect, p0, p1, _n_dir in resolved:
         i = per_sweep_counter.get((sweep.name, side), 0)
         source = LineString([p0, p1])
         band_faces = []

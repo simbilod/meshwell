@@ -1108,7 +1108,7 @@ in Task 6 if orchestrator import from mesh.py would be circular — decide
 there, and leave a re-export in orchestrator for backward compatibility).
 
 - [ ] **Step 7: Run** `uv run pytest tests/test_sweep_imprint.py -q` — PASS
-(the mesh generated here still uses gmsh's default trianglulation of the band
+(the mesh generated here still uses gmsh's default triangulation of the band
 faces — stamping arrives in Task 7; only group presence is asserted).
 Then `uv run pytest -x -q` — no regressions.
 

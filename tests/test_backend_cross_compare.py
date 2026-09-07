@@ -19,12 +19,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import meshio
 import numpy as np
 import pytest
 import shapely
 from shapely.geometry import LineString
 
-import meshio
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.interface_tag import InterfaceTag

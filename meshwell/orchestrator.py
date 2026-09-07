@@ -72,6 +72,7 @@ def generate_mesh(
         checkpoint_cad: Optional path to save the CAD state (.xao).
         registry: Optional registry for ``OCC_entity`` function resolution.
         backend: Deprecated; only ``"occ"`` or ``None`` is accepted.
+        sweeps: Optional list of structured-sweep resolution specs.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 

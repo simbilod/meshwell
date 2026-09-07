@@ -23,9 +23,7 @@ def signed_axis(pts):
     """
     pts = np.asarray(pts, dtype=float)
     diffs = pts[:, None, :] - pts[None, :, :]
-    i, j = np.unravel_index(
-        int(np.argmax((diffs**2).sum(-1))), (len(pts), len(pts))
-    )
+    i, j = np.unravel_index(int(np.argmax((diffs**2).sum(-1))), (len(pts), len(pts)))
     d = pts[j] - pts[i]
     if d[0] < 0 or (d[0] == 0 and d[1] < 0):
         d = -d
