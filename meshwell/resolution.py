@@ -584,7 +584,7 @@ class BoundaryLayerResolutionSpec(ResolutionSpec):
             into the Min background field.
         """
         if not entities_mass_dict:
-            return None
+            return
         f = model.mesh.field.add("BoundaryLayer")
         model.mesh.field.setNumbers(f, "CurvesList", list(entities_mass_dict.keys()))
         model.mesh.field.setNumber(f, "Size", self.size)
@@ -603,4 +603,4 @@ class BoundaryLayerResolutionSpec(ResolutionSpec):
         if self.beta is not None:
             model.mesh.field.setNumber(f, "Beta", self.beta)
         model.mesh.field.setAsBoundaryLayer(f)
-        return None
+        return

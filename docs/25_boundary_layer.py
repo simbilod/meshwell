@@ -21,7 +21,9 @@ from meshwell.visualization import plot2D
 # ## A graded quad boundary layer on a region's outer boundary
 
 # %%
-sheet = PolySurface(polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1)
+sheet = PolySurface(
+    polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1
+)
 bl_mesh = generate_mesh(
     entities=[sheet],
     dim=2,
@@ -29,7 +31,9 @@ bl_mesh = generate_mesh(
     default_characteristic_length=0.1,
     resolution_specs={
         "sheet___None": [
-            BoundaryLayerResolutionSpec(size=0.01, thickness=0.08, ratio=1.3, quads=True)
+            BoundaryLayerResolutionSpec(
+                size=0.01, thickness=0.08, ratio=1.3, quads=True
+            )
         ],
     },
 )
@@ -42,13 +46,19 @@ plot2D(bl_mesh, title="Quad boundary layer on sheet___None", wireframe=True)
 
 # %%
 tri_mesh = generate_mesh(
-    entities=[PolySurface(polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1)],
+    entities=[
+        PolySurface(
+            polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1
+        )
+    ],
     dim=2,
     output_mesh="boundary_layer_tri.msh",
     default_characteristic_length=0.1,
     resolution_specs={
         "sheet___None": [
-            BoundaryLayerResolutionSpec(size=0.01, thickness=0.08, ratio=1.3, quads=False)
+            BoundaryLayerResolutionSpec(
+                size=0.01, thickness=0.08, ratio=1.3, quads=False
+            )
         ],
     },
 )
@@ -63,8 +73,12 @@ plot2D(tri_mesh, title="Triangle boundary layer", wireframe=True)
 # %%
 two = generate_mesh(
     entities=[
-        PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2),
-        PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1),
+        PolySurface(
+            polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+        ),
+        PolySurface(
+            polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+        ),
     ],
     dim=2,
     output_mesh="boundary_layer_two.msh",
