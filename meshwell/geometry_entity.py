@@ -1,6 +1,7 @@
 """Shared utilities for geometries."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +12,67 @@ if TYPE_CHECKING:
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
 
+logger = logging.getLogger(__name__)
+
+# Legacy per-entity dict keys from before arc identification became a
+# pipeline-level stamp (``cad_common.apply_arc_params``, driven by
+# ``generate_mesh``/``cad_occ`` kwargs). Old serialized scenes may still
+# carry these; ``from_dict`` never reads them since the constructors no
+# longer accept them.
+_LEGACY_ARC_DICT_KEYS = ("identify_arcs", "min_arc_points", "arc_tolerance")
+
+
+def warn_legacy_arc_keys(data: dict, entity_name: str) -> None:
+    """Warn when a serialized entity dict carries legacy per-entity arc keys.
+
+    Called once per ``from_dict`` invocation by PolyPrism/PolySurface/
+    PolyLine. The keys are silently ignored either way -- arcs are
+    enabled via the ``generate_mesh``/``cad_occ`` ``identify_arcs`` kwarg
+    today, not per entity -- this only makes the drop visible instead of
+    silent.
+    """
+    present = [k for k in _LEGACY_ARC_DICT_KEYS if k in data]
+    if present:
+        logger.warning(
+            "%s.from_dict: ignoring legacy per-entity arc key(s) %s -- arc "
+            "identification is enabled via generate_mesh/cad_occ kwargs now, "
+            "not per entity.",
+            entity_name,
+            present,
+        )
+
+
+# --- Arc-detection heuristics -------------------------------------------------
+# A run of vertices is accepted as a circular arc only if it is smooth and
+# genuinely curved. These thresholds are heuristic; collecting them here gives
+# the greedy detector (``_decompose_vertices_3d``), the closed-circle primitive,
+# and the seam finder ONE shared definition instead of scattered bare literals.
+
+# cos(60 deg): if any interior turn along a candidate run is sharper than 60
+# degrees the run is treated as polygon corners (e.g. a rectangle), not an arc.
+_ARC_MAX_TURN_COS = 0.5
+
+# A least-squares circle fit whose radius exceeds this is a near-straight line
+# masquerading as a huge-radius arc; reject it and emit line segments instead.
+# Absolute, hence scale-limited: fine for the O(1)-O(1e3) coordinates meshwell
+# targets; extreme-coordinate models would need this raised.
+_ARC_MAX_RADIUS = 1e6
+
+# ``|2 * signed triangle area|`` below this means three points are collinear, so
+# no unique circle passes through them (guards the division in
+# ``_three_point_circle_2d``). Absolute FP floor; area scales with length^2, so
+# this is likewise scale-limited at extreme coordinate magnitudes.
+_COLLINEAR_DET_EPS = 1e-30
+
+# An edge shorter than ``point_tolerance * _DEGENERATE_EDGE_REL`` is treated as
+# zero-length when measuring a turn angle (its direction is meaningless).
+# Vertices are already deduplicated at ``point_tolerance`` upstream, so in
+# practice this only catches floating-point-coincident survivors. Expressing it
+# relative to ``point_tolerance`` keeps the guard correct at any coordinate
+# scale -- a fixed 1e-6 would wrongly reject real edges in nanometre-scale
+# models, and a fixed 1e-12 is inconsistent with the coarser grid.
+_DEGENERATE_EDGE_REL = 1e-3
+
 
 @dataclass
 class DecompositionSegment:
@@ -20,6 +82,10 @@ class DecompositionSegment:
     is_arc: bool
     center: tuple[float, float, float] | None = None
     radius: float | None = None
+    # Set by canonicalize_ring_segments: the OFFSET canonical circle
+    # ((cx, cy), R +/- eps) this arc must be emitted on. None -> legacy
+    # 3-point emission (passthrough path only).
+    canonical: tuple[tuple[float, float], float] | None = None
 
 
 def _strip_consecutive_duplicates(
@@ -50,7 +116,8 @@ def _strip_consecutive_duplicates(
 
 def _find_canonical_seam(
     vertices: list[tuple[float, float, float]],
-    sharp_cos_threshold: float = 0.5,
+    point_tolerance: float = 1e-3,
+    sharp_cos_threshold: float = _ARC_MAX_TURN_COS,
 ) -> int:
     """Return index at which to start a closed polyline so arc runs don't straddle the seam.
 
@@ -63,6 +130,7 @@ def _find_canonical_seam(
     if n < 3:
         return 0
 
+    degenerate_edge = point_tolerance * _DEGENERATE_EDGE_REL
     best_idx = 0
     best_cos = 2.0
     best_key: tuple | None = None
@@ -74,7 +142,7 @@ def _find_canonical_seam(
         v2x, v2y = nxt[0] - cur[0], nxt[1] - cur[1]
         n1 = (v1x * v1x + v1y * v1y) ** 0.5
         n2 = (v2x * v2x + v2y * v2y) ** 0.5
-        if n1 < 1e-12 or n2 < 1e-12:
+        if n1 < degenerate_edge or n2 < degenerate_edge:
             continue
         cos_a = (v1x * v2x + v1y * v2y) / (n1 * n2)
         key = (cos_a, tuple(round(c, 9) for c in cur))
@@ -169,7 +237,7 @@ def _decompose_vertices_3d(
         and len(vertices) >= max(min_arc_points + 1, 4)
         and vertices[0] == vertices[-1]
     ):
-        seam = _find_canonical_seam(vertices)
+        seam = _find_canonical_seam(vertices, point_tolerance)
         vertices = _rotate_closed(vertices, seam)
 
     if not identify_arcs or len(vertices) < min_arc_points:
@@ -179,10 +247,69 @@ def _decompose_vertices_3d(
             for i in range(len(vertices) - 1)
         ]
 
+    ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
+    degenerate_edge = point_tolerance * _DEGENERATE_EDGE_REL
+
+    # Up-front closed-circle primitive. If the whole closed ring fits ONE
+    # circle within arc_tolerance, emit it directly as a single closed arc
+    # and skip the greedy per-window scan. The emission layer already
+    # special-cases closed circles (a 360-degree arc can't be one edge, so
+    # it's split into two 180-degree arcs); detecting them here keeps the
+    # two layers consistent and, crucially, keeps the greedy emitted-circle
+    # gate from ever seeing a window that wraps toward closure -- where
+    # start ~= end makes the 3-point circle ill-conditioned and the gate
+    # would fragment the ring into an arc + chords, yielding an
+    # untriangulatable face. A full-ring least-squares fit is the
+    # best-conditioned case; non-circular closed rings (rounded rectangles,
+    # ellipses) fail the fit and fall through to the greedy scan below.
+    if vertices[0] == vertices[-1] and len(vertices) >= min_arc_points + 1:
+        ring = np.array(vertices[:-1])
+        c_center, c_radius, c_residual = fit_circle_2d(ring[:, :2])
+        if c_residual <= arc_tolerance and c_radius < _ARC_MAX_RADIUS:
+            c_dev = np.abs(
+                np.hypot(ring[:, 0] - c_center[0], ring[:, 1] - c_center[1]) - c_radius
+            ).max()
+            # Same sharp-corner gate the greedy path applies (``valid_arc``):
+            # a coarsely sampled ring (e.g. a hexagon) fits a circle with low
+            # residual but turns too sharply at each vertex to be a genuine
+            # arc. Without this the primitive would promote coarse polygonal
+            # rings to circles that the greedy path (and the emission layer)
+            # would otherwise keep as line segments, producing degenerate
+            # faces. Ring is closed, so check the wrap-around corner too.
+            m = len(ring)
+            smooth = True
+            for k in range(m):
+                a = ring[(k - 1) % m][:2]
+                b = ring[k][:2]
+                cc = ring[(k + 1) % m][:2]
+                v1 = b - a
+                v2 = cc - b
+                n1 = np.hypot(v1[0], v1[1])
+                n2 = np.hypot(v2[0], v2[1])
+                if (
+                    n1 > degenerate_edge
+                    and n2 > degenerate_edge
+                    and float(np.dot(v1, v2) / (n1 * n2)) < _ARC_MAX_TURN_COS
+                ):
+                    smooth = False
+                    break
+            if c_dev <= arc_tolerance and smooth:
+                return [
+                    DecompositionSegment(
+                        points=vertices,
+                        is_arc=True,
+                        center=(
+                            round(c_center[0], ndigits),
+                            round(c_center[1], ndigits),
+                            vertices[0][2],
+                        ),
+                        radius=round(c_radius, ndigits),
+                    )
+                ]
+
     segments = []
     i = 0
     n = len(vertices)
-    ndigits = max(0, int(-np.floor(np.log10(point_tolerance))))
 
     while i < n - 1:
         # Try to find an arc starting at i
@@ -194,7 +321,36 @@ def _decompose_vertices_3d(
                 # For simplicity, we assume the arc is in the XY plane
                 center, radius, residual = fit_circle_2d(pts[:, :2])
 
-                if residual <= arc_tolerance and radius < 1e6:
+                accepted = residual <= arc_tolerance and radius < _ARC_MAX_RADIUS
+                if accepted:
+                    # The RMSE above validates the least-squares fit, but
+                    # emission interpolates only 3 samples (start, mid, end)
+                    # -- or the quarter samples for a closed window. Gate on
+                    # the MAX deviation of every window sample from both the
+                    # fitted circle and (for open windows) the 3-point
+                    # circle actually emitted: sagitta-starved windows
+                    # amplify a half-grid midpoint error into radius errors
+                    # far beyond arc_tolerance.
+                    xy = pts[:, :2]
+                    dev_fit = np.abs(
+                        np.hypot(xy[:, 0] - center[0], xy[:, 1] - center[1]) - radius
+                    ).max()
+                    accepted = dev_fit <= arc_tolerance
+                    window_closed = vertices[i] == vertices[j - 1]
+                    if accepted and not window_closed:
+                        mid_k = len(xy) // 2
+                        emitted = _three_point_circle_2d(
+                            tuple(xy[0]), tuple(xy[mid_k]), tuple(xy[-1])
+                        )
+                        if emitted is None:
+                            accepted = False
+                        else:
+                            (ecx, ecy), er = emitted
+                            dev_emit = np.abs(
+                                np.hypot(xy[:, 0] - ecx, xy[:, 1] - ecy) - er
+                            ).max()
+                            accepted = dev_emit <= arc_tolerance
+                if accepted:
                     # Ensure it's not a polygon with sharp corners (like a rectangle)
                     valid_arc = True
                     for k in range(1, len(pts) - 1):
@@ -202,9 +358,11 @@ def _decompose_vertices_3d(
                         v2 = pts[k + 1][:2] - pts[k][:2]
                         n1 = np.linalg.norm(v1)
                         n2 = np.linalg.norm(v2)
-                        if n1 > 1e-6 and n2 > 1e-6:
+                        if n1 > degenerate_edge and n2 > degenerate_edge:
                             cos_angle = np.dot(v1, v2) / (n1 * n2)
-                            if cos_angle < 0.5:  # Turn angle > 60 degrees
+                            if (
+                                cos_angle < _ARC_MAX_TURN_COS
+                            ):  # turn sharper than 60 deg
                                 valid_arc = False
                                 break
 
@@ -273,12 +431,315 @@ def fit_circle_2d(points: np.ndarray) -> tuple[tuple[float, float], float, float
     return (xc, yc), radius, residual
 
 
+def _arc_sense_ccw(center, p_start, p_mid, p_end) -> bool:
+    """True iff the arc start->mid->end runs counterclockwise about center.
+
+    Resolves the two-arc trim ambiguity by ANGULAR position of the
+    midpoint -- NOT by distance projection, which is degenerate (the
+    midpoint lies on the full circle for both trims; see the 3-point-form
+    comment in _make_occ_wire_from_vertices).
+    """
+    two_pi = 2.0 * np.pi
+    a0 = np.arctan2(p_start[1] - center[1], p_start[0] - center[0])
+    am = np.arctan2(p_mid[1] - center[1], p_mid[0] - center[0])
+    a1 = np.arctan2(p_end[1] - center[1], p_end[0] - center[0])
+    sweep_ccw = (a1 - a0) % two_pi
+    mid_rel = (am - a0) % two_pi
+    if sweep_ccw == 0.0:
+        return True
+    return bool(mid_rel <= sweep_ccw)
+
+
+def _project_to_circle(center, radius, p):
+    dx, dy = p[0] - center[0], p[1] - center[1]
+    d = float(np.hypot(dx, dy))
+    if d == 0.0:
+        return p
+    return (center[0] + radius * dx / d, center[1] + radius * dy / d)
+
+
+def _line_circle_junction(center, radius, p_junction, p_far):
+    """Junction of line (p_far -> p_junction) with the circle, nearest p_junction.
+
+    Tangent/degenerate cases return the tangency foot.
+    """
+    fx, fy = p_far
+    dx, dy = p_junction[0] - fx, p_junction[1] - fy
+    a = dx * dx + dy * dy
+    if a == 0.0:
+        return _project_to_circle(center, radius, p_junction)
+    ex, ey = fx - center[0], fy - center[1]
+    b = 2.0 * (dx * ex + dy * ey)
+    c = ex * ex + ey * ey - radius * radius
+    disc = b * b - 4.0 * a * c
+    if disc <= 0.0:
+        t = -(ex * dx + ey * dy) / a
+        return _project_to_circle(center, radius, (fx + t * dx, fy + t * dy))
+    sq = float(np.sqrt(disc))
+    candidates = [
+        (fx + t * dx, fy + t * dy) for t in ((-b - sq) / (2 * a), (-b + sq) / (2 * a))
+    ]
+    return min(
+        candidates,
+        key=lambda q: (q[0] - p_junction[0]) ** 2 + (q[1] - p_junction[1]) ** 2,
+    )
+
+
+def _circle_circle_junction(c1, r1, c2, r2, p_junction):
+    """Intersection of two circles nearest p_junction.
+
+    Midpoint of the two radial projections when they don't intersect
+    (same-circle case included: both projections coincide).
+    """
+    dx, dy = c2[0] - c1[0], c2[1] - c1[1]
+    d = float(np.hypot(dx, dy))
+    if d == 0.0 or d > r1 + r2 or d < abs(r1 - r2):
+        p1 = _project_to_circle(c1, r1, p_junction)
+        p2 = _project_to_circle(c2, r2, p_junction)
+        return (0.5 * (p1[0] + p2[0]), 0.5 * (p1[1] + p2[1]))
+    a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d)
+    h = float(np.sqrt(max(r1 * r1 - a * a, 0.0)))
+    mx, my = c1[0] + a * dx / d, c1[1] + a * dy / d
+    candidates = [
+        (mx + h * dy / d, my - h * dx / d),
+        (mx - h * dy / d, my + h * dx / d),
+    ]
+    return min(
+        candidates,
+        key=lambda q: (q[0] - p_junction[0]) ** 2 + (q[1] - p_junction[1]) ** 2,
+    )
+
+
+def _line_line_junction(a1, a2, b1, b2, p_fallback):
+    """Intersection (miter point) of infinite lines a1->a2 and b1->b2.
+
+    Return p_fallback when near-parallel (collinear offset edges keep their
+    shared endpoint).
+    """
+    d1x, d1y = a2[0] - a1[0], a2[1] - a1[1]
+    d2x, d2y = b2[0] - b1[0], b2[1] - b1[1]
+    denom = d1x * d2y - d1y * d2x
+    scale = max(abs(d1x), abs(d1y), abs(d2x), abs(d2y), 1e-300)
+    if abs(denom) <= 1e-12 * scale * scale:
+        return p_fallback
+    t = ((b1[0] - a1[0]) * d2y - (b1[1] - a1[1]) * d2x) / denom
+    return (a1[0] + t * d1x, a1[1] + t * d1y)
+
+
+def _offset_point(p_prev, p, eps):
+    """Shift ``p`` by ``eps`` along the right-of-travel normal of the segment.
+
+    For segment p_prev -> p: with OGC ring orientation (CCW exterior, CW
+    holes) material is LEFT of travel, so right-of-travel is outward.
+    """
+    dx, dy = p[0] - p_prev[0], p[1] - p_prev[1]
+    n = float(np.hypot(dx, dy))
+    if n == 0.0 or eps == 0.0:
+        return (p[0], p[1])
+    return (p[0] + eps * dy / n, p[1] - eps * dx / n)
+
+
+def _promote_chord_runs(segments, registry, *, tolerance):
+    """Replace line runs whose vertices all track one canonical circle with an arc.
+
+    Closes the classification cliffs (min_arc_points remnants, detector
+    gate rejections) where one entity keeps chords -- midpoint sag
+    R*theta^2/8, far above any boolean clearance -- against another
+    entity's arc. Keys on vertex proximity to a registered circle; never
+    re-fits. Single-segment runs (no interior vertex) stay untouched:
+    two points near a circle are indistinguishable from a straight edge
+    grazing it (the probe reports them).
+    """
+    if not segments or registry is None:
+        return segments
+
+    # Rotate so index 0 is an arc when one exists; line runs then never
+    # wrap the list seam. (All-line rings may split a seam-wrapping span
+    # into two promoted arcs on the same circle -- harmless: same-circle
+    # junctions are exact.)
+    first_arc = next((i for i, s in enumerate(segments) if s.is_arc), None)
+    if first_arc:
+        segments = segments[first_arc:] + segments[:first_arc]
+
+    out: list[DecompositionSegment] = []
+    i, n = 0, len(segments)
+    while i < n:
+        if segments[i].is_arc:
+            out.append(segments[i])
+            i += 1
+            continue
+        j = i
+        while j < n and not segments[j].is_arc:
+            j += 1
+        run = segments[i:j]
+        run_pts = [s.points[0] for s in run] + [run[-1].points[-1]]
+        # Greedy sub-run scan INSIDE the line run: a remnant arc can be
+        # embedded between genuine straight edges, so whole-run matching
+        # would be poisoned by the corners. Monotone: adding a vertex can
+        # only raise the max deviation, so break-on-first-miss finds the
+        # longest matching window exactly.
+        k, m = 0, len(run_pts)
+        while k < m - 1:
+            hit_k, best_end = None, None
+            end = k + 2  # >= 3 vertices: require an interior vertex
+            while end < m:
+                h = registry.match_chord_run(
+                    [(p[0], p[1]) for p in run_pts[k : end + 1]],
+                    tolerance=tolerance,
+                )
+                if h is None:
+                    break
+                hit_k, best_end = h, end
+                end += 1
+            if hit_k is not None:
+                (cx, cy), r = hit_k
+                z = run_pts[k][2]
+                out.append(
+                    DecompositionSegment(
+                        points=run_pts[k : best_end + 1],
+                        is_arc=True,
+                        center=(cx, cy, z),
+                        radius=r,
+                    )
+                )
+                k = best_end
+            else:
+                out.append(run[k])
+                k += 1
+        i = j
+    return out
+
+
+def canonicalize_ring_segments(segments, registry, *, eps, match_tolerance, slack):
+    """Canonicalize one OGC-oriented ring: promote, assign circles, offset, re-join.
+
+    OGC orientation (CCW exterior, CW holes) puts material LEFT of
+    travel: lines offset eps to the RIGHT of travel; an arc whose center
+    is left of travel offsets to R+eps, else R-eps. Junction vertices are
+    re-derived as intersections of the ADJACENT OFFSET primitives (miter
+    for line/line, root selection nearest the original vertex otherwise),
+    so every emitted vertex lies exactly on both incident curves.
+    """
+    segments = _promote_chord_runs(segments, registry, tolerance=match_tolerance)
+    n = len(segments)
+    if n == 0:
+        return segments
+
+    # Assign offset canonical circles to arcs.
+    for seg in segments:
+        if not seg.is_arc or seg.center is None:
+            continue
+        hit = None
+        if registry is not None:
+            hit = registry.lookup(
+                (seg.center[0], seg.center[1]), seg.radius, slack=slack
+            )
+        (cx, cy), r = (
+            hit if hit is not None else ((seg.center[0], seg.center[1]), seg.radius)
+        )
+        p0, p1 = seg.points[0], seg.points[1]
+        cross = (p1[0] - p0[0]) * (cy - p0[1]) - (p1[1] - p0[1]) * (cx - p0[0])
+        seg.canonical = ((cx, cy), r + eps if cross > 0 else r - eps)
+
+    if eps != 0.0:
+        # Offset line endpoints along their own right-of-travel normals.
+        for seg in segments:
+            if seg.is_arc:
+                continue
+            a, b = seg.points[0], seg.points[-1]
+            z = a[2]
+            oa = _offset_point((2 * a[0] - b[0], 2 * a[1] - b[1]), a, eps)
+            ob = _offset_point(a, b, eps)
+            seg.points = [(oa[0], oa[1], z), (ob[0], ob[1], z)]
+
+    # Re-derive every junction as the exact intersection of the two
+    # adjacent offset primitives (arcs keep their original points as trim
+    # references; only their endpoints move here).
+    if n > 1 or (n == 1 and not segments[0].is_arc):
+        for i, seg in enumerate(segments):
+            nxt = segments[(i + 1) % n]
+            p_orig = nxt.points[0]
+            z = p_orig[2]
+            if seg.is_arc and seg.canonical and nxt.is_arc and nxt.canonical:
+                (c1, r1), (c2, r2) = seg.canonical, nxt.canonical
+                j = _circle_circle_junction(c1, r1, c2, r2, (p_orig[0], p_orig[1]))
+            elif seg.is_arc and seg.canonical:
+                (c1, r1) = seg.canonical
+                j = _line_circle_junction(
+                    c1,
+                    r1,
+                    (nxt.points[0][0], nxt.points[0][1]),
+                    (nxt.points[-1][0], nxt.points[-1][1]),
+                )
+            elif nxt.is_arc and nxt.canonical:
+                (c2, r2) = nxt.canonical
+                j = _line_circle_junction(
+                    c2,
+                    r2,
+                    (seg.points[-1][0], seg.points[-1][1]),
+                    (seg.points[0][0], seg.points[0][1]),
+                )
+            elif not seg.is_arc and not nxt.is_arc:
+                j = _line_line_junction(
+                    (seg.points[0][0], seg.points[0][1]),
+                    (seg.points[-1][0], seg.points[-1][1]),
+                    (nxt.points[0][0], nxt.points[0][1]),
+                    (nxt.points[-1][0], nxt.points[-1][1]),
+                    (seg.points[-1][0], seg.points[-1][1]),
+                )
+            else:
+                continue  # arc without canonical: legacy passthrough
+            seg.points[-1] = (j[0], j[1], z)
+            nxt.points[0] = (j[0], j[1], z)
+    return segments
+
+
+def _three_point_circle_2d(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+) -> tuple[tuple[float, float], float] | None:
+    """Center and radius of the circle through three 2D points.
+
+    This is the circle the downstream arc emitters actually build
+    (gmsh ``addCircleArc(..., center=False)`` / OCC ``GC_MakeArcOfCircle``
+    through start, mid-sample, end). Returns ``None`` for (near-)collinear
+    points.
+    """
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < _COLLINEAR_DET_EPS:
+        return None
+    ux = (
+        (ax * ax + ay * ay) * (by - cy)
+        + (bx * bx + by * by) * (cy - ay)
+        + (cx * cx + cy * cy) * (ay - by)
+    ) / d
+    uy = (
+        (ax * ax + ay * ay) * (cx - bx)
+        + (bx * bx + by * by) * (ax - cx)
+        + (cx * cx + cy * cy) * (bx - ax)
+    ) / d
+    return (ux, uy), float(np.hypot(ax - ux, ay - uy))
+
+
 class GeometryEntity:
     """Base class for geometry entities that create GMSH geometry directly.
 
     Provides shared functionality for point deduplication and coordinate parsing
     to ensure consistent geometry creation across PolyLine, PolySurface, and PolyPrism.
     """
+
+    # Pipeline-level parameters, stamped by cad_common.apply_arc_params /
+    # CAD_OCC.process_entities. Class defaults keep standalone entity use
+    # working (no arcs, no offset, no registry).
+    identify_arcs = False
+    min_arc_points = 5
+    arc_tolerance = 1e-3
+    circle_registry = None
+    perturbation = 0.0
 
     def __init__(
         self,
@@ -529,7 +990,11 @@ class GeometryEntity:
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire
 
         vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
-        if not identify_arcs:
+        if (
+            not identify_arcs
+            and self.circle_registry is None
+            and self.perturbation == 0.0
+        ):
             points = self._make_occ_points(vertices)
             wire_builder = BRepBuilderAPI_MakeWire()
             for i in range(len(points) - 1):
@@ -543,24 +1008,29 @@ class GeometryEntity:
 
         ndigits = max(0, int(-np.floor(np.log10(self.point_tolerance))))
 
-        # Quantize coordinates once up front, then re-strip at the
-        # grid level: ``_strip_consecutive_duplicates`` compares raw
-        # coords with a strict-inequality Euclidean threshold, but
-        # rounding later in the loop can still collapse pairs that
-        # were just far enough apart to survive the strip. Feeding
-        # ``decompose_vertices`` (and the downstream arc fitter)
-        # already-quantized coords avoids fitting arcs through pairs
-        # of points that will later produce a zero-length edge.
-        quantized: list[tuple[float, float, float]] = []
+        def _key(coords):
+            return tuple(round(c, ndigits) for c in coords)
+
+        # Deduplicate at the point_tolerance grid WITHOUT moving surviving
+        # coordinates. Rounding actual coordinates would undo the
+        # sub-tolerance perturbation buffer applied by
+        # cad_common.prepare_entities (buffered coords sit ~perturbation off
+        # grid vertices and round straight back), silently disabling the
+        # pre-cut overlap strategy for arc-identified entities. Only the
+        # dedup KEY is quantized -- the same scheme
+        # _add_point_with_tolerance uses on the gmsh side.
+        deduped: list[tuple[float, float, float]] = []
+        last_key: tuple[float, float, float] | None = None
         for v in vertices:
-            q = tuple(round(c, ndigits) for c in v)
-            if quantized and q == quantized[-1]:
+            k = _key(v)
+            if last_key is not None and k == last_key:
                 continue
-            quantized.append(q)
+            deduped.append(v)
+            last_key = k
         was_closed = vertices[0] == vertices[-1]
-        if was_closed and len(quantized) >= 2 and quantized[0] != quantized[-1]:
-            quantized.append(quantized[0])
-        vertices = quantized
+        if was_closed and len(deduped) >= 2 and deduped[0] != deduped[-1]:
+            deduped.append(deduped[0])
+        vertices = deduped
 
         segments = self.decompose_vertices(
             vertices,
@@ -569,64 +1039,143 @@ class GeometryEntity:
             arc_tolerance=arc_tolerance,
         )
 
-        wire_builder = BRepBuilderAPI_MakeWire()
+        if self.circle_registry is not None or self.perturbation != 0.0:
+            segments = canonicalize_ring_segments(
+                segments,
+                self.circle_registry,
+                eps=self.perturbation,
+                match_tolerance=arc_tolerance + self.point_tolerance,
+                slack=self.point_tolerance,
+            )
 
-        def _rounded_pnt(coords):
-            rc = [round(c, ndigits) for c in coords]
-            return gp_Pnt(*rc)
+        wire_builder = BRepBuilderAPI_MakeWire()
 
         for seg in segments:
             if seg.is_arc:
-                start_coords = tuple(round(c, ndigits) for c in seg.points[0])
                 mid_idx = len(seg.points) // 2
-                mid_coords = tuple(round(c, ndigits) for c in seg.points[mid_idx])
-                end_coords = tuple(round(c, ndigits) for c in seg.points[-1])
+                is_closed = seg.points[0] == seg.points[-1]
                 # Drop degenerate arcs whose endpoints collapse under the
                 # quantization grid -- BRepBuilderAPI_MakeEdge raises
-                # StdFail_NotDone on a zero-length edge.
-                is_closed = seg.points[0] == seg.points[-1]
-                if not is_closed and start_coords == end_coords:
+                # StdFail_NotDone on a (near-)zero-length edge.
+                if not is_closed and _key(seg.points[0]) == _key(seg.points[-1]):
                     continue
-                p_start = gp_Pnt(*start_coords)
-                p_mid = gp_Pnt(*mid_coords)
-                p_end = gp_Pnt(*end_coords)
-                _center = gp_Pnt(seg.center[0], seg.center[1], seg.center[2])
 
-                if is_closed:
-                    # Full circle: split into two 180-degree arcs.
-                    quarter_idx = len(seg.points) // 4
-                    three_quarter_idx = (len(seg.points) * 3) // 4
-                    p1 = _rounded_pnt(seg.points[quarter_idx])
-                    p3 = _rounded_pnt(seg.points[three_quarter_idx])
-                    arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
-                    edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
-                    arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
-                    edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
-                    wire_builder.Add(edge1)
+                if seg.canonical is not None:
+                    (ccx, ccy), cr = seg.canonical
+                    z = seg.points[0][2]
+
+                    def _on_circle(p, _ccx=ccx, _ccy=ccy, _cr=cr, _z=z):
+                        q = _project_to_circle((_ccx, _ccy), _cr, (p[0], p[1]))
+                        return gp_Pnt(q[0], q[1], _z)
+
+                    if is_closed:
+                        # Unified onto the same 3-point form the open-arc
+                        # branch below uses (rather than the
+                        # (circle, p_start, p_end, sense) form this used to
+                        # build): OCC's ``Sense`` argument does not reliably
+                        # pick the intended half here either, so trust the
+                        # actual quarter/three-quarter samples (projected
+                        # onto the canonical circle) as through-points
+                        # instead. This also removes the asymmetry of only
+                        # this branch depending on ``_arc_sense_ccw``.
+                        quarter = len(seg.points) // 4
+                        three_q = (len(seg.points) * 3) // 4
+                        p0 = _on_circle(seg.points[0])
+                        pm = _on_circle(seg.points[mid_idx])
+                        p_quarter = _on_circle(seg.points[quarter])
+                        p_three_q = _on_circle(seg.points[three_q])
+                        wire_builder.Add(
+                            BRepBuilderAPI_MakeEdge(
+                                GC_MakeArcOfCircle(p0, p_quarter, pm).Value()
+                            ).Edge()
+                        )
+                        edge = BRepBuilderAPI_MakeEdge(
+                            GC_MakeArcOfCircle(pm, p_three_q, p0).Value()
+                        ).Edge()
+                    else:
+                        # NOT the (circle, p_start, p_end, sense) form: OCC's
+                        # ``Sense`` argument does not reliably pick the short
+                        # vs. long arc here -- empirically it can return the
+                        # SAME (wrong-way, 270-degree) arc for both
+                        # Sense=True and Sense=False when p_start's raw
+                        # circle-parameter exceeds p_end's (the common case
+                        # on a CW-oriented hole ring, where the offset
+                        # junction endpoints wrap "backwards" relative to
+                        # the circle's own CCW parametrization). The 3-point
+                        # form is unambiguous, so project the run's mid
+                        # sample onto the canonical circle (mirrors the
+                        # closed-arc branch's ``_on_circle`` use above) and
+                        # build through it instead of trusting ``sense``.
+                        #
+                        # NOTE this 3-point form (start, mid-on-circle, end)
+                        # reconstructs the canonical circle EXACTLY only when
+                        # both endpoints already lie on it. ``seg.points[0]``
+                        # / ``seg.points[-1]`` are junction points set by
+                        # ``canonicalize_ring_segments``'s junction loop
+                        # (~line 628 above), which guarantees on-circle
+                        # endpoints for line<->arc junctions (exact root, or
+                        # ``_project_to_circle``) and for arc<->arc junctions
+                        # whose two offset circles INTERSECT
+                        # (``_circle_circle_junction``'s exact root). Only the
+                        # arc<->arc NON-intersecting fallback
+                        # (``_circle_circle_junction``'s midpoint-of-two-
+                        # projections branch, ~line 466) leaves a junction
+                        # point that lies on NEITHER circle -- there the
+                        # reconstructed circle here deviates from the
+                        # canonical one by at most that junction's off-circle
+                        # distance (half the inter-circle gap). By
+                        # construction the two circles are nearly touching
+                        # (they were offset apart specifically to still
+                        # overlap for the boolean), so this gap -- and the
+                        # resulting curve deviation -- is sub-tolerance. It is a
+                        # deliberate trade favoring exact wire closure (the
+                        # wire must still close through this junction) over
+                        # perfect circle fidelity in this one fallback case.
+                        p_mid_on_circle = _on_circle(seg.points[mid_idx])
+                        edge = BRepBuilderAPI_MakeEdge(
+                            GC_MakeArcOfCircle(
+                                gp_Pnt(*seg.points[0]),
+                                p_mid_on_circle,
+                                gp_Pnt(*seg.points[-1]),
+                            ).Value()
+                        ).Edge()
                 else:
-                    # Three-point arc form: GC_MakeArcOfCircle(p_start, p_mid,
-                    # p_end) builds the unique arc passing through all three
-                    # points, in that order. This avoids the CCW-vs-CW
-                    # ambiguity of the (circle, p_start, p_end, sense) form
-                    # -- the latter cannot be disambiguated by projecting
-                    # p_mid, since p_mid lies on the underlying full circle
-                    # and projection ignores the parametric trim of the arc
-                    # (gives LowerDistance == 0 for both senses).
-                    arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
-                    edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
+                    # Legacy passthrough: 3-point arcs through the vertices
+                    # (unchanged code from today, including its comment).
+                    p_start = gp_Pnt(*seg.points[0])
+                    p_mid = gp_Pnt(*seg.points[mid_idx])
+                    p_end = gp_Pnt(*seg.points[-1])
+
+                    if is_closed:
+                        # Full circle: split into two 180-degree arcs.
+                        quarter_idx = len(seg.points) // 4
+                        three_quarter_idx = (len(seg.points) * 3) // 4
+                        p1 = gp_Pnt(*seg.points[quarter_idx])
+                        p3 = gp_Pnt(*seg.points[three_quarter_idx])
+                        arc_geom1 = GC_MakeArcOfCircle(p_start, p1, p_mid).Value()
+                        edge1 = BRepBuilderAPI_MakeEdge(arc_geom1).Edge()
+                        arc_geom2 = GC_MakeArcOfCircle(p_mid, p3, p_end).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom2).Edge()
+                        wire_builder.Add(edge1)
+                    else:
+                        # Three-point arc form: GC_MakeArcOfCircle(p_start, p_mid,
+                        # p_end) builds the unique arc passing through all three
+                        # points, in that order. This avoids the CCW-vs-CW
+                        # ambiguity of the (circle, p_start, p_end, sense) form
+                        # -- the latter cannot be disambiguated by projecting
+                        # p_mid, since p_mid lies on the underlying full circle
+                        # and projection ignores the parametric trim of the arc
+                        # (gives LowerDistance == 0 for both senses).
+                        arc_geom = GC_MakeArcOfCircle(p_start, p_mid, p_end).Value()
+                        edge = BRepBuilderAPI_MakeEdge(arc_geom).Edge()
             else:
-                p1_coords = [round(c, ndigits) for c in seg.points[0]]
-                p2_coords = [round(c, ndigits) for c in seg.points[1]]
-                # Coords within `point_tolerance` that survive the
-                # Python-tuple dedup can still collapse to the same
-                # quantized point here (rounding bins wider than the
-                # strict inequality used by _strip_consecutive_duplicates);
-                # skip the resulting zero-length segment rather than let
-                # BRepBuilderAPI_MakeEdge raise StdFail_NotDone.
-                if p1_coords == p2_coords:
+                # Consecutive points that collapse to the same grid key are
+                # already removed by the dedup pass above; guard anyway so a
+                # zero-length segment can never reach MakeEdge.
+                if _key(seg.points[0]) == _key(seg.points[1]):
                     continue
                 edge = BRepBuilderAPI_MakeEdge(
-                    gp_Pnt(*p1_coords), gp_Pnt(*p2_coords)
+                    gp_Pnt(*seg.points[0]), gp_Pnt(*seg.points[1])
                 ).Edge()
             wire_builder.Add(edge)
         return wire_builder.Wire()

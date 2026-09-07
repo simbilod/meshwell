@@ -2,6 +2,7 @@
 import pytest
 from shapely.geometry import Polygon
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.polyprism import PolyPrism
 from meshwell.structured.collect import collect_structured_slabs
 from meshwell.structured.exceptions import StructuredEntityTypeError
@@ -62,10 +63,8 @@ def test_carries_arc_metadata():
         buffers={0.0: 0.0, 1.0: 0.0},
         physical_name="a",
         structured=True,
-        identify_arcs=True,
-        arc_tolerance=5e-4,
-        min_arc_points=5,
     )
+    apply_arc_params([p], identify_arcs=True, arc_tolerance=5e-4, min_arc_points=5)
     slabs, _ = collect_structured_slabs([p])
     assert slabs[0].arc_tolerance == 5e-4
     assert slabs[0].min_arc_points == 5

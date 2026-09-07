@@ -9,7 +9,7 @@ from typing import Any
 
 import gmsh
 
-from meshwell.cad_common import prepare_entities
+from meshwell.cad_common import apply_arc_params, prepare_entities
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
@@ -89,6 +89,30 @@ def generate_mesh(
             - ``pre_2d_hook`` / ``pre_3d_hook`` (callables): composed with
               the structured wedge hooks (run after the structured pass),
               not replacing them.
+            - ``identify_arcs`` (bool | None, default ``None``): stamp
+              pipeline-level arc identification onto every polygon
+              entity before the structured pre-pass. ``None`` leaves
+              entities untouched (scene-level semantics: both sides of
+              a shared circular boundary must classify it identically).
+            - ``min_arc_points`` (int, default 5): minimum run length
+              considered for arc fitting, forwarded to
+              :func:`meshwell.cad_common.apply_arc_params`.
+            - ``arc_tolerance`` (float, default 1e-3): circle-fit
+              tolerance, forwarded to
+              :func:`meshwell.cad_common.apply_arc_params`.
+            - ``perturbation`` (float, default ``1e-5``): outward offset
+              disambiguating overlapping same-mesh_order boundaries so the
+              per-entity cut cascade has a non-degenerate strip to carve.
+              Applied ANALYTICALLY at OCC wire-emission time (canonical
+              circle/line offsets keyed off the pipeline's circle
+              registry) rather than via a shapely buffer -- entities stay
+              at nominal coordinates through the structured pre-pass and
+              registry build. ``perturbation=0.0`` is supported
+              (canonical-exact mode: both sides of a shared boundary emit
+              the identical geometry; ownership resolves by exact
+              coincidence plus the final fragment merge). Only the legacy
+              cad_gmsh mirror still realizes this via the shapely
+              round-join buffer.
 
     Returns:
         meshio.Mesh: The generated mesh object (or ``None`` if
@@ -102,6 +126,19 @@ def generate_mesh(
         )
 
     entities = deserialize(entities, registry=registry)
+
+    # Pipeline-level arc identification (scene-level semantics: both
+    # sides of a shared circular boundary must classify it identically).
+    identify_arcs = mesh_kwargs.pop("identify_arcs", None)
+    arc_min_points = mesh_kwargs.pop("min_arc_points", 5)
+    arc_fit_tolerance = mesh_kwargs.pop("arc_tolerance", 1e-3)
+    if identify_arcs is not None:
+        apply_arc_params(
+            entities,
+            identify_arcs=identify_arcs,
+            min_arc_points=arc_min_points,
+            arc_tolerance=arc_fit_tolerance,
+        )
 
     # --- Stage 1: OCC fragmentation (cad_occ kwargs). -------------------
     cad_kwargs: dict[str, Any] = {}
@@ -130,15 +167,31 @@ def generate_mesh(
         perturbation = 1e-5
 
     # --- Stage 1a: shapely intake pre-pass. -----------------------------
-    # Apply the polygon-buffer + InterfaceTag resolve BEFORE the
-    # structured pre-pass so the cohort compound is built from the same
-    # perturbed XY that unstructured neighbours see at BOP time.
-    # ``prepare_entities`` is NOT idempotent; cad_occ is invoked with
-    # ``prepared=True`` below to skip the duplicate buffer.
+    # Resolve InterfaceTags against NOMINAL polygon coordinates before the
+    # structured pre-pass. Cohort solids are baked (bottom-up, via
+    # ``structured/wedge.py``) directly from these NOMINAL coordinates --
+    # they never see a buffer. Unstructured neighbours, by contrast, are
+    # emitted by cad_occ with the analytic canonical epsilon (eps) offset
+    # applied at OCC wire-emission time (canonical circle/line offsets
+    # keyed off the circle registry; see
+    # ``GeometryEntity._make_occ_wire_from_vertices``). That offset is
+    # XY-only, so a shared z-plane face between a cohort and an
+    # unstructured neighbour still coincides exactly; only the LATERAL
+    # (vertical) footprint differs, by eps. That eps-sized lateral gap
+    # is what the fragment fuzzy (1e-3, orders of magnitude larger than
+    # the default eps=1e-5) is relied on to absorb during the final BOP
+    # fragment pass -- it is not a coincidence, it's the designed
+    # tolerance ladder. ``cad_occ`` is called here with
+    # ``buffer_polygons=False`` so entities stay nominal through this
+    # pre-pass and the structured pre-pass / registry build.
+    # ``prepare_entities`` is NOT idempotent when ``buffer_polygons=True``
+    # (the compounding buffer case); cad_occ is invoked with
+    # ``prepared=True`` below to skip its own duplicate call regardless.
     prepare_entities(
         entities,
         perturbation=perturbation,
         resolve_snap=max(perturbation, point_tolerance),
+        buffer_polygons=False,
     )
 
     # --- Stage 1b: structured pre-pass. ---------------------------------

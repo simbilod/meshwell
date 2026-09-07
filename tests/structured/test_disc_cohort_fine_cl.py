@@ -43,19 +43,16 @@ def test_disc_cohort_meshes_at_fine_cl(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="disc",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         _disc(),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _disc(),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     out = tmp_path / "x.msh"
     generate_mesh(
@@ -64,5 +61,6 @@ def test_disc_cohort_meshes_at_fine_cl(tmp_path):
         output_mesh=out,
         default_characteristic_length=0.2,
         resolution_specs={"disc": [StructuredExtrusionResolutionSpec(n_layers=2)]},
+        identify_arcs=True,
     )
     assert out.exists()

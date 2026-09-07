@@ -35,6 +35,7 @@ import pytest
 import shapely
 from shapely.geometry import LineString
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.cad_gmsh import cad_gmsh
 from meshwell.cad_occ import cad_occ
 from meshwell.interface_tag import InterfaceTag
@@ -333,16 +334,15 @@ def _arc_polygon(n_arc_pts: int = 24, radius: float = 5.0) -> shapely.Polygon:
 
 def _scene_arc_polysurface() -> list:
     """2D arc-bearing surface with ``identify_arcs=True``."""
-    return [
+    entities = [
         PolySurface(
             polygons=_arc_polygon(),
             physical_name="quarter_disc",
             mesh_order=1,
-            identify_arcs=True,
-            min_arc_points=4,
-            arc_tolerance=1e-3,
         ),
     ]
+    apply_arc_params(entities, identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3)
+    return entities
 
 
 def _scene_arc_polyprism_with_inner_box() -> list:
@@ -356,16 +356,17 @@ def _scene_arc_polyprism_with_inner_box() -> list:
     """
     outer = _arc_polygon(n_arc_pts=24, radius=5.0)
     inner = shapely.Polygon([(3, 0), (5, 0), (5, 2), (3, 2)])
+    outer_entity = PolyPrism(
+        polygons=outer,
+        buffers=_NO_TAPER,
+        physical_name="outer",
+        mesh_order=2,
+    )
+    apply_arc_params(
+        [outer_entity], identify_arcs=True, min_arc_points=4, arc_tolerance=1e-3
+    )
     return [
-        PolyPrism(
-            polygons=outer,
-            buffers=_NO_TAPER,
-            physical_name="outer",
-            mesh_order=2,
-            identify_arcs=True,
-            min_arc_points=4,
-            arc_tolerance=1e-3,
-        ),
+        outer_entity,
         PolyPrism(
             polygons=inner,
             buffers=_NO_TAPER,
@@ -498,6 +499,14 @@ _SCENES: list[tuple[str, Callable[[], list], dict, str | None]] = [
             "ignore_entity_count_dims": {0, 1},
             "check_boundary_signature": False,
         },
+        # Previously strict-xfailed: preserving the perturbation buffer for
+        # arc entities exposed a tangency between the inner box's straight
+        # +x edge and the outer disc's fitted arc at (5,0). The buffer left
+        # a sub-perturbation grazing gap (~4-7e-6) that the old cut fuzzy
+        # (perturbation/2 = 5e-6) sat just below, so OCC's cut emitted a
+        # sliver solid. Fixed by widening the default cut fuzzy to
+        # 0.8*perturbation (8e-6), which clears the gap while staying inside
+        # the tolerance ladder. Now backend-equivalent again.
         None,
     ),
     (
@@ -529,10 +538,25 @@ _SCENES: list[tuple[str, Callable[[], list], dict, str | None]] = [
         # invariant; the n_entities + per-entity boundary structure
         # legitimately differs. The same applies to A___B / B___A
         # which sits on the same face. Edge counts also differ for
-        # the same reason.
+        # the same reason, and (since Task 5) so do vertex counts:
+        # cad_gmsh still realizes ``perturbation`` via a shared shapely
+        # buffer (Pass A of ``prepare_entities``), while cad_occ now
+        # offsets each entity's boundary analytically and independently
+        # at wire-emission time -- the two constructions no longer share
+        # topology at the offset boundary, so the vertices bounding the
+        # differently-split edges/faces above also diverge in count. The
+        # mass-based check below still confirms the geometry itself
+        # (area) is equivalent -- widened to 5e-3 (from the 1e-3
+        # default) for the same reason ``test_backend_cross_compare.py``
+        # ``test_polyprism_with_interface_tag_match`` widens its own
+        # rel_tol: the thin ``iface`` panel sits exactly on the now-
+        # independently-offset boundary, picking up a slightly larger
+        # (observed ~2.4e-3) but still perturbation-scale cross-backend
+        # mass discrepancy.
         {
-            "ignore_entity_count_dims": {1, 2},
+            "ignore_entity_count_dims": {0, 1, 2},
             "mass_only_groups": {"iface", "A___B"},
+            "rel_tol": 5e-3,
         },
         None,
     ),

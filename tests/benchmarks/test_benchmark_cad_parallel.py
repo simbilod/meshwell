@@ -31,12 +31,18 @@ def create_complex_polysurfaces(n=50, n_holes=20):
 
 
 def test_benchmark_cad_parallel_instantiation():
+    # NOTE: cad_occ prepares entities in place (buffers them by the
+    # perturbation), which is not idempotent -- reusing the same list for
+    # both runs would compound the buffer and now raises via
+    # cad_common.prepare_entities' double-call guard. Build a fresh set per
+    # run so both measure equivalent full-pipeline work.
     entities = create_complex_polysurfaces(50, 20)
     start = time.time()
     cad_occ(entities, n_threads=1)
     end = time.time()
     print(f"CAD OCC (1 thread) took {end - start:.4f}s")
 
+    entities = create_complex_polysurfaces(50, 20)
     start = time.time()
     cad_occ(entities, n_threads=4)
     end = time.time()

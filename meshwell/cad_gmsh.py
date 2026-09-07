@@ -124,9 +124,13 @@ class CAD_GMSH:
                 point_tolerance=point_tolerance,
                 # Tolerance ladder:
                 #   geometry_tolerance < tolerance_boolean < perturbation
-                # so BOP can resolve the small offset cleanly.
+                # so BOP can resolve the small offset cleanly. tolerance_boolean
+                # matches cad_occ's default cut fuzzy (0.8*perturbation) to keep
+                # the two backends numerically aligned; gmsh has no tangency
+                # sliver of its own (its XAO loader snaps points to curves), but
+                # the wider value is harmless here and preserves parity.
                 geometry_tolerance=self.perturbation / 100,
-                tolerance_boolean=self.perturbation / 2,
+                tolerance_boolean=0.8 * self.perturbation,
             )
             self._owns_model = True
         else:
@@ -409,10 +413,16 @@ class CAD_GMSH:
         # enough to produce non-degenerate panels (at least 2*point_tolerance
         # in each direction). The polygon perturbation (which can be
         # sub-tolerance) only shifts the boundary position, not the strip width.
+        # ``buffer_polygons=True`` (explicit): unlike cad_occ, this backend
+        # has no analytic-offset wire emission, so it still relies on the
+        # shapely round-join buffer to realize ``perturbation``. This is the
+        # one remaining caller of the buffer path -- a legacy mirror kept
+        # for head-to-head comparison against cad_occ.
         prepare_entities(
             entities_list,
             perturbation=self.perturbation,
             resolve_snap=max(self.perturbation, self.point_tolerance),
+            buffer_polygons=True,
         )
 
         # ----- Pass C: existing mesh_order sort + instantiate + sequential cut -----
@@ -492,13 +502,31 @@ def cad_gmsh(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     perturbation: float | None = None,
+    identify_arcs: bool | None = None,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
 ) -> tuple[list[GMSHLabeledEntity], ModelManager]:
     """Build + fragment + tag ``entities_list`` in a gmsh model.
 
     Returns ``(labeled_entities, model_manager)``. Pass
     ``model_manager`` on to :func:`meshwell.mesh.mesh` (with
     ``model=model_manager``) to mesh without round-tripping through XAO.
+
+    ``identify_arcs`` / ``min_arc_points`` / ``arc_tolerance`` stamp
+    pipeline-level arc identification onto ``entities_list`` via
+    :func:`meshwell.cad_common.apply_arc_params` before processing.
+    ``identify_arcs=None`` (default) leaves entities untouched.
     """
+    if identify_arcs is not None:
+        from meshwell.cad_common import apply_arc_params
+
+        apply_arc_params(
+            entities_list,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+
     processor = CAD_GMSH(
         point_tolerance=point_tolerance,
         n_threads=n_threads,

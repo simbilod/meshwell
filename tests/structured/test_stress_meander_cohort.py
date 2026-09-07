@@ -127,7 +127,6 @@ def meander_entities():
         physical_name="meander_A",
         structured=True,
         mesh_order=3.0,
-        identify_arcs=True,
     )
     B = PolyPrism(
         outer_U_polygon(),
@@ -135,7 +134,6 @@ def meander_entities():
         physical_name="meander_B",
         structured=True,
         mesh_order=3.0,
-        identify_arcs=True,
     )
     void_A = PolyPrism(
         _disc(L + 0.8, 1.5, 0.3),  # inside A's U-turn 1 half-annulus
@@ -144,7 +142,6 @@ def meander_entities():
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     void_B = PolyPrism(
         _rect(L / 2 - 0.25, 3.25, L / 2 + 0.25, 3.75),  # inside strip B2
@@ -153,7 +150,6 @@ def meander_entities():
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     embed = PolyPrism(
         _rect(-3.0, -2.0, L + 4.0, 6.0),
@@ -161,21 +157,18 @@ def meander_entities():
         physical_name="embed",
         structured=True,
         mesh_order=10.0,
-        identify_arcs=True,
     )
     cladding_below = PolyPrism(
         _rect(-3.0, -2.0, L + 4.0, 6.0),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="cladding_below",
         mesh_order=20.0,
-        identify_arcs=True,
     )
     cladding_above = PolyPrism(
         _rect(-3.0, -2.0, L + 4.0, 6.0),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cladding_above",
         mesh_order=20.0,
-        identify_arcs=True,
     )
     return [A, B, void_A, void_B, embed, cladding_below, cladding_above]
 
@@ -198,7 +191,6 @@ def test_meander_minimal(tmp_path):
         physical_name="meander_A",
         structured=True,
         mesh_order=3.0,
-        identify_arcs=True,
     )
     B = PolyPrism(
         outer_U_polygon(),
@@ -206,21 +198,18 @@ def test_meander_minimal(tmp_path):
         physical_name="meander_B",
         structured=True,
         mesh_order=3.0,
-        identify_arcs=True,
     )
     clad = PolyPrism(
         _rect(-3.0, -2.0, L + 4.0, 6.0),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="cladding_below",
         mesh_order=20.0,
-        identify_arcs=True,
     )
     clad_above = PolyPrism(
         _rect(-3.0, -2.0, L + 4.0, 6.0),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cladding_above",
         mesh_order=20.0,
-        identify_arcs=True,
     )
     specs = {
         n: [StructuredExtrusionResolutionSpec(n_layers=2)]
@@ -232,6 +221,7 @@ def test_meander_minimal(tmp_path):
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
         resolution_specs=specs,
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "out.msh")
     field = set(m.cell_sets.keys())
@@ -245,6 +235,7 @@ def test_meander_meshes(meander_entities, tmp_path):
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
         resolution_specs=_resolution_specs(),
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "out.msh")
     wedges = sum(cb.data.shape[0] for cb in m.cells if cb.type == "wedge")
@@ -260,6 +251,7 @@ def test_meander_physical_groups_present(meander_entities, tmp_path):
         output_mesh=tmp_path / "out.msh",
         default_characteristic_length=0.5,
         resolution_specs=_resolution_specs(),
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "out.msh")
     field = set(m.cell_sets.keys())
@@ -351,6 +343,7 @@ def test_meander_aabb_rescue_count_bounded(meander_entities, tmp_path):
             output_mesh=tmp_path / "out.msh",
             default_characteristic_length=0.5,
             resolution_specs=_resolution_specs(),
+            identify_arcs=True,
         )
     finally:
         xao_mod._compute_physical_groups = original

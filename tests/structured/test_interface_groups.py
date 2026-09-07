@@ -65,26 +65,22 @@ def test_stacked_discs_share_interface_group(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="lower",
         structured=True,
-        identify_arcs=True,
     )
     upper = PolyPrism(
         _disc(1.0),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="upper",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         _disc(1.0),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _disc(1.0),
         {2.0: 0.0, 3.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     msh = tmp_path / "x.msh"
     generate_mesh(
@@ -96,6 +92,7 @@ def test_stacked_discs_share_interface_group(tmp_path):
             "lower": [StructuredExtrusionResolutionSpec(n_layers=2)],
             "upper": [StructuredExtrusionResolutionSpec(n_layers=2)],
         },
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert (
@@ -120,26 +117,22 @@ def test_annulus_on_disc_partial_interface(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="lower_disc",
         structured=True,
-        identify_arcs=True,
     )
     annulus = PolyPrism(
         _annulus(r_out=2.0, r_in=0.8),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="upper_annulus",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         _disc(2.0),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _annulus(r_out=2.0, r_in=0.8),
         {2.0: 0.0, 3.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     msh = tmp_path / "x.msh"
     generate_mesh(
@@ -151,6 +144,7 @@ def test_annulus_on_disc_partial_interface(tmp_path):
             "lower_disc": [StructuredExtrusionResolutionSpec(n_layers=2)],
             "upper_annulus": [StructuredExtrusionResolutionSpec(n_layers=2)],
         },
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     interface_name = (
@@ -171,19 +165,16 @@ def test_single_disc_only_boundary(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="disc",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         _disc(1.0),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _disc(1.0),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     msh = tmp_path / "x.msh"
     generate_mesh(
@@ -192,6 +183,7 @@ def test_single_disc_only_boundary(tmp_path):
         output_mesh=msh,
         default_characteristic_length=0.3,
         resolution_specs={"disc": [StructuredExtrusionResolutionSpec(n_layers=3)]},
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert "disc___None" in names

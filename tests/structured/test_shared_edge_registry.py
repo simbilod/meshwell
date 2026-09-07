@@ -48,21 +48,18 @@ def test_arc_cohort_meets_unstructured_base_produces_interface(tmp_path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     base = PolyPrism(
         _rect(-5, -5, 5, 5),
         {-2.0: 0.0, 0.0: 0.0},
         physical_name="base",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _rect(-5, -5, 5, 5),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     generate_mesh(
         [bg, base, cap],
@@ -72,6 +69,7 @@ def test_arc_cohort_meets_unstructured_base_produces_interface(tmp_path):
         resolution_specs={
             "bg": [StructuredExtrusionResolutionSpec(n_layers=2)],
         },
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "out.msh")
 
@@ -212,21 +210,18 @@ def test_aabb_rescue_count_reduced_under_sharing(tmp_path):
             physical_name="bg",
             structured=True,
             mesh_order=2.0,
-            identify_arcs=True,
         )
         base = PolyPrism(
             _rect(-5, -5, 5, 5),
             {-2.0: 0.0, 0.0: 0.0},
             physical_name="base",
             mesh_order=3.0,
-            identify_arcs=True,
         )
         cap = PolyPrism(
             _rect(-5, -5, 5, 5),
             {1.0: 0.0, 2.0: 0.0},
             physical_name="cap",
             mesh_order=3.0,
-            identify_arcs=True,
         )
         generate_mesh(
             [bg, base, cap],
@@ -236,6 +231,7 @@ def test_aabb_rescue_count_reduced_under_sharing(tmp_path):
             resolution_specs={
                 "bg": [StructuredExtrusionResolutionSpec(n_layers=2)],
             },
+            identify_arcs=True,
         )
     finally:
         xao_mod._compute_physical_groups = original

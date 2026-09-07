@@ -38,19 +38,16 @@ def test_disc_cohort_with_square_cap_above(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="disc",
         structured=True,
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     base = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     msh = tmp_path / "x.msh"
     generate_mesh(
@@ -61,6 +58,7 @@ def test_disc_cohort_with_square_cap_above(tmp_path):
         resolution_specs={
             "disc": [StructuredExtrusionResolutionSpec(n_layers=2)],
         },
+        identify_arcs=True,
     )
     m = meshio.read(msh)
     # Both physical groups must be present with elements.

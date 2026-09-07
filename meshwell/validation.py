@@ -1,5 +1,6 @@
 """Mesh validation routines."""
 import math
+import warnings
 
 
 def validate_dimtags(dimtags):
@@ -87,3 +88,73 @@ def order_entities(entities):
         start_index=start_index,
     )
     return ordered_defined_entities + ordered_undefined_entities
+
+
+def validate_tolerance_ladder(
+    perturbation: float,
+    cut_fuzzy_value: float,
+    fragment_fuzzy_value: float,
+) -> None:
+    """Enforce the cad_occ tolerance-ladder invariants.
+
+    Two regimes, depending on ``perturbation``:
+
+    * ``perturbation > 0`` (analytic offset, non-degenerate): the existing
+      ladder::
+
+          cut_fuzzy_value < perturbation < 2*perturbation < fragment_fuzzy_value
+
+      * A cut fuzzy at or above the perturbation can merge the buffered
+        overlap into the lower-priority entity and erase the carved face.
+      * A fragment fuzzy below ``2*perturbation`` leaves the buffered
+        face gap unmerged: coincident faces keep distinct TShapes and
+        ``A___B`` interface groups are silently dropped by the XAO writer.
+
+    * ``perturbation == 0`` (canonical-exact mode: both sides of a shared
+      boundary emit the IDENTICAL geometry, no offset strip): the ladder
+      collapses to ``0 < cut_fuzzy_value < fragment_fuzzy_value``. There is
+      no overlap strip to protect, so ``cut_fuzzy_value`` only needs to
+      heal grid-snap / T-junction noise while staying below the fragment's
+      merge authority.
+
+    Raises:
+        ValueError: when the ladder is inverted
+            (``fragment_fuzzy_value <= cut_fuzzy_value``).
+
+    Warns:
+        UserWarning: when ``fragment_fuzzy_value < 2*perturbation`` or
+            ``cut_fuzzy_value >= perturbation`` (with ``perturbation > 0``);
+            or when ``perturbation == 0`` and ``cut_fuzzy_value == 0``
+            (degenerate canonical-exact mode: no noise healing at all).
+    """
+    if fragment_fuzzy_value <= cut_fuzzy_value:
+        raise ValueError(
+            f"fragment_fuzzy_value ({fragment_fuzzy_value:g}) must exceed "
+            f"cut_fuzzy_value ({cut_fuzzy_value:g}): the final fragment must "
+            f"be at least as permissive as the per-entity cuts."
+        )
+    if perturbation > 0 and 0 < fragment_fuzzy_value < 2 * perturbation:
+        warnings.warn(
+            f"fragment_fuzzy_value ({fragment_fuzzy_value:g}) is below "
+            f"2*perturbation ({2 * perturbation:g}): faces separated by the "
+            f"perturbation buffer may keep distinct TShapes and interface "
+            f"groups (A___B) can be silently dropped. Raise "
+            f"fragment_fuzzy_value / point_tolerance, or lower perturbation.",
+            stacklevel=3,
+        )
+    if perturbation > 0 and cut_fuzzy_value >= perturbation:
+        warnings.warn(
+            f"cut_fuzzy_value ({cut_fuzzy_value:g}) is >= perturbation "
+            f"({perturbation:g}): a loose cut fuzzy can merge the buffered "
+            f"overlap into the lower-priority entity and erase the carved "
+            f"face.",
+            stacklevel=3,
+        )
+    if perturbation == 0 and cut_fuzzy_value == 0:
+        warnings.warn(
+            "perturbation=0 with cut_fuzzy_value=0: the cut cascade cannot "
+            "heal grid-snap or T-junction noise. The CAD_OCC default "
+            "derives cut_fuzzy_value=0.5*fragment_fuzzy_value in this "
+            "regime; pass an explicit value if zero is intended.",
+            stacklevel=3,
+        )

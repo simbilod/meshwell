@@ -6,6 +6,7 @@ import gmsh
 import pytest
 import shapely
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.cad_occ import cad_occ
 from meshwell.mesh import mesh
 from meshwell.occ_entity import OCC_entity
@@ -151,6 +152,42 @@ def test_occ_many_polyprism_stress_with_arcs_and_coincidences():
     # Polygon reused by two coinciding prisms.
     coincident_poly = circle(3, 0, 1.0)
 
+    disk_a = PolyPrism(
+        polygons=circle(-2.0, 0.0, 1.5),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="disk_a",
+        mesh_order=5,
+    )
+    disk_b = PolyPrism(
+        polygons=circle(-0.5, 0.0, 1.5),
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="disk_b",
+        mesh_order=6,
+    )
+    coincident_hi = PolyPrism(
+        polygons=coincident_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="coincident_hi",
+        mesh_order=1,
+    )
+    coincident_lo = PolyPrism(
+        polygons=coincident_poly,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="coincident_lo",
+        mesh_order=10,
+    )
+    ring = PolyPrism(
+        polygons=circle(1.0, -2.0, 1.2).difference(circle(1.0, -2.0, 0.6)),
+        buffers={0.0: 0.0, 2.0: 0.0},
+        physical_name="ring",
+        mesh_order=4,
+    )
+    # Arc identification is now stamped uniformly across the entities that
+    # need it, rather than passed per-entity to the constructor.
+    apply_arc_params(
+        [disk_a, disk_b, coincident_hi, coincident_lo, ring], identify_arcs=True
+    )
+
     entities = [
         # Background slab (lowest priority).
         PolyPrism(
@@ -160,35 +197,11 @@ def test_occ_many_polyprism_stress_with_arcs_and_coincidences():
             mesh_order=20,
         ),
         # Two arc-fitted disks with an arc-on-arc overlap.
-        PolyPrism(
-            polygons=circle(-2.0, 0.0, 1.5),
-            buffers={0.0: 0.0, 1.0: 0.0},
-            physical_name="disk_a",
-            mesh_order=5,
-            identify_arcs=True,
-        ),
-        PolyPrism(
-            polygons=circle(-0.5, 0.0, 1.5),
-            buffers={0.0: 0.0, 1.0: 0.0},
-            physical_name="disk_b",
-            mesh_order=6,
-            identify_arcs=True,
-        ),
+        disk_a,
+        disk_b,
         # Exactly coinciding pair: hi wins everywhere, lo is fully absorbed.
-        PolyPrism(
-            polygons=coincident_poly,
-            buffers={0.0: 0.0, 1.0: 0.0},
-            physical_name="coincident_hi",
-            mesh_order=1,
-            identify_arcs=True,
-        ),
-        PolyPrism(
-            polygons=coincident_poly,
-            buffers={0.0: 0.0, 1.0: 0.0},
-            physical_name="coincident_lo",
-            mesh_order=10,
-            identify_arcs=True,
-        ),
+        coincident_hi,
+        coincident_lo,
         # Square cutting into disk_b — arc-on-polygon interface.
         PolyPrism(
             polygons=Polygon([(-1.0, 1.0), (2.0, 1.0), (2.0, 3.0), (-1.0, 3.0)]),
@@ -197,13 +210,7 @@ def test_occ_many_polyprism_stress_with_arcs_and_coincidences():
             mesh_order=3,
         ),
         # Annulus (polygon with hole), taller than the slab.
-        PolyPrism(
-            polygons=circle(1.0, -2.0, 1.2).difference(circle(1.0, -2.0, 0.6)),
-            buffers={0.0: 0.0, 2.0: 0.0},
-            physical_name="ring",
-            mesh_order=4,
-            identify_arcs=True,
-        ),
+        ring,
         # Buffered (non-extrude) tapered prism.
         PolyPrism(
             polygons=Polygon([(3.0, 3.0), (4.5, 3.0), (4.5, 4.5), (3.0, 4.5)]),
@@ -368,6 +375,31 @@ def test_cad_occ_perturbation_below_point_tolerance():
     assert abs(ymin - 0.0) < point_tol, ymin
     assert abs(xmax - 2.0) < point_tol, xmax
     assert abs(ymax - 1.0) < point_tol, ymax
+
+
+def test_cohort_cut_skip_is_logged(caplog):
+    """Skipping the unsafe cohort cut must leave an audit trail."""
+    import logging
+
+    from shapely.geometry import Polygon
+
+    from meshwell.cad_occ import CAD_OCC
+
+    a = PolySurface(
+        polygons=Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]),
+        physical_name="cohortish",
+        mesh_order=1,
+    )
+    a.is_cohort = True
+    b = PolySurface(
+        polygons=Polygon([(1, 1), (3, 1), (3, 3), (1, 3)]),
+        physical_name="plain",
+        mesh_order=2,
+    )
+    proc = CAD_OCC()
+    with caplog.at_level(logging.DEBUG, logger="meshwell.cad_occ"):
+        proc.process_entities_cut_only([a, b])
+    assert any("skipping" in r.message.lower() for r in caplog.records)
 
 
 if __name__ == "__main__":

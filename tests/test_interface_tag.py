@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import gmsh
 import pytest
 import shapely
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Polygon
 
 from meshwell.cad_gmsh import cad_gmsh, strip_suffix
 from meshwell.interface_tag import InterfaceTag
@@ -220,6 +220,45 @@ def test_resolve_mesh_order_ties_resolve_to_first_inserted():
     seg = tag.resolved_linestrings[0]
     xs = {round(x, 6) for x, _ in seg.coords}
     assert xs == {round(5 + pert, 6)}, (xs, seg)
+
+
+def test_resolve_ignores_z_disjoint_targets():
+    """A z-disjoint higher-priority entity must not shadow the tag's polygon.
+
+    The real 3D cut cascade never cuts z-disjoint prisms, but the XY-only
+    shapely replication subtracted them. ``upper`` fully engulfs ``lower``
+    in XY (and wins the cascade via a lower ``mesh_order``) but sits at a
+    disjoint z-range from the tag. Pre-fix, ``upper`` absorbs ``lower``
+    entirely and its own boundary lies far from the tag's nominal strip,
+    so nothing resolves. Post-fix, ``upper`` is excluded and ``lower``'s
+    own boundary resolves normally.
+    """
+    lower_square = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
+    upper_square = Polygon([(-1, -1), (2, -1), (2, 2), (-1, 2)])
+    lower = PolyPrism(
+        polygons=lower_square,
+        buffers={0.0: 0.0, 1.0: 0.0},
+        physical_name="lower",
+        mesh_order=2,
+    )
+    upper = PolyPrism(
+        polygons=upper_square,
+        buffers={2.0: 0.0, 3.0: 0.0},
+        physical_name="upper",
+        mesh_order=1,
+    )
+    tag = InterfaceTag(
+        linestrings=LineString([(1, 0), (1, 1)]),
+        zmin=0.0,
+        zmax=1.0,
+        physical_name="right_edge",
+    )
+    # Same shapes prepare_entities would pass: name -> [entities].
+    tag.resolve({"lower": [lower], "upper": [upper]}, default_snap=1e-3)
+    # Without z filtering, upper (mesh_order 1) engulfs and subtracts
+    # lower's square entirely, and upper's own boundary lies far from the
+    # tag's nominal strip, so nothing resolves.
+    assert tag.resolved_linestrings, "tag failed to resolve on z-disjoint stack"
 
 
 def _physical_names() -> list[tuple[int, str]]:

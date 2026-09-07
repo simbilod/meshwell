@@ -2,6 +2,7 @@ import gmsh
 import numpy as np
 from shapely.geometry import Polygon
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.model import ModelManager
 from meshwell.polyprism import PolyPrism
 
@@ -37,9 +38,8 @@ def test_arc_extrusion():
             polygons=poly1,
             buffers={0.0: 0.0, 5.0: 0.0},  # extrude from z=0 to z=5
             physical_name="stadium1",
-            identify_arcs=True,
-            arc_tolerance=1e-3,
         )
+        apply_arc_params([prism1], identify_arcs=True, arc_tolerance=1e-3)
 
         manager = ModelManager()
         dimtags1 = prism1.instanciate(manager)
@@ -59,9 +59,8 @@ def test_arc_extrusion():
             polygons=poly2,
             buffers={0.0: 0.0, 5.0: 0.0},
             physical_name="stadium2",
-            identify_arcs=True,
-            arc_tolerance=1e-3,
         )
+        apply_arc_params([prism2], identify_arcs=True, arc_tolerance=1e-3)
         dimtags2 = prism2.instanciate(manager)
         manager.sync_model()
 

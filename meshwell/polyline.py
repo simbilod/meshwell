@@ -7,7 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import LineString, MultiLineString
 
-from meshwell.geometry_entity import GeometryEntity
+from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -34,9 +34,6 @@ class PolyLine(GeometryEntity):
         mesh_bool: bool = True,
         additive: bool = False,
         point_tolerance: float = 1e-3,
-        identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
@@ -79,9 +76,6 @@ class PolyLine(GeometryEntity):
         self.mesh_bool = mesh_bool
         self.dimension = 1
         self.additive = additive
-        self.identify_arcs = identify_arcs
-        self.min_arc_points = min_arc_points
-        self.arc_tolerance = arc_tolerance
 
     def _create_wire_from_linestring(self, linestring: LineString) -> int:
         """Create a GMSH wire directly from linestring coordinates."""
@@ -120,11 +114,32 @@ class PolyLine(GeometryEntity):
         entities = []
         for seg in segments:
             if seg.is_arc:
-                # Create arc
+                # Three-point form (center=False): the arc through start,
+                # mid-sample, and end. The center form requires
+                # |center-start| == |center-end| within OCC precision,
+                # which grid-snapped samples and a grid-rounded fitted
+                # center cannot guarantee (mismatch up to ~sqrt(2)*grid).
+                # Mirrors GeometryEntity._create_surface_from_vertices.
                 start_pt = self._add_point_with_tolerance(*seg.points[0])
-                center_pt = self._add_point_with_tolerance(*seg.center)
+                mid_idx = len(seg.points) // 2
+                mid_pt = self._add_point_with_tolerance(*seg.points[mid_idx])
                 end_pt = self._add_point_with_tolerance(*seg.points[-1])
-                arc_id = gmsh.model.occ.addCircleArc(start_pt, center_pt, end_pt)
+                if start_pt == end_pt:
+                    # Full circle: split into two 180-degree arcs through
+                    # the quarter-point samples.
+                    quarter_idx = len(seg.points) // 4
+                    three_quarter_idx = (len(seg.points) * 3) // 4
+                    p1 = self._add_point_with_tolerance(*seg.points[quarter_idx])
+                    p3 = self._add_point_with_tolerance(*seg.points[three_quarter_idx])
+                    arc1 = gmsh.model.occ.addCircleArc(
+                        start_pt, p1, mid_pt, center=False
+                    )
+                    arc2 = gmsh.model.occ.addCircleArc(mid_pt, p3, end_pt, center=False)
+                    entities.extend(arc_id for arc_id in (arc1, arc2) if arc_id != 0)
+                    continue
+                arc_id = gmsh.model.occ.addCircleArc(
+                    start_pt, mid_pt, end_pt, center=False
+                )
                 if arc_id != 0:
                     entities.append(arc_id)
             else:
@@ -217,9 +232,6 @@ class PolyLine(GeometryEntity):
             "mesh_bool": self.mesh_bool,
             "additive": self.additive,
             "point_tolerance": self.point_tolerance,
-            "identify_arcs": self.identify_arcs,
-            "min_arc_points": self.min_arc_points,
-            "arc_tolerance": self.arc_tolerance,
             "translation": self.translation,
             "rotation_axis": self.rotation_axis,
             "rotation_point": self.rotation_point,
@@ -239,6 +251,8 @@ class PolyLine(GeometryEntity):
         import shapely.wkt
         from shapely.geometry import MultiLineString
 
+        warn_legacy_arc_keys(data, cls.__name__)
+
         linestrings = [shapely.wkt.loads(wkt) for wkt in data["linestrings_wkt"]]
         if len(linestrings) > 1:
             linestrings = MultiLineString(linestrings)
@@ -252,9 +266,6 @@ class PolyLine(GeometryEntity):
             mesh_bool=data["mesh_bool"],
             additive=data["additive"],
             point_tolerance=data["point_tolerance"],
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
             translation=data.get("translation"),
             rotation_axis=data.get("rotation_axis"),
             rotation_point=data.get("rotation_point"),

@@ -61,7 +61,6 @@ def test_void_inside_single_structured_slab(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _disc(0, 0, 1.0),
@@ -70,21 +69,18 @@ def test_void_inside_single_structured_slab(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -93,6 +89,7 @@ def test_void_inside_single_structured_slab(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     m = meshio.read(msh)
     names = _physical_names(msh)
@@ -115,7 +112,6 @@ def test_void_below_unstructured_cap(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _disc(0, 0, 1.0),
@@ -124,21 +120,18 @@ def test_void_below_unstructured_cap(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -147,6 +140,7 @@ def test_void_below_unstructured_cap(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     m = meshio.read(msh)
     names = _physical_names(msh)
@@ -171,7 +165,6 @@ def test_void_above_unstructured_base(tmp_path: Path):
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     bg = PolyPrism(
         _square(-3, -3, 6, 6),
@@ -179,7 +172,6 @@ def test_void_above_unstructured_base(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _disc(0, 0, 1.0),
@@ -188,14 +180,12 @@ def test_void_above_unstructured_base(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -204,6 +194,7 @@ def test_void_above_unstructured_base(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert _has_interface(names, "bg", "hole")
@@ -222,7 +213,6 @@ def test_void_sandwiched_between_unstructured(tmp_path: Path):
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     bg = PolyPrism(
         _square(-3, -3, 6, 6),
@@ -230,7 +220,6 @@ def test_void_sandwiched_between_unstructured(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _disc(0, 0, 1.0),
@@ -239,14 +228,12 @@ def test_void_sandwiched_between_unstructured(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -255,6 +242,7 @@ def test_void_sandwiched_between_unstructured(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert _has_interface(names, "bg", "hole"), "lateral"
@@ -276,7 +264,6 @@ def test_void_through_stacked_cohort(tmp_path: Path):
         physical_name="lower",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     upper = PolyPrism(
         _square(-3, -3, 6, 6),
@@ -284,7 +271,6 @@ def test_void_through_stacked_cohort(tmp_path: Path):
         physical_name="upper",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     # Two voids, one per slab, with the same disc footprint.
     hole_lower = PolyPrism(
@@ -294,7 +280,6 @@ def test_void_through_stacked_cohort(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     hole_upper = PolyPrism(
         _disc(0, 0, 1.0),
@@ -303,21 +288,18 @@ def test_void_through_stacked_cohort(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _square(-3, -3, 6, 6),
         {2.0: 0.0, 3.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -326,6 +308,7 @@ def test_void_through_stacked_cohort(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("lower", "upper"),
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert _has_interface(
@@ -348,7 +331,6 @@ def test_void_below_structured_cohort_slab(tmp_path: Path):
         physical_name="lower",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     upper = PolyPrism(
         _square(-3, -3, 6, 6),
@@ -356,7 +338,6 @@ def test_void_below_structured_cohort_slab(tmp_path: Path):
         physical_name="upper",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _disc(0, 0, 1.0),
@@ -365,21 +346,18 @@ def test_void_below_structured_cohort_slab(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _square(-3, -3, 6, 6),
         {2.0: 0.0, 3.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -388,6 +366,7 @@ def test_void_below_structured_cohort_slab(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("lower", "upper"),
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert _has_interface(names, "lower", "hole"), "lateral"
@@ -407,7 +386,6 @@ def test_void_square_no_arcs(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _square(-0.5, -0.5, 1, 1),
@@ -416,21 +394,18 @@ def test_void_square_no_arcs(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -439,6 +414,7 @@ def test_void_square_no_arcs(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert _has_interface(
@@ -459,7 +435,6 @@ def test_two_separate_voids_policy_b(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=3.0,
-        identify_arcs=True,
     )
     # Void A: disc centred at (-1.5, 0).
     void_a = PolyPrism(
@@ -469,7 +444,6 @@ def test_two_separate_voids_policy_b(tmp_path: Path):
         structured=True,
         mesh_order=2.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     # Void B: disc centred at (+1.5, 0).
     void_b = PolyPrism(
@@ -479,21 +453,18 @@ def test_two_separate_voids_policy_b(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _square(-3, -3, 6, 6),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -502,6 +473,7 @@ def test_two_separate_voids_policy_b(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     m = meshio.read(msh)
     names = _physical_names(msh)
@@ -529,7 +501,6 @@ def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
         physical_name="bg",
         structured=True,
         mesh_order=2.0,
-        identify_arcs=True,
     )
     hole = PolyPrism(
         _disc(0, 0, 1.0),
@@ -538,7 +509,6 @@ def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
         structured=True,
         mesh_order=1.0,
         mesh_bool=False,
-        identify_arcs=True,
     )
     # Arc-bearing cap (a larger disc) above. Pre-cut splits it into
     # disc-over-hole + annular-ring-over-bg.
@@ -547,14 +517,12 @@ def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
         mesh_order=3.0,
-        identify_arcs=True,
     )
     below = PolyPrism(
         _square(-3, -3, 6, 6),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     # Second above-cladding covering the bg corners that the disc cap doesn't
     # cover. Together with `cap` the union spans the bg footprint, satisfying
@@ -564,7 +532,6 @@ def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
         {1.0: 0.0, 2.0: 0.0},
         physical_name="above_corners",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "out.msh"
     generate_mesh(
@@ -573,6 +540,7 @@ def test_void_with_arc_neighbour_pre_cut(tmp_path: Path):
         output_mesh=msh,
         default_characteristic_length=0.4,
         resolution_specs=_structured_spec("bg"),
+        identify_arcs=True,
     )
     names = _physical_names(msh)
     assert _has_interface(

@@ -1,6 +1,7 @@
 import numpy as np
 from shapely.geometry import Polygon
 
+from meshwell.cad_common import apply_arc_params
 from meshwell.cad_occ import cad_occ
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
@@ -49,8 +50,6 @@ def test_arc_cad_fusion():
         polygons=poly_trace,
         buffers={0.0: 0.0, 5.0: 0.0},
         physical_name="trace",
-        identify_arcs=True,
-        arc_tolerance=1e-3,
         mesh_order=1,
     )
 
@@ -58,8 +57,6 @@ def test_arc_cad_fusion():
         polygons=poly_gnd_in,
         buffers={0.0: 0.0, 5.0: 0.0},
         physical_name="gnd_in",
-        identify_arcs=True,
-        arc_tolerance=1e-3,
         mesh_order=1,
     )
 
@@ -67,16 +64,18 @@ def test_arc_cad_fusion():
         polygons=poly_gnd_out,
         buffers={0.0: 0.0, 5.0: 0.0},
         physical_name="gnd_out",
+        mesh_order=1,
+    )
+    apply_arc_params(
+        [prism_trace, prism_gnd_in, prism_gnd_out],
         identify_arcs=True,
         arc_tolerance=1e-3,
-        mesh_order=1,
     )
 
     prism_straight = PolyPrism(
         polygons=poly_straight,
         buffers={0.0: 0.0, 5.0: 0.0},
-        physical_name="straight",
-        identify_arcs=False,  # straight block
+        physical_name="straight",  # straight block; identify_arcs stays False
         mesh_order=2,
     )
 

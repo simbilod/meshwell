@@ -70,20 +70,17 @@ def scene_single_disc(out_dir: Path) -> Path:
         buffers={0.0: 0.0, 1.0: 0.0},
         physical_name="disc",
         structured=True,
-        identify_arcs=True,
     )
     # Cladding above and below to satisfy the cohort wrapping invariant.
     base = PolyPrism(
         polygons=_disc(0, 0, 1.0, n=48),
         buffers={-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         polygons=_disc(0, 0, 1.0, n=48),
         buffers={1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     out = out_dir / "single_disc.msh"
     generate_mesh(
@@ -92,6 +89,7 @@ def scene_single_disc(out_dir: Path) -> Path:
         output_mesh=out,
         default_characteristic_length=0.3,
         resolution_specs={"disc": [StructuredExtrusionResolutionSpec(n_layers=3)]},
+        identify_arcs=True,
     )
     _report(out)
     return out
@@ -108,26 +106,22 @@ def scene_stacked_discs(out_dir: Path) -> Path:
         buffers={0.0: 0.0, 1.0: 0.0},
         physical_name="lower",
         structured=True,
-        identify_arcs=True,
     )
     upper = PolyPrism(
         polygons=_disc(0, 0, 1.0, n=48),
         buffers={1.0: 0.0, 2.0: 0.0},
         physical_name="upper",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         polygons=_disc(0, 0, 1.0, n=48),
         buffers={-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         polygons=_disc(0, 0, 1.0, n=48),
         buffers={2.0: 0.0, 3.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     out = out_dir / "stacked_discs.msh"
     generate_mesh(
@@ -139,6 +133,7 @@ def scene_stacked_discs(out_dir: Path) -> Path:
             "lower": [StructuredExtrusionResolutionSpec(n_layers=2)],
             "upper": [StructuredExtrusionResolutionSpec(n_layers=2)],
         },
+        identify_arcs=True,
     )
     _report(out)
     return out
@@ -156,26 +151,22 @@ def scene_annulus_on_disc(out_dir: Path) -> Path:
         buffers={0.0: 0.0, 1.0: 0.0},
         physical_name="lower_disc",
         structured=True,
-        identify_arcs=True,
     )
     annulus = PolyPrism(
         polygons=_annulus(0, 0, r_out=2.0, r_in=0.8, n=48),
         buffers={1.0: 0.0, 2.0: 0.0},
         physical_name="upper_annulus",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         polygons=_disc(0, 0, 2.0, n=48),
         buffers={-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         polygons=_annulus(0, 0, r_out=2.0, r_in=0.8, n=48),
         buffers={2.0: 0.0, 3.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     out = out_dir / "annulus_disc_stack.msh"
     generate_mesh(
@@ -187,6 +178,7 @@ def scene_annulus_on_disc(out_dir: Path) -> Path:
             "lower_disc": [StructuredExtrusionResolutionSpec(n_layers=2)],
             "upper_annulus": [StructuredExtrusionResolutionSpec(n_layers=2)],
         },
+        identify_arcs=True,
     )
     _report(out)
     return out

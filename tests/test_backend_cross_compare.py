@@ -361,7 +361,16 @@ def test_polyprism_with_interface_tag_match(tmp_path):
     ns_occ = _normalize_summary(s_occ)
     assert "iface" in ns_gmsh
     assert "iface" in ns_occ
-    _assert_summaries_equivalent(s_gmsh, s_occ)
+    # Widened from the 1e-3 default (Task 5): cad_gmsh still realizes
+    # ``perturbation`` via cad_common's shared shapely buffer, while
+    # cad_occ now offsets each prism's boundary analytically and
+    # independently at wire-emission time. The thin ``iface`` panel sits
+    # exactly on that offset boundary, so its area now picks up a
+    # slightly larger (but still perturbation-scale, ~2.4e-3 relative)
+    # cross-backend discrepancy than the strict default allows. Observed
+    # rel~2.4e-3; 5e-3 keeps comfortable margin without masking a real
+    # divergence.
+    _assert_summaries_equivalent(s_gmsh, s_occ, rel_tol=5e-3)
 
 
 def test_keep_false_helper_match(tmp_path):

@@ -29,19 +29,16 @@ def test_full_circle_lateral_wall_coverage(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="disc",
         structured=True,
-        identify_arcs=True,
     )
     base = PolyPrism(
         _disc(1.0),
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="base",
-        identify_arcs=True,
     )
     cap = PolyPrism(
         _disc(1.0),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="cap",
-        identify_arcs=True,
     )
     generate_mesh(
         [disc, base, cap],
@@ -49,6 +46,7 @@ def test_full_circle_lateral_wall_coverage(tmp_path):
         output_mesh=tmp_path / "x.msh",
         default_characteristic_length=0.3,
         resolution_specs={"disc": [StructuredExtrusionResolutionSpec(n_layers=3)]},
+        identify_arcs=True,
     )
     m = meshio.read(tmp_path / "x.msh")
     # Quads only live on the lateral wall (bot/top are triangulated).

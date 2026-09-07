@@ -33,7 +33,6 @@ def test_structured_annulus_has_inner_lateral(tmp_path):
         {0.0: 0.0, 1.0: 0.0},
         physical_name="ann",
         structured=True,
-        identify_arcs=True,
     )
     # Cladding to satisfy wrapping invariant. Use a square cover that
     # spans the annulus footprint; the inner hole is intentionally NOT
@@ -44,14 +43,12 @@ def test_structured_annulus_has_inner_lateral(tmp_path):
         {-1.0: 0.0, 0.0: 0.0},
         physical_name="below",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     above = PolyPrism(
         _annulus(2.0, 0.8),
         {1.0: 0.0, 2.0: 0.0},
         physical_name="above",
         mesh_order=5.0,
-        identify_arcs=True,
     )
     msh = tmp_path / "x.msh"
     generate_mesh(
@@ -60,6 +57,7 @@ def test_structured_annulus_has_inner_lateral(tmp_path):
         output_mesh=msh,
         default_characteristic_length=0.3,
         resolution_specs={"ann": [StructuredExtrusionResolutionSpec(n_layers=2)]},
+        identify_arcs=True,
     )
     gmsh.initialize()
     try:

@@ -29,6 +29,7 @@ exactly; tests that pin one pin the other.
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from os import cpu_count
@@ -51,6 +52,7 @@ from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
 from meshwell.cad_common import prepare_entities
+from meshwell.validation import validate_tolerance_ladder
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -72,6 +74,8 @@ class OCCLabeledEntity:
     mesh_order: float | None = None
     _is_cohort: bool = False
 
+
+logger = logging.getLogger(__name__)
 
 _SHAPE_HASHER = TopTools_ShapeMapHasher()
 
@@ -128,11 +132,31 @@ class CAD_OCC:
                 get snapped before the TopoDS graph is built.
             n_threads: Thread count for ``BOPAlgo_Builder.SetRunParallel``.
             cut_fuzzy_value: Fuzzy passed to ``BRepAlgoAPI_Cut`` in the
-                sequential per-entity cut cascade. Defaults to
-                ``perturbation / 2`` (mirrors cad_gmsh's
-                ``tolerance_boolean = perturbation / 2``). Tight by design --
-                a loose cut fuzzy merges the buffered overlap into the lower
-                entity and erases the carved face.
+                sequential per-entity cut cascade. Two default regimes,
+                fragment_fuzzy_value resolved first since the
+                ``perturbation == 0`` branch depends on it:
+
+                * ``perturbation > 0`` (default): ``0.8 * perturbation``.
+                  Must stay below ``perturbation``: a cut fuzzy at/above it
+                  merges the buffered overlap into the lower entity and
+                  erases the carved face. It must also clear the
+                  sub-perturbation grazing gap the buffer itself leaves
+                  where a straight edge runs tangent to a fitted arc -- at
+                  ``perturbation / 2`` that gap survives and OCC's cut emits
+                  a spurious sliver solid at the tangency; ``0.8 *
+                  perturbation`` clears it while staying inside the ladder.
+                  cad_gmsh's ``tolerance_boolean`` uses the same ``0.8 *
+                  perturbation`` to keep the backends numerically aligned
+                  (gmsh has no sliver of its own -- its XAO loader snaps
+                  points to curves -- but the shared value is harmless
+                  there).
+                * ``perturbation == 0`` (canonical-exact mode): ``0.5 *
+                  fragment_fuzzy_value``. There is no overlap strip to
+                  protect (both sides emit the identical canonical
+                  geometry), so the ceiling is the fragment fuzzy instead;
+                  ``0.5 * fragment_fuzzy_value`` heals grid-snap / T-junction
+                  noise while staying strictly below the fragment's merge
+                  authority.
             fragment_fuzzy_value: Fuzzy passed to the final ``BOPAlgo_Builder``
                 all-fragment pass. Defaults to ``point_tolerance``,
                 intentionally LOOSER than the cut fuzzy: cad_occ tags
@@ -148,11 +172,23 @@ class CAD_OCC:
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
         self.perturbation = perturbation if perturbation is not None else 1e-5
-        self.cut_fuzzy_value = (
-            self.perturbation / 2 if cut_fuzzy_value is None else cut_fuzzy_value
-        )
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
+        )
+        if cut_fuzzy_value is not None:
+            self.cut_fuzzy_value = cut_fuzzy_value
+        elif self.perturbation > 0:
+            self.cut_fuzzy_value = 0.8 * self.perturbation
+        else:
+            # Canonical-exact mode (perturbation=0): no overlap strip to
+            # protect; ceiling is the fragment fuzzy. 0.5*fragment heals
+            # grid-snap / T-junction noise while staying strictly below
+            # the fragment's merge authority.
+            self.cut_fuzzy_value = 0.5 * self.fragment_fuzzy_value
+        validate_tolerance_ladder(
+            perturbation=self.perturbation,
+            cut_fuzzy_value=self.cut_fuzzy_value,
+            fragment_fuzzy_value=self.fragment_fuzzy_value,
         )
         # Set by the final fragment pass in ``_fragment_all`` so callers (e.g.
         # the orchestrator's cohort-shell check) can query ``Modified()``.
@@ -432,7 +468,28 @@ class CAD_OCC:
                 entities_list,
                 perturbation=self.perturbation,
                 resolve_snap=max(self.perturbation, self.point_tolerance),
+                buffer_polygons=False,
             )
+
+        # Build the cross-entity circle registry (if any entity opted into
+        # arc identification) and stamp ``perturbation`` / ``circle_registry``
+        # onto extrude polygon entities. This replaces the shapely buffer:
+        # entities stay at NOMINAL coordinates and the offset + canonical
+        # circle snap now happen analytically at OCC wire-emission time
+        # (``GeometryEntity._make_occ_wire_from_vertices``).
+        registry = None
+        if any(getattr(e, "identify_arcs", False) for e in entities_list):
+            from meshwell.circle_registry import build_circle_registry
+
+            registry = build_circle_registry(entities_list)
+        for ent in entities_list:
+            if getattr(ent, "polygons", None) is None:
+                continue
+            ent.perturbation = self.perturbation
+            if getattr(ent, "extrude", True):
+                ent.circle_registry = registry
+            # Non-extrude prisms get the line offset only: promotion onto
+            # circles would desynchronize their per-z loft wire counts.
 
         # Sort by mesh_order (lowest first); preserve insertion order on ties.
         indexed = list(enumerate(entities_list))
@@ -487,7 +544,15 @@ class CAD_OCC:
                 # be a no-op in volume but corrupts via fuzzy. fragment_all
                 # handles their boundary-plane merging cleanly.
                 if prev._is_cohort or labeled._is_cohort:
-                    # MANUAL_NOTE: don't do this silently, log it?
+                    logger.debug(
+                        "cad_occ: skipping pre-fragment cut between %s and %s "
+                        "(cohort involved; cut is unsafe on shared-TShape "
+                        "sub-solids and unnecessary since cohorts are "
+                        "disjoint by invariant). Boundary merging deferred "
+                        "to fragment.",
+                        prev.physical_name,
+                        labeled.physical_name,
+                    )
                     # MANUAL_NOTE: treat cohort hull as its own solid to cut
                     # unstructured around? Then only need to validate higher
                     # priority cohort mesh order
@@ -597,6 +662,9 @@ def cad_occ(
     perturbation: float | None = None,
     return_processor: bool = False,
     prepared: bool = False,
+    identify_arcs: bool | None = None,
+    min_arc_points: int = 5,
+    arc_tolerance: float = 1e-3,
 ) -> list[OCCLabeledEntity] | tuple[list[OCCLabeledEntity], CAD_OCC]:
     """Utility function for OCC-based CAD processing.
 
@@ -610,7 +678,22 @@ def cad_occ(
     ``processor.last_fragment_builder`` and query ``Modified()`` on
     pre-BOP shapes (used by the structured shell-invariance validator).
     See :class:`CAD_OCC` for the rest of the parameter semantics.
+
+    ``identify_arcs`` / ``min_arc_points`` / ``arc_tolerance`` stamp
+    pipeline-level arc identification onto ``entities_list`` via
+    :func:`meshwell.cad_common.apply_arc_params` before processing.
+    ``identify_arcs=None`` (default) leaves entities untouched.
     """
+    if identify_arcs is not None:
+        from meshwell.cad_common import apply_arc_params
+
+        apply_arc_params(
+            entities_list,
+            identify_arcs=identify_arcs,
+            min_arc_points=min_arc_points,
+            arc_tolerance=arc_tolerance,
+        )
+
     processor = CAD_OCC(
         point_tolerance=point_tolerance,
         n_threads=n_threads,

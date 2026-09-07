@@ -7,7 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
-from meshwell.geometry_entity import GeometryEntity
+from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 
 if TYPE_CHECKING:
     from OCP.TopoDS import TopoDS_Shape
@@ -32,9 +32,6 @@ class PolySurface(GeometryEntity):
         mesh_bool: bool = True,
         additive: bool = False,
         point_tolerance: float = 1e-3,
-        identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
@@ -75,9 +72,6 @@ class PolySurface(GeometryEntity):
         self.mesh_bool = mesh_bool
         self.dimension = 2
         self.additive = additive
-        self.identify_arcs = identify_arcs
-        self.min_arc_points = min_arc_points
-        self.arc_tolerance = arc_tolerance
 
     def _create_surface_with_holes(self, polygon: Polygon) -> int:
         """Create surface with holes directly using GMSH calls."""
@@ -155,9 +149,18 @@ class PolySurface(GeometryEntity):
     def instanciate_occ(self) -> TopoDS_Shape:
         """Create OCC surfaces directly using OCP."""
         from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+        from shapely.geometry.polygon import orient
 
         surfaces = []
         for polygon in self.polygons:
+            # Canonicalize to OGC convention (CCW exterior + CW interiors)
+            # unconditionally, mirroring PolyPrism.instanciate_occ. The
+            # canonical arc offset rule defines "outward" as
+            # material-left-of-travel, so it requires a fixed ring
+            # orientation; on a CW-wound input the offset would otherwise
+            # invert (grow instead of shrink, or vice versa).
+            polygon = orient(polygon, sign=1.0)
+
             # Create exterior face
             exterior_vertices = [
                 self._parse_coords(coords) for coords in polygon.exterior.coords
@@ -228,9 +231,6 @@ class PolySurface(GeometryEntity):
             "mesh_bool": self.mesh_bool,
             "additive": self.additive,
             "point_tolerance": self.point_tolerance,
-            "identify_arcs": self.identify_arcs,
-            "min_arc_points": self.min_arc_points,
-            "arc_tolerance": self.arc_tolerance,
             "translation": self.translation,
             "rotation_axis": self.rotation_axis,
             "rotation_point": self.rotation_point,
@@ -250,6 +250,8 @@ class PolySurface(GeometryEntity):
         import shapely.wkt
         from shapely.geometry import MultiPolygon
 
+        warn_legacy_arc_keys(data, cls.__name__)
+
         polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
         polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
 
@@ -260,9 +262,6 @@ class PolySurface(GeometryEntity):
             mesh_bool=data["mesh_bool"],
             additive=data["additive"],
             point_tolerance=data["point_tolerance"],
-            identify_arcs=data["identify_arcs"],
-            min_arc_points=data["min_arc_points"],
-            arc_tolerance=data["arc_tolerance"],
             translation=data.get("translation"),
             rotation_axis=data.get("rotation_axis"),
             rotation_point=data.get("rotation_point"),
