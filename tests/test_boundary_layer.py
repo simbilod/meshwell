@@ -1,8 +1,10 @@
+import pytest
 import shapely
 
 from meshwell.orchestrator import generate_mesh
 from meshwell.polysurface import PolySurface
-from meshwell.resolution import BoundaryLayerResolutionSpec
+from meshwell.resolution import BoundaryLayerResolutionSpec, StructuredSweepResolutionSpec
+from meshwell.structured.sweep import StructuredSweep
 
 
 def _sheet():
@@ -120,3 +122,25 @@ def test_global_none_returning_spec_does_not_crash(tmp_path):
     gmsh.logger.stop()
     assert mesh is not None
     assert not any("Unknown Field" in line for line in log)
+
+
+def _two_boxes():
+    return [
+        PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2),
+        PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1),
+    ]
+
+
+def test_boundary_layer_with_sweep_raises(tmp_path):
+    with pytest.raises(ValueError, match="boundary layer"):
+        generate_mesh(
+            entities=_two_boxes(),
+            sweeps=[StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})],
+            dim=2,
+            output_mesh=str(tmp_path / "conflict.msh"),
+            default_characteristic_length=0.5,
+            resolution_specs={
+                "qw": [StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 2})],
+                "lower___None": [BoundaryLayerResolutionSpec(size=0.01, thickness=0.05)],
+            },
+        )
