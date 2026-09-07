@@ -11,10 +11,13 @@
 
 # %%
 import shapely
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+from OCP.gp import gp_Pnt
 
+from meshwell.occ_entity import OCC_entity
 from meshwell.orchestrator import generate_mesh
 from meshwell.polysurface import PolySurface
-from meshwell.resolution import BoundaryLayerResolutionSpec
+from meshwell.resolution import BoundaryLayerResolutionSpec, ConstantInField
 from meshwell.visualization import plot2D
 
 # %% [markdown]
@@ -103,11 +106,6 @@ plot2D(two, title="Two boundary layers, different sizes", wireframe=True)
 # feature (wrapping graded layers around the corner).
 
 # %%
-from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
-from OCP.gp import gp_Pnt
-
-from meshwell.occ_entity import OCC_entity
-from meshwell.resolution import ConstantInField
 
 corner = OCC_entity(
     occ_function=lambda: BRepBuilderAPI_MakeVertex(gp_Pnt(1.0, 1.0, 0.0)).Vertex(),
@@ -116,7 +114,9 @@ corner = OCC_entity(
 )
 corner_mesh = generate_mesh(
     entities=[
-        PolySurface(polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1),
+        PolySurface(
+            polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1
+        ),
         corner,
     ],
     dim=2,
@@ -130,7 +130,9 @@ corner_mesh = generate_mesh(
     },
 )
 print("named corner is a mesh node:", "corner" in corner_mesh.cell_sets)
-plot2D(corner_mesh, title="Boundary layer + refined named corner (1, 1)", wireframe=True)
+plot2D(
+    corner_mesh, title="Boundary layer + refined named corner (1, 1)", wireframe=True
+)
 
 # %% [markdown]
 # ## Notes and limitations

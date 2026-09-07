@@ -23,8 +23,12 @@ def _named_point(x, y, name):
 
 def _stack():
     return [
-        PolySurface(polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2),
-        PolySurface(polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1),
+        PolySurface(
+            polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+        ),
+        PolySurface(
+            polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+        ),
     ]
 
 
@@ -94,7 +98,9 @@ def test_named_point_group_in_xao(tmp_path):
     gmsh.initialize()
     try:
         gmsh.merge(str(xao))
-        names = {gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups()}
+        names = {
+            gmsh.model.getPhysicalName(d, t) for d, t in gmsh.model.getPhysicalGroups()
+        }
     finally:
         gmsh.finalize()
     assert "pin" in names

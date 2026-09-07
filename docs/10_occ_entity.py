@@ -88,7 +88,6 @@ write_xao(cad_occ([custom_entity]), "cyl.xao")
 
 # %%
 import shapely  # noqa: E402
-
 from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex  # noqa: E402
 
 from meshwell.orchestrator import generate_mesh  # noqa: E402
@@ -103,11 +102,16 @@ def named_point(x, y, name):
     )
 
 
-sheet = PolySurface(polygons=shapely.box(0, 0, 4, 2), physical_name="sheet", mesh_order=1)
+sheet = PolySurface(
+    polygons=shapely.box(0, 0, 4, 2), physical_name="sheet", mesh_order=1
+)
 point_mesh = generate_mesh(
     entities=[sheet, named_point(2.0, 1.0, "probe")],
     dim=2,
     output_mesh="named_point.msh",
     default_characteristic_length=0.5,
 )
-print("named groups:", sorted(k for k in point_mesh.cell_sets if not k.startswith("gmsh:")))
+print(
+    "named groups:",
+    sorted(k for k in point_mesh.cell_sets if not k.startswith("gmsh:")),
+)
