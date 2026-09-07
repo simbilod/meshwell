@@ -56,6 +56,7 @@ def generate_mesh(
     checkpoint_cad: Path | str | None = None,
     registry: dict[str, Callable[..., Any]] | None = None,
     backend: str | None = None,  # deprecated
+    sweeps: list[Any] | None = None,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -71,6 +72,7 @@ def generate_mesh(
         checkpoint_cad: Optional path to save the CAD state (.xao).
         registry: Optional registry for ``OCC_entity`` function resolution.
         backend: Deprecated; only ``"occ"`` or ``None`` is accepted.
+        sweeps: Optional list of structured-sweep resolution specs.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -215,6 +217,18 @@ def generate_mesh(
 
     occ_entities = structured_post_pass(occ_entities_raw, state)
 
+    # --- Stage 1c: structured-sweep clip + imprint pass. ----------------
+    if sweeps:
+        from meshwell.structured.sweep import StructuredSweep
+        from meshwell.structured.sweep_cad import sweep_imprint_pass
+
+        sweeps = [
+            StructuredSweep.from_dict(s) if isinstance(s, dict) else s for s in sweeps
+        ]
+        occ_entities = sweep_imprint_pass(
+            occ_entities, sweeps, entities, point_tolerance
+        )
+
     # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
     interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
     boundary_delimiter = mesh_kwargs.pop("boundary_delimiter", "None")
@@ -260,7 +274,7 @@ def generate_mesh(
         # so user code can still inspect them if needed. (Face and
         # solid tag maps were resolved before this hook runs, so the
         # synthetic groups are no longer needed downstream.)
-        if state.slab_meta:
+        if state.slab_meta or sweeps:
             _strip_synthetic_physical_groups()
 
     def _structured_pre_3d() -> None:
@@ -308,7 +322,9 @@ def generate_mesh(
             _remove_duplicate_nodes_tight()
 
     has_structured = bool(state.slab_meta)
-    pre_2d_hook = _structured_pre_2d if (has_structured or user_pre_2d) else None
+    pre_2d_hook = (
+        _structured_pre_2d if (has_structured or sweeps or user_pre_2d) else None
+    )
     pre_3d_hook = _structured_pre_3d if (has_structured or user_pre_3d) else None
     post_3d_hook = _structured_post_3d if has_structured else None
 
@@ -405,7 +421,7 @@ def _strip_synthetic_physical_groups() -> None:
     names_to_drop: list[str] = []
     for dim, gtag in gmsh.model.getPhysicalGroups():
         gname = gmsh.model.getPhysicalName(dim, gtag)
-        if gname.startswith("__cohort_"):
+        if gname.startswith(("__cohort_", "__sweep")):
             to_remove.append((dim, gtag))
             names_to_drop.append(gname)
     if to_remove:

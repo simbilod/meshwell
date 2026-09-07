@@ -125,16 +125,20 @@ def plot2D(
         else:
             id_to_name[id_].append(name)
 
+    # 2D surface cells can be triangles, quads, or a mix (structured sweeps
+    # emit quads when element_type="quad").
+    cell_types_2D = [t for t in ("triangle", "quad") if t in mesh.cells_dict]
+
     # Get unique physical groups if they exist, otherwise treat all cells as one group
     physical_groups_2D = []
     physical_groups_1D = []
     if "gmsh:physical" in mesh.cell_data_dict:
-        if "triangle" in mesh.cell_data_dict["gmsh:physical"]:
-            physical_groups_2D = np.unique(
-                mesh.cell_data_dict["gmsh:physical"]["triangle"]
-            )
-        else:
-            physical_groups_2D = [1]
+        phys_2D = [
+            mesh.cell_data_dict["gmsh:physical"][t]
+            for t in cell_types_2D
+            if t in mesh.cell_data_dict["gmsh:physical"]
+        ]
+        physical_groups_2D = np.unique(np.concatenate(phys_2D)) if phys_2D else [1]
         if "line" in mesh.cell_data_dict["gmsh:physical"]:
             physical_groups_1D = np.unique(mesh.cell_data_dict["gmsh:physical"]["line"])
         else:
@@ -143,7 +147,7 @@ def plot2D(
         physical_groups_2D = [1]
         physical_groups_1D = [1]
 
-    # Plot triangles for each 2D physical group
+    # Plot surface cells (triangles and/or quads) for each 2D physical group
     for i, group in enumerate(physical_groups_2D):
         # Skip if physicals specified and this group not in them
         if (
@@ -153,46 +157,45 @@ def plot2D(
         ):
             continue
 
-        # Get cells for this physical group
-        if (
-            "gmsh:physical" in mesh.cell_data_dict
-            and "triangle" in mesh.cell_data_dict["gmsh:physical"]
-        ):
-            group_cells = mesh.cells_dict["triangle"][
-                mesh.cell_data_dict["gmsh:physical"]["triangle"] == group
-            ]
-        else:
-            group_cells = mesh.cells_dict["triangle"]
-
         # Get color for this group
         color = colors[i % len(colors)]
 
         # Get group name for legend
         group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
 
-        # Plot triangles
-        for triangle in group_cells:
-            x = mesh.points[triangle, 0]
-            y = mesh.points[triangle, 1]
-            # Close the triangle
-            x = np.append(x, x[0])
-            y = np.append(y, y[0])
-
-            if wireframe:
-                ax.plot(
-                    x,
-                    y,
-                    color=color,
-                    marker="o" if wireframe else None,
-                    markersize=3 if wireframe else None,
-                    label=group_name,
-                )
+        # Plot each surface cell type belonging to this group
+        for cell_type in cell_types_2D:
+            if "gmsh:physical" in mesh.cell_data_dict:
+                if cell_type not in mesh.cell_data_dict["gmsh:physical"]:
+                    continue
+                group_cells = mesh.cells_dict[cell_type][
+                    mesh.cell_data_dict["gmsh:physical"][cell_type] == group
+                ]
             else:
-                ax.fill(x, y, color=color, alpha=0.5, label=group_name)
-                ax.plot(x, y, color=color, linewidth=0.5)
+                group_cells = mesh.cells_dict[cell_type]
 
-            # Only include label once in legend
-            group_name = "_nolegend_"
+            for cell in group_cells:
+                x = mesh.points[cell, 0]
+                y = mesh.points[cell, 1]
+                # Close the polygon (works for triangles and quads alike)
+                x = np.append(x, x[0])
+                y = np.append(y, y[0])
+
+                if wireframe:
+                    ax.plot(
+                        x,
+                        y,
+                        color=color,
+                        marker="o" if wireframe else None,
+                        markersize=3 if wireframe else None,
+                        label=group_name,
+                    )
+                else:
+                    ax.fill(x, y, color=color, alpha=0.5, label=group_name)
+                    ax.plot(x, y, color=color, linewidth=0.5)
+
+                # Only include label once in legend
+                group_name = "_nolegend_"
 
     # Plot lines for each 1D physical group
     if not ignore_lines:

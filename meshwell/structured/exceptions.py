@@ -219,3 +219,109 @@ class CanonicalArrangementError(StructuredError):
         self.cohort_index = cohort_index
         self.reason = reason
         super().__init__(f"cohort {cohort_index}: {reason}")
+
+
+class SweepNormalExtentError(StructuredError):
+    """Normal spec for a structured sweep is invalid.
+
+    Raised either for a non-positive int layer count, or when an
+    explicit normal offset array does not span [0, thickness].
+    """
+
+    def __init__(self, offsets, thickness: float):
+        if isinstance(offsets, int):
+            super().__init__(
+                f"Structured sweep needs at least 1 normal layer, got {offsets}."
+            )
+        else:
+            super().__init__(
+                f"Explicit normal offsets must start at 0.0 and end at the sweep "
+                f"thickness {thickness!r}; got first={offsets[0]!r}, last={offsets[-1]!r}. "
+                "Use Graded(h0, ratio) or an int layer count to avoid restating thickness."
+            )
+
+
+class SweepKeyError(StructuredError):
+    """thickness/normal keys invalid for the sweep's attachment kind."""
+
+    def __init__(self, name, kind, bad_keys, admissible):
+        super().__init__(
+            f"Sweep {name!r} ({kind} attachment): invalid side keys {sorted(bad_keys)}; "
+            f"admissible keys are {sorted(admissible)}."
+        )
+
+
+class SweepAttachmentNotFoundError(StructuredError):
+    """The sweep's ``on`` name doesn't resolve to geometry in the model."""
+
+    def __init__(self, name, on):
+        self.name = name
+        self.on = on
+        super().__init__(
+            f"Sweep {name!r}: attachment {on!r} not found/adjacent in model."
+        )
+
+
+class SweepCurvedSourceError(StructuredError):
+    """Attachment resolved to a non-straight source (phase 3 territory)."""
+
+    def __init__(self, on, got):
+        self.on = on
+        self.got = got
+        super().__init__(
+            f"Sweep attachment {on!r} is not a single straight segment (got {got}). "
+            "Curved/multi-segment sources are not supported in phase 1; for a "
+            "straight subset of a boundary, attach to an embedded PolyLine instead."
+        )
+
+
+class SweepOverlapError(StructuredError):
+    """Two sweep footprints overlap (unsupported in phase 1)."""
+
+    def __init__(self, name_a, name_b):
+        super().__init__(
+            f"Sweep footprints of {name_a!r} and {name_b!r} overlap; "
+            "overlapping sweeps are not supported in phase 1."
+        )
+
+
+class SweepPairingError(StructuredError):
+    """``__sweep`` groups and ``StructuredSweepResolutionSpec``s must pair 1:1.
+
+    Raised at the mesh stage, either when a sweep group discovered in the
+    loaded CAD has no matching spec under its name in ``resolution_specs``,
+    or when a sweep spec's name has no matching ``__sweep`` group in the
+    loaded CAD.
+    """
+
+
+class SweepSeamMismatchError(StructuredError):
+    """Adjacent sweep faces disagree on shared-seam node coordinates.
+
+    Raised by the 2D stamping kernel when a boundary curve already stamped
+    by one face would receive different node positions from another face
+    sharing that curve (the frozen seam is not conformal).
+    """
+
+    def __init__(self, curve_tag):
+        self.curve_tag = curve_tag
+        super().__init__(
+            f"Sweep seam mismatch on curve {curve_tag}: a neighbouring face "
+            "would stamp node positions that do not match the already-frozen "
+            "nodes on this shared curve. Tangential grids of adjacent sweep "
+            "faces must agree on their shared seam."
+        )
+
+
+class SweepSplitCoordinateError(StructuredError):
+    """A BOP split point on a sweep edge is not a tangential grid member."""
+
+    def __init__(self, t, face_tag):
+        self.t = t
+        self.face_tag = face_tag
+        super().__init__(
+            f"Sweep face {face_tag}: fragment boundary at tangential coordinate "
+            f"{t!r} is not a member of the tangential grid. Add this coordinate "
+            "to the explicit tangential array (BOP splits mark user geometry the "
+            "grid must align with)."
+        )
