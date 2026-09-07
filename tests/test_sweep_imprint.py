@@ -59,3 +59,50 @@ def test_sweep_groups_stripped_from_msh(tmp_path):
     )
     m = meshio.read(out)
     assert not any(k.startswith("__sweep") for k in m.cell_sets)
+
+
+def test_sweep_internal_seam_not_in_boundary_group(tmp_path):
+    """The band/remainder seam inside a swept region is interior, not a boundary.
+
+    Sweeping into "upper" (box y in [1, 2]) with thickness 0.4 splits it into
+    a band face (y in [1, 1.4]) and a remainder face (y in [1.4, 2]) within the
+    SAME "upper" entity. The shared y=1.4 edge is interior to the same material
+    and must NOT leak into the ``upper___None`` exterior boundary group.
+    """
+    import numpy as np
+    import meshio
+
+    out = tmp_path / "seam.msh"
+    generate_mesh(
+        entities=_entities(),
+        sweeps=[StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})],
+        dim=2,
+        output_mesh=str(out),
+        default_characteristic_length=0.5,
+        resolution_specs={
+            "qw": [StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 2})],
+        },
+    )
+    m = meshio.read(out)
+    pts = m.points[:, :2]
+    line_blocks = [i for i, cb in enumerate(m.cells) if cb.type == "line"]
+
+    def horizontal_ys(name):
+        ys = set()
+        for bi in line_blocks:
+            idx = m.cell_sets[name][bi]
+            if idx is None:
+                continue
+            for ci in idx:
+                a, b = m.cells[bi].data[ci]
+                if abs(pts[a, 1] - pts[b, 1]) < 1e-6:
+                    ys.add(round(float(pts[a, 1]), 4))
+        return ys
+
+    # The only legitimate horizontal exterior edge of "upper" is its top, y=2.0.
+    assert horizontal_ys("upper___None") == {2.0}, (
+        "internal band seam (y=1.4) leaked into upper___None"
+    )
+    # Sanity: real interface and the other region's boundary are unaffected.
+    assert horizontal_ys("lower___upper") == {1.0}
+    assert horizontal_ys("lower___None") == {0.0}

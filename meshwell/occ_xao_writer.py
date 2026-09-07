@@ -276,9 +276,24 @@ def _compute_physical_groups(
         leaves = [leaf for s in ent.shapes for leaf, _ in _leaf_subshapes(s, ent.dim)]
         boundaries: dict[int, object] = {}
         if ent.dim == max_dim and ent.dim > 0:
+            counts: dict[int, int] = {}
             for s in ent.shapes:
                 for sub, sid in _leaf_subshapes(s, ent.dim - 1):
+                    counts[sid] = counts.get(sid, 0) + 1
                     boundaries.setdefault(sid, sub)
+            if ent.dim >= 2:
+                # Manifold-boundary rule (surfaces/volumes): a boundary leaf
+                # (edge in 2D, face in 3D) shared by two of this entity's own
+                # faces/solids is interior to the same material -- e.g. the
+                # seam between a structured-sweep band and the rest of its
+                # region, or two touching polygons of one PolySurface. Keep
+                # only the once-referenced leaves so interior seams don't leak
+                # into the entity's ``A___None`` exterior group. 1D polyline
+                # endpoint groups keep their existing semantics (interior
+                # junctions stay tagged).
+                boundaries = {
+                    sid: boundaries[sid] for sid, c in counts.items() if c == 1
+                }
         elif ent.dim == max_dim - 1 and ent.dim > 0:
             # Lower-dim entity: its own leaves act as the boundary index
             # so the interface pass can match them against a parent's
