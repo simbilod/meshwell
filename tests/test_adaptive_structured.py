@@ -7,6 +7,7 @@ from meshwell.resolution import (
     DirectSizeSpecification,
     Graded,
     StructuredSweepResolutionSpec,
+    SweepAdaptContext,
     ThresholdField,
     _equidistribute,
     _gradation_limit,
@@ -141,3 +142,113 @@ class TestRefine:
         out = DirectSizeSpecification(refinement_data=data).refine(0.5)
         np.testing.assert_allclose(out.refinement_data[:, 3], [0.2, 0.1])
         np.testing.assert_allclose(out.refinement_data[:, :3], data[:, :3])
+
+
+def _qw_context():
+    """Axis-aligned band: x in [0, 4], grown +y from y=1, thickness 0.4."""
+    return SweepAdaptContext(
+        thickness={"upper": 0.4},
+        t_axis=0,
+        n_axis=1,
+        t0=0.0,
+        t1=4.0,
+        n0=1.0,
+        normal_sign={"upper": 1.0},
+    )
+
+
+def _grid_size_map(size_func, nx=81, ny=41):
+    """Dense (x, y, 0, size) map over the band's neighborhood [0,4]x[0.8,1.6]."""
+    xs, ys = np.meshgrid(
+        np.linspace(0.0, 4.0, nx), np.linspace(0.8, 1.6, ny), indexing="ij"
+    )
+    pts = np.column_stack([xs.ravel(), ys.ravel()])
+    return np.column_stack([pts, np.zeros(len(pts)), size_func(pts[:, 0], pts[:, 1])])
+
+
+class TestSweepAdapt:
+    def test_context_none_returns_self(self):
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            assert spec.adapt(size_map) is spec
+
+    def test_no_signal_returns_self(self):
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        far = np.array([[100.0, 100.0, 0.0, 0.01]])
+        assert spec.adapt(far, _qw_context()) is spec
+
+    def test_uniform_signal_reproduces_uniform(self):
+        # target 0.1 == current normal size and 1.0 == current tangential
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        out = spec.adapt(size_map, _qw_context())
+        off = np.asarray(out.normal["upper"])
+        assert off[0] == 0.0 and off[-1] == 0.4
+        np.testing.assert_allclose(np.diff(off), 0.1, rtol=1e-6)
+        # tangential widened to an explicit array spanning [0, 4]
+        t = np.asarray(out.tangential)
+        assert t[0] == 0.0 and t[-1] == 4.0
+
+    def test_interface_signal_refines_normal_near_interface(self):
+        # fine at the attachment (eta=0), coarse away; within the damp clamp
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(
+            lambda x, y: np.clip(0.05 + 0.25 * (y - 1.0), 0.05, 0.2)
+        )
+        out = spec.adapt(size_map, _qw_context())
+        off = np.asarray(out.normal["upper"])
+        d = np.diff(off)
+        assert d[0] < d[-1]  # finer near the interface
+        assert off[0] == 0.0 and off[-1] == 0.4
+        # gradation cap holds
+        assert np.all(d[1:] / d[:-1] <= 1.3 + 1e-9)
+        # int input widened to explicit array
+        assert isinstance(out.normal["upper"], list)
+
+    def test_tangential_hotspot_refines_tangentially(self):
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(
+            lambda x, y: np.clip(0.5 + 0.5 * np.abs(x - 2.0), 0.5, 1.0)
+        )
+        out = spec.adapt(size_map, _qw_context())
+        t = np.asarray(out.tangential)
+        d = np.diff(t)
+        mid = (t[1:] + t[:-1]) / 2
+        assert d[np.argmin(np.abs(mid - 2.0))] < d[0]  # denser near x=2
+
+    def test_damping_clamps_pathological_target(self):
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(lambda x, y: np.full_like(x, 1e-6))
+        out = spec.adapt(size_map, _qw_context(), change_max=2.0)
+        off = np.asarray(out.normal["upper"])
+        # old h = 0.1; clamped target = 0.05 -> exactly 8 cells, not millions
+        assert len(off) - 1 == 8
+
+    def test_damping_iteration_converges_monotonically(self):
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.0125))
+        counts = []
+        for _ in range(4):
+            spec = spec.adapt(size_map, _qw_context(), change_max=2.0)
+            counts.append(len(spec.normal["upper"]) - 1)
+        assert counts == [8, 16, 32, 32]  # doubles until it hits the target
+
+    def test_graded_input_widens(self):
+        spec = StructuredSweepResolutionSpec(
+            tangential=1.0, normal={"upper": Graded(h0=0.05, ratio=1.3)}
+        )
+        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        out = spec.adapt(size_map, _qw_context())
+        assert isinstance(out.normal["upper"], list)
+        off = np.asarray(out.normal["upper"])
+        assert off[0] == 0.0 and off[-1] == 0.4
+
+    def test_required_ts_retained(self):
+        ctx = _qw_context()
+        ctx.required_ts = (1.7,)
+        spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
+        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        out = spec.adapt(size_map, ctx)
+        assert np.any(np.abs(np.asarray(out.tangential) - 1.7) < 1e-9)
