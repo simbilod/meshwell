@@ -1,4 +1,5 @@
 """Remesh module for adaptive mesh refinement."""
+
 from __future__ import annotations
 
 import shutil
@@ -16,7 +17,7 @@ from scipy.interpolate import NearestNDInterpolator
 from scipy.spatial import cKDTree
 
 from meshwell.model import ModelManager
-from meshwell.resolution import DirectSizeSpecification
+from meshwell.resolution import DirectSizeSpecification, SweepAdaptContext
 
 
 def _identity_threshold_func(
@@ -41,9 +42,9 @@ class RemeshingStrategy:
 
     refinement_data: Path | np.ndarray | None
     func: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None
-    threshold_func: Callable[
-        [np.ndarray, np.ndarray], np.ndarray
-    ] = _identity_threshold_func
+    threshold_func: Callable[[np.ndarray, np.ndarray], np.ndarray] = (
+        _identity_threshold_func
+    )
     min_size: float | None = None
     max_size: float | None = None
 
@@ -830,6 +831,7 @@ def compute_total_size_map(
     remesher._load_mesh_data(input_mesh)
     return remesher.compute_size_field(strategies)
 
+
 def gradation_limit_size_map(
     size_map: np.ndarray, max_ratio: float, n_passes: int = 5, k: int = 8
 ) -> np.ndarray:
@@ -857,3 +859,52 @@ def gradation_limit_size_map(
             break
         size_map[:, 3] = new
     return size_map
+
+
+def _sweep_band_frames(sweeps, tol: float = 1e-9) -> dict:
+    """Recover axis-aligned band frames from the loaded .xao's sweep groups.
+
+    Uses the synthetic ``__sweepsrc|name`` attachment curves for the
+    tangential axis/extent and attachment coordinate, and the
+    ``__sweep|name|side|i`` faces for per-side signs and interior split
+    coordinates. Requires the geometry to be loaded in the current gmsh model.
+    """
+    from meshwell.structured.sweep2d import discover_sweeps
+
+    # STL-tight bounds: OCC's default getBoundingBox pads by the shape
+    # tolerance (~2e-3 here); the STL path tracks the geometry to within the
+    # CAD perturbation. Mirrors the orchestrator's own bounds handling.
+    gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
+    discovered = discover_sweeps()
+    frames: dict = {}
+    for sweep in sweeps:
+        d = discovered.get(sweep.name)
+        if d is None or not d["src_curves"]:
+            continue
+        boxes = [gmsh.model.getBoundingBox(1, t) for t in d["src_curves"]]
+        lo = [min(b[i] for b in boxes) for i in range(3)]
+        hi = [max(b[i + 3] for b in boxes) for i in range(3)]
+        t_axis = 0 if (hi[0] - lo[0]) >= (hi[1] - lo[1]) else 1
+        n_axis = 1 - t_axis
+        t0, t1 = lo[t_axis], hi[t_axis]
+        n0 = 0.5 * (lo[n_axis] + hi[n_axis])
+        signs: dict = {}
+        splits: set = set()
+        for (side, _i), ftag in d["faces"].items():
+            b = gmsh.model.getBoundingBox(2, ftag)
+            center_n = 0.5 * (b[n_axis] + b[n_axis + 3])
+            signs[side] = 1.0 if center_n > n0 else -1.0
+            for t in (b[t_axis], b[t_axis + 3]):
+                if t0 + tol < t < t1 - tol:
+                    splits.add(round(t - t0, 12))
+        frames[sweep.name] = SweepAdaptContext(
+            thickness=dict(sweep.thickness),
+            t_axis=t_axis,
+            n_axis=n_axis,
+            t0=t0,
+            t1=t1,
+            n0=n0,
+            normal_sign=signs,
+            required_ts=tuple(sorted(splits)),
+        )
+    return frames

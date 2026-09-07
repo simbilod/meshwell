@@ -1,8 +1,13 @@
 """Tests for the adapt() protocol and structured-sweep adaptation."""
+
 import warnings
 
+import gmsh
 import numpy as np
+import shapely
 
+from meshwell.orchestrator import generate_mesh
+from meshwell.polysurface import PolySurface
 from meshwell.resolution import (
     DirectSizeSpecification,
     Graded,
@@ -13,6 +18,7 @@ from meshwell.resolution import (
     _gradation_limit,
     _insert_required,
 )
+from meshwell.structured.sweep import StructuredSweep
 
 
 class TestGradationLimit:
@@ -254,7 +260,7 @@ class TestSweepAdapt:
         assert np.any(np.abs(np.asarray(out.tangential) - 1.7) < 1e-9)
 
 
-from meshwell.remesh import gradation_limit_size_map
+from meshwell.remesh import _sweep_band_frames, gradation_limit_size_map
 
 
 class TestSizeMapGradation:
@@ -283,3 +289,55 @@ class TestSizeMapGradation:
         size_map = np.array([[0.0, 0.0, 0.0, 1e6], [0.1, 0.0, 0.0, 0.01]])
         gradation_limit_size_map(size_map, max_ratio=1.3)
         assert size_map[0, 3] == 1e6
+
+
+def _generate_qw_fixture(tmp_path, tangential=1.0, normal=4):
+    """Two-box stack with a 'qw' band; returns (mesh, xao_path, sweep, specs)."""
+    sweep = StructuredSweep(name="qw", on="lower___upper", thickness={"upper": 0.4})
+    specs = {
+        "qw": [
+            StructuredSweepResolutionSpec(
+                tangential=tangential, normal={"upper": normal}
+            )
+        ],
+    }
+    xao = tmp_path / "qw.xao"
+    m = generate_mesh(
+        entities=[
+            PolySurface(
+                polygons=shapely.box(0, 0, 4, 1), physical_name="lower", mesh_order=2
+            ),
+            PolySurface(
+                polygons=shapely.box(0, 1, 4, 2), physical_name="upper", mesh_order=1
+            ),
+        ],
+        sweeps=[sweep],
+        dim=2,
+        output_mesh=str(tmp_path / "qw.msh"),
+        checkpoint_cad=str(xao),
+        default_characteristic_length=0.5,
+        resolution_specs=specs,
+    )
+    return m, xao, sweep, specs
+
+
+class TestBandFrames:
+    def test_frames_from_xao(self, tmp_path):
+        _, xao, sweep, _ = _generate_qw_fixture(tmp_path)
+        if not gmsh.isInitialized():
+            gmsh.initialize()
+        gmsh.model.add("frames_test")
+        gmsh.model.setCurrent("frames_test")
+        try:
+            gmsh.open(str(xao))
+            frames = _sweep_band_frames([sweep])
+        finally:
+            gmsh.model.remove()
+        ctx = frames["qw"]
+        assert ctx.t_axis == 0 and ctx.n_axis == 1
+        # atol=1e-5: gmsh's OCC getBoundingBox carries the CAD's 1e-5
+        # perturbation tolerance even with STL-tight bounds.
+        np.testing.assert_allclose([ctx.t0, ctx.t1], [0.0, 4.0], atol=1e-5)
+        np.testing.assert_allclose(ctx.n0, 1.0, atol=1e-5)
+        assert ctx.normal_sign == {"upper": 1.0}
+        assert ctx.thickness == {"upper": 0.4}
