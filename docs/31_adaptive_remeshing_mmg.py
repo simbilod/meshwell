@@ -143,7 +143,6 @@ strategy = BinaryScalingStrategy(
     refinement_data=refinement_data,
     min_size=0.1,
     max_size=2.0,
-    field_smoothing_steps=2,
 )
 
 # %% [markdown]

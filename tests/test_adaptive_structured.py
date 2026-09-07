@@ -252,3 +252,34 @@ class TestSweepAdapt:
         size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
         out = spec.adapt(size_map, ctx)
         assert np.any(np.abs(np.asarray(out.tangential) - 1.7) < 1e-9)
+
+
+from meshwell.remesh import gradation_limit_size_map
+
+
+class TestSizeMapGradation:
+    def test_shock_is_limited(self):
+        xs = np.linspace(0.0, 10.0, 101)
+        h = np.full_like(xs, 1e6)
+        h[50] = 0.01  # one fine point in a sea of huge sizes
+        size_map = np.column_stack([xs, np.zeros_like(xs), np.zeros_like(xs), h])
+        out = gradation_limit_size_map(size_map, max_ratio=1.3)
+        g = 1.3 - 1.0
+        # pairwise bound against the fine point for its near neighborhood
+        d = np.abs(xs - xs[50])
+        near = d <= 0.5  # within the kNN propagation horizon
+        assert np.all(out[near, 3] <= 0.01 + g * d[near] + 1e-9)
+        # fine point itself untouched
+        assert out[50, 3] == 0.01
+
+    def test_smooth_map_untouched(self):
+        xs = np.linspace(0.0, 1.0, 50)
+        h = 0.1 + 0.01 * xs  # gentle slope well within the bound
+        size_map = np.column_stack([xs, np.zeros_like(xs), np.zeros_like(xs), h])
+        out = gradation_limit_size_map(size_map, max_ratio=1.3)
+        np.testing.assert_allclose(out[:, 3], h)
+
+    def test_input_not_mutated(self):
+        size_map = np.array([[0.0, 0.0, 0.0, 1e6], [0.1, 0.0, 0.0, 0.01]])
+        gradation_limit_size_map(size_map, max_ratio=1.3)
+        assert size_map[0, 3] == 1e6

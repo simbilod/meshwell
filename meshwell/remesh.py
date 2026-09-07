@@ -37,7 +37,6 @@ class RemeshingStrategy:
         threshold_func: Callable mapping (metric_values, current_sizes) to new_sizes.
         min_size: Minimum allowed mesh size.
         max_size: Maximum allowed mesh size.
-        field_smoothing_steps: Number of smoothing steps for the size field.
     """
 
     refinement_data: Path | np.ndarray | None
@@ -47,7 +46,6 @@ class RemeshingStrategy:
     ] = _identity_threshold_func
     min_size: float | None = None
     max_size: float | None = None
-    field_smoothing_steps: int = 0
 
     def apply(self, current_sizes: np.ndarray, metric_values: np.ndarray) -> np.ndarray:
         """Apply the strategy to calculate new sizes based on metric values."""
@@ -831,3 +829,31 @@ def compute_total_size_map(
     remesher = Remesher(n_threads=n_threads, verbosity=verbosity)
     remesher._load_mesh_data(input_mesh)
     return remesher.compute_size_field(strategies)
+
+def gradation_limit_size_map(
+    size_map: np.ndarray, max_ratio: float, n_passes: int = 5, k: int = 8
+) -> np.ndarray:
+    """Cap size growth over the point cloud: h_j <= h_i + (max_ratio - 1) * d_ij.
+
+    gmsh has no built-in gradation control on background fields, so a raw
+    size map with a large jump would mesh abrupt unstructured transitions.
+    """
+    # ponytail: Jacobi passes over a kNN graph, not a full graph-distance
+    # closure; raise n_passes or switch to a Dijkstra-style sweep if shocks
+    # survive in practice.
+    size_map = np.asarray(size_map, dtype=float).copy()
+    n = len(size_map)
+    if n < 2:
+        return size_map
+    coords = size_map[:, :3]
+    g = max_ratio - 1.0
+    tree = cKDTree(coords)
+    kk = min(k, n)
+    dist, idx = tree.query(coords, k=kk)
+    for _ in range(n_passes):
+        cap = (size_map[idx[:, 1:], 3] + g * dist[:, 1:]).min(axis=1)
+        new = np.minimum(size_map[:, 3], cap)
+        if np.allclose(new, size_map[:, 3]):
+            break
+        size_map[:, 3] = new
+    return size_map
