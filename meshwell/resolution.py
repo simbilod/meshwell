@@ -543,3 +543,64 @@ class StructuredExtrusionResolutionSpec(StructuredSweepResolutionSpec):
 
     apply_to: Literal["volumes"] = "volumes"  # type: ignore[assignment]
     n_layers: int = Field(default=1, ge=1)
+
+
+class BoundaryLayerResolutionSpec(ResolutionSpec):
+    """Configure a gmsh BoundaryLayer field on a 1D physical name.
+
+    Attach (via ``resolution_specs``) to any dim-1 physical group -- a
+    PolyLine name, an interface ``a___b``, or a boundary ``a___None``. Grows
+    an anisotropic graded layer off those curves. Registered with gmsh via
+    ``setAsBoundaryLayer`` (NOT combined into the Min background size field),
+    hence ``apply`` returns ``None``. Full gmsh passthrough; optional params
+    are only pushed when set. Fan points are a separate follow-up (they need
+    named 0D point support).
+    """
+
+    apply_to: Literal["curves"] = "curves"
+    size: float = Field(gt=0)  # gmsh Size: first-layer normal size
+    thickness: float = Field(gt=0)  # gmsh Thickness: total layer thickness
+    ratio: float = Field(default=1.0, ge=1.0)  # gmsh Ratio: geometric growth
+    quads: bool = False  # gmsh Quads (0/1)
+    size_far: float | None = None  # gmsh SizeFar
+    nb_layers: int | None = None  # gmsh NbLayers
+    intersect_metrics: bool = False  # gmsh IntersectMetrics
+    aniso_max: float | None = None  # gmsh AnisoMax
+    beta: float | None = None  # gmsh Beta
+
+    def apply(self, model: Any, entities_mass_dict, **_kwargs) -> None:
+        """Create a gmsh BoundaryLayer field on the given curves.
+
+        Registered via setAsBoundaryLayer; returns None so it is not merged
+        into the Min background size field.
+
+        Args:
+            model: The mesh model to apply the field to.
+            entities_mass_dict: Dictionary mapping entity tags to their masses.
+            **_kwargs: Unused kwargs (restrict_to_str, restrict_to_tags).
+
+        Returns:
+            None: this field is registered as a boundary layer, not merged
+            into the Min background field.
+        """
+        if not entities_mass_dict:
+            return
+        f = model.mesh.field.add("BoundaryLayer")
+        model.mesh.field.setNumbers(f, "CurvesList", list(entities_mass_dict.keys()))
+        model.mesh.field.setNumber(f, "Size", self.size)
+        model.mesh.field.setNumber(f, "Thickness", self.thickness)
+        model.mesh.field.setNumber(f, "Ratio", self.ratio)
+        model.mesh.field.setNumber(f, "Quads", 1 if self.quads else 0)
+        if self.size_far is not None:
+            model.mesh.field.setNumber(f, "SizeFar", self.size_far)
+        if self.nb_layers is not None:
+            model.mesh.field.setNumber(f, "NbLayers", self.nb_layers)
+        model.mesh.field.setNumber(
+            f, "IntersectMetrics", 1 if self.intersect_metrics else 0
+        )
+        if self.aniso_max is not None:
+            model.mesh.field.setNumber(f, "AnisoMax", self.aniso_max)
+        if self.beta is not None:
+            model.mesh.field.setNumber(f, "Beta", self.beta)
+        model.mesh.field.setAsBoundaryLayer(f)
+        return

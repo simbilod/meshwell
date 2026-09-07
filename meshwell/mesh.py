@@ -336,7 +336,8 @@ class Mesh:
                 field_index = spec.apply(
                     self.model_manager.model, {}, restrict_to_tags=None
                 )
-                refinement_field_indices.append(field_index)
+                if field_index is not None:
+                    refinement_field_indices.append(field_index)
 
         # Collect constant fields for batching
         constant_collector = defaultdict(lambda: defaultdict(list))
@@ -565,6 +566,20 @@ class Mesh:
 
         discovered = discover_sweeps()
         if discovered:
+            from meshwell.resolution import BoundaryLayerResolutionSpec
+
+            has_bl = any(
+                isinstance(spec, BoundaryLayerResolutionSpec)
+                for specs in (resolution_specs or {}).values()
+                for spec in specs
+            )
+            if has_bl:
+                raise ValueError(
+                    "Cannot combine a StructuredSweep with a boundary layer "
+                    "(BoundaryLayerResolutionSpec) in the same model: the sweep "
+                    "stamping kernel sets Mesh.MeshOnlyEmpty=1, which suppresses "
+                    "gmsh boundary-layer generation. Mesh them in separate models."
+                )
             specs_by_name = validate_sweep_pairing(discovered, resolution_specs)
             sweep_hook = make_sweep_pre_2d_hook(
                 discovered,
