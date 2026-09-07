@@ -91,6 +91,48 @@ two = generate_mesh(
 plot2D(two, title="Two boundary layers, different sizes", wireframe=True)
 
 # %% [markdown]
+# ## Naming the convex corner where a boundary layer wraps
+#
+# A boundary layer growing off `sheet___None` has to negotiate the sharp convex
+# corners of the box. You can name such a corner with a 0D `OCC_entity` (see
+# notebook 10): build a vertex, set `dimension=0` and a `physical_name`. The
+# named vertex survives fragmentation and becomes a named mesh node, so it can
+# carry its own resolution spec -- here `ConstantInField` refines the mesh
+# locally at the corner while the boundary layer grows off the walls. This
+# named-point recipe is also the building block for the planned *fan points*
+# feature (wrapping graded layers around the corner).
+
+# %%
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+from OCP.gp import gp_Pnt
+
+from meshwell.occ_entity import OCC_entity
+from meshwell.resolution import ConstantInField
+
+corner = OCC_entity(
+    occ_function=lambda: BRepBuilderAPI_MakeVertex(gp_Pnt(1.0, 1.0, 0.0)).Vertex(),
+    physical_name="corner",
+    dimension=0,
+)
+corner_mesh = generate_mesh(
+    entities=[
+        PolySurface(polygons=shapely.box(0, 0, 1, 1), physical_name="sheet", mesh_order=1),
+        corner,
+    ],
+    dim=2,
+    output_mesh="boundary_layer_corner.msh",
+    default_characteristic_length=0.2,
+    resolution_specs={
+        "sheet___None": [
+            BoundaryLayerResolutionSpec(size=0.01, thickness=0.08, ratio=1.3)
+        ],
+        "corner": [ConstantInField(apply_to="points", resolution=0.02)],
+    },
+)
+print("named corner is a mesh node:", "corner" in corner_mesh.cell_sets)
+plot2D(corner_mesh, title="Boundary layer + refined named corner (1, 1)", wireframe=True)
+
+# %% [markdown]
 # ## Notes and limitations
 #
 # - Full gmsh passthrough: `size`, `thickness`, `ratio`, `quads`, and the
@@ -101,4 +143,5 @@ plot2D(two, title="Two boundary layers, different sizes", wireframe=True)
 #   sets `Mesh.MeshOnlyEmpty=1`, which suppresses boundary-layer generation) --
 #   meshwell raises a clear error if both are requested.
 # - Fan points (wrapping a layer around a sharp convex vertex) are a planned
-#   follow-up; they need named 0D point support first.
+#   follow-up; the named 0D point they build on is shown above and in
+#   notebook 10.
