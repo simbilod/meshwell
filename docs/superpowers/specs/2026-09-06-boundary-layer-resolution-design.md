@@ -25,8 +25,15 @@ on `feat/structured-sweeps`.
 - **Element type:** raw `quads: bool` (gmsh `Quads` 0/1). No built-in
   quad→triangle split; callers can run `gmsh.model.mesh.splitQuadrangles()`
   downstream if they want it.
-- **Fan points:** identified by 0D physical name(s), resolved to point tags at
-  apply time.
+- **Fan points:** DEFERRED to a follow-up PR. Fans are identified by 0D
+  physical name, but meshwell cannot currently name a single 0D point in a 2D
+  mesh (the XAO boundary pass emits only `dim-1` groups; dim-0 groups appear
+  only in polyline-only models, as endpoint sets). The follow-up PR first adds
+  a **named 0D OCC point entity** (via the existing generic `OCC_entity` with
+  `dimension=0`), ensuring the named vertex survives BOP fragmentation and is
+  emitted as a dim-0 physical group / embedded mesh node, then wires
+  `fan_points` into this spec. See "Follow-up: fan points" below. **This
+  design (PR 1) ships the core BL spec without fan points.**
 - **Multiplicity:** each spec becomes its own gmsh BoundaryLayer field.
   Verified empirically that the installed gmsh accepts multiple boundary-layer
   fields (different curves/params) in one model and meshes them together.
@@ -53,14 +60,11 @@ class BoundaryLayerResolutionSpec(ResolutionSpec):
     intersect_metrics: bool = False                 # gmsh IntersectMetrics
     aniso_max: float | None = None                  # gmsh AnisoMax
     beta: float | None = None                       # gmsh Beta
-    fan_points: list[str] = Field(default_factory=list)        # 0D physical names
-    fan_points_sizes: list[int] = Field(default_factory=list)  # gmsh FanPointsSizesList
+    # fan_points / fan_points_sizes -> follow-up PR (needs named 0D points)
 ```
 
 Validation:
 - `size > 0`, `thickness > 0`, `ratio >= 1` (pydantic `Field`).
-- `len(fan_points_sizes) == len(fan_points)` OR `fan_points_sizes == []`
-  (empty → let gmsh default the fan size). Raise `ValueError` otherwise.
 - `name` / physical-name rules unchanged (this reuses the standard key).
 
 Optional params (`size_far`, `nb_layers`, `aniso_max`, `beta`) are pushed to
@@ -95,19 +99,9 @@ def apply(self, model, entities_mass_dict, **kwargs) -> None:
         model.mesh.field.setNumber(f, "AnisoMax", self.aniso_max)
     if self.beta is not None:
         model.mesh.field.setNumber(f, "Beta", self.beta)
-    if self.fan_points:
-        pt_tags = _resolve_point_names(model, self.fan_points)  # 0D name -> point tags
-        model.mesh.field.setNumbers(f, "FanPointsList", pt_tags)
-        if self.fan_points_sizes:
-            model.mesh.field.setNumbers(f, "FanPointsSizesList", self.fan_points_sizes)
     model.mesh.field.setAsBoundaryLayer(f)
     return None
 ```
-
-`_resolve_point_names` queries gmsh's 0D physical groups
-(`getPhysicalGroups(0)` / `getPhysicalName` / `getEntitiesForPhysicalGroup`)
-for the named points; raises a clear error if a name isn't found. Physical
-groups already exist at apply time (loaded from the XAO), so this is safe.
 
 Because `apply()` returns `None`, the BL field never enters the `Min`
 background field — correct, since a BL field is registered via
@@ -117,8 +111,7 @@ background field — correct, since a BL field is registered via
 
 **A — self-register in `apply()`, return `None` (recommended, chosen).**
 Minimal; fits the existing `ResolutionSpec` dispatch; the `None`-filter
-already exists. Fan points resolved via gmsh physical-group query inside
-`apply()`.
+already exists.
 
 Rejected:
 - **B — dedicated discovery pass** (like `sweeps=`): unnecessary
@@ -149,7 +142,6 @@ Real behavior, not mocks:
   ≈ `ratio`.
 - `quads=True` → quad cells present in the layer; `quads=False` → triangles.
 - Two BL specs (different curves/params) → both layers present in one mesh.
-- Fan via a 0D physical name → fan cells wrap the named convex point.
 - Regression: a mesh with no BL spec is unchanged; full suite stays green.
 
 ## Files
@@ -161,10 +153,35 @@ Real behavior, not mocks:
 - `docs/25_boundary_layer.py` — short worked-example notebook (in scope;
   mirrors `docs/23`/`24`).
 
-## Non-goals (v1)
+## Follow-up: fan points (separate, stacked PR)
 
+Fan points wrap a boundary layer around a sharp convex vertex. They are
+identified by a single 0D vertex, but meshwell has no way today to name a
+single point in a 2D mesh. The follow-up PR (stacked on this one) will:
+
+1. **Named 0D OCC point entity.** Use the existing generic `OCC_entity`
+   (`meshwell/occ_entity.py`) with `dimension=0` and an `occ_function` that
+   builds a `TopoDS_Vertex` at a coordinate. Ensure the CAD pipeline
+   (`cad_occ.py`) carries a dim-0 entity through BOP fragmentation without
+   dropping the vertex, and that `occ_xao_writer.py` emits its `(0, name)`
+   physical group (the `tag_entities` pass already keys groups by `ent.dim`,
+   so a surviving dim-0 leaf should group naturally — the risk is the
+   standalone vertex being dropped/uncaptured by the fragment, which the PR
+   must verify and, if needed, embed into the containing surface).
+2. **Wire `fan_points` into `BoundaryLayerResolutionSpec`.** Add
+   `fan_points: list[str]` (0D physical names) + `fan_points_sizes: list[int]`,
+   a `_resolve_point_names(model, names)` helper (query gmsh 0D physical
+   groups; require each name to resolve to exactly one point tag; clear error
+   otherwise; `len(fan_points_sizes) == len(fan_points)` or empty), and set
+   `FanPointsList`/`FanPointsSizesList` in `apply()` before
+   `setAsBoundaryLayer`.
+
+That work gets its own spec + plan when this PR lands.
+
+## Non-goals (this PR)
+
+- Fan points (deferred to the follow-up above).
 - Curved-source *exactness* (that's StructuredSweep's domain; BL is
   heuristic by nature).
 - quad→triangle split option (do it downstream via `splitQuadrangles`).
 - Combining BL and StructuredSweep on one model.
-- Fan points by coordinate (0D physical name only).
