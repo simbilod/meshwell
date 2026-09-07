@@ -70,3 +70,48 @@ write_xao(cad_occ([custom_entity]), "cyl.xao")
 # - Primitive shapes beyond polygon extrusion (spheres, cones, tori)
 # - Shapes from external STEP / BREP files
 # - Any OCP boolean composition you want processed as a single labeled entity
+
+# %% [markdown]
+# ## Naming individual points (0D entities)
+#
+# meshwell meshes are keyed by physical name. Regions (``PolySurface``), curves
+# (``PolyLine``), and auto-generated interfaces/boundaries all get names -- and
+# so can an individual **point**, by wrapping a vertex in an ``OCC_entity`` with
+# ``dimension=0`` and a ``physical_name``. Build the vertex with
+# ``BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, 0.0)).Vertex()``. The named vertex
+# survives CAD fragmentation and becomes a named mesh node (a ``vertex`` cell
+# block) within meshwell's point-tolerance (~1e-5) of the requested coordinate.
+# Works inside a region, on an interface, or on a corner.
+#
+# This is the building block for features that reference a specific vertex by
+# name (e.g. boundary-layer fan points at a convex corner -- see notebook 25).
+
+# %%
+import shapely  # noqa: E402
+from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex  # noqa: E402
+
+from meshwell.orchestrator import generate_mesh  # noqa: E402
+from meshwell.polysurface import PolySurface  # noqa: E402
+
+
+def named_point(x, y, name):
+    return OCC_entity(
+        occ_function=lambda: BRepBuilderAPI_MakeVertex(gp_Pnt(x, y, 0.0)).Vertex(),
+        physical_name=name,
+        dimension=0,
+    )
+
+
+sheet = PolySurface(
+    polygons=shapely.box(0, 0, 4, 2), physical_name="sheet", mesh_order=1
+)
+point_mesh = generate_mesh(
+    entities=[sheet, named_point(2.0, 1.0, "probe")],
+    dim=2,
+    output_mesh="named_point.msh",
+    default_characteristic_length=0.5,
+)
+print(
+    "named groups:",
+    sorted(k for k in point_mesh.cell_sets if not k.startswith("gmsh:")),
+)
