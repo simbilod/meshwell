@@ -75,3 +75,10 @@ class TestInsertRequired:
         out = _insert_required(off, (0.1, 1.9))
         assert out[0] == 0.0 and out[-1] == 2.0
         assert 0.1 in out and 1.9 in out
+
+    def test_many_required_preserves_endpoints(self):
+        off = np.array([0.0, 1.0, 2.0])
+        out = _insert_required(off, (0.1, 0.2, 0.3))
+        assert out[0] == 0.0 and out[-1] == 2.0
+        assert all(r in out for r in (0.1, 0.2, 0.3))
+        assert np.all(np.diff(out) > 0)  # strictly sorted, no duplicates

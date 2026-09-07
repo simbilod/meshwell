@@ -585,7 +585,8 @@ def _insert_required(
             i = free[int(np.argmin(np.abs(off[free] - r)))]
             off[i] = r
         else:
-            off = np.append(off, r)
+            # keep sorted so indices 0 / -1 stay the true endpoints
+            off = np.sort(np.append(off, r))
     return np.sort(off)
 
 
