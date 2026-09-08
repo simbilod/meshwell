@@ -260,7 +260,11 @@ class TestSweepAdapt:
         assert np.any(np.abs(np.asarray(out.tangential) - 1.7) < 1e-9)
 
 
-from meshwell.remesh import _sweep_band_frames, gradation_limit_size_map
+from meshwell.remesh import (
+    _sweep_band_frames,
+    gradation_limit_size_map,
+    remesh_structured,
+)
 
 
 class TestSizeMapGradation:
@@ -396,3 +400,131 @@ class TestBandFrames:
             assert any(
                 abs(t - split) <= 5e-5 for t in ctx.required_ts
             ), f"split {split} missing from required_ts={ctx.required_ts}"
+
+
+def _interface_size_map():
+    """Fine near y=1, coarse away — within the default damp clamp of the fixture."""
+    return _grid_size_map(lambda x, y: np.clip(0.05 + 0.25 * np.abs(y - 1.0), 0.05, 0.2))
+
+
+class TestRemeshStructured:
+    def test_end_to_end_tensor_grid_preserved(self, tmp_path):
+        m, xao, sweep, specs = _generate_qw_fixture(tmp_path)
+        new_mesh, new_specs = remesh_structured(
+            input_mesh=m,
+            geometry_file=xao,
+            sweeps=[sweep],
+            resolution_specs=specs,
+            size_map=_interface_size_map(),
+            output_mesh=tmp_path / "adapted.msh",
+            default_characteristic_length=0.5,
+        )
+        # adapted spec has explicit arrays, finer near the interface
+        spec = new_specs["qw"][0]
+        off = np.asarray(spec.normal["upper"])
+        assert off[0] == 0.0 and abs(off[-1] - 0.4) < 1e-9
+        assert np.diff(off)[0] < np.diff(off)[-1]
+        # band nodes in the new mesh form an exact tensor grid
+        pts = new_mesh.points[:, :2]
+        band = pts[(pts[:, 1] >= 1.0 - 1e-9) & (pts[:, 1] <= 1.4 + 1e-9)]
+        xs = np.unique(np.round(band[:, 0], 9))
+        ys = np.unique(np.round(band[:, 1], 9))
+        assert len(band) == len(xs) * len(ys)
+        np.testing.assert_allclose(
+            sorted(ys), 1.0 + np.asarray(off), atol=1e-6
+        )
+        # physical groups preserved
+        assert "lower___upper" in new_mesh.cell_sets
+        # driver appended exactly one global DirectSizeSpecification
+        directs = [
+            s
+            for ss in new_specs.values()
+            for s in ss
+            if isinstance(s, DirectSizeSpecification)
+        ]
+        assert len(directs) == 1
+
+    def test_loop_is_stable_no_direct_spec_accumulation(self, tmp_path):
+        m, xao, sweep, specs = _generate_qw_fixture(tmp_path)
+        for _ in range(2):
+            m, specs = remesh_structured(
+                input_mesh=m,
+                geometry_file=xao,
+                sweeps=[sweep],
+                resolution_specs=specs,
+                size_map=_interface_size_map(),
+                output_mesh=None,
+                default_characteristic_length=0.5,
+            )
+        directs = [
+            s
+            for ss in specs.values()
+            for s in ss
+            if isinstance(s, DirectSizeSpecification)
+        ]
+        assert len(directs) == 1
+
+    def test_shared_tangential_group(self, tmp_path):
+        """Two bands stacked wall-to-wall get one shared tangential array."""
+        s1 = StructuredSweep(name="s1", on="lower___mid", thickness={"mid": 0.5})
+        s2 = StructuredSweep(name="s2", on="mid___upper", thickness={"mid": 0.5})
+        specs = {
+            "s1": [StructuredSweepResolutionSpec(tangential=1.0, normal={"mid": 2})],
+            "s2": [StructuredSweepResolutionSpec(tangential=1.0, normal={"mid": 2})],
+        }
+        xao = tmp_path / "stack.xao"
+        m = generate_mesh(
+            entities=[
+                PolySurface(
+                    polygons=shapely.box(0, 0, 4, 1),
+                    physical_name="lower",
+                    mesh_order=3,
+                ),
+                PolySurface(
+                    polygons=shapely.box(0, 1, 4, 2),
+                    physical_name="mid",
+                    mesh_order=1,
+                ),
+                PolySurface(
+                    polygons=shapely.box(0, 2, 4, 3),
+                    physical_name="upper",
+                    mesh_order=2,
+                ),
+            ],
+            sweeps=[s1, s2],
+            dim=2,
+            output_mesh=str(tmp_path / "stack.msh"),
+            checkpoint_cad=str(xao),
+            default_characteristic_length=0.5,
+            resolution_specs=specs,
+        )
+        # signal fine only near the lower interface + a tangential hotspot
+        def sizes(x, y):
+            return np.clip(
+                0.5 + 0.5 * np.abs(x - 2.0) + 0.5 * np.abs(y - 1.0), 0.5, 1.5
+            )
+
+        xs, ys = np.meshgrid(
+            np.linspace(0, 4, 81), np.linspace(0.5, 2.5, 81), indexing="ij"
+        )
+        size_map = np.column_stack(
+            [
+                xs.ravel(),
+                ys.ravel(),
+                np.zeros(xs.size),
+                sizes(xs.ravel(), ys.ravel()),
+            ]
+        )
+        new_mesh, new_specs = remesh_structured(
+            input_mesh=m,
+            geometry_file=xao,
+            sweeps=[s1, s2],
+            resolution_specs=specs,
+            size_map=size_map,
+            output_mesh=tmp_path / "stack_adapted.msh",
+            default_characteristic_length=0.5,
+        )
+        t1 = np.asarray(new_specs["s1"][0].tangential)
+        t2 = np.asarray(new_specs["s2"][0].tangential)
+        np.testing.assert_allclose(t1, t2)  # identical shared array
+        assert new_mesh.points.shape[0] > 0  # regeneration succeeded (seam conforms)

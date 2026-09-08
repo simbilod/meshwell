@@ -734,7 +734,14 @@ def _old_tangential_offsets(tangential, length: float) -> "np.ndarray":
     """Old tangential offsets [0, ..., length] from a scalar spacing or array."""
     if isinstance(tangential, (int, float)):
         h = float(tangential)
-        return np.unique(np.concatenate([np.arange(0.0, length, h), [length]]))
+        offs = np.arange(0.0, length, h)
+        # A perturbed (CAD-tolerance) length leaves an arange sample a hair
+        # short of it; appending `length` would then create a sliver end-cell
+        # whose tiny size, once gradation-limited, refines the whole band into
+        # hundreds of cells. Drop that sample and let the last cell absorb it.
+        if offs.size and length - offs[-1] < 0.5 * h:
+            offs = offs[:-1]
+        return np.concatenate([offs, [length]])
     return np.asarray(tangential, dtype=float)
 
 

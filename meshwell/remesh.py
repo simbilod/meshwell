@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import shutil
 import subprocess
 import tempfile
@@ -17,7 +18,15 @@ from scipy.interpolate import NearestNDInterpolator
 from scipy.spatial import cKDTree
 
 from meshwell.model import ModelManager
-from meshwell.resolution import DirectSizeSpecification, SweepAdaptContext
+from meshwell.resolution import (
+    DirectSizeSpecification,
+    StructuredExtrusionResolutionSpec,
+    StructuredSweepResolutionSpec,
+    SweepAdaptContext,
+    _adapt_sweep_arrays,
+    _equidistribute,
+    _insert_required,
+)
 
 
 def _identity_threshold_func(
@@ -507,7 +516,15 @@ class RemeshGMSH(Remesher):
 
 
 class RemeshMMG(Remesher):
-    """Remesher using MMG backend."""
+    """Remesher using MMG backend.
+
+    Incompatible with structured sweep bands: MMG would remesh the band and
+    destroy its tensor structure, and the ``__sweep|`` marker groups are
+    stripped from ``.msh`` files so this cannot be detected here. For models
+    with structured bands use :func:`remesh_structured`. (Extension path:
+    mark band cells as Required entities in the Medit file so MMG adapts
+    only the unstructured complement.)
+    """
 
     def __init__(
         self,
@@ -922,3 +939,188 @@ def _sweep_band_frames(sweeps, tol: float = 1e-4) -> dict:
             required_ts=tuple(sorted(splits)),
         )
     return frames
+
+
+def _is_adaptable_sweep_spec(spec) -> bool:
+    return isinstance(spec, StructuredSweepResolutionSpec) and not isinstance(
+        spec, StructuredExtrusionResolutionSpec
+    )
+
+
+def _snap_offsets(offs, q: float) -> list:
+    """Round offsets onto the point_tolerance lattice the stamping kernel uses.
+
+    ``_stamp_all`` snaps every stamped node onto the ``point_tolerance`` grid
+    (sweep2d.py: ``grid_xy = round(grid_xy / q) * q``) to undo the CAD
+    perturbation, so a returned spec carrying the raw (continuous)
+    equidistributed offsets would not describe the mesh that was produced.
+    Snap here so the returned arrays round-trip exactly.
+    """
+    if q <= 0:
+        return [float(v) for v in offs]
+    return [float(round(float(v) / q) * q) for v in offs]
+
+
+def _tangential_key(spec, ctx):
+    """Group key: sweeps sharing extent + equal tangential share one new array."""
+    if isinstance(spec.tangential, (int, float)):
+        tkey = ("scalar", float(spec.tangential))
+    else:
+        tkey = ("array", tuple(round(float(v), 12) for v in spec.tangential))
+    return (ctx.t_axis, round(ctx.t0, 9), round(ctx.t1, 9), tkey)
+
+
+def remesh_structured(
+    input_mesh,
+    geometry_file,
+    sweeps,
+    resolution_specs,
+    strategies=None,
+    *,
+    size_map=None,
+    change_max: float = 2.0,
+    max_ratio: float = 1.3,
+    output_mesh=None,
+    dim: int = 2,
+    global_2D_algorithm: int = 6,
+    global_3D_algorithm: int = 1,
+    mesh_element_order: int = 1,
+    optimization_flags=None,
+    default_characteristic_length: float = 1.0,
+    verbosity: int = 0,
+    n_threads: int = cpu_count(),
+    filename: str = "temp_remesh_structured",
+    model: ModelManager | None = None,
+) -> tuple[meshio.Mesh, dict]:
+    """Adapt every ResolutionSpec to a size map and regenerate from the .xao.
+
+    Structured bands are adapted by spec regeneration (tangential/normal
+    arrays re-derived from the size map); unstructured regions follow the
+    gradation-limited map via a global DirectSizeSpecification. Returns
+    ``(new_mesh, adapted_resolution_specs)``; feed the specs back in to
+    iterate the adaptive loop.
+    """
+    if size_map is None:
+        if strategies is None:
+            raise ValueError("Provide either strategies or size_map.")
+        size_map = compute_total_size_map(
+            input_mesh, strategies, n_threads=n_threads, verbosity=verbosity
+        )
+    size_map = gradation_limit_size_map(np.asarray(size_map, float), max_ratio)
+
+    remesher = RemeshGMSH(
+        n_threads=n_threads, filename=filename, model=model, verbosity=verbosity
+    )
+    try:
+        remesher.model_manager.ensure_initialized(
+            str(remesher.model_manager.filename)
+        )
+        # OCCBoundsUseStl must be ON *before* open: gmsh only builds the
+        # STL tessellation (which tracks the CAD-perturbed geometry to ~1e-5)
+        # at import time. Setting it afterwards leaves _sweep_band_frames with
+        # loose shape-tolerance bounds (~2e-3), which misclassify the band's
+        # own end corners as interior splits and corrupt the tangential grid.
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
+        gmsh.open(str(geometry_file))
+        gmsh.model.occ.synchronize()
+        frames = _sweep_band_frames(sweeps)
+        # Turn STL bounds back off before meshing (they feed the meshing
+        # octree otherwise).
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 0)
+        # The stamping kernel snaps stamped nodes onto this lattice, so the
+        # returned spec arrays are snapped to match (see _snap_offsets).
+        q = remesher.model_manager.point_tolerance or 1e-3
+        # gmsh (4.15) deadlocks in generate() when a PostView background field
+        # (the DirectSizeSpecification below) is meshed multi-threaded -- the
+        # sweep stamping's generate(1) never returns. The whole point of this
+        # driver is the background field, so pin gmsh meshing single-threaded
+        # (matches the n_threads=1 the DirectSizeSpecification tests use).
+        for _opt in (
+            "General.NumThreads",
+            "Mesh.MaxNumThreads1D",
+            "Mesh.MaxNumThreads2D",
+            "Mesh.MaxNumThreads3D",
+        ):
+            gmsh.option.setNumber(_opt, 1)
+
+        new_specs = {k: list(v) for k, v in resolution_specs.items()}
+
+        # Non-sweep specs adapt independently; sweep specs are collected for
+        # shared-tangential grouping.
+        sweep_items = []  # (key, index, spec, ctx)
+        for key, specs in new_specs.items():
+            for i, spec in enumerate(specs):
+                if _is_adaptable_sweep_spec(spec) and key in frames:
+                    sweep_items.append((key, i, spec, frames[key]))
+                else:
+                    specs[i] = spec.adapt(
+                        size_map, change_max=change_max, max_ratio=max_ratio
+                    )
+
+        # Group sweeps by shared tangential (the existing stacking convention),
+        # min-merge their tangential targets, emit ONE shared array per group.
+        groups: dict = {}
+        for item in sweep_items:
+            groups.setdefault(_tangential_key(item[2], item[3]), []).append(item)
+        for members in groups.values():
+            adapted = [
+                _adapt_sweep_arrays(spec, size_map, ctx, change_max, max_ratio)
+                for (_k, _i, spec, ctx) in members
+            ]
+            with_signal = [a for a in adapted if a is not None]
+            if not with_signal:
+                continue  # no signal over any band in the group: all unchanged
+            t_off = with_signal[0][1]
+            h_t = np.min([a[2] for a in with_signal], axis=0)
+            required = tuple(
+                sorted({r for (_k, _i, _s, ctx) in members for r in ctx.required_ts})
+            )
+            t_new = _snap_offsets(
+                _insert_required(_equidistribute(t_off, h_t), required), q
+            )
+            for (key, i, spec, _ctx), arrays in zip(members, adapted):
+                result = copy.copy(spec)
+                result.tangential = list(t_new)
+                # no-signal members keep their normal arrays but must adopt
+                # the shared tangential for seam conformity
+                if arrays is not None:
+                    result.normal = {
+                        side: _snap_offsets(off, q)
+                        for side, off in arrays[0].items()
+                    }
+                else:
+                    result.normal = spec.normal
+                new_specs[key][i] = result
+
+        # Unstructured regions follow the (gradation-limited) map. Reuse an
+        # existing global DirectSizeSpecification (already updated via adapt
+        # above) instead of stacking a new one each iteration.
+        has_direct = any(
+            isinstance(s, DirectSizeSpecification)
+            for ss in new_specs.values()
+            for s in ss
+        )
+        if not has_direct:
+            new_specs.setdefault(None, []).append(
+                DirectSizeSpecification(refinement_data=size_map, apply_to=None)
+            )
+
+        from meshwell.mesh import Mesh
+
+        mesh_gen = Mesh(model=remesher.model_manager)
+        new_mesh = mesh_gen.process_geometry(
+            dim=dim,
+            resolution_specs=new_specs,
+            global_2D_algorithm=global_2D_algorithm,
+            global_3D_algorithm=global_3D_algorithm,
+            mesh_element_order=mesh_element_order,
+            optimization_flags=optimization_flags,
+            verbosity=verbosity,
+            default_characteristic_length=default_characteristic_length,
+        )
+        if output_mesh is not None:
+            remesher.to_msh(Path(output_mesh))
+    finally:
+        remesher.finalize()
+
+    return new_mesh, new_specs
