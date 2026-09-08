@@ -30,6 +30,8 @@ parts:
     chapters:
     - file: 30_adaptive_remeshing_gmsh
     - file: 31_adaptive_remeshing_mmg
+    - file: 32_adaptive_structured
+    - file: 33_point_refine_structured
 
   - caption: Misc
     chapters:
