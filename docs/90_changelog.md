@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.5.0
+
+- parallel cuts [#PR168](https://github.com/simbilod/meshwell/pull/168)
+- points [#PR167](https://github.com/simbilod/meshwell/pull/167)
+- BoundaryLayer [#PR166](https://github.com/simbilod/meshwell/pull/166)
+- 1D structured sweep [#PR165](https://github.com/simbilod/meshwell/pull/165)
+- arcs across entities [#PR164](https://github.com/simbilod/meshwell/pull/164)
+
 ## 2.4.0
 
 - cad_occ focus
