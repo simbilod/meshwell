@@ -36,7 +36,7 @@ from os import cpu_count
 from typing import TYPE_CHECKING, Any
 
 from OCP.Bnd import Bnd_Box
-from OCP.BOPAlgo import BOPAlgo_Builder
+from OCP.BOPAlgo import BOPAlgo_BOP, BOPAlgo_Builder, BOPAlgo_Operation
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -231,7 +231,7 @@ class CAD_OCC:
         while exp.More():
             out.append(exp.Current())
             exp.Next()
-        return out if out else [shape]
+        return out
 
     def _shape_bbox(
         self, shape: TopoDS_Shape
@@ -578,36 +578,78 @@ class CAD_OCC:
                     tool_shapes.append(ts)
 
             if tool_shapes and labeled.shapes:
-                # Sequential per-tool cuts -- matches
-                # ``gmsh.model.occ.cut(obj, [tools])`` which iterates
-                # internally. Bundling all tools into a single
-                # ``TopoDS_Compound`` and calling ``BRepAlgoAPI_Cut(s,
-                # compound)`` (or feeding a ``TopTools_ListOfShape``) was
-                # observed to produce empty results (zero SOLIDs) for
-                # large bodies like a substrate cut against ~10
-                # metal+helper bodies, even though the same body against
-                # each tool individually retains 1 SOLID per cut.
-                # MANUAL_NOTE: need to revisit, an advantage of raw OCP
-                # is parallelization...
+                # Multi-tool cut via BOPAlgo_BOP: passing all overlapping tools
+                # simultaneously allows OCCT to build a unified PaveFiller graph
+                # and resolve coincident faces/edges across adjacent tools in one pass.
+                # This avoids the non-manifold coincident-edge singularities that occur
+                # during sequential binary cuts (e.g. when complementary layers meet at
+                # a common Z plane).
                 new_shapes: list[TopoDS_Shape] = []
                 for s in labeled.shapes:
+                    s_bbox = self._shape_bbox(s)
+                    if s_bbox is None:
+                        continue
+                    s_tools = [
+                        ts
+                        for ts in tool_shapes
+                        if (tb := self._shape_bbox(ts)) is not None
+                        and self._bboxes_overlap(s_bbox, tb)
+                    ]
+                    if not s_tools:
+                        new_shapes.append(s)
+                        continue
+
+                    unwrapped: list[TopoDS_Shape] = []
+                    bop_succeeded = False
                     try:
-                        result = s
-                        for ts in tool_shapes:
-                            cut_op = BRepAlgoAPI_Cut(result, ts)
-                            cut_op.SetFuzzyValue(self.cut_fuzzy_value)
-                            cut_op.Build()
-                            result = cut_op.Shape()
+                        bop = BOPAlgo_BOP()
+                        bop.AddArgument(s)
+                        for ts in s_tools:
+                            bop.AddTool(ts)
+                        bop.SetOperation(BOPAlgo_Operation.BOPAlgo_CUT)
+                        bop.SetFuzzyValue(self.cut_fuzzy_value)
+                        bop.SetRunParallel(self.n_threads > 1)
+                        bop.Perform()
+                        if not bop.HasErrors():
+                            res = bop.Shape()
+                            unwrapped = self._unwrap_shape(res, labeled.dim)
+                            bop_succeeded = True
+                        else:
+                            logger.debug(
+                                "cad_occ: multi-tool cut reported errors for entity %s; falling back to sequential cut",
+                                labeled.physical_name,
+                            )
                     except Exception as e:  # pragma: no cover -- defensive
-                        print(
-                            f"Warning: BRepAlgoAPI_Cut failed for entity "
-                            f"{orig_idx}: {e}"
+                        logger.debug(
+                            "cad_occ: multi-tool cut failed for entity %s: %s; falling back to sequential cut",
+                            labeled.physical_name,
+                            e,
                         )
+
+                    # Defensive fallback: if multi-tool cut errored or threw an exception,
+                    # attempt sequential cuts with safety checks.
+                    if not bop_succeeded:
                         result = s
-                    if result is not None:
-                        # Flatten compound wrapper so BOPAlgo_Builder.Modified()
-                        # in the final fragment pass tracks sub-shape provenance.
-                        new_shapes.extend(self._unwrap_shape(result, labeled.dim))
+                        for ts in s_tools:
+                            try:
+                                cut_op = BRepAlgoAPI_Cut(result, ts)
+                                cut_op.SetFuzzyValue(self.cut_fuzzy_value)
+                                cut_op.Build()
+                                next_res = cut_op.Shape()
+                                next_unwrapped = self._unwrap_shape(
+                                    next_res, labeled.dim
+                                )
+                                if next_unwrapped:
+                                    result = next_res
+                            except Exception as e:  # pragma: no cover -- defensive
+                                logger.debug(
+                                    "cad_occ: sequential cut step failed for entity %s: %s",
+                                    labeled.physical_name,
+                                    e,
+                                )
+                        unwrapped = self._unwrap_shape(result, labeled.dim)
+
+                    new_shapes.extend(unwrapped)
                 labeled.shapes = new_shapes
 
             instantiated[orig_idx] = labeled
