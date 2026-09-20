@@ -51,9 +51,9 @@ class RemeshingStrategy:
 
     refinement_data: Path | np.ndarray | None
     func: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None
-    threshold_func: Callable[[np.ndarray, np.ndarray], np.ndarray] = (
-        _identity_threshold_func
-    )
+    threshold_func: Callable[
+        [np.ndarray, np.ndarray], np.ndarray
+    ] = _identity_threshold_func
     min_size: float | None = None
     max_size: float | None = None
 
@@ -1012,9 +1012,7 @@ def remesh_structured(
         n_threads=n_threads, filename=filename, model=model, verbosity=verbosity
     )
     try:
-        remesher.model_manager.ensure_initialized(
-            str(remesher.model_manager.filename)
-        )
+        remesher.model_manager.ensure_initialized(str(remesher.model_manager.filename))
         # OCCBoundsUseStl must be ON *before* open: gmsh only builds the
         # STL tessellation (which tracks the CAD-perturbed geometry to ~1e-5)
         # at import time. Setting it afterwards leaves _sweep_band_frames with
@@ -1085,8 +1083,7 @@ def remesh_structured(
                 # the shared tangential for seam conformity
                 if arrays is not None:
                     result.normal = {
-                        side: _snap_offsets(off, q)
-                        for side, off in arrays[0].items()
+                        side: _snap_offsets(off, q) for side, off in arrays[0].items()
                     }
                 else:
                     result.normal = spec.normal

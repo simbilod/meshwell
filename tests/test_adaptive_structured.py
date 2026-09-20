@@ -8,6 +8,11 @@ import shapely
 
 from meshwell.orchestrator import generate_mesh
 from meshwell.polysurface import PolySurface
+from meshwell.remesh import (
+    _sweep_band_frames,
+    gradation_limit_size_map,
+    remesh_structured,
+)
 from meshwell.resolution import (
     DirectSizeSpecification,
     Graded,
@@ -22,6 +27,8 @@ from meshwell.structured.sweep import StructuredSweep
 
 
 class TestGradationLimit:
+    """Tests for one-dimensional size-map gradation limiting."""
+
     def test_flat_untouched(self):
         h = np.array([0.1, 0.1, 0.1])
         np.testing.assert_allclose(_gradation_limit(h, 1.3), h)
@@ -33,7 +40,8 @@ class TestGradationLimit:
         assert np.all(ratios <= 1.3 + 1e-12)
         assert np.all(ratios >= 1 / 1.3 - 1e-12)
         # small values are never increased
-        assert out[0] <= 0.1 + 1e-12 and out[2] <= 0.1 + 1e-12
+        assert out[0] <= 0.1 + 1e-12
+        assert out[2] <= 0.1 + 1e-12
 
     def test_input_not_mutated(self):
         h = np.array([0.1, 1e6, 0.1])
@@ -42,6 +50,8 @@ class TestGradationLimit:
 
 
 class TestEquidistribute:
+    """Tests for redistributing offsets from target cell sizes."""
+
     def test_uniform_reproduces_uniform(self):
         offsets = np.linspace(0.0, 0.4, 5)
         h = np.full(4, 0.1)
@@ -52,7 +62,8 @@ class TestEquidistribute:
         offsets = np.array([0.0, 0.13, 0.4])
         h = np.array([0.05, 0.11])
         out = _equidistribute(offsets, h)
-        assert out[0] == 0.0 and out[-1] == 0.4
+        assert out[0] == 0.0
+        assert out[-1] == 0.4
 
     def test_equal_density_increments(self):
         # piecewise target: fine near 0, coarse near 1
@@ -74,6 +85,8 @@ class TestEquidistribute:
 
 
 class TestInsertRequired:
+    """Tests for preserving required offsets in a grid."""
+
     def test_noop_when_present(self):
         off = np.array([0.0, 1.0, 2.0])
         np.testing.assert_allclose(_insert_required(off, (1.0,)), off)
@@ -86,18 +99,23 @@ class TestInsertRequired:
     def test_never_moves_endpoints(self):
         off = np.array([0.0, 1.0, 2.0])
         out = _insert_required(off, (0.1, 1.9))
-        assert out[0] == 0.0 and out[-1] == 2.0
-        assert 0.1 in out and 1.9 in out
+        assert out[0] == 0.0
+        assert out[-1] == 2.0
+        assert 0.1 in out
+        assert 1.9 in out
 
     def test_many_required_preserves_endpoints(self):
         off = np.array([0.0, 1.0, 2.0])
         out = _insert_required(off, (0.1, 0.2, 0.3))
-        assert out[0] == 0.0 and out[-1] == 2.0
+        assert out[0] == 0.0
+        assert out[-1] == 2.0
         assert all(r in out for r in (0.1, 0.2, 0.3))
         assert np.all(np.diff(out) > 0)  # strictly sorted, no duplicates
 
 
 class TestAdaptProtocol:
+    """Tests for adaptive resolution-specification behavior."""
+
     def test_base_returns_self_and_warns(self):
         spec = ThresholdField(apply_to="curves", sizemin=0.1, sizemax=1.0, distmax=1.0)
         size_map = np.array([[0.0, 0.0, 0.0, 0.05]])
@@ -118,13 +136,16 @@ class TestAdaptProtocol:
 
 
 class TestRefine:
+    """Tests for refining resolution specifications."""
+
     def test_sweep_refine_scalar_and_int(self):
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 2})
         out = spec.refine(0.5)
         assert out.tangential == 0.5
         assert out.normal["upper"] == 4
         # original untouched
-        assert spec.tangential == 1.0 and spec.normal["upper"] == 2
+        assert spec.tangential == 1.0
+        assert spec.normal["upper"] == 2
 
     def test_sweep_refine_graded(self):
         spec = StructuredSweepResolutionSpec(
@@ -173,9 +194,11 @@ def _grid_size_map(size_func, nx=81, ny=41):
 
 
 class TestSweepAdapt:
+    """Tests for adapting structured sweep resolution."""
+
     def test_context_none_returns_self(self):
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
-        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        size_map = _grid_size_map(lambda x, _y: np.full_like(x, 0.1))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             assert spec.adapt(size_map) is spec
@@ -188,26 +211,29 @@ class TestSweepAdapt:
     def test_uniform_signal_reproduces_uniform(self):
         # target 0.1 == current normal size and 1.0 == current tangential
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
-        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        size_map = _grid_size_map(lambda x, _y: np.full_like(x, 0.1))
         out = spec.adapt(size_map, _qw_context())
         off = np.asarray(out.normal["upper"])
-        assert off[0] == 0.0 and off[-1] == 0.4
+        assert off[0] == 0.0
+        assert off[-1] == 0.4
         np.testing.assert_allclose(np.diff(off), 0.1, rtol=1e-6)
         # tangential widened to an explicit array spanning [0, 4]
         t = np.asarray(out.tangential)
-        assert t[0] == 0.0 and t[-1] == 4.0
+        assert t[0] == 0.0
+        assert t[-1] == 4.0
 
     def test_interface_signal_refines_normal_near_interface(self):
         # fine at the attachment (eta=0), coarse away; within the damp clamp
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
         size_map = _grid_size_map(
-            lambda x, y: np.clip(0.05 + 0.25 * (y - 1.0), 0.05, 0.2)
+            lambda _x, y: np.clip(0.05 + 0.25 * (y - 1.0), 0.05, 0.2)
         )
         out = spec.adapt(size_map, _qw_context())
         off = np.asarray(out.normal["upper"])
         d = np.diff(off)
         assert d[0] < d[-1]  # finer near the interface
-        assert off[0] == 0.0 and off[-1] == 0.4
+        assert off[0] == 0.0
+        assert off[-1] == 0.4
         # gradation cap holds
         assert np.all(d[1:] / d[:-1] <= 1.3 + 1e-9)
         # int input widened to explicit array
@@ -216,7 +242,7 @@ class TestSweepAdapt:
     def test_tangential_hotspot_refines_tangentially(self):
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
         size_map = _grid_size_map(
-            lambda x, y: np.clip(0.5 + 0.5 * np.abs(x - 2.0), 0.5, 1.0)
+            lambda x, _y: np.clip(0.5 + 0.5 * np.abs(x - 2.0), 0.5, 1.0)
         )
         out = spec.adapt(size_map, _qw_context())
         t = np.asarray(out.tangential)
@@ -226,7 +252,7 @@ class TestSweepAdapt:
 
     def test_damping_clamps_pathological_target(self):
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
-        size_map = _grid_size_map(lambda x, y: np.full_like(x, 1e-6))
+        size_map = _grid_size_map(lambda x, _y: np.full_like(x, 1e-6))
         out = spec.adapt(size_map, _qw_context(), change_max=2.0)
         off = np.asarray(out.normal["upper"])
         # old h = 0.1; clamped target = 0.05 -> exactly 8 cells, not millions
@@ -234,7 +260,7 @@ class TestSweepAdapt:
 
     def test_damping_iteration_converges_monotonically(self):
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
-        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.0125))
+        size_map = _grid_size_map(lambda x, _y: np.full_like(x, 0.0125))
         counts = []
         for _ in range(4):
             spec = spec.adapt(size_map, _qw_context(), change_max=2.0)
@@ -245,29 +271,25 @@ class TestSweepAdapt:
         spec = StructuredSweepResolutionSpec(
             tangential=1.0, normal={"upper": Graded(h0=0.05, ratio=1.3)}
         )
-        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        size_map = _grid_size_map(lambda x, _y: np.full_like(x, 0.1))
         out = spec.adapt(size_map, _qw_context())
         assert isinstance(out.normal["upper"], list)
         off = np.asarray(out.normal["upper"])
-        assert off[0] == 0.0 and off[-1] == 0.4
+        assert off[0] == 0.0
+        assert off[-1] == 0.4
 
     def test_required_ts_retained(self):
         ctx = _qw_context()
         ctx.required_ts = (1.7,)
         spec = StructuredSweepResolutionSpec(tangential=1.0, normal={"upper": 4})
-        size_map = _grid_size_map(lambda x, y: np.full_like(x, 0.1))
+        size_map = _grid_size_map(lambda x, _y: np.full_like(x, 0.1))
         out = spec.adapt(size_map, ctx)
         assert np.any(np.abs(np.asarray(out.tangential) - 1.7) < 1e-9)
 
 
-from meshwell.remesh import (
-    _sweep_band_frames,
-    gradation_limit_size_map,
-    remesh_structured,
-)
-
-
 class TestSizeMapGradation:
+    """Tests for gradation limiting a point-cloud size map."""
+
     def test_shock_is_limited(self):
         xs = np.linspace(0.0, 10.0, 101)
         h = np.full_like(xs, 1e6)
@@ -326,6 +348,8 @@ def _generate_qw_fixture(tmp_path, tangential=1.0, normal=4):
 
 
 class TestBandFrames:
+    """Tests for sweep-band frames recovered from CAD."""
+
     def test_frames_from_xao(self, tmp_path):
         _, xao, sweep, _ = _generate_qw_fixture(tmp_path)
         if not gmsh.isInitialized():
@@ -338,7 +362,8 @@ class TestBandFrames:
         finally:
             gmsh.model.remove()
         ctx = frames["qw"]
-        assert ctx.t_axis == 0 and ctx.n_axis == 1
+        assert ctx.t_axis == 0
+        assert ctx.n_axis == 1
         # atol=1e-5: gmsh's OCC getBoundingBox carries the CAD's 1e-5
         # perturbation tolerance even with STL-tight bounds.
         np.testing.assert_allclose([ctx.t0, ctx.t1], [0.0, 4.0], atol=1e-5)
@@ -404,10 +429,14 @@ class TestBandFrames:
 
 def _interface_size_map():
     """Fine near y=1, coarse away — within the default damp clamp of the fixture."""
-    return _grid_size_map(lambda x, y: np.clip(0.05 + 0.25 * np.abs(y - 1.0), 0.05, 0.2))
+    return _grid_size_map(
+        lambda _x, y: np.clip(0.05 + 0.25 * np.abs(y - 1.0), 0.05, 0.2)
+    )
 
 
 class TestRemeshStructured:
+    """End-to-end tests for structured-band remeshing."""
+
     def test_end_to_end_tensor_grid_preserved(self, tmp_path):
         m, xao, sweep, specs = _generate_qw_fixture(tmp_path)
         new_mesh, new_specs = remesh_structured(
@@ -422,7 +451,8 @@ class TestRemeshStructured:
         # adapted spec has explicit arrays, finer near the interface
         spec = new_specs["qw"][0]
         off = np.asarray(spec.normal["upper"])
-        assert off[0] == 0.0 and abs(off[-1] - 0.4) < 1e-9
+        assert off[0] == 0.0
+        assert abs(off[-1] - 0.4) < 1e-9
         assert np.diff(off)[0] < np.diff(off)[-1]
         # band nodes in the new mesh form an exact tensor grid
         pts = new_mesh.points[:, :2]
@@ -430,9 +460,7 @@ class TestRemeshStructured:
         xs = np.unique(np.round(band[:, 0], 9))
         ys = np.unique(np.round(band[:, 1], 9))
         assert len(band) == len(xs) * len(ys)
-        np.testing.assert_allclose(
-            sorted(ys), 1.0 + np.asarray(off), atol=1e-6
-        )
+        np.testing.assert_allclose(sorted(ys), 1.0 + np.asarray(off), atol=1e-6)
         # physical groups preserved
         assert "lower___upper" in new_mesh.cell_sets
         # driver appended exactly one global DirectSizeSpecification
@@ -498,6 +526,7 @@ class TestRemeshStructured:
             default_characteristic_length=0.5,
             resolution_specs=specs,
         )
+
         # signal fine only near the lower interface + a tangential hotspot
         def sizes(x, y):
             return np.clip(
