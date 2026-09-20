@@ -1,6 +1,7 @@
 """Resolution specifications."""
 import copy
 import warnings
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
@@ -72,6 +73,25 @@ class ResolutionSpec(BaseModel):
         if self.apply_to == "points":
             return 0
         return None
+
+    def adapt(
+        self,
+        size_map: "np.ndarray",  # noqa: ARG002
+        context: Any = None,  # noqa: ARG002
+        *,
+        change_max: float = 2.0,  # noqa: ARG002
+        max_ratio: float = 1.3,  # noqa: ARG002
+    ) -> "ResolutionSpec":
+        """Project a pointwise (x, y, z, size) map onto this spec's parameters.
+
+        Base implementation: this spec type does not support adaptation;
+        return self unchanged (documented, not silent).
+        """
+        warnings.warn(
+            f"{type(self).__name__} does not support adapt(); returning unchanged.",
+            stacklevel=2,
+        )
+        return self
 
 
 class ConstantInField(ResolutionSpec):
@@ -466,6 +486,27 @@ class DirectSizeSpecification(ResolutionSpec):
 
         return field_index
 
+    def adapt(
+        self,
+        size_map: "np.ndarray",
+        context: Any = None,  # noqa: ARG002
+        *,
+        change_max: float = 2.0,  # noqa: ARG002
+        max_ratio: float = 1.3,  # noqa: ARG002
+    ) -> "DirectSizeSpecification":
+        """Replace the carried size map with the new one."""
+        result = copy.copy(self)
+        result.refinement_data = np.asarray(size_map, dtype=float)
+        return result
+
+    def refine(self, resolution_factor: float) -> "DirectSizeSpecification":
+        """Create a copy with the size column scaled by ``resolution_factor``."""
+        result = copy.copy(self)
+        data = np.asarray(self.refinement_data, dtype=float).copy()
+        data[:, 3] *= resolution_factor
+        result.refinement_data = data
+        return result
+
 
 class Graded(BaseModel):
     """Geometric grading for a structured sweep's normal direction.
@@ -501,6 +542,67 @@ class StructuredSweepResolutionSpec(ResolutionSpec):
     def apply(self, **_kwargs) -> None:
         """No-op: consumed by the sweep stamping kernel."""
 
+    def refine(self, resolution_factor: float) -> "StructuredSweepResolutionSpec":
+        """Create a copy with all sizes scaled by ``resolution_factor``.
+
+        Follows the existing convention (see ConstantInField.refine):
+        sizes are multiplied by the factor, so refine(0.5) is finer.
+        """
+        import math
+
+        result = copy.copy(self)
+        if isinstance(self.tangential, (int, float)):
+            result.tangential = float(self.tangential) * resolution_factor
+        elif self.tangential is not None:
+            off = np.asarray(self.tangential, dtype=float)
+            result.tangential = _equidistribute(
+                off, np.diff(off) * resolution_factor
+            ).tolist()
+        new_normal: dict = {}
+        for side, n in self.normal.items():
+            if isinstance(n, int):
+                new_normal[side] = max(1, math.ceil(n / resolution_factor))
+            elif isinstance(n, Graded):
+                new_normal[side] = Graded(h0=n.h0 * resolution_factor, ratio=n.ratio)
+            else:
+                off = np.asarray(n, dtype=float)
+                new_normal[side] = _equidistribute(
+                    off, np.diff(off) * resolution_factor
+                ).tolist()
+        result.normal = new_normal
+        return result
+
+    def adapt(
+        self,
+        size_map: "np.ndarray",
+        context: "SweepAdaptContext | None" = None,
+        *,
+        change_max: float = 2.0,
+        max_ratio: float = 1.3,
+    ) -> "StructuredSweepResolutionSpec":
+        """Project the size map onto this band's tangential/normal arrays.
+
+        Directional min-collapse at the old cell midpoints, per-iteration
+        change clamp, gradation cap, then 1D equidistribution. Returns
+        self unchanged when no context is given or no signal covers the band.
+        """
+        if context is None:
+            warnings.warn(
+                "StructuredSweepResolutionSpec.adapt needs a SweepAdaptContext "
+                "(use meshwell.remesh.remesh_structured); returning unchanged.",
+                stacklevel=2,
+            )
+            return self
+        arrays = _adapt_sweep_arrays(self, size_map, context, change_max, max_ratio)
+        if arrays is None:
+            return self
+        new_normal, t_off, h_t = arrays
+        t_new = _insert_required(_equidistribute(t_off, h_t), context.required_ts)
+        result = copy.copy(self)
+        result.tangential = [float(v) for v in t_new]
+        result.normal = new_normal
+        return result
+
 
 def resolve_normal_offsets(normal_spec, thickness: float, atol: float) -> "np.ndarray":
     """Resolve a per-side normal spec into offsets [0, ..., thickness].
@@ -532,6 +634,172 @@ def resolve_normal_offsets(normal_spec, thickness: float, atol: float) -> "np.nd
     if abs(offsets[0]) > atol or abs(offsets[-1] - thickness) > atol:
         raise SweepNormalExtentError(offsets, thickness)
     return offsets
+
+
+def _gradation_limit(h: "np.ndarray", max_ratio: float) -> "np.ndarray":
+    """Cap neighbor cell-size ratios at ``max_ratio`` (standard two-pass sweep)."""
+    h = np.asarray(h, dtype=float).copy()
+    for i in range(1, len(h)):
+        h[i] = min(h[i], h[i - 1] * max_ratio)
+    for i in range(len(h) - 2, -1, -1):
+        h[i] = min(h[i], h[i + 1] * max_ratio)
+    return h
+
+
+def _equidistribute(
+    offsets: "np.ndarray", h_cells: "np.ndarray", min_cells: int = 2
+) -> "np.ndarray":
+    """Redistribute ``offsets`` so each new cell holds an equal share of ∫ dη / h.
+
+    ``h_cells`` is the piecewise-constant target size on the old cells.
+    Endpoints are pinned exactly; at least ``min_cells`` cells are emitted.
+    """
+    offsets = np.asarray(offsets, dtype=float)
+    d = np.diff(offsets)
+    density = d / np.asarray(h_cells, dtype=float)
+    cum = np.concatenate([[0.0], np.cumsum(density)])
+    n = max(min_cells, int(np.ceil(cum[-1] - 1e-9)))
+    new = np.interp(np.linspace(0.0, cum[-1], n + 1), cum, offsets)
+    new[0], new[-1] = offsets[0], offsets[-1]
+    return new
+
+
+def _insert_required(
+    offsets: "np.ndarray", required: tuple, tol: float = 1e-9
+) -> "np.ndarray":
+    """Snap the nearest interior offset onto each required coordinate.
+
+    An interior offset already pinned to another required coordinate is not
+    reused; a new offset is inserted instead so every required point survives.
+    """
+    off = np.asarray(offsets, dtype=float).copy()
+    req = np.asarray(required, dtype=float)
+    for r in required:
+        if off.size and np.min(np.abs(off - r)) <= tol:
+            continue  # already present
+        # interior offsets not already pinned to a required coordinate
+        free = [i for i in range(1, len(off) - 1) if np.min(np.abs(req - off[i])) > tol]
+        if free:
+            i = free[int(np.argmin(np.abs(off[free] - r)))]
+            off[i] = r
+        else:
+            # keep sorted so indices 0 / -1 stay the true endpoints
+            off = np.sort(np.append(off, r))
+    return np.sort(off)
+
+
+@dataclass
+class SweepAdaptContext:
+    """Axis-aligned band frame for StructuredSweepResolutionSpec.adapt.
+
+    Built by the driver from the .xao's __sweep|/__sweepsrc| groups
+    (see meshwell.remesh._sweep_band_frames).
+    """
+
+    thickness: dict
+    t_axis: int
+    n_axis: int
+    t0: float
+    t1: float
+    n0: float
+    normal_sign: dict
+    required_ts: tuple = ()
+
+
+def _size_interpolator(size_map: "np.ndarray"):
+    """Callable mapping (M, 2) xy points to sizes; linear with nearest fallback."""
+    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+
+    pts = np.asarray(size_map, dtype=float)[:, :2]
+    vals = np.asarray(size_map, dtype=float)[:, 3]
+    nearest = NearestNDInterpolator(pts, vals)
+    if len(pts) < 4:
+        return nearest
+    try:
+        linear = LinearNDInterpolator(pts, vals)
+    except Exception:  # degenerate (collinear) point sets
+        return nearest
+
+    def interp(p):
+        out = linear(p)
+        bad = np.isnan(out)
+        if bad.any():
+            out[bad] = nearest(p[bad])
+        return out
+
+    return interp
+
+
+def _old_tangential_offsets(tangential, length: float) -> "np.ndarray":
+    """Old tangential offsets [0, ..., length] from a scalar spacing or array."""
+    if isinstance(tangential, (int, float)):
+        h = float(tangential)
+        offs = np.arange(0.0, length, h)
+        # A perturbed (CAD-tolerance) length leaves an arange sample a hair
+        # short of it; appending `length` would then create a sliver end-cell
+        # whose tiny size, once gradation-limited, refines the whole band into
+        # hundreds of cells. Drop that sample and let the last cell absorb it.
+        if offs.size and length - offs[-1] < 0.5 * h:
+            offs = offs[:-1]
+        return np.concatenate([offs, [length]])
+    return np.asarray(tangential, dtype=float)
+
+
+def _adapt_sweep_arrays(
+    spec: "StructuredSweepResolutionSpec",
+    size_map: "np.ndarray",
+    ctx: SweepAdaptContext,
+    change_max: float,
+    max_ratio: float,
+):
+    """Collapse the size map onto the band's 1D arrays; damp and gradation-limit.
+
+    Returns (new_normal_offsets_per_side, old_tangential_offsets,
+    tangential_cell_sizes) with the tangential part left un-equidistributed
+    so the driver can min-merge shared-tangential groups first. Returns None
+    when no size-map point lies in the band (never silently coarsen).
+    """
+    size_map = np.asarray(size_map, dtype=float)
+    length = ctx.t1 - ctx.t0
+    t_off = _old_tangential_offsets(spec.tangential, length)
+
+    n_bounds = [ctx.n0] + [
+        ctx.n0 + ctx.normal_sign[side] * t for side, t in ctx.thickness.items()
+    ]
+    eps = 1e-9
+    tc = size_map[:, ctx.t_axis]
+    nc = size_map[:, ctx.n_axis]
+    inside = (
+        (tc >= ctx.t0 - eps)
+        & (tc <= ctx.t1 + eps)
+        & (nc >= min(n_bounds) - eps)
+        & (nc <= max(n_bounds) + eps)
+    )
+    if not inside.any():
+        return None
+
+    interp = _size_interpolator(size_map)
+    t_mid = 0.5 * (t_off[1:] + t_off[:-1])
+    h_t_target = np.full(len(t_mid), np.inf)
+    new_normal: dict = {}
+    for side, thick in ctx.thickness.items():
+        off = resolve_normal_offsets(spec.normal[side], thick, atol=1e-9)
+        n_mid = 0.5 * (off[1:] + off[:-1])
+        tt, nn = np.meshgrid(t_mid, n_mid, indexing="ij")
+        pts = np.zeros((tt.size, 2))
+        pts[:, ctx.t_axis] = (ctx.t0 + tt).ravel()
+        pts[:, ctx.n_axis] = (ctx.n0 + ctx.normal_sign[side] * nn).ravel()
+        sampled = interp(pts).reshape(len(t_mid), len(n_mid))
+        h_old = np.diff(off)
+        h_n = np.clip(sampled.min(axis=0), h_old / change_max, h_old * change_max)
+        h_n = _gradation_limit(h_n, max_ratio)
+        new_normal[side] = _equidistribute(off, h_n).tolist()
+        h_t_target = np.minimum(h_t_target, sampled.min(axis=1))
+
+    h_old_t = np.diff(t_off)
+    h_t = np.clip(h_t_target, h_old_t / change_max, h_old_t * change_max)
+    h_t = _gradation_limit(h_t, max_ratio)
+    return new_normal, t_off, h_t
 
 
 class StructuredExtrusionResolutionSpec(StructuredSweepResolutionSpec):

@@ -151,7 +151,6 @@ strategy = BinaryScalingStrategy(
     refinement_data=refinement_data,
     min_size=0.1,
     max_size=2.0,
-    field_smoothing_steps=2,
 )
 
 size_map = remesh_gmsh(
@@ -205,7 +204,6 @@ grid_strategy = BinaryScalingStrategy(
     refinement_data=grid_refinement_data,
     min_size=0.1,
     max_size=2.0,
-    field_smoothing_steps=5,
 )
 
 size_map = remesh_gmsh(
@@ -320,7 +318,6 @@ circle_strategy = BinaryScalingStrategy(
     refinement_data=circle_refinement_data,
     min_size=0.05,  # Much smaller minimum size
     max_size=2.0,
-    field_smoothing_steps=5,
 )
 
 line_strategy = BinaryScalingStrategy(
@@ -330,7 +327,6 @@ line_strategy = BinaryScalingStrategy(
     refinement_data=line_refinement_data,
     min_size=0.08,  # Much smaller minimum size
     max_size=2.0,
-    field_smoothing_steps=5,
 )
 
 # Combine both strategies
