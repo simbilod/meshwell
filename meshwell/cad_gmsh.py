@@ -22,6 +22,7 @@ Ownership semantics match :mod:`meshwell.cad_occ` exactly -- the same
 ``mesh_order`` ladder and tie-break rules apply, so tests that pin the
 OCC ownership model also pin this one.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict

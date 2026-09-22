@@ -11,6 +11,7 @@ Architecture:
      in `pre_2d_hook`, and stamps `3D` tetrahedra in `pre_3d_hook` while Gmsh
      meshes the remaining filler entities conformally (`Mesh.MeshOnlyEmpty = 1`).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -119,6 +120,9 @@ class CopyGroup:
         xao_path: Optional path to the companion `.xao` CAD file (defaults to
             ``msh_path.with_suffix(".xao")``).
         role_tolerance: Tolerance on ``(center_of_mass, mass)`` role matching.
+        surface_only: If True, stamp only the outer `2D` shell surface mesh of each
+            instance and leave its `3D` interior hollow/unmeshed while Gmsh tet-meshes
+            the surrounding filler conformally around the stamped shell.
     """
 
     name: str
@@ -126,6 +130,7 @@ class CopyGroup:
     instances: list[CopyInstance] = field(default_factory=list)
     xao_path: Path | None = None
     role_tolerance: float = 1e-6
+    surface_only: bool = False
 
     def __post_init__(self) -> None:
         """Normalize paths and validate instances."""
@@ -150,6 +155,7 @@ class CopyGroup:
             "xao_path": str(self.xao_path) if self.xao_path else None,
             "instances": [inst.to_dict() for inst in self.instances],
             "role_tolerance": float(self.role_tolerance),
+            "surface_only": bool(self.surface_only),
         }
 
     @classmethod
@@ -161,6 +167,7 @@ class CopyGroup:
             xao_path=Path(data["xao_path"]) if data.get("xao_path") else None,
             instances=[CopyInstance.from_dict(d) for d in data.get("instances", [])],
             role_tolerance=float(data.get("role_tolerance", 1e-6)),
+            surface_only=bool(data.get("surface_only", False)),
         )
 
 
@@ -239,7 +246,9 @@ def validate_copy_group_preconditions(
             for idx, inst in enumerate(grp.instances):
                 if abs(inst.rotation_angle_deg) < 1e-12:
                     for comp in inst.translation:
-                        rem = abs(comp / point_tolerance - round(comp / point_tolerance))
+                        rem = abs(
+                            comp / point_tolerance - round(comp / point_tolerance)
+                        )
                         if rem > 1e-4:
                             raise CopyGroupPreconditionError(
                                 f"CopyGroup {grp.name!r} instance {idx}: translation "
@@ -329,6 +338,49 @@ def closure_of_volumes(vols: list[int]) -> dict[int, list[int]]:
     return {0: d0, 1: d1, 2: d2, 3: d3}
 
 
+def shell_closure_of_volumes(
+    vols: list[int],
+) -> tuple[dict[int, list[int]], list[tuple[int, int]]]:
+    """Return `(shell_closure, interior_dimtags)` for `vols`.
+
+    `shell_closure` contains `{0: shell_pts, 1: shell_curves, 2: shell_faces, 3: d3}`
+    where `shell_faces` are the outer boundary faces (`incidence == 1` across `vols`).
+    `interior_dimtags` lists all `(dim, tag)` entities (`dim in (0, 1, 2)`) that lie
+    strictly inside the union of `vols` (`incidence >= 2` internal faces and curves/points
+    not shared with `shell_faces`).
+    """
+    full_cl = closure_of_volumes(vols)
+    face_counts: Counter = Counter()
+    for v in full_cl[3]:
+        for d, t in gmsh.model.getBoundary([(3, v)], oriented=False):
+            if d == 2:
+                face_counts[int(abs(t))] += 1
+    shell_faces = sorted(f for f, c in face_counts.items() if c == 1)
+    shell_curves = sorted(
+        {
+            int(abs(t))
+            for f in shell_faces
+            for d, t in gmsh.model.getBoundary([(2, f)], oriented=False)
+            if d == 1
+        }
+    )
+    shell_pts = sorted(
+        {
+            int(abs(t))
+            for c in shell_curves
+            for d, t in gmsh.model.getBoundary([(1, c)], oriented=False)
+            if d == 0
+        }
+    )
+    shell_cl = {0: shell_pts, 1: shell_curves, 2: shell_faces, 3: full_cl[3]}
+    interior_dimtags: list[tuple[int, int]] = (
+        [(2, f) for f in full_cl[2] if f not in set(shell_faces)]
+        + [(1, c) for c in full_cl[1] if c not in set(shell_curves)]
+        + [(0, p) for p in full_cl[0] if p not in set(shell_pts)]
+    )
+    return shell_cl, interior_dimtags
+
+
 def _entity_com_and_mass(dim: int, tag: int) -> tuple[np.ndarray, float]:
     """Return ``(center_of_mass_3d, mass)`` for a CAD entity ``(dim, tag)``."""
     if dim == 0:
@@ -381,6 +433,7 @@ def _load_donor_records_from_msh_file(
     msh_path: Path,
     xao_path: Path,
     member_names: list[str],
+    surface_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Load a donor `(0D/1D/2D/3D)` mesh template from `xao_path` + `msh_path`."""
     prev_model = gmsh.model.getCurrent()
@@ -391,7 +444,9 @@ def _load_donor_records_from_msh_file(
         phys_to_vol: dict[str, int] = {}
         for dim, gtag in gmsh.model.getPhysicalGroups(3):
             gname = gmsh.model.getPhysicalName(dim, gtag)
-            tags = sorted({int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, gtag)})
+            tags = sorted(
+                {int(t) for t in gmsh.model.getEntitiesForPhysicalGroup(dim, gtag)}
+            )
             if len(tags) == 1:
                 phys_to_vol[gname] = tags[0]
 
@@ -419,7 +474,7 @@ def _load_donor_records_from_msh_file(
                     ets, _, ens = gmsh.model.mesh.getElements(d, t)
                     for et, en in zip(ets, ens):
                         elems.append((int(et), np.asarray(en, dtype=np.int64)))
-                    if not elems:
+                    if not elems and (d < 3 or not surface_only):
                         raise CopyGroupPreconditionError(
                             f"Donor .msh file {msh_path} has no dim={d} elements on entity {t}. "
                             "Pass save_all=True to generate_mesh() when creating a donor .msh file."
@@ -479,7 +534,9 @@ def _match_closure_to_donor_records(
                     continue
                 if d == 3 and int(rec.get("slot", -1)) != slot:
                     continue
-                d_com = float(np.max(np.abs(com_donor - np.asarray(rec["com"], dtype=float))))
+                d_com = float(
+                    np.max(np.abs(com_donor - np.asarray(rec["com"], dtype=float)))
+                )
                 d_mass = abs(mass - float(rec["mass"]))
                 err = max(d_com, d_mass)
                 if err < best_err:
@@ -620,7 +677,10 @@ def _stamp_self_congruence_pairs(
             s_t, s_c, _ = gmsh.model.mesh.getNodes(d_b, t_b, includeBoundary=False)
             if not len(s_t):
                 continue
-            want = np.asarray(s_c, dtype=float).reshape(-1, 3) @ A_rel[:3, :3].T + A_rel[:3, 3]
+            want = (
+                np.asarray(s_c, dtype=float).reshape(-1, 3) @ A_rel[:3, :3].T
+                + A_rel[:3, 3]
+            )
             dist, idx = kdt.query(want, distance_upper_bound=_NODE_SNAP_TOL)
             for k_i, (dd, j_i) in enumerate(zip(dist, idx)):
                 if dd < _NODE_SNAP_TOL:
@@ -628,7 +688,10 @@ def _stamp_self_congruence_pairs(
 
         s_t, s_c, _ = gmsh.model.mesh.getNodes(dim, t_src, includeBoundary=False)
         if len(s_t):
-            want = np.asarray(s_c, dtype=float).reshape(-1, 3) @ A_rel[:3, :3].T + A_rel[:3, 3]
+            want = (
+                np.asarray(s_c, dtype=float).reshape(-1, 3) @ A_rel[:3, :3].T
+                + A_rel[:3, 3]
+            )
             base = gmsh.model.mesh.getMaxNodeTag()
             new_tags = list(range(base + 1, base + 1 + len(s_t)))
             coords_flat = want.reshape(-1).tolist()
@@ -659,9 +722,14 @@ def _stamp_instance_dims(
     inst: CopyInstance,
     inst_vols: list[int],
     dims: tuple[int, ...],
+    surface_only: bool = False,
 ) -> None:
     """Stamp ``dims`` (`(0, 1, 2)` or `(3,)`) from ``donor_records`` onto ``inst_vols``."""
-    cl = closure_of_volumes(inst_vols)
+    cl = (
+        shell_closure_of_volumes(inst_vols)[0]
+        if surface_only
+        else closure_of_volumes(inst_vols)
+    )
     det_r = float(np.linalg.det(inst.affine_matrix()[:3, :3]))
 
     src_keys_list: list[np.ndarray] = []
@@ -753,7 +821,10 @@ class CopyGroupPipeline:
             inst_vols_map = _resolve_group_instance_tags(grp)
             self.inst_vols_by_group[grp.name] = inst_vols_map
             records = _load_donor_records_from_msh_file(
-                grp.msh_path, grp.xao_path, grp.canonical_donor_names()
+                grp.msh_path,
+                grp.xao_path,
+                grp.canonical_donor_names(),
+                surface_only=grp.surface_only,
             )
             self.donor_records_by_group[grp.name] = records
             self.matches_by_group[grp.name] = {
@@ -766,13 +837,19 @@ class CopyGroupPipeline:
 
         target_curves: set[int] = set()
         target_faces: set[int] = set()
+        hidden_interior_2d: list[tuple[int, int]] = []
         for grp in self.copy_groups:
             for vols in self.inst_vols_by_group[grp.name].values():
                 cl = closure_of_volumes(vols)
                 target_curves.update(cl[1])
                 target_faces.update(cl[2])
+                if grp.surface_only:
+                    _shell_cl, int_dimtags = shell_closure_of_volumes(vols)
+                    hidden_interior_2d.extend(int_dimtags)
+
         gmsh.model.mesh.clear(
-            [(2, f) for f in sorted(target_faces)] + [(1, c) for c in sorted(target_curves)]
+            [(2, f) for f in sorted(target_faces)]
+            + [(1, c) for c in sorted(target_curves)]
         )
 
         for grp in self.copy_groups:
@@ -784,12 +861,22 @@ class CopyGroupPipeline:
                     grp.instances[inst_idx],
                     vols,
                     dims=(0, 1, 2),
+                    surface_only=grp.surface_only,
                 )
+
+        if hidden_interior_2d:
+            gmsh.model.setVisibility(hidden_interior_2d, 0)
+            gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
         gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
 
     def pre_3d_hook(self) -> None:
-        """Stamp 3D tetrahedra onto all target instances before Gmsh generates filler volumes."""
+        """Stamp 3D tetrahedra onto volume groups and hide hollow volumes for surface_only groups."""
+        hollow_vol_dimtags: list[tuple[int, int]] = []
         for grp in self.copy_groups:
+            if grp.surface_only:
+                for vols in self.inst_vols_by_group[grp.name].values():
+                    hollow_vol_dimtags.extend((3, v) for v in vols)
+                continue
             records = self.donor_records_by_group[grp.name]
             for inst_idx, vols in self.inst_vols_by_group[grp.name].items():
                 _stamp_instance_dims(
@@ -799,17 +886,46 @@ class CopyGroupPipeline:
                     vols,
                     dims=(3,),
                 )
+        if hollow_vol_dimtags:
+            gmsh.model.setVisibility(hollow_vol_dimtags, 0)
+            gmsh.option.setNumber("Mesh.MeshOnlyVisible", 1)
         gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
 
     def post_3d_hook(self) -> None:
-        """Reset MeshOnlyEmpty, strip synthetic physical groups, and verify global 3D conformality."""
+        """Reset MeshOnlyEmpty/MeshOnlyVisible, strip synthetic groups, and verify 3D conformality."""
         gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 0)
+        gmsh.option.setNumber("Mesh.MeshOnlyVisible", 0)
+        gmsh.model.setVisibility(gmsh.model.getEntities(), 1)
         strip_copy_group_physical_groups()
+
+        # Strip empty 3D physical groups and empty internal 2D interface groups
+        # belonging to surface_only hollow cavity instances.
+        if any(grp.surface_only for grp in self.copy_groups):
+            empty_pgs: list[tuple[int, int]] = []
+            empty_names: list[str] = []
+            for dim in (2, 3):
+                for _d, gtag in gmsh.model.getPhysicalGroups(dim):
+                    ents = gmsh.model.getEntitiesForPhysicalGroup(dim, gtag)
+                    has_elems = any(
+                        len(gmsh.model.mesh.getElements(dim, int(e))[0]) > 0
+                        for e in ents
+                    )
+                    if not has_elems:
+                        empty_pgs.append((dim, gtag))
+                        empty_names.append(gmsh.model.getPhysicalName(dim, gtag))
+            if empty_pgs:
+                gmsh.model.removePhysicalGroups(empty_pgs)
+                for gname in empty_names:
+                    with contextlib.suppress(Exception):
+                        gmsh.model.removePhysicalName(gname)
 
         allt, allc, _ = gmsh.model.mesh.getNodes()
         if not len(allt):
             return
-        pos = {int(t): np.asarray(allc[3 * k : 3 * k + 3], dtype=float) for k, t in enumerate(allt)}
+        pos = {
+            int(t): np.asarray(allc[3 * k : 3 * k + 3], dtype=float)
+            for k, t in enumerate(allt)
+        }
         rows = []
         for _, v in gmsh.model.getEntities(3):
             en = gmsh.model.mesh.getElements(3, v)[2]

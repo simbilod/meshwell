@@ -6,6 +6,7 @@ The pipeline invariants (documented in CAD_OCC.__init__):
                                            faces with distinct TShapes and
                                            silently drops A___B interfaces)
 """
+
 import pytest
 
 from meshwell.cad_occ import CAD_OCC

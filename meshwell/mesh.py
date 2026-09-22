@@ -1,4 +1,5 @@
 """Mesh class definition."""
+
 from __future__ import annotations
 
 import contextlib
@@ -445,9 +446,10 @@ class Mesh:
                 self.model_manager.model.mesh.optimize(optimization_flag, niter=niter)
 
         # Return mesh object without writing to file
-        with contextlib.redirect_stdout(
-            None
-        ), tempfile.TemporaryDirectory() as tmpdirname:
+        with (
+            contextlib.redirect_stdout(None),
+            tempfile.TemporaryDirectory() as tmpdirname,
+        ):
             temp_mesh_path = f"{tmpdirname}/mesh.msh"
             gmsh.write(temp_mesh_path)
             return meshio.read(temp_mesh_path)
@@ -478,9 +480,10 @@ class Mesh:
             meshio.Mesh: Current mesh as meshio object
 
         """
-        with contextlib.redirect_stdout(
-            None
-        ), tempfile.TemporaryDirectory() as tmpdirname:
+        with (
+            contextlib.redirect_stdout(None),
+            tempfile.TemporaryDirectory() as tmpdirname,
+        ):
             temp_mesh_path = f"{tmpdirname}/mesh.msh"
             gmsh.write(temp_mesh_path)
             return meshio.read(temp_mesh_path)

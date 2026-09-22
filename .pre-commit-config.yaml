@@ -21,6 +21,7 @@ repos:
     rev: "d9b8a6407e2f46304a8d36b18e4a73d8e0613519"
     hooks:
       - id: black
+        args: ["--fast"]
 
   # - repo: https://github.com/asottile/pyupgrade
   #   rev: ddb39ad37166dbc938d853cc77606526a0b1622a

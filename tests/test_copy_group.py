@@ -1,4 +1,5 @@
 """Tests for Streamlined Entity Subgroup Copying (`CopyGroup` / `CopyInstance` via `.msh` stamping)."""
+
 from __future__ import annotations
 
 import tempfile
@@ -21,7 +22,11 @@ from meshwell.polyprism import PolyPrism
 LAYERS = [("pad_bot", 0.0, 0.3), ("via", 0.3, 0.7), ("pad_top", 0.7, 1.0)]
 
 
-def _build_via_donor_msh(msh_path: Path, cl: float = 0.35, periodic_pitch: tuple[float, float, float] | None = None) -> None:
+def _build_via_donor_msh(
+    msh_path: Path,
+    cl: float = 0.35,
+    periodic_pitch: tuple[float, float, float] | None = None,
+) -> None:
     """Generate a standalone 3-layer via-stack donor `.msh` file."""
     ents: list[PolyPrism] = []
     for idx, (name, z0, z1) in enumerate(LAYERS, start=1):
@@ -48,14 +53,19 @@ def _build_via_donor_msh(msh_path: Path, cl: float = 0.35, periodic_pitch: tuple
     )
 
 
-def _assert_global_conformality(expected_volume: float) -> dict[str, tuple[int, np.ndarray]]:
+def _assert_global_conformality(
+    expected_volume: float,
+) -> dict[str, tuple[int, np.ndarray]]:
     """Verify global tet mesh conformality and return per-physical-group `(ntets, coords)`."""
     for dim, gtag in gmsh.model.getPhysicalGroups():
         gname = gmsh.model.getPhysicalName(dim, gtag)
         assert not gname.startswith("__copy|"), f"Leaked synthetic group: {gname}"
 
     allt, allc, _ = gmsh.model.mesh.getNodes()
-    pos = {int(t): np.asarray(allc[3 * k : 3 * k + 3], dtype=float) for k, t in enumerate(allt)}
+    pos = {
+        int(t): np.asarray(allc[3 * k : 3 * k + 3], dtype=float)
+        for k, t in enumerate(allt)
+    }
     rows = []
     for _, v in gmsh.model.getEntities(3):
         en = gmsh.model.mesh.getElements(3, v)[2]
@@ -187,7 +197,9 @@ def test_multi_entity_translated_and_rotated_subgroup(tmp_path: Path) -> None:
             ntk, ptsk = info[f"{name}_{tag}"]
             assert ntk == nt0
             pts_mapped = np.array(
-                sorted(tuple(np.round(inst.inverse_transform_point(p), 10)) for p in ptsk)
+                sorted(
+                    tuple(np.round(inst.inverse_transform_point(p), 10)) for p in ptsk
+                )
             )
             pts0_sorted = np.array(sorted(tuple(np.round(p, 10)) for p in pts0))
             assert np.max(np.abs(pts_mapped - pts0_sorted)) < 1e-9
@@ -325,7 +337,9 @@ def test_recursive_msh_hierarchy_stamping(tmp_path: Path) -> None:
                 off = 0.0 if name != "via" else 0.3
                 chip_ents.append(
                     PolyPrism(
-                        polygons=shapely.box(tx + vx + off, off, tx + vx + off + w, off + w),
+                        polygons=shapely.box(
+                            tx + vx + off, off, tx + vx + off + w, off + w
+                        ),
                         buffers={z0: 0.0, z1: 0.0},
                         physical_name=f"{name}_t{t_idx}_v{v_idx}",
                         mesh_order=order,
@@ -382,6 +396,115 @@ def test_recursive_msh_hierarchy_stamping(tmp_path: Path) -> None:
     assert info["tile_filler_t0"][0] == info["tile_filler_t1"][0]
 
 
+def test_surface_only_hollow_cavity_stamping(tmp_path: Path) -> None:
+    """Test `surface_only=True`: stamps only the outer 2D shell and leaves the 3D interior hollow."""
+    donor_msh = tmp_path / "via_shell_donor.msh"
+    _build_via_donor_msh(donor_msh, cl=0.35)
+
+    origin = (0.5, 0.5, 0.0)
+    specs = [
+        ("i0", (0.0, 0.0, 0.0), 0.0),
+        ("i1", (2.5, 0.0, 0.0), 37.0),
+    ]
+    ents: list[PolyPrism] = []
+    order = 1
+    for tag, trans, angle in specs:
+        for name, z0, z1 in LAYERS:
+            w = 1.0 if name != "via" else 0.4
+            off = 0.0 if name != "via" else 0.3
+            ents.append(
+                PolyPrism(
+                    polygons=shapely.box(off, off, off + w, off + w),
+                    buffers={z0: 0.0, z1: 0.0},
+                    physical_name=f"{name}_{tag}",
+                    mesh_order=order,
+                    point_tolerance=0.0,
+                    translation=trans,
+                    rotation_axis=(0.0, 0.0, 1.0) if angle != 0.0 else None,
+                    rotation_point=origin if angle != 0.0 else None,
+                    rotation_angle=angle,
+                )
+            )
+            order += 1
+
+    ents.append(
+        PolyPrism(
+            polygons=shapely.box(-1.5, -1.5, 5.0, 2.5),
+            buffers={-0.5: 0.0, 1.5: 0.0},
+            physical_name="bg",
+            mesh_order=100,
+        )
+    )
+
+    instances = [
+        CopyInstance(
+            members={name: f"{name}_{tag}" for name, _, _ in LAYERS},
+            translation=trans,
+            rotation_axis=(0.0, 0.0, 1.0),
+            rotation_angle_deg=angle,
+            rotation_origin=origin,
+        )
+        for tag, trans, angle in specs
+    ]
+    cg = CopyGroup(
+        name="via_hollow_shell",
+        msh_path=donor_msh,
+        instances=instances,
+        surface_only=True,
+    )
+
+    generate_mesh(
+        entities=ents,
+        dim=3,
+        default_characteristic_length=0.35,
+        copy_groups=[cg],
+        verbosity=0,
+    )
+
+    # Outer box volume minus 2 hollow via stacks (each stack = 0.3 + 0.4*0.4*0.4 + 0.3 = 0.664)
+    via_stack_vol = 1.0 * 1.0 * 0.3 + 0.4 * 0.4 * 0.4 + 1.0 * 1.0 * 0.3
+    expected_vol = (5.0 - (-1.5)) * (2.5 - (-1.5)) * (
+        1.5 - (-0.5)
+    ) - 2.0 * via_stack_vol
+    info_3d = _assert_global_conformality(expected_vol)
+
+    # Only "bg" should remain as a 3D physical group (cavity interiors are hollow)
+    assert set(info_3d.keys()) == {"bg"}
+
+    # Verify 2D shell interface groups (`{name}_i0___bg` vs `{name}_i1___bg`) are bit-identical
+    allt, allc, _ = gmsh.model.mesh.getNodes()
+    pos = {
+        int(t): np.asarray(allc[3 * k : 3 * k + 3], dtype=float)
+        for k, t in enumerate(allt)
+    }
+    surf_groups: dict[str, tuple[int, np.ndarray]] = {}
+    for dim, gtag in gmsh.model.getPhysicalGroups(2):
+        gname = gmsh.model.getPhysicalName(dim, gtag)
+        ftags = gmsh.model.getEntitiesForPhysicalGroup(dim, gtag)
+        tri_cnt = 0
+        pts_set = set()
+        for f in ftags:
+            en = gmsh.model.mesh.getElements(2, int(f))[2]
+            if en:
+                tris = np.asarray(en[0], dtype=int).reshape(-1, 3)
+                tri_cnt += len(tris)
+                for n in tris.ravel():
+                    pts_set.add(tuple(pos[int(n)]))
+        surf_groups[gname] = (tri_cnt, np.array(sorted(pts_set), dtype=float))
+
+    inst1 = instances[1]
+    for name, _, _ in LAYERS:
+        nt0, pts0 = surf_groups[f"{name}_i0___bg"]
+        nt1, pts1 = surf_groups[f"{name}_i1___bg"]
+        assert nt0 > 0
+        assert nt1 == nt0
+        pts1_mapped = np.array(
+            sorted(tuple(np.round(inst1.inverse_transform_point(p), 10)) for p in pts1)
+        )
+        pts0_sorted = np.array(sorted(tuple(np.round(p, 10)) for p in pts0))
+        assert np.max(np.abs(pts1_mapped - pts0_sorted)) < 1e-9
+
+
 if __name__ == "__main__":
     for test_name, test_fn in [
         ("test_copy_group_serialization", test_copy_group_serialization),
@@ -393,15 +516,15 @@ if __name__ == "__main__":
         ),
         (
             "test_abutting_subgroup_instances_zero_gap",
-            lambda: test_abutting_subgroup_instances_zero_gap(
-                Path(tempfile.mkdtemp())
-            ),
+            lambda: test_abutting_subgroup_instances_zero_gap(Path(tempfile.mkdtemp())),
         ),
         (
             "test_recursive_msh_hierarchy_stamping",
-            lambda: test_recursive_msh_hierarchy_stamping(
-                Path(tempfile.mkdtemp())
-            ),
+            lambda: test_recursive_msh_hierarchy_stamping(Path(tempfile.mkdtemp())),
+        ),
+        (
+            "test_surface_only_hollow_cavity_stamping",
+            lambda: test_surface_only_hollow_cavity_stamping(Path(tempfile.mkdtemp())),
         ),
     ]:
         print(f"Running {test_name} ...", flush=True)

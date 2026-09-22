@@ -27,6 +27,7 @@ user-visible result.
 Ownership semantics match :func:`meshwell.cad_gmsh._resolve_piece_ownership`
 exactly; tests that pin one pin the other.
 """
+
 from __future__ import annotations
 
 import logging
