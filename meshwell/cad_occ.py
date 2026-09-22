@@ -171,7 +171,7 @@ class CAD_OCC:
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.perturbation = perturbation if perturbation is not None else 1e-5
+        self.perturbation = perturbation if perturbation is not None else 0.0
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
         )

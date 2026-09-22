@@ -229,19 +229,21 @@ def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
     annotator (flavour 2) is correctly identified as bookkeeping-only.
     """
     return bool(ent.physical_name) and all(
-        n.startswith(("__cohort_", "__sweep")) for n in ent.physical_name
+        n.startswith(("__cohort_", "__sweep", "__copy|")) for n in ent.physical_name
     )
 
 
 def _filter_real_names(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Drop synthetic ``__cohort_*`` names; keep the user-visible names only.
+    """Drop synthetic ``__cohort_*`` / ``__sweep*`` / ``__copy|*`` names; keep user-visible names only.
 
     Used when forming ``A___B`` interface group names from a pair of real
     cohort sub-solids: their ``physical_name`` tuple has a synthetic name
     appended, but we only want the user-visible ``A___B``, not also the
     spurious ``A_____cohort_X``, ``__cohort_X___B``, ``__cohort_X_____cohort_Y``.
     """
-    return tuple(n for n in names if not n.startswith("__cohort_"))
+    return tuple(
+        n for n in names if not n.startswith(("__cohort_", "__sweep", "__copy|"))
+    )
 
 
 def _compute_physical_groups(

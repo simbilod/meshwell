@@ -13,7 +13,9 @@ from meshwell.validation import validate_tolerance_ladder
 
 
 def test_default_ladder_is_silent(recwarn):
-    CAD_OCC()
+    cad = CAD_OCC()
+    assert cad.perturbation == 0.0
+    assert cad.cut_fuzzy_value == 0.5 * cad.fragment_fuzzy_value
     ladder_warnings = [w for w in recwarn.list if "fuzzy" in str(w.message)]
     assert not ladder_warnings
 
@@ -22,7 +24,7 @@ def test_tight_point_tolerance_warns():
     # point_tolerance=1e-5 -> fragment fuzzy 1e-5 < 2*perturbation (2e-5):
     # the documented interface-dropping regime must not be silent.
     with pytest.warns(UserWarning, match="2\\*perturbation"):
-        CAD_OCC(point_tolerance=1e-5)
+        CAD_OCC(point_tolerance=1e-5, perturbation=1e-5)
 
 
 def test_inverted_ladder_raises():
@@ -32,7 +34,7 @@ def test_inverted_ladder_raises():
 
 def test_loose_cut_fuzzy_warns():
     with pytest.warns(UserWarning, match="cut_fuzzy_value"):
-        CAD_OCC(cut_fuzzy_value=2e-5)  # >= perturbation (1e-5)
+        CAD_OCC(cut_fuzzy_value=2e-5, perturbation=1e-5)  # >= perturbation (1e-5)
 
 
 def test_validate_function_direct():

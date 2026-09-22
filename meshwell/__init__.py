@@ -3,6 +3,12 @@
 import logging
 from importlib.metadata import PackageNotFoundError, version
 
+from meshwell.copy_group import (
+    CopyGroup,
+    CopyGroupCongruenceError,
+    CopyGroupPreconditionError,
+    CopyInstance,
+)
 from meshwell.orchestrator import generate_mesh
 from meshwell.utils import deserialize
 
@@ -16,4 +22,11 @@ except PackageNotFoundError:  # running from a source tree without an install
     __version__ = "0.0.0"
 __author__ = "Simon Bilodeau <sb30@princeton.edu>"
 
-__all__ = ["deserialize", "generate_mesh"]
+__all__ = [
+    "CopyGroup",
+    "CopyGroupCongruenceError",
+    "CopyGroupPreconditionError",
+    "CopyInstance",
+    "deserialize",
+    "generate_mesh",
+]

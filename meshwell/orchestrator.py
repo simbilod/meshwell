@@ -57,6 +57,7 @@ def generate_mesh(
     registry: dict[str, Callable[..., Any]] | None = None,
     backend: str | None = None,  # deprecated
     sweeps: list[Any] | None = None,
+    copy_groups: list[Any] | None = None,
     **mesh_kwargs,
 ) -> Any:
     """Generate a mesh from a list of entities.
@@ -73,6 +74,8 @@ def generate_mesh(
         registry: Optional registry for ``OCC_entity`` function resolution.
         backend: Deprecated; only ``"occ"`` or ``None`` is accepted.
         sweeps: Optional list of structured-sweep resolution specs.
+        copy_groups: Optional list of :class:`CopyGroup` specifications for
+            entity subgroup copying.
         **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
             plus a few CAD-side kwargs consumed here:
 
@@ -88,8 +91,8 @@ def generate_mesh(
               only catches OCC-identical coincident TShapes.
             - ``interface_delimiter``, ``boundary_delimiter``: XAO group
               name delimiters.
-            - ``pre_2d_hook`` / ``pre_3d_hook`` (callables): composed with
-              the structured wedge hooks (run after the structured pass),
+            - ``pre_2d_hook`` / ``pre_3d_hook`` / ``post_3d_hook`` (callables):
+              composed with the structured wedge and copy-group hooks,
               not replacing them.
             - ``identify_arcs`` (bool | None, default ``None``): stamp
               pipeline-level arc identification onto every polygon
@@ -102,19 +105,10 @@ def generate_mesh(
             - ``arc_tolerance`` (float, default 1e-3): circle-fit
               tolerance, forwarded to
               :func:`meshwell.cad_common.apply_arc_params`.
-            - ``perturbation`` (float, default ``1e-5``): outward offset
+            - ``perturbation`` (float, default ``0.0``): outward offset
               disambiguating overlapping same-mesh_order boundaries so the
               per-entity cut cascade has a non-degenerate strip to carve.
-              Applied ANALYTICALLY at OCC wire-emission time (canonical
-              circle/line offsets keyed off the pipeline's circle
-              registry) rather than via a shapely buffer -- entities stay
-              at nominal coordinates through the structured pre-pass and
-              registry build. ``perturbation=0.0`` is supported
-              (canonical-exact mode: both sides of a shared boundary emit
-              the identical geometry; ownership resolves by exact
-              coincidence plus the final fragment merge). Only the legacy
-              cad_gmsh mirror still realizes this via the shapely
-              round-join buffer.
+              Defaults to ``0.0`` (canonical-exact mode).
 
     Returns:
         meshio.Mesh: The generated mesh object (or ``None`` if
@@ -162,33 +156,33 @@ def generate_mesh(
     point_tolerance = cad_kwargs.get(
         "point_tolerance", mesh_kwargs.get("point_tolerance", 1e-3)
     )
-    # Default mirrors ``CAD_OCC.__init__`` (perturbation=1e-5 when None);
-    # use ``is None`` so an explicit ``perturbation=0.0`` is respected.
+    # Default mirrors ``CAD_OCC.__init__`` (perturbation=0.0 when None).
     perturbation = cad_kwargs.get("perturbation")
     if perturbation is None:
-        perturbation = 1e-5
+        perturbation = 0.0
+
+    parsed_copy_groups = None
+    if copy_groups:
+        from meshwell.copy_group import (
+            CopyGroup,
+            CopyGroupPipeline,
+            tag_copy_group_occ_entities,
+            validate_copy_group_preconditions,
+        )
+
+        parsed_copy_groups = [
+            CopyGroup.from_dict(cg) if isinstance(cg, dict) else cg
+            for cg in copy_groups
+        ]
+        validate_copy_group_preconditions(
+            entities,
+            parsed_copy_groups,
+            point_tolerance=point_tolerance,
+            optimization_flags=mesh_kwargs.get("optimization_flags"),
+            resolution_specs=mesh_kwargs.get("resolution_specs"),
+        )
 
     # --- Stage 1a: shapely intake pre-pass. -----------------------------
-    # Resolve InterfaceTags against NOMINAL polygon coordinates before the
-    # structured pre-pass. Cohort solids are baked (bottom-up, via
-    # ``structured/wedge.py``) directly from these NOMINAL coordinates --
-    # they never see a buffer. Unstructured neighbours, by contrast, are
-    # emitted by cad_occ with the analytic canonical epsilon (eps) offset
-    # applied at OCC wire-emission time (canonical circle/line offsets
-    # keyed off the circle registry; see
-    # ``GeometryEntity._make_occ_wire_from_vertices``). That offset is
-    # XY-only, so a shared z-plane face between a cohort and an
-    # unstructured neighbour still coincides exactly; only the LATERAL
-    # (vertical) footprint differs, by eps. That eps-sized lateral gap
-    # is what the fragment fuzzy (1e-3, orders of magnitude larger than
-    # the default eps=1e-5) is relied on to absorb during the final BOP
-    # fragment pass -- it is not a coincidence, it's the designed
-    # tolerance ladder. ``cad_occ`` is called here with
-    # ``buffer_polygons=False`` so entities stay nominal through this
-    # pre-pass and the structured pre-pass / registry build.
-    # ``prepare_entities`` is NOT idempotent when ``buffer_polygons=True``
-    # (the compounding buffer case); cad_occ is invoked with
-    # ``prepared=True`` below to skip its own duplicate call regardless.
     prepare_entities(
         entities,
         perturbation=perturbation,
@@ -229,6 +223,12 @@ def generate_mesh(
             occ_entities, sweeps, entities, point_tolerance
         )
 
+    # --- Stage 1d: CopyGroup synthetic physical group tagging. ----------
+    copy_pipeline = None
+    if parsed_copy_groups:
+        tag_copy_group_occ_entities(occ_entities, parsed_copy_groups)
+        copy_pipeline = CopyGroupPipeline(copy_groups=parsed_copy_groups)
+
     # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
     interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
     boundary_delimiter = mesh_kwargs.pop("boundary_delimiter", "None")
@@ -248,6 +248,8 @@ def generate_mesh(
 
     if checkpoint_cad:
         mm.save_to_xao(Path(checkpoint_cad))
+    elif output_mesh:
+        mm.save_to_xao(Path(output_mesh).with_suffix(".xao"))
 
     # --- Stage 2a: build ShapeKey -> gmsh-tag maps for the wedge hooks. -
     face_tag_by_key: dict[ShapeKey, int] = {}
@@ -258,6 +260,7 @@ def generate_mesh(
     # --- Stage 2b: hook wiring. -----------------------------------------
     user_pre_2d = mesh_kwargs.pop("pre_2d_hook", None)
     user_pre_3d = mesh_kwargs.pop("pre_3d_hook", None)
+    user_post_3d = mesh_kwargs.pop("post_3d_hook", None)
     resolution_specs_for_wedge = mesh_kwargs.get("resolution_specs")
 
     def _structured_pre_2d() -> None:
@@ -267,13 +270,13 @@ def generate_mesh(
                 face_tag_by_key,
                 resolution_specs=resolution_specs_for_wedge,
             )
+        if copy_pipeline is not None:
+            copy_pipeline.pre_2d_hook()
         if user_pre_2d is not None:
             user_pre_2d()
         # Strip synthetic ``__cohort_*`` bookkeeping groups so they
         # don't leak into the .msh output. Done after the user's hook
-        # so user code can still inspect them if needed. (Face and
-        # solid tag maps were resolved before this hook runs, so the
-        # synthetic groups are no longer needed downstream.)
+        # so user code can still inspect them if needed.
         if state.slab_meta or sweeps:
             _strip_synthetic_physical_groups()
 
@@ -286,47 +289,35 @@ def generate_mesh(
                 resolution_specs=resolution_specs_for_wedge,
                 point_tolerance=point_tolerance,
             )
-            # The cohort sub-solids are now fully meshed with wedges;
-            # tell gmsh's tet algorithm to only fill the remaining
-            # unstructured volumes.
             gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
-            # Deduplicate nodes only within the structured sub-solid volumes.
-            # A global removeDuplicateNodes() can corrupt boundary meshes of
-            # adjacent unstructured volumes: BOP sometimes produces duplicate
-            # topological curves/faces at the interface between structured and
-            # unstructured regions.  The duplicate curves have their own node
-            # sets; after global dedup one curve's nodes survive and the other
-            # curve's elements reference those surviving nodes, which may be
-            # classified on the wrong topological entity, causing generate(3)
-            # to fail for the unstructured volume.
-            #
-            # Scoping dedup to the structured volumes is safe because the
-            # intermediate-layer duplicate nodes (z_layer from stamp_wedges vs
-            # lateral transfinite edge nodes) are eliminated upstream in
-            # _stamp_one (step 4 reuses existing nodes instead of creating new
-            # ones).  No genuine duplicates remain within the structured volumes
-            # after stamp_wedges; the scoped call is a safe no-op for them
-            # while leaving the unstructured boundary mesh untouched.
             structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
             _remove_duplicate_nodes_tight(structured_vol_dimtags)
+        if copy_pipeline is not None:
+            copy_pipeline.pre_3d_hook()
         if user_pre_3d is not None:
             user_pre_3d()
 
     def _structured_post_3d() -> None:
         if state.slab_meta and face_tag_by_key and sub_solid_tag_by_key:
-            # After generate(3) has filled all unstructured volumes, perform a
-            # global removeDuplicateNodes() to clean up the z-interface dups
-            # that were intentionally left by the scoped pre-3D dedup.  At
-            # this point all volumes are fully meshed, so the dedup cannot
-            # corrupt any pending generate() pass.
             _remove_duplicate_nodes_tight()
+        if copy_pipeline is not None:
+            copy_pipeline.post_3d_hook()
+        if user_post_3d is not None:
+            user_post_3d()
 
     has_structured = bool(state.slab_meta)
+    has_copy = copy_pipeline is not None
     pre_2d_hook = (
-        _structured_pre_2d if (has_structured or sweeps or user_pre_2d) else None
+        _structured_pre_2d
+        if (has_structured or sweeps or has_copy or user_pre_2d)
+        else None
     )
-    pre_3d_hook = _structured_pre_3d if (has_structured or user_pre_3d) else None
-    post_3d_hook = _structured_post_3d if has_structured else None
+    pre_3d_hook = (
+        _structured_pre_3d if (has_structured or has_copy or user_pre_3d) else None
+    )
+    post_3d_hook = (
+        _structured_post_3d if (has_structured or has_copy or user_post_3d) else None
+    )
 
     # --- Stage 3: mesh. -------------------------------------------------
     return mesh(

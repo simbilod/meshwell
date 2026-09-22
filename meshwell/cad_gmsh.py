@@ -112,25 +112,21 @@ class CAD_GMSH:
         if perturbation is not None:
             self.perturbation = perturbation
         else:
-            # Sub-tolerance default. Empirically must remain meaningfully
-            # larger than FP noise (~1e-7); 1e-5 is two orders below
-            # default point_tolerance, giving ~1% distortion at user scale.
-            self.perturbation = 1e-5
+            self.perturbation = 0.0
 
         if model is None:
+            if self.perturbation == 0.0:
+                geom_tol = None
+                tol_bool = 0.5 * point_tolerance
+            else:
+                geom_tol = self.perturbation / 100
+                tol_bool = 0.8 * self.perturbation
             self.model_manager = ModelManager(
                 n_threads=n_threads,
                 filename=filename,
                 point_tolerance=point_tolerance,
-                # Tolerance ladder:
-                #   geometry_tolerance < tolerance_boolean < perturbation
-                # so BOP can resolve the small offset cleanly. tolerance_boolean
-                # matches cad_occ's default cut fuzzy (0.8*perturbation) to keep
-                # the two backends numerically aligned; gmsh has no tangency
-                # sliver of its own (its XAO loader snaps points to curves), but
-                # the wider value is harmless here and preserves parity.
-                geometry_tolerance=self.perturbation / 100,
-                tolerance_boolean=0.8 * self.perturbation,
+                geometry_tolerance=geom_tol,
+                tolerance_boolean=tol_bool,
             )
             self._owns_model = True
         else:

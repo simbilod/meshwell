@@ -673,6 +673,7 @@ def mesh(
     pre_2d_hook: Callable[[], None] | None = None,
     pre_3d_hook: Callable[[], None] | None = None,
     post_3d_hook: Callable[[], None] | None = None,
+    save_all: bool = False,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -702,6 +703,8 @@ def mesh(
         pre_2d_hook: Optional callable invoked immediately before generate(2)
         pre_3d_hook: Optional callable invoked immediately before generate(3)
         post_3d_hook: Optional callable invoked immediately after generate(3)
+        save_all: If True, set Mesh.SaveAll=1 when writing output_file so all
+            0D/1D/2D/3D elements are saved (required for CopyGroup donor .msh files).
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
@@ -745,7 +748,14 @@ def mesh(
 
         # Save to file if output file provided
         if output_file is not None:
-            mesh_generator.save_to_file(output_file)
+            prev_save_all = int(gmsh.option.getNumber("Mesh.SaveAll"))
+            if save_all:
+                gmsh.option.setNumber("Mesh.SaveAll", 1)
+            try:
+                mesh_generator.save_to_file(output_file)
+            finally:
+                if save_all:
+                    gmsh.option.setNumber("Mesh.SaveAll", prev_save_all)
     except Exception:
         # Opt-in failed-mesh dump for production triage. Off by default so a
         # failure doesn't silently write an extra file beside the user's output.
