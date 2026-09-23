@@ -366,10 +366,46 @@ def arrangement_subpieces_for_interval(
     return subs
 
 
+def _horizontal_face_footprints(
+    shape: object, z_tolerance: float = 1e-9
+) -> list[tuple["Polygon", float]]:
+    """Return ``[(Polygon, z), ...]`` for horizontal planar faces in ``shape``."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from shapely.geometry import Polygon
+
+    footprints: list[tuple[Polygon, float]] = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face_s(explorer.Current())
+        explorer.Next()
+        points: list[tuple[float, float, float]] = []
+        wire_explorer = BRepTools_WireExplorer(BRepTools.OuterWire_s(face))
+        while wire_explorer.More():
+            pnt = BRep_Tool.Pnt_s(wire_explorer.CurrentVertex())
+            points.append((pnt.X(), pnt.Y(), pnt.Z()))
+            wire_explorer.Next()
+        if len(points) < 3:
+            continue
+        zs = [p[2] for p in points]
+        if max(zs) - min(zs) > z_tolerance:
+            continue
+        polygon = Polygon([(x, y) for x, y, _ in points])
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        if not polygon.is_empty:
+            footprints.append((polygon, zs[0]))
+    return footprints
+
+
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],
     point_tolerance: float = 1e-3,
+    sweeps: list[Any] | None = None,
 ) -> tuple[list[list[SubPiece]], list[Any], list[Arrangement]]:
     """Stage 3 driver — cohort-global arrangement edition.
 
@@ -397,6 +433,17 @@ def decompose_cohorts(
 
     from meshwell.interface_tag import InterfaceTag
     from meshwell.polyprism import PolyPrism
+
+    sweep_rects = []
+    if sweeps:
+        from meshwell.structured.sweep_cad import resolve_sweep_rectangles
+
+        sweep_rects = [
+            rect
+            for _sw, _side, rect, *_ in resolve_sweep_rectangles(
+                unstructured_entities, sweeps, point_tolerance
+            )
+        ]
 
     # 1. For each cohort, collect adjacent unstructured boundaries to
     # include in the cohort's arrangement linework.
@@ -458,6 +505,34 @@ def decompose_cohorts(
                                 break
                         if touches:
                             iface_lines.extend(snapped_lss)
+            elif getattr(ent, "dimension", None) == 2 and hasattr(
+                ent, "instanciate_occ"
+            ):
+                for fp_poly, z in _horizontal_face_footprints(ent.instanciate_occ()):
+                    z_snap = _snap_to_cohort_plane(z, cohort)
+                    if z_snap is None:
+                        continue
+                    if _cohort_xy_at(cohort, z_snap).intersects(fp_poly):
+                        lines.append(
+                            shapely.set_precision(
+                                fp_poly.boundary,
+                                grid_size=point_tolerance,
+                                mode="valid_output",
+                            )
+                        )
+        if sweep_rects:
+            z_snap = _snap_to_cohort_plane(0.0, cohort)
+            if z_snap is not None:
+                cohort_xy = _cohort_xy_at(cohort, z_snap)
+                lines.extend(
+                    shapely.set_precision(
+                        rect.boundary,
+                        grid_size=point_tolerance,
+                        mode="valid_output",
+                    )
+                    for rect in sweep_rects
+                    if cohort_xy.intersects(rect)
+                )
         adjacency_lines_per_cohort.append(lines)
         interface_lines_per_cohort.append(iface_lines)
 

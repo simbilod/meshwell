@@ -49,6 +49,9 @@ class StructuredState:
     cohort_entities: list[_CohortEntity] = field(default_factory=list)
     face_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
     sub_solid_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
+    sub_solid_index_by_key: dict[ShapeKey, tuple[int, int]] = field(
+        default_factory=dict
+    )
 
     # Per-cohort (VertexRegistry, EdgeRegistry, FaceRegistry) triples,
     # indexed by cohort_index. Constructed in structured_pre_pass and
@@ -64,6 +67,7 @@ class StructuredState:
 def structured_pre_pass(
     entities: list[Any],
     point_tolerance: float,
+    sweeps: list[Any] | None = None,
 ) -> StructuredState:
     """Run Stages 1-4 and return entities_out for cad_occ.
 
@@ -96,13 +100,14 @@ def structured_pre_pass(
     validate_no_volumetric_cohort_overlap(cohorts, entities)
     # decompose_cohorts returns the unstructured list unchanged (third slot).
     subpieces_per_cohort, unstructured_out, arrangements = decompose_cohorts(
-        cohorts, unstructured, point_tolerance=point_tolerance
+        cohorts, unstructured, point_tolerance=point_tolerance, sweeps=sweeps
     )
 
     cohort_entities: list[_CohortEntity] = []
     all_slab_meta: dict[ShapeKey, SlabMeta] = {}
     face_name_by_key: dict[ShapeKey, str] = {}
     sub_solid_name_by_key: dict[ShapeKey, str] = {}
+    sub_solid_index_by_key: dict[ShapeKey, tuple[int, int]] = {}
     cohort_registries: list[tuple[VertexRegistry, EdgeRegistry, FaceRegistry]] = []
     for ci, (cohort, subs) in enumerate(zip(cohorts, subpieces_per_cohort)):
         vreg = VertexRegistry(point_tolerance=point_tolerance)
@@ -126,18 +131,25 @@ def structured_pre_pass(
         )
         cohort_entities.append(ce)
         all_slab_meta.update(slab_meta)
-        # Assign synthetic per-face / per-sub-solid names. The orchestrator
-        # writes these into the XAO via synthetic 2D / 3D entities so it
-        # can recover ShapeKey -> gmsh-tag mappings by name lookup after
-        # XAO load.
-        # MANUAL_NOTE: investigate alternative, e.g. brep sidecar w/
-        # deterministic import
+        # Assign synthetic per-face / per-sub-solid names for kept slabs.
+        # These names are written into the XAO via synthetic 2D / 3D
+        # entities so meshwell.mesh() can recover SlabMeta and gmsh-tag
+        # mappings directly from the XAO without in-memory CAD state.
         for si, (sub_key, meta) in enumerate(slab_meta.items()):
-            sub_solid_name_by_key[sub_key] = f"__cohort_{ci}__slab_{si}"
-            face_name_by_key[meta.bot_face_key] = f"__cohort_{ci}__slab_{si}__bot"
-            face_name_by_key[meta.top_face_key] = f"__cohort_{ci}__slab_{si}__top"
+            if not meta.keep:
+                continue
+            sub_solid_index_by_key[sub_key] = (ci, si)
+            sub_solid_name_by_key[sub_key] = meta.to_synthetic_solid_name(ci, si)
+            face_name_by_key[meta.bot_face_key] = SlabMeta.to_synthetic_face_name(
+                ci, si, "bot"
+            )
+            face_name_by_key[meta.top_face_key] = SlabMeta.to_synthetic_face_name(
+                ci, si, "top"
+            )
             for li, lk in enumerate(meta.lateral_face_keys):
-                face_name_by_key[lk] = f"__cohort_{ci}__slab_{si}__lat_{li}"
+                face_name_by_key[lk] = SlabMeta.to_synthetic_face_name(
+                    ci, si, f"lat_{li}"
+                )
 
     entities_out = cohort_entities + unstructured_out
     return StructuredState(
@@ -146,6 +158,7 @@ def structured_pre_pass(
         cohort_entities=cohort_entities,
         face_name_by_key=face_name_by_key,
         sub_solid_name_by_key=sub_solid_name_by_key,
+        sub_solid_index_by_key=sub_solid_index_by_key,
         cohort_registries=cohort_registries,
     )
 
@@ -237,7 +250,9 @@ def structured_post_pass(
                     if key in state.slab_meta
                     else _find_slab_key(state.slab_meta, meta)
                 )
-                sub_solid_name = state.sub_solid_name_by_key.get(sub_key)
+                sub_solid_name = (
+                    state.sub_solid_name_by_key.get(sub_key) if meta.keep else None
+                )
                 names: tuple[str, ...] = meta.physical_name
                 if sub_solid_name is not None:
                     names = (*meta.physical_name, sub_solid_name)
@@ -251,6 +266,9 @@ def structured_post_pass(
                 )
                 expanded.append(sub_ent)
                 next_index += 1
+
+                if not meta.keep:
+                    continue
 
                 # Pre-compute (z_centroid, z_extent, face) tuples for
                 # every face in this sub-solid so the per-role match
@@ -276,8 +294,15 @@ def structured_post_pass(
                 pre_fp_for_meta = {
                     rk: face_fp_by_key[rk] for _r, rk in roles if rk in face_fp_by_key
                 }
+                ci_si = state.sub_solid_index_by_key.get(sub_key)
                 for _role, fk in roles:
-                    face_name = state.face_name_by_key.get(fk)
+                    if ci_si is not None:
+                        face_name = SlabMeta.to_synthetic_face_name(
+                            ci_si[0], ci_si[1], _role
+                        )
+                        state.face_name_by_key[fk] = face_name
+                    else:
+                        face_name = state.face_name_by_key.get(fk)
                     if face_name is None:
                         continue
                     matched = _match_role_face(fk, pre_fp_for_meta, solid_faces)

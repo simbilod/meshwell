@@ -99,6 +99,7 @@ class ModelManager:
 
         # Configure threading
         self._configure_threading()
+        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
 
         # Configure OCC tolerance if provided
         if self.point_tolerance is not None:

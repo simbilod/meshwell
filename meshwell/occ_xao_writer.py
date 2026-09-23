@@ -234,14 +234,14 @@ def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
 
 
 def _filter_real_names(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Drop synthetic ``__cohort_*`` names; keep the user-visible names only.
+    """Drop synthetic ``__cohort_*`` and ``__sweep*`` names; keep the user-visible names only.
 
-    Used when forming ``A___B`` interface group names from a pair of real
-    cohort sub-solids: their ``physical_name`` tuple has a synthetic name
-    appended, but we only want the user-visible ``A___B``, not also the
-    spurious ``A_____cohort_X``, ``__cohort_X___B``, ``__cohort_X_____cohort_Y``.
+    Used when forming ``A___B`` interface group names and ``A___None`` exterior
+    boundary group names from real entities: their ``physical_name`` tuple may
+    have a synthetic name appended, and we only want user-visible groups, not
+    spurious ``__cohort_X___B`` or ``__cohort_X___None`` groups.
     """
-    return tuple(n for n in names if not n.startswith("__cohort_"))
+    return tuple(n for n in names if not n.startswith(("__cohort_", "__sweep")))
 
 
 def _compute_physical_groups(
@@ -481,7 +481,7 @@ def _compute_physical_groups(
         exterior_shapes = [entity_boundary[i][bid] for bid in exterior]
         if not exterior_shapes:
             continue
-        for name in ent.physical_name:
+        for name in _filter_real_names(ent.physical_name):
             full_name = f"{name}{interface_delimiter}{boundary_delimiter}"
             groups.setdefault((boundary_dim, full_name), []).extend(exterior_shapes)
 

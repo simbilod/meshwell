@@ -221,9 +221,17 @@ class Mesh:
         final_entity_list = []
         final_entity_dict = {}
 
-        # We address entities by "named" physicals (not default):
-        top_physical_names = self.get_top_physical_names()
-        all_physical_names = self.get_all_physical_names()
+        # We address entities by "named" physicals (not default or synthetic bookkeeping):
+        top_physical_names = [
+            n
+            for n in self.get_top_physical_names()
+            if not n.startswith(("__cohort_", "__sweep"))
+        ]
+        all_physical_names = [
+            n
+            for n in self.get_all_physical_names()
+            if not n.startswith(("__cohort_", "__sweep"))
+        ]
 
         # Collect all base names from interfaces to handle removed entities (voids)
         base_names = set(all_physical_names)
@@ -558,6 +566,7 @@ class Mesh:
         # ``mesh(input_file=xao, ...)`` step -- both flow through here.
         # Composed once, before the (possibly multi-attempt) retry loop,
         # so a fallback retry doesn't stamp/validate more than once.
+        from meshwell.structured import wedge as _wedge
         from meshwell.structured.sweep2d import (
             discover_sweeps,
             make_sweep_pre_2d_hook,
@@ -581,17 +590,29 @@ class Mesh:
                     "gmsh boundary-layer generation. Mesh them in separate models."
                 )
             specs_by_name = validate_sweep_pairing(discovered, resolution_specs)
-            sweep_hook = make_sweep_pre_2d_hook(
-                discovered,
-                specs_by_name,
-                self.model_manager.point_tolerance or 1e-3,
-            )
-            user_pre_2d = pre_2d_hook
+            user_pre_2d_before_sweep = pre_2d_hook
 
             def pre_2d_hook() -> None:
-                if user_pre_2d is not None:
-                    user_pre_2d()
+                if user_pre_2d_before_sweep is not None:
+                    user_pre_2d_before_sweep()
+                cur_discovered = discover_sweeps() or discovered
+                sweep_hook = make_sweep_pre_2d_hook(
+                    cur_discovered,
+                    specs_by_name,
+                    self.model_manager.point_tolerance or 1e-3,
+                )
                 sweep_hook()
+
+        if getattr(_wedge, "has_cohort_groups", lambda: False)() and hasattr(
+            _wedge, "make_cohort_hooks"
+        ):
+            pre_2d_hook, pre_3d_hook, post_3d_hook = _wedge.make_cohort_hooks(
+                resolution_specs=resolution_specs or None,
+                point_tolerance=self.model_manager.point_tolerance or 1e-3,
+                user_pre_2d=pre_2d_hook,
+                user_pre_3d=pre_3d_hook,
+                user_post_3d=post_3d_hook,
+            )
 
         def _run_once(algo2d: int, algo3d: int) -> meshio.Mesh:
             self._initialize_mesh_settings(

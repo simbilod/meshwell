@@ -10,8 +10,12 @@ triangulation to top and emits wedge elements.
 """
 from __future__ import annotations
 
+import contextlib
+import itertools
 import logging
 from collections import defaultdict
+from collections.abc import Callable
+from typing import Any
 
 import gmsh
 import numpy as np
@@ -28,32 +32,248 @@ from meshwell.structured.types import ShapeKey, SlabMeta
 
 logger = logging.getLogger(__name__)
 
+# Tight gmsh geometry tolerance used while deduplicating mesh nodes, so
+# distinct-but-close points (e.g. on adjacent fine curves) are not merged.
+_DEDUP_GEOMETRY_TOLERANCE = 1e-6
+
+
+def _remove_duplicate_nodes_tight(
+    dimtags: list[tuple[int, int]] | None = None,
+) -> None:
+    """Run ``removeDuplicateNodes`` under a tightened geometry tolerance.
+
+    Pass ``dimtags`` to scope the dedup to specific entities, or ``None``
+    for a global pass. The previous ``Geometry.Tolerance`` is restored.
+    """
+    old_tol = gmsh.option.getNumber("Geometry.Tolerance")
+    gmsh.option.setNumber("Geometry.Tolerance", _DEDUP_GEOMETRY_TOLERANCE)
+    try:
+        if dimtags is None:
+            gmsh.model.mesh.removeDuplicateNodes()
+        else:
+            gmsh.model.mesh.removeDuplicateNodes(dimtags)
+    finally:
+        gmsh.option.setNumber("Geometry.Tolerance", old_tol)
+
+
+def strip_synthetic_physical_groups() -> None:
+    """Remove ``__cohort_*`` and ``__sweep*`` synthetic groups from gmsh.
+
+    Called before writing the .msh so synthetic bookkeeping groups don't
+    leak into the output.
+    """
+    to_remove: list[tuple[int, int]] = []
+    names_to_drop: list[str] = []
+    for dim, gtag in gmsh.model.getPhysicalGroups():
+        gname = gmsh.model.getPhysicalName(dim, gtag)
+        if gname.startswith(("__cohort_", "__sweep")):
+            to_remove.append((dim, gtag))
+            names_to_drop.append(gname)
+    if to_remove:
+        gmsh.model.removePhysicalGroups(to_remove)
+        for gname in names_to_drop:
+            with contextlib.suppress(Exception):
+                gmsh.model.removePhysicalName(gname)
+
+
+def has_cohort_groups() -> bool:
+    """Return True if the active gmsh model contains any ``__cohort_*`` physical groups."""
+    for dim, gtag in gmsh.model.getPhysicalGroups():
+        if gmsh.model.getPhysicalName(dim, gtag).startswith("__cohort_"):
+            return True
+    return False
+
+
+def discover_cohorts() -> tuple[
+    dict[str, SlabMeta], dict[str, int], dict[str, int]
+]:
+    """Scan the loaded gmsh model's physical groups for ``__cohort_*`` synthetics.
+
+    Reconstructs ``(slab_meta, face_tag_by_key, sub_solid_tag_by_key)`` via
+    :meth:`SlabMeta.from_synthetic_groups`. If a legacy XAO omitted dim=2
+    synthetic face groups, falls back to inspecting the 3D volume's boundary
+    faces in gmsh.
+    """
+    face_groups: dict[str, int] = {}
+    for _, gtag in gmsh.model.getPhysicalGroups(2):
+        gname = gmsh.model.getPhysicalName(2, gtag)
+        if not gname.startswith("__cohort_"):
+            continue
+        entities = gmsh.model.getEntitiesForPhysicalGroup(2, gtag)
+        if len(entities) >= 1:
+            face_groups[gname] = int(entities[0])
+
+    solid_groups: dict[str, int] = {}
+    fallback_names_by_vol: dict[int, list[str]] = defaultdict(list)
+    for _, gtag in gmsh.model.getPhysicalGroups(3):
+        gname = gmsh.model.getPhysicalName(3, gtag)
+        entities = gmsh.model.getEntitiesForPhysicalGroup(3, gtag)
+        if gname.startswith("__cohort_"):
+            if len(entities) >= 1:
+                solid_groups[gname] = int(entities[0])
+        elif not gname.startswith("__"):
+            for tag in entities:
+                fallback_names_by_vol[int(tag)].append(gname)
+
+    slab_meta, face_tag_by_key, sub_solid_tag_by_key = (
+        SlabMeta.from_synthetic_groups(
+            solid_groups=solid_groups,
+            face_groups=face_groups,
+            fallback_names_by_vol=fallback_names_by_vol,
+        )
+    )
+
+    # Fallback for legacy XAOs where dim=2 face groups were not present:
+    for sub_key, meta in list(slab_meta.items()):
+        if (
+            meta.bot_face_key in face_tag_by_key
+            and meta.top_face_key in face_tag_by_key
+        ):
+            continue
+        vtag = sub_solid_tag_by_key[sub_key]
+        bnds = [
+            int(t)
+            for _, t in gmsh.model.getBoundary([(3, vtag)], oriented=False)
+        ]
+        horiz = sorted(
+            (round(gmsh.model.getBoundingBox(2, t)[2], 6), t)
+            for t in bnds
+            if abs(
+                gmsh.model.getBoundingBox(2, t)[5]
+                - gmsh.model.getBoundingBox(2, t)[2]
+            )
+            < 1e-5
+        )
+        if len(horiz) >= 2:
+            bot_tag, top_tag = horiz[0][1], horiz[-1][1]
+            lat_tags = [t for t in bnds if t not in (bot_tag, top_tag)]
+            bot_k = f"{sub_key}__bot"
+            top_k = f"{sub_key}__top"
+            face_tag_by_key[bot_k] = bot_tag
+            face_tag_by_key[top_k] = top_tag
+            lat_keys: list[str] = []
+            for li, lt in enumerate(lat_tags):
+                lk = f"{sub_key}__lat_{li}"
+                face_tag_by_key[lk] = lt
+                lat_keys.append(lk)
+            slab_meta[sub_key] = SlabMeta(
+                slab_index=meta.slab_index,
+                physical_name=meta.physical_name,
+                bot_face_key=bot_k,
+                top_face_key=top_k,
+                lateral_face_keys=tuple(lat_keys),
+                keep=meta.keep,
+            )
+
+    return slab_meta, face_tag_by_key, sub_solid_tag_by_key
+
+
+def make_cohort_hooks(
+    resolution_specs: dict | None = None,
+    point_tolerance: float = 1e-3,
+    user_pre_2d: Callable[[], None] | None = None,
+    user_pre_3d: Callable[[], None] | None = None,
+    user_post_3d: Callable[[], None] | None = None,
+) -> tuple[Callable[[], None], Callable[[], None], Callable[[], None]]:
+    """Build ``(pre_2d_hook, pre_3d_hook, post_3d_hook)`` for cohort wedge meshing.
+
+    Discovers cohort metadata from the loaded gmsh model inside ``pre_2d_hook``
+    (before stripping synthetic groups) so multi-attempt fallback retries that
+    reload ``cad_checkpoint.xao`` re-discover fresh gmsh tags cleanly.
+    """
+    state: dict[str, Any] = {}
+
+    def _pre_2d() -> None:
+        slab_meta, face_tag_by_key, sub_solid_tag_by_key = discover_cohorts()
+        state["slab_meta"] = slab_meta
+        state["face_tag_by_key"] = face_tag_by_key
+        state["sub_solid_tag_by_key"] = sub_solid_tag_by_key
+        if slab_meta and face_tag_by_key:
+            freeze_lateral_mesh(
+                slab_meta,
+                face_tag_by_key,
+                resolution_specs=resolution_specs,
+                after_1d_hook=user_pre_2d,
+            )
+        elif user_pre_2d is not None:
+            user_pre_2d()
+        strip_synthetic_physical_groups()
+
+    def _pre_3d() -> None:
+        slab_meta = state.get("slab_meta")
+        face_tag_by_key = state.get("face_tag_by_key")
+        sub_solid_tag_by_key = state.get("sub_solid_tag_by_key")
+        if slab_meta and face_tag_by_key and sub_solid_tag_by_key:
+            stamp_wedges(
+                slab_meta,
+                face_tag_by_key,
+                sub_solid_tag_by_key,
+                resolution_specs=resolution_specs,
+                point_tolerance=point_tolerance,
+            )
+            gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
+            structured_vol_dimtags = [
+                (3, tag) for tag in sub_solid_tag_by_key.values()
+            ]
+            _remove_duplicate_nodes_tight(structured_vol_dimtags)
+        if user_pre_3d is not None:
+            user_pre_3d()
+
+    def _post_3d() -> None:
+        slab_meta = state.get("slab_meta")
+        face_tag_by_key = state.get("face_tag_by_key")
+        sub_solid_tag_by_key = state.get("sub_solid_tag_by_key")
+        if slab_meta and face_tag_by_key and sub_solid_tag_by_key:
+            _remove_duplicate_nodes_tight()
+        if user_post_3d is not None:
+            user_post_3d()
+
+    return _pre_2d, _pre_3d, _post_3d
+
 
 def resolve_n_layers(
     physical_name: tuple[str, ...] | str,
     resolution_specs: dict | None,
 ) -> int:
-    """Look up n_layers from resolution_specs for one physical_name.
+    """Look up n_layers from resolution_specs for a physical_name tuple or string.
 
-    Returns 1 if no spec. Raises StructuredError if more than one
-    StructuredExtrusionResolutionSpec is present for the name.
+    Inspects all names in ``physical_name``. Returns 1 if no spec matches.
+    Raises :class:`StructuredError` if a single name has more than one
+    ``StructuredExtrusionResolutionSpec`` or if multiple names on the same
+    slab specify conflicting ``n_layers``.
     """
     from meshwell.resolution import StructuredExtrusionResolutionSpec
 
     if not resolution_specs:
         return 1
-    key = physical_name[0] if isinstance(physical_name, tuple) else physical_name
-    specs = [
-        s
-        for s in resolution_specs.get(key, [])
-        if isinstance(s, StructuredExtrusionResolutionSpec)
-    ]
-    if len(specs) > 1:
+    names = (
+        (physical_name,)
+        if isinstance(physical_name, str)
+        else tuple(physical_name)
+    )
+    matched_specs: list[StructuredExtrusionResolutionSpec] = []
+    for key in names:
+        specs = [
+            s
+            for s in resolution_specs.get(key, [])
+            if isinstance(s, StructuredExtrusionResolutionSpec)
+        ]
+        if len(specs) > 1:
+            raise StructuredError(
+                f"physical_name {key!r} has {len(specs)} "
+                "StructuredExtrusionResolutionSpec entries; expected at most 1."
+            )
+        if specs:
+            matched_specs.append(specs[0])
+    if not matched_specs:
+        return 1
+    distinct_n_layers = {s.n_layers for s in matched_specs}
+    if len(distinct_n_layers) > 1:
         raise StructuredError(
-            f"physical_name {key!r} has {len(specs)} "
-            "StructuredExtrusionResolutionSpec entries; expected at most 1."
+            f"physical_name {names!r} has conflicting "
+            f"StructuredExtrusionResolutionSpec n_layers {sorted(distinct_n_layers)}."
         )
-    return specs[0].n_layers if specs else 1
+    return matched_specs[0].n_layers
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +374,88 @@ def _vertical_edge_layer_nodes(vertical_edge_tag: int) -> list[int]:
     return [t for t, _z in items]
 
 
+def _copy_curve_nodes_to_partner(
+    src_row: list[tuple[int, float, float, float]],
+    dst_edge_tag: int,
+    z_dst: float,
+) -> None:
+    """Mirror ``src_row``'s (x, y) node layout onto ``dst_edge_tag`` at ``z_dst``."""
+    if len(src_row) < 2:
+        return
+    end_pts = gmsh.model.getBoundary([(1, dst_edge_tag)], oriented=False)
+    if len(end_pts) != 2:
+        return
+    ep_info: list[tuple[float, float, int]] = []
+    for _d, ptag in end_pts:
+        ptag = abs(int(ptag))
+        xyz = gmsh.model.getValue(0, ptag, [])
+        ntags, _c, _p = gmsh.model.mesh.getNodes(0, ptag)
+        if len(ntags) == 0:
+            new_pt_node = gmsh.model.mesh.getMaxNodeTag() + 1
+            gmsh.model.mesh.addNodes(
+                0, ptag, [new_pt_node], [float(xyz[0]), float(xyz[1]), float(z_dst)]
+            )
+            ep_info.append((float(xyz[0]), float(xyz[1]), new_pt_node))
+        else:
+            ep_info.append((float(xyz[0]), float(xyz[1]), int(ntags[0])))
+
+    (pmin,), (pmax,) = gmsh.model.getParametrizationBounds(1, dst_edge_tag)
+    base = np.array(gmsh.model.getValue(1, dst_edge_tag, [pmin])[:2])
+    far = np.array(gmsh.model.getValue(1, dst_edge_tag, [pmax])[:2])
+    span = far - base
+    length2 = float(span @ span)
+
+    def _frac(x: float, y: float) -> float:
+        if length2 == 0.0:
+            return 0.0
+        return float(((np.array([x, y]) - base) @ span) / length2)
+
+    ordered_xy = sorted(
+        ((_frac(x, y), x, y) for _t, x, y, _z in src_row),
+        key=lambda r: r[0],
+    )
+    _, x0, y0 = ordered_xy[0]
+    d0_to_ep0 = (x0 - ep_info[0][0]) ** 2 + (y0 - ep_info[0][1]) ** 2
+    d0_to_ep1 = (x0 - ep_info[1][0]) ** 2 + (y0 - ep_info[1][1]) ** 2
+    if d0_to_ep0 <= d0_to_ep1:
+        start_node, end_node = ep_info[0][2], ep_info[1][2]
+    else:
+        start_node, end_node = ep_info[1][2], ep_info[0][2]
+
+    gmsh.model.mesh.clear([(1, dst_edge_tag)])
+    gmsh.model.mesh.setNode(
+        start_node,
+        [float(ordered_xy[0][1]), float(ordered_xy[0][2]), float(z_dst)],
+        [],
+    )
+    gmsh.model.mesh.setNode(
+        end_node,
+        [float(ordered_xy[-1][1]), float(ordered_xy[-1][2]), float(z_dst)],
+        [],
+    )
+
+    seq = [start_node]
+    interior_tags: list[int] = []
+    interior_coords: list[float] = []
+    interior_params: list[float] = []
+    next_tag = gmsh.model.mesh.getMaxNodeTag() + 1
+    for frac, x, y in ordered_xy[1:-1]:
+        seq.append(next_tag)
+        interior_tags.append(next_tag)
+        interior_coords.extend([float(x), float(y), float(z_dst)])
+        interior_params.append(float(pmin + frac * (pmax - pmin)))
+        next_tag += 1
+    seq.append(end_node)
+    if interior_tags:
+        gmsh.model.mesh.addNodes(
+            1, dst_edge_tag, interior_tags, interior_coords, interior_params
+        )
+    lines: list[int] = []
+    for a, b in itertools.pairwise(seq):
+        lines.extend([a, b])
+    gmsh.model.mesh.addElementsByType(dst_edge_tag, 1, [], lines)
+
+
 def _emit_lateral_face_quads(
     face_tag: int,
     z_bot: float,
@@ -179,7 +481,15 @@ def _emit_lateral_face_quads(
         )
 
     bot_row = _ordered_curve_nodes(bot_edge)
-    top_row = _align_top_to_bot(bot_row, _ordered_curve_nodes(top_edge))
+    top_row = _ordered_curve_nodes(top_edge)
+    if len(bot_row) != len(top_row):
+        if len(bot_row) > len(top_row) and len(bot_row) >= 2:
+            _copy_curve_nodes_to_partner(bot_row, top_edge, z_top)
+            top_row = _ordered_curve_nodes(top_edge)
+        elif len(top_row) > len(bot_row) and len(top_row) >= 2:
+            _copy_curve_nodes_to_partner(top_row, bot_edge, z_bot)
+            bot_row = _ordered_curve_nodes(bot_edge)
+    top_row = _align_top_to_bot(bot_row, top_row)
     if len(bot_row) < 2 or len(top_row) != len(bot_row):
         logger.warning(
             "Slab %s: lateral face %s skipped because bot_row len (%s) != "
@@ -252,6 +562,7 @@ def freeze_lateral_mesh(
     slab_meta: dict[ShapeKey, SlabMeta],
     face_tag_by_key: dict[ShapeKey, int],
     resolution_specs: dict[str, list] | None = None,
+    after_1d_hook: Callable[[], None] | None = None,
 ) -> None:
     """Pre_2d hook: emit cohort lateral-face mesh before generate(2).
 
@@ -261,7 +572,8 @@ def freeze_lateral_mesh(
          exactly n_layers+1 nodes per vertical edge (uniformly
          spaced in parametric coord).
       3. Call generate(1) explicitly so we have edge nodes available
-         to walk in step 4.
+         to walk in step 4 (and invoke ``after_1d_hook`` if present
+         so 2D sweeps stamp their curves/faces after the single 1D pass).
       4. For each lateral face: walk bot/top edge nodes in parametric
          order; reuse the vertical-edge transfinite nodes for the
          left/right endpoints at each layer; create face-interior
@@ -324,9 +636,19 @@ def freeze_lateral_mesh(
                 continue
             face_z_bounds[tag] = (z_bot, z_top)
 
+    sweep_curve_tags: set[int] = set()
+    for _dim, gtag in gmsh.model.getPhysicalGroups(2):
+        if gmsh.model.getPhysicalName(2, gtag).startswith("__sweep|"):
+            for ftag in gmsh.model.getEntitiesForPhysicalGroup(2, gtag):
+                for _d, ct in gmsh.model.getBoundary(
+                    [(2, int(ftag))], oriented=False
+                ):
+                    sweep_curve_tags.add(abs(int(ct)))
+
     # Step 2: setTransfiniteCurve on vertical edges and setPeriodic on top/bot curves.
     vertical_edges_done: set[int] = set()
     periodic_edges_done: set[int] = set()
+    sweep_partner_pairs: list[tuple[int, int, float, float]] = []
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
         n_layers = face_n_layers.get(face_tag, 1)
         bot_edge, top_edge, verticals = _classify_lateral_face_edges(
@@ -345,38 +667,57 @@ def freeze_lateral_mesh(
             and top_edge not in periodic_edges_done
         ):
             periodic_edges_done.add(top_edge)
-            dz = z_top - z_bot
-            transform = [
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-                float(dz),
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ]
-            try:
-                gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
-            except Exception as per_err:
-                logger.warning(
-                    "Failed to set periodic constraint for top_edge %s -> "
-                    "bot_edge %s: %s",
-                    top_edge,
-                    bot_edge,
-                    per_err,
-                )
+            if bot_edge in sweep_curve_tags or top_edge in sweep_curve_tags:
+                sweep_partner_pairs.append((bot_edge, top_edge, z_bot, z_top))
+            else:
+                dz = z_top - z_bot
+                transform = [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    float(dz),
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                ]
+                try:
+                    gmsh.model.mesh.setPeriodic(
+                        1, [top_edge], [bot_edge], transform
+                    )
+                except Exception as per_err:
+                    logger.warning(
+                        "Failed to set periodic constraint for top_edge %s -> "
+                        "bot_edge %s: %s",
+                        top_edge,
+                        bot_edge,
+                        per_err,
+                    )
 
-    # Step 3: materialise 1D mesh.
+    # Step 3: materialise 1D mesh, then invoke after_1d_hook (e.g. 2D sweep
+    # stamping) so sweep curves and 2D sweep faces are stamped AFTER the single
+    # generate(1) call without being wiped by a second generate(1).
     gmsh.model.mesh.generate(1)
+    if after_1d_hook is not None:
+        after_1d_hook()
+
+    for bot_edge, top_edge, z_bot, z_top in sweep_partner_pairs:
+        if bot_edge in sweep_curve_tags and top_edge not in sweep_curve_tags:
+            _copy_curve_nodes_to_partner(
+                _ordered_curve_nodes(bot_edge), top_edge, z_top
+            )
+        elif top_edge in sweep_curve_tags and bot_edge not in sweep_curve_tags:
+            _copy_curve_nodes_to_partner(
+                _ordered_curve_nodes(top_edge), bot_edge, z_bot
+            )
 
     # Step 4: emit lateral-face quads.
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
@@ -562,13 +903,21 @@ def _stamp_one(
     face_tag_by_key: dict[ShapeKey, int],
 ) -> None:
     """Read bot triangulation, stamp on top, emit wedges into volume."""
-    snap_tolerance = 1e-6
-    # 1) Read bot triangulation.
+    snap_tolerance = max(1e-5, point_tolerance * 0.1)
+    # 1) Read bot triangulation / quad mesh.
     elem_types, _elem_tags, node_tags = gmsh.model.mesh.getElements(2, bot_tag)
-    if 2 not in elem_types:  # type 2 = 3-node triangle
+    if 2 not in elem_types and 3 not in elem_types:
         return
-    tri_idx = list(elem_types).index(2)
-    tris = np.array(node_tags[tri_idx]).reshape(-1, 3)
+    if 2 in elem_types:
+        tri_idx = list(elem_types).index(2)
+        tris = np.array(node_tags[tri_idx]).reshape(-1, 3)
+    else:
+        tris = np.zeros((0, 3), dtype=int)
+    if 3 in elem_types:
+        quad_idx = list(elem_types).index(3)
+        quads = np.array(node_tags[quad_idx]).reshape(-1, 4)
+    else:
+        quads = np.zeros((0, 4), dtype=int)
     bot_node_tags, bot_coord, _ = gmsh.model.mesh.getNodes(
         2, bot_tag, includeBoundary=True
     )
@@ -644,12 +993,18 @@ def _stamp_one(
 
     # Remove existing top-face elements WITHOUT removing nodes (so we do
     # not orphan interior nodes that are shared with adjacent volumes).
-    # Then re-stamp with the bot-matched triangulation.
+    # Then re-stamp with the bot-matched triangulation / quad mesh.
     gmsh.model.mesh.removeElements(2, top_tag)
-    top_tri_nodes: list[int] = []
-    for tri in tris:
-        top_tri_nodes.extend(bot_to_top[int(t)] for t in tri)
-    gmsh.model.mesh.addElementsByType(top_tag, 2, [], top_tri_nodes)
+    if len(tris):
+        top_tri_nodes: list[int] = []
+        for tri in tris:
+            top_tri_nodes.extend(bot_to_top[int(t)] for t in tri)
+        gmsh.model.mesh.addElementsByType(top_tag, 2, [], top_tri_nodes)
+    if len(quads):
+        top_quad_nodes: list[int] = []
+        for quad in quads:
+            top_quad_nodes.extend(bot_to_top[int(t)] for t in quad)
+        gmsh.model.mesh.addElementsByType(top_tag, 3, [], top_quad_nodes)
 
     # 4) Intermediate layer nodes (for n_layers > 1).
     #
@@ -732,8 +1087,9 @@ def _stamp_one(
         {i: bot_to_top[int(bot_node_tags[i])] for i in range(len(bot_node_tags))}
     )
 
-    # 5) Emit wedges (gmsh element type 6 = 6-node prism).
+    # 5) Emit wedges (type 6 = 6-node prism) and hexahedra (type 5 = 8-node hex).
     wedge_node_tags: list[int] = []
+    hex_node_tags: list[int] = []
     expected = 0
     for layer in range(n_layers):
         bot_map = layer_maps[layer]
@@ -764,8 +1120,38 @@ def _stamp_one(
                 ]
             )
             expected += 1
-    gmsh.model.mesh.addElementsByType(vol_tag, 6, [], wedge_node_tags)
-    emitted = len(wedge_node_tags) // 6
+        for quad in quads:
+            b0, b1, b2, b3 = (bot_idx_by_tag[int(t)] for t in quad)
+            p0 = bot_pts[b0]
+            p1 = bot_pts[b1]
+            p2 = bot_pts[b2]
+            v1_x = p1[0] - p0[0]
+            v1_y = p1[1] - p0[1]
+            v2_x = p2[0] - p0[0]
+            v2_y = p2[1] - p0[1]
+            cross_z = v1_x * v2_y - v1_y * v2_x
+            if cross_z * dz < 0:
+                b1_p, b2_p, b3_p = b3, b2, b1
+            else:
+                b1_p, b2_p, b3_p = b1, b2, b3
+            hex_node_tags.extend(
+                [
+                    bot_map[b0],
+                    bot_map[b1_p],
+                    bot_map[b2_p],
+                    bot_map[b3_p],
+                    top_map[b0],
+                    top_map[b1_p],
+                    top_map[b2_p],
+                    top_map[b3_p],
+                ]
+            )
+            expected += 1
+    if wedge_node_tags:
+        gmsh.model.mesh.addElementsByType(vol_tag, 6, [], wedge_node_tags)
+    if hex_node_tags:
+        gmsh.model.mesh.addElementsByType(vol_tag, 5, [], hex_node_tags)
+    emitted = (len(wedge_node_tags) // 6) + (len(hex_node_tags) // 8)
     if emitted != expected:
         raise WedgeCountMismatchError(
             slab_index=meta.slab_index,
