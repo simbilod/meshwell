@@ -10,6 +10,7 @@ is what makes cohort internal interfaces conformal without BOP.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 
@@ -619,7 +620,12 @@ def _replay_canonical_ring(
                 )
             segments = list(canon.segments)
             if not forward:
-                segments = list(reversed(segments))
+                segments = [
+                    s
+                    if s.is_arc
+                    else dataclasses.replace(s, points=list(reversed(s.points)))
+                    for s in reversed(segments)
+                ]
             out.append(segments)
             step = n_canon
             i += step
@@ -641,7 +647,12 @@ def _replay_canonical_ring(
             )
         segments = list(canon.segments)
         if not forward:
-            segments = list(reversed(segments))
+            segments = [
+                s
+                if s.is_arc
+                else dataclasses.replace(s, points=list(reversed(s.points)))
+                for s in reversed(segments)
+            ]
         out.append(segments)
         step = len(canon.vertex_keys) - 1
         i += step

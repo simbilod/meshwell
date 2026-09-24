@@ -54,11 +54,29 @@ class StructuredSlab:
 
 
 @dataclass(frozen=True)
+class StructuredPlane:
+    """Horizontal (`StructuredPolySurface`) or vertical (`InterfaceTag`) surface on a cohort."""
+
+    source_index: int
+    orientation: str  # "horizontal" | "vertical"
+    footprint: object  # Polygon | MultiPolygon (horizontal) or LineString | MultiLineString (vertical)
+    zmin: float
+    zmax: float
+    mesh_order: float | None
+    mesh_bool: bool
+    physical_name: tuple[str, ...]
+    identify_arcs: bool
+    arc_tolerance: float
+    min_arc_points: int
+
+
+@dataclass(frozen=True)
 class Cohort:
     """Connected component of structured slabs (Union-Find)."""
 
     slabs: tuple[StructuredSlab, ...]
     z_planes: tuple[float, ...]  # sorted unique cohort z-boundaries
+    planes: tuple[StructuredPlane, ...] = ()
 
     @property
     def zmin(self) -> float:

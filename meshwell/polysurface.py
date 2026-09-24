@@ -308,3 +308,85 @@ class PolySurface(GeometryEntity):
                     **kwargs,
                 )
         return ax
+
+
+class StructuredPolySurface(PolySurface):
+    """Horizontal 2D polygonal surface at height ``z`` that tags faces of a structured cohort.
+
+    Attributes:
+        polygons: list of shapely (Multi)Polygon in the 2D XY plane
+        z: z-plane coordinate (must coincide with a z_plane of a structured cohort)
+        physical_name: name of the physical group this surface will tag
+        mesh_order: priority if overlapping with another StructuredPolySurface on the same z-plane
+        mesh_bool: whether to keep the tagged surface group
+    """
+
+    def __init__(
+        self,
+        polygons: Polygon | list[Polygon] | MultiPolygon | list[MultiPolygon],
+        z: float,
+        physical_name: str | tuple[str, ...] | None = None,
+        mesh_order: float | None = None,
+        mesh_bool: bool = True,
+        point_tolerance: float = 1e-3,
+    ):
+        if physical_name is None or physical_name == "" or physical_name == ():
+            raise ValueError("StructuredPolySurface requires a non-empty physical_name")
+
+        self.z = float(z)
+        self.structured = True
+        super().__init__(
+            polygons=polygons,
+            physical_name=physical_name,
+            mesh_order=mesh_order,
+            mesh_bool=mesh_bool,
+            point_tolerance=point_tolerance,
+            translation=(0.0, 0.0, self.z),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert StructuredPolySurface to dictionary representation."""
+        import shapely.wkt
+        from shapely.geometry import MultiPolygon
+
+        if isinstance(self.polygons, MultiPolygon):
+            polygons_wkt = [
+                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons.geoms
+            ]
+        elif isinstance(self.polygons, list):
+            polygons_wkt = [
+                shapely.wkt.dumps(p, rounding_precision=12) for p in self.polygons
+            ]
+        else:
+            polygons_wkt = [shapely.wkt.dumps(self.polygons, rounding_precision=12)]
+
+        return {
+            "type": "StructuredPolySurface",
+            "polygons_wkt": polygons_wkt,
+            "z": self.z,
+            "physical_name": self.physical_name,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "point_tolerance": self.point_tolerance,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StructuredPolySurface":
+        """Reconstruct StructuredPolySurface from dictionary representation."""
+        import shapely.wkt
+        from shapely.geometry import MultiPolygon
+
+        warn_legacy_arc_keys(data, cls.__name__)
+
+        polygons = [shapely.wkt.loads(wkt) for wkt in data["polygons_wkt"]]
+        polygons = MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
+
+        return cls(
+            polygons=polygons,
+            z=float(data["z"]),
+            physical_name=data["physical_name"],
+            mesh_order=data.get("mesh_order"),
+            mesh_bool=data.get("mesh_bool", True),
+            point_tolerance=data.get("point_tolerance", 1e-3),
+        )
+

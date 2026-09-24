@@ -241,7 +241,11 @@ def build_cohort_arrangement(
     parameters use the strictest (largest `min_arc_points`, smallest
     `arc_tolerance`) across the cohort's slabs.
     """
-    raw_boundaries = [s.footprint.boundary for s in cohort.slabs]
+    raw_boundaries = [s.footprint.boundary for s in cohort.slabs] + [
+        p.footprint.boundary
+        for p in cohort.planes
+        if p.orientation == "horizontal" and not p.footprint.is_empty
+    ]
     # Deduplicate cohort boundaries progressively so that shared arc
     # sections (e.g. the outer U-turn arc shared between two adjacent
     # meander slabs, or a disc boundary duplicated by an adjacent base/
@@ -284,21 +288,65 @@ def build_cohort_arrangement(
                 continue
         linework.append(line)
 
+    vertical_planes = [
+        p.footprint
+        for p in cohort.planes
+        if p.orientation == "vertical" and not p.footprint.is_empty
+    ]
+    if vertical_planes:
+        linework.extend(vertical_planes)
+
     if interface_lines:
         linework.extend(interface_lines)
     merged = unary_union(linework)
     pieces = tuple(polygonize(merged))
 
-    # OR identify_arcs across the cohort's slabs; pick strictest arc
+    # If any vertical StructuredPlane has a dangling segment (degree-1 endpoint
+    # strictly inside a cohort polygon that polygonize dropped), close it with a
+    # one-sided auxiliary strip clipped to the cohort footprint so the trace
+    # becomes a manifold boundary edge shared by two SubPieces of the same material.
+    if vertical_planes and pieces:
+        covered_bounds = unary_union([p.boundary for p in pieces])
+        cohort_hull = unary_union([s.footprint for s in cohort.slabs])
+        added_closure = False
+        for v_fp in vertical_planes:
+            dangling = v_fp.difference(covered_bounds)
+            if dangling.is_empty or dangling.length <= point_tolerance:
+                continue
+            strip_width = max(
+                10.0 * point_tolerance, min(0.25 * dangling.length, 1.0)
+            )
+            aux_strip = shapely.set_precision(
+                dangling.buffer(strip_width, single_sided=True, join_style="mitre"),
+                grid_size=point_tolerance,
+                mode="valid_output",
+            ).intersection(cohort_hull)
+            if aux_strip.is_empty or getattr(aux_strip, "area", 0.0) <= 0:
+                aux_strip = shapely.set_precision(
+                    dangling.buffer(
+                        -strip_width, single_sided=True, join_style="mitre"
+                    ),
+                    grid_size=point_tolerance,
+                    mode="valid_output",
+                ).intersection(cohort_hull)
+            if not aux_strip.is_empty and getattr(aux_strip, "area", 0.0) > 0:
+                linework.append(aux_strip.boundary)
+                added_closure = True
+        if added_closure:
+            merged = unary_union(linework)
+            pieces = tuple(polygonize(merged))
+
+    # OR identify_arcs across the cohort's slabs and planes; pick strictest arc
     # params so the canonical fit never violates any contributor's
     # preference.
-    identify_arcs = any(s.identify_arcs for s in cohort.slabs)
+    all_members = (*cohort.slabs, *cohort.planes)
+    identify_arcs = any(m.identify_arcs for m in all_members)
     min_arc_points = max(
-        (s.min_arc_points for s in cohort.slabs if s.identify_arcs),
+        (m.min_arc_points for m in all_members if m.identify_arcs),
         default=5,
     )
     arc_tolerance = min(
-        (s.arc_tolerance for s in cohort.slabs if s.identify_arcs),
+        (m.arc_tolerance for m in all_members if m.identify_arcs),
         default=1e-3,
     )
     # Canonical edges live at the cohort's z-planes; use the first plane

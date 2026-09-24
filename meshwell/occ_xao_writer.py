@@ -416,7 +416,12 @@ def _compute_physical_groups(
         # their tuple (e.g. ``("lower", "__cohort_0__slab_0")``) but they
         # are real geometry — their interfaces still need to be detected
         # normally. ``_is_purely_synthetic`` distinguishes the two flavours.
-        if _is_purely_synthetic(ent1) or _is_purely_synthetic(ent2):
+        if (
+            _is_purely_synthetic(ent1)
+            or _is_purely_synthetic(ent2)
+            or getattr(ent1, "is_surface_tag", False)
+            or getattr(ent2, "is_surface_tag", False)
+        ):
             continue
         entity_interface_ids[i1].update(common)
         # For TShape-identity matches, ``common`` ⊆ entity 2's bids

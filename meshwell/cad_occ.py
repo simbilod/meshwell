@@ -73,6 +73,7 @@ class OCCLabeledEntity:
     dim: int
     mesh_order: float | None = None
     _is_cohort: bool = False
+    is_surface_tag: bool = False
 
 
 logger = logging.getLogger(__name__)
