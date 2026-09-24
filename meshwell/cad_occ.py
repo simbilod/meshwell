@@ -430,6 +430,14 @@ class CAD_OCC:
         for key, ent_idx in owners.items():
             entities[ent_idx].shapes.append(piece_shapes[key])
 
+        # Cohorts keep their pre-BOP compound (Modified(compound) is empty);
+        # make unstructured neighbours reuse the cohort sub-shapes BOP
+        # re-created so coincident interface faces are shared, not duplicated.
+        if any(ent._is_cohort for ent in entities):
+            from meshwell.structured.rebind import rebind_to_cohort_topology
+
+            rebind_to_cohort_topology(entities, builder)
+
         # Stash the builder so callers can query Modified() post-BOP.
         self.last_fragment_builder = builder
 
