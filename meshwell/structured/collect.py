@@ -172,4 +172,3 @@ def collect_structured_slabs(
     """Partition the input list into (structured_slabs, unstructured_entities)."""
     slabs, _planes, unstructured = collect_structured_entities(entities)
     return slabs, unstructured
-

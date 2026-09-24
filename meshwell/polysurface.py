@@ -389,4 +389,3 @@ class StructuredPolySurface(PolySurface):
             mesh_bool=data.get("mesh_bool", True),
             point_tolerance=data.get("point_tolerance", 1e-3),
         )
-

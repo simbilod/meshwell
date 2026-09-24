@@ -124,4 +124,3 @@ def attach_planes_to_cohorts(
         replace(cohort, planes=tuple(planes_by_cohort[ci]))
         for ci, cohort in enumerate(cohorts)
     ]
-

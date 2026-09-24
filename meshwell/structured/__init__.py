@@ -13,6 +13,8 @@ family, all subclasses of ``StructuredError``.
 from meshwell.structured.exceptions import (
     CanonicalArrangementError,
     CohortShellModifiedError,
+    DegenerateElementsAfterDedupError,
+    InvalidMeshTopologyError,
     MixedIdentifyArcsError,
     StructuredEntityTypeError,
     StructuredError,
@@ -37,6 +39,8 @@ from meshwell.structured.exceptions import (
 __all__ = [
     "CanonicalArrangementError",
     "CohortShellModifiedError",
+    "DegenerateElementsAfterDedupError",
+    "InvalidMeshTopologyError",
     "MixedIdentifyArcsError",
     "StructuredEntityTypeError",
     "StructuredError",

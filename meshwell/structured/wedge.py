@@ -22,6 +22,8 @@ import numpy as np
 from scipy.spatial import KDTree
 
 from meshwell.structured.exceptions import (
+    DegenerateElementsAfterDedupError,
+    InvalidMeshTopologyError,
     StructuredError,
     StructuredLateralNLayersMismatchError,
     StructuredTransfiniteRejectedError,
@@ -32,68 +34,356 @@ from meshwell.structured.types import ShapeKey, SlabMeta
 
 logger = logging.getLogger(__name__)
 
-# Tight gmsh geometry tolerance used while deduplicating mesh nodes, so
-# distinct-but-close points (e.g. on adjacent fine curves) are not merged.
-_DEDUP_GEOMETRY_TOLERANCE = 1e-6
+# Node dedup tolerances, as fractions of ``point_tolerance`` (input grid).
+# Search radius for duplicate candidates: must exceed the shapely
+# ``perturbation`` (1e-5) + BOP drift separating coincident-but-unshared
+# faces, and stay below one grid unit. Candidates that share a mesh element
+# are never merged, so real sub-radius features are protected topologically.
+_DEDUP_SEARCH_FACTOR = 0.1
+# Absolute tolerance for gmsh's final merge of nodes already snapped onto
+# identical coordinates (converted to gmsh's bbox-relative tolerance).
+_DEDUP_EXACT_ABS_TOL_FACTOR = 1e-9
+
+# gmsh local face node orderings (corner nodes) per 3D element type.
+_VOLUME_ELEMENT_FACES: dict[int, list[tuple[int, ...]]] = {
+    4: [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)],  # tetrahedron
+    5: [  # hexahedron
+        (0, 1, 2, 3),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    ],
+    6: [(0, 1, 2), (3, 4, 5), (0, 1, 4, 3), (1, 2, 5, 4), (0, 2, 5, 3)],  # prism
+    7: [(0, 1, 2, 3), (0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)],  # pyramid
+}
+
+_MAX_REPORTED_EXAMPLES = 5
 
 
-def _strip_degenerate_elements() -> None:
-    """Remove any 1D/2D/3D mesh elements that have duplicate node tags after node deduplication.
+def _model_characteristic_length() -> float:
+    """Return the model bounding-box diagonal, which gmsh uses to scale ``Geometry.Tolerance``."""
+    xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.getBoundingBox(-1, -1)
+    lc = float(np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin]))
+    if not np.isfinite(lc) or lc <= 0.0:
+        return 1.0
+    return lc
 
-    When ``gmsh.model.mesh.removeDuplicateNodes`` merges two vertices A and B
-    that belong to the same sliver element (e.g. a tetrahedron ``(u, v, A, B)``
-    or triangle ``(u, A, B)``), Gmsh rewrites ``B -> A`` in-place, leaving a
-    collapsed zero-volume/zero-area element ``(u, v, A, A)`` whose remaining
-    face ``(u, v, A)`` duplicates the shared face between the two adjacent
-    valid elements ``(u, v, w1, A)`` and ``(u, v, w2, A)``.
+
+def _primary_node_rows(elem_type: int, nodes: np.ndarray) -> np.ndarray:
+    """Reshape a flat node-tag array into ``(n_elems, n_corner_nodes)``."""
+    props = gmsh.model.mesh.getElementProperties(int(elem_type))
+    n_nodes, n_primary = props[3], props[5]
+    return nodes.reshape(-1, n_nodes)[:, :n_primary]
+
+
+def _rows_with_repeated_nodes(rows: np.ndarray) -> np.ndarray:
+    """Boolean mask of rows containing a repeated node tag."""
+    if rows.shape[1] < 2:
+        return np.zeros(rows.shape[0], dtype=bool)
+    srt = np.sort(rows, axis=1)
+    return np.any(srt[:, 1:] == srt[:, :-1], axis=1)
+
+
+def _node_coords_str(node_tags: np.ndarray) -> str:
+    """Format the centroid of a handful of mesh nodes for error messages."""
+    coords = [gmsh.model.mesh.getNode(int(t))[0] for t in node_tags]
+    c = np.mean(coords, axis=0)
+    return f"({c[0]:.6g}, {c[1]:.6g}, {c[2]:.6g})"
+
+
+def _check_no_degenerate_elements() -> None:
+    """Raise if any 1D/2D/3D element references the same node twice.
+
+    When ``removeDuplicateNodes`` merges two distinct nodes A and B that
+    belong to the same element (e.g. a thin tetrahedron ``(u, v, A, B)``
+    built across a short real edge), gmsh rewrites ``B -> A`` in place and
+    leaves a collapsed element ``(u, v, A, A)``. Its surviving face then
+    duplicates the face shared by the two neighbouring valid elements. 
+    Silently stripping such elements would hide the underlying tolerance 
+    or topology bug, so fail loudly instead.
     """
+    count_by_dim: dict[int, int] = {}
+    examples: list[str] = []
     for dim in (1, 2, 3):
         for _, ent_tag in gmsh.model.getEntities(dim):
             etypes, etags, enodes = gmsh.model.mesh.getElements(dim, ent_tag)
-            if not len(etypes):
-                continue
-            has_degen = False
-            kept_by_type: list[tuple[int, list[int], list[int]]] = []
             for et, tags, nodes in zip(etypes, etags, enodes):
-                n_per = gmsh.model.mesh.getElementProperties(int(et))[3]
-                arr = nodes.reshape(-1, n_per)
-                kept_tags: list[int] = []
-                kept_nodes: list[int] = []
-                for t, row in zip(tags, arr):
-                    r = [int(x) for x in row]
-                    if len(set(r)) < n_per:
-                        has_degen = True
-                    else:
-                        kept_tags.append(int(t))
-                        kept_nodes.extend(r)
-                kept_by_type.append((int(et), kept_tags, kept_nodes))
-            if has_degen:
-                gmsh.model.mesh.removeElements(dim, ent_tag)
-                for et, kept_tags, kept_nodes in kept_by_type:
-                    if kept_tags:
-                        gmsh.model.mesh.addElementsByType(
-                            ent_tag, et, kept_tags, kept_nodes
-                        )
+                rows = _primary_node_rows(et, np.asarray(nodes))
+                bad = np.flatnonzero(_rows_with_repeated_nodes(rows))
+                if not bad.size:
+                    continue
+                count_by_dim[dim] = count_by_dim.get(dim, 0) + int(bad.size)
+                for i in bad[: max(0, _MAX_REPORTED_EXAMPLES - len(examples))]:
+                    examples.append(
+                        f"dim={dim} entity={ent_tag} element={int(tags[i])} "
+                        f"nodes={rows[i].tolist()} at {_node_coords_str(rows[i])}"
+                    )
+    if count_by_dim:
+        raise DegenerateElementsAfterDedupError(count_by_dim, examples)
 
 
 def _remove_duplicate_nodes_tight(
     dimtags: list[tuple[int, int]] | None = None,
+    point_tolerance: float = 1e-3,
 ) -> None:
-    """Run ``removeDuplicateNodes`` under a tightened geometry tolerance and strip collapsed elements.
+    """Merge duplicate mesh nodes without ever merging real geometry, then verify no element collapsed.
 
-    Pass ``dimtags`` to scope the dedup to specific entities, or ``None``
-    for a global pass. The previous ``Geometry.Tolerance`` is restored.
+    Duplicates arise when coincident-but-unshared entities are meshed
+    independently. Their nodes are not bit-identical: the shapely
+    ``perturbation`` buffer (1e-5) and BOP drift can separate them by a few
+    1e-5. Real features, on the other hand, can be as short as one dbu
+    (== ``point_tolerance``). A pure distance threshold cannot separate the
+    two, and gmsh's ``Geometry.Tolerance`` is additionally scaled by the model
+    bounding-box diagonal (1e-6 on a ~2 mm model merges 2 nm edges).
+
+    Strategy:
+
+    1. Find node pairs closer than ``_DEDUP_SEARCH_FACTOR * point_tolerance``.
+    2. Reject any pair whose nodes co-occur in a mesh element — two nodes of
+       the same element are by construction distinct geometry.
+    3. Union the remaining pairs (never joining clusters that would place two
+       element-sharing nodes together), snap each cluster onto its lowest tag.
+    4. Let gmsh merge the now exactly coincident nodes with a near-zero
+       absolute tolerance.
+
+    Pass ``dimtags`` to scope the candidate nodes to specific entities (and
+    their boundaries), or ``None`` for a global pass.
+
+    Raises:
+        DegenerateElementsAfterDedupError: if dedup collapsed any element.
     """
+    search_radius = _DEDUP_SEARCH_FACTOR * point_tolerance
+    n_snapped = _snap_duplicate_node_clusters(dimtags, search_radius)
+
+    rel_tol = _DEDUP_EXACT_ABS_TOL_FACTOR * point_tolerance / (
+        _model_characteristic_length()
+    )
     old_tol = gmsh.option.getNumber("Geometry.Tolerance")
-    gmsh.option.setNumber("Geometry.Tolerance", _DEDUP_GEOMETRY_TOLERANCE)
+    gmsh.option.setNumber("Geometry.Tolerance", rel_tol)
     try:
         if dimtags is None:
             gmsh.model.mesh.removeDuplicateNodes()
         else:
             gmsh.model.mesh.removeDuplicateNodes(dimtags)
-        _strip_degenerate_elements()
     finally:
         gmsh.option.setNumber("Geometry.Tolerance", old_tol)
+    logger.info("Node dedup: snapped %d duplicate nodes onto representatives", n_snapped)
+    _check_no_degenerate_elements()
+
+
+def _candidate_node_tags_and_coords(
+    dimtags: list[tuple[int, int]] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Unique node tags (+ coords) in scope: all nodes, or nodes of ``dimtags`` incl. boundaries."""
+    if dimtags is None:
+        tags, coords, _ = gmsh.model.mesh.getNodes()
+        return np.asarray(tags, dtype=np.int64), np.asarray(coords).reshape(-1, 3)
+    all_tags, all_coords = [], []
+    for dim, tag in dimtags:
+        t, c, _ = gmsh.model.mesh.getNodes(dim, tag, includeBoundary=True)
+        all_tags.append(np.asarray(t, dtype=np.int64))
+        all_coords.append(np.asarray(c).reshape(-1, 3))
+    if not all_tags:
+        return np.empty(0, dtype=np.int64), np.empty((0, 3))
+    tags = np.concatenate(all_tags)
+    coords = np.concatenate(all_coords)
+    tags, first = np.unique(tags, return_index=True)
+    return tags, coords[first]
+
+
+def _element_sharing_pairs(nodes_of_interest: np.ndarray) -> set[tuple[int, int]]:
+    """Pairs ``(a, b)`` (a < b) of ``nodes_of_interest`` that co-occur in any 1D/2D/3D element."""
+    forbidden: set[tuple[int, int]] = set()
+    if nodes_of_interest.size < 2:
+        return forbidden
+    for dim in (1, 2, 3):
+        etypes, _etags, enodes = gmsh.model.mesh.getElements(dim)
+        for et, nodes in zip(etypes, enodes):
+            rows = _primary_node_rows(et, np.asarray(nodes, dtype=np.int64))
+            mask = np.isin(rows, nodes_of_interest)
+            hit = np.flatnonzero(mask.sum(axis=1) >= 2)
+            for r in hit:
+                members = sorted(int(n) for n in rows[r][mask[r]])
+                forbidden.update(itertools.combinations(members, 2))
+    return forbidden
+
+
+def _snap_duplicate_node_clusters(
+    dimtags: list[tuple[int, int]] | None,
+    search_radius: float,
+) -> int:
+    """Snap near-coincident, non-element-sharing nodes onto a representative. Returns #nodes moved."""
+    tags, coords = _candidate_node_tags_and_coords(dimtags)
+    if tags.size < 2:
+        return 0
+    pairs = KDTree(coords).query_pairs(search_radius, output_type="ndarray")
+    if not len(pairs):
+        return 0
+    dist = np.linalg.norm(coords[pairs[:, 0]] - coords[pairs[:, 1]], axis=1)
+    pairs = pairs[np.argsort(dist)]
+    involved = np.unique(pairs)
+    forbidden = _element_sharing_pairs(tags[involved])
+
+    # Union-find over candidate indices; clusters track member tags so a
+    # merge that would put two element-sharing nodes together is refused.
+    parent: dict[int, int] = {}
+    members: dict[int, list[int]] = {}
+
+    def find(i: int) -> int:
+        parent.setdefault(i, i)
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    n_rejected = 0
+    for i, j in pairs:
+        ri, rj = find(int(i)), find(int(j))
+        if ri == rj:
+            continue
+        mi = members.get(ri, [int(tags[ri])])
+        mj = members.get(rj, [int(tags[rj])])
+        if any(
+            (min(a, b), max(a, b)) in forbidden for a in mi for b in mj
+        ):
+            n_rejected += 1
+            continue
+        parent[rj] = ri
+        members[ri] = mi + mj
+        members.pop(rj, None)
+
+    idx_by_tag = {int(t): k for k, t in enumerate(tags)}
+    n_moved = 0
+    for group in members.values():
+        rep = min(group)
+        rep_xyz = coords[idx_by_tag[rep]].tolist()
+        for t in group:
+            if t != rep:
+                gmsh.model.mesh.setNode(t, rep_xyz, [])
+                n_moved += 1
+    if n_rejected:
+        logger.info(
+            "Node dedup: kept %d near-coincident node pairs distinct "
+            "(they share a mesh element, i.e. real sub-%.3g features)",
+            n_rejected,
+            search_radius,
+        )
+    return n_moved
+
+
+def validate_mesh_topology() -> None:
+    """Check that the current 3D mesh is a valid conforming FE mesh.
+
+    * no volume element references the same node twice;
+    * every face is shared by at most two volume elements;
+    * every 2D element on a surface that bounds a volume coincides with a
+      face of some volume element.
+
+    No-op when the model has no 3D elements.
+
+    Raises:
+        InvalidMeshTopologyError: listing every failed check with examples.
+    """
+    width = 4  # widest face (quad); triangles padded with -1
+    vol_faces: list[np.ndarray] = []
+    vol_face_owner: list[np.ndarray] = []
+    problems: list[str] = []
+    n_degenerate = 0
+
+    for _, ent_tag in gmsh.model.getEntities(3):
+        etypes, etags, enodes = gmsh.model.mesh.getElements(3, ent_tag)
+        for et, tags, nodes in zip(etypes, etags, enodes):
+            face_defs = _VOLUME_ELEMENT_FACES.get(int(et))
+            if face_defs is None:
+                problems.append(
+                    f"unsupported 3D element type {int(et)} in volume {ent_tag}"
+                )
+                continue
+            rows = _primary_node_rows(et, np.asarray(nodes))
+            n_degenerate += int(_rows_with_repeated_nodes(rows).sum())
+            tags = np.asarray(tags)
+            for fd in face_defs:
+                f = np.full((rows.shape[0], width), -1, dtype=np.int64)
+                f[:, : len(fd)] = rows[:, list(fd)]
+                vol_faces.append(f)
+                vol_face_owner.append(tags)
+
+    if not vol_faces:
+        if problems:
+            raise InvalidMeshTopologyError(problems)
+        return
+
+    if n_degenerate:
+        problems.append(f"{n_degenerate} volume elements with repeated nodes")
+
+    # 2D elements on surfaces that bound at least one volume.
+    surf_faces: list[np.ndarray] = []
+    surf_owner: list[tuple[int, np.ndarray]] = []
+    for _, s in gmsh.model.getEntities(2):
+        up, _ = gmsh.model.getAdjacencies(2, s)
+        if len(up) == 0:
+            continue
+        etypes, etags, enodes = gmsh.model.mesh.getElements(2, s)
+        for et, tags, nodes in zip(etypes, etags, enodes):
+            rows = _primary_node_rows(et, np.asarray(nodes))
+            f = np.full((rows.shape[0], width), -1, dtype=np.int64)
+            f[:, : rows.shape[1]] = rows
+            surf_faces.append(f)
+            surf_owner.append((s, np.asarray(tags)))
+
+    vf = np.concatenate(vol_faces)
+    owners = np.concatenate(vol_face_owner)
+    n_vf = vf.shape[0]
+    sf = (
+        np.concatenate(surf_faces)
+        if surf_faces
+        else np.empty((0, width), dtype=np.int64)
+    )
+    keys = np.sort(np.concatenate([vf, sf]), axis=1)
+    _, inverse, counts_all = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True
+    )
+    inverse = inverse.ravel()
+    vol_counts = np.bincount(inverse[:n_vf], minlength=counts_all.size)
+
+    over = np.flatnonzero(vol_counts > 2)
+    if over.size:
+        ex = []
+        for uid in over[:_MAX_REPORTED_EXAMPLES]:
+            idx = np.flatnonzero(inverse[:n_vf] == uid)
+            face_nodes = vf[idx[0]][vf[idx[0]] >= 0]
+            ex.append(
+                f"face {face_nodes.tolist()} at {_node_coords_str(face_nodes)} "
+                f"shared by elements {owners[idx].tolist()}"
+            )
+        problems.append(
+            f"{over.size} faces shared by more than two volume elements: "
+            + "; ".join(ex)
+        )
+
+    if sf.shape[0]:
+        orphan = np.flatnonzero(vol_counts[inverse[n_vf:]] == 0)
+        if orphan.size:
+            surf_ent = np.concatenate(
+                [np.full(t.size, s) for s, t in surf_owner]
+            )
+            surf_tags = np.concatenate([t for _, t in surf_owner])
+            ex = []
+            for i in orphan[:_MAX_REPORTED_EXAMPLES]:
+                face_nodes = sf[i][sf[i] >= 0]
+                ex.append(
+                    f"surface {int(surf_ent[i])} element {int(surf_tags[i])} "
+                    f"at {_node_coords_str(face_nodes)}"
+                )
+            problems.append(
+                f"{orphan.size} surface elements not matching any volume face: "
+                + "; ".join(ex)
+            )
+
+    if problems:
+        raise InvalidMeshTopologyError(problems)
 
 
 def strip_synthetic_physical_groups() -> None:
@@ -255,7 +545,9 @@ def make_cohort_hooks(
             structured_vol_dimtags = [
                 (3, tag) for tag in sub_solid_tag_by_key.values()
             ]
-            _remove_duplicate_nodes_tight(structured_vol_dimtags)
+            _remove_duplicate_nodes_tight(
+                structured_vol_dimtags, point_tolerance=point_tolerance
+            )
         if user_pre_3d is not None:
             user_pre_3d()
 
@@ -264,7 +556,8 @@ def make_cohort_hooks(
         face_tag_by_key = state.get("face_tag_by_key")
         sub_solid_tag_by_key = state.get("sub_solid_tag_by_key")
         if slab_meta and face_tag_by_key and sub_solid_tag_by_key:
-            _remove_duplicate_nodes_tight()
+            _remove_duplicate_nodes_tight(point_tolerance=point_tolerance)
+            validate_mesh_topology()
         if user_post_3d is not None:
             user_post_3d()
 

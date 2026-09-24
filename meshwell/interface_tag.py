@@ -462,4 +462,3 @@ class InterfaceTag(GeometryEntity):
             point_tolerance=data.get("point_tolerance", 1e-3),
             structured=data.get("structured", False),
         )
-
