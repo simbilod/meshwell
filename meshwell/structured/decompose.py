@@ -514,7 +514,7 @@ def decompose_cohorts(
                 if touches:
                     # Snap to the same grid the cohort slab footprints were
                     # snapped to in structured_pre_pass. Without this, the
-                    # 1e-5 perturbation from prepare_entities makes the
+                    # (optional, non-zero) perturbation from prepare_entities makes the
                     # cladding boundary live on a different grid than the
                     # cohort, and polygonize produces a thin annulus that no
                     # cohort sub-piece covers.

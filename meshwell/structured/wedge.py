@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Node dedup tolerances, as fractions of ``point_tolerance`` (input grid).
 # Search radius for duplicate candidates: must exceed the shapely
-# ``perturbation`` (1e-5) + BOP drift separating coincident-but-unshared
+# ``perturbation`` (optional, e.g. 1e-5) + BOP drift separating coincident-but-unshared
 # faces, and stay below one grid unit. Candidates that share a mesh element
 # are never merged, so real sub-radius features are protected topologically.
 _DEDUP_SEARCH_FACTOR = 0.1
@@ -132,7 +132,7 @@ def _remove_duplicate_nodes_tight(
 
     Duplicates arise when coincident-but-unshared entities are meshed
     independently. Their nodes are not bit-identical: the shapely
-    ``perturbation`` buffer (1e-5) and BOP drift can separate them by a few
+    ``perturbation`` buffer (optional, e.g. 1e-5) and BOP drift can separate them by a few
     1e-5. Real features, on the other hand, can be as short as one dbu
     (== ``point_tolerance``). A pure distance threshold cannot separate the
     two, and gmsh's ``Geometry.Tolerance`` is additionally scaled by the model

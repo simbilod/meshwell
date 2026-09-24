@@ -29,7 +29,7 @@ def cad(
     registry: dict[str, Callable[..., Any]] | None = None,
     sweeps: list[Any] | None = None,
     point_tolerance: float = 1e-3,
-    perturbation: float | None = 1e-5,
+    perturbation: float | None = 0.0,
     identify_arcs: bool | None = None,
     min_arc_points: int = 5,
     arc_tolerance: float = 1e-3,
@@ -84,7 +84,7 @@ def cad(
         )
 
     if perturbation is None:
-        perturbation = 1e-5
+        perturbation = 0.0
 
     prepare_entities(
         entities,

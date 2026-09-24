@@ -137,7 +137,7 @@ class CAD_OCC:
                 fragment_fuzzy_value resolved first since the
                 ``perturbation == 0`` branch depends on it:
 
-                * ``perturbation > 0`` (default): ``0.8 * perturbation``.
+                * ``perturbation > 0``: ``0.8 * perturbation``.
                   Must stay below ``perturbation``: a cut fuzzy at/above it
                   merges the buffered overlap into the lower entity and
                   erases the carved face. It must also clear the
@@ -151,9 +151,9 @@ class CAD_OCC:
                   (gmsh has no sliver of its own -- its XAO loader snaps
                   points to curves -- but the shared value is harmless
                   there).
-                * ``perturbation == 0`` (canonical-exact mode): ``0.5 *
-                  fragment_fuzzy_value``. There is no overlap strip to
-                  protect (both sides emit the identical canonical
+                * ``perturbation == 0`` (default, canonical-exact mode):
+                  ``0.5 * fragment_fuzzy_value``. There is no overlap strip
+                  to protect (both sides emit the identical canonical
                   geometry), so the ceiling is the fragment fuzzy instead;
                   ``0.5 * fragment_fuzzy_value`` heals grid-snap / T-junction
                   noise while staying strictly below the fragment's merge
@@ -162,17 +162,17 @@ class CAD_OCC:
                 all-fragment pass. Defaults to ``point_tolerance``,
                 intentionally LOOSER than the cut fuzzy: cad_occ tags
                 interfaces via raw ``TShape`` identity on per-entity leaves;
-                tightening this below the perturbation gap (~2e-5) leaves
-                coincident faces with distinct TShapes and drops ``A___B``
-                interfaces.
+                tightening this below the perturbation gap (~2e-5 when
+                ``perturbation=1e-5``) leaves coincident faces with distinct
+                TShapes and drops ``A___B`` interfaces.
             perturbation: Outward shapely buffer applied to polygon entities
-                before the sequential cut cascade. Mirrors cad_gmsh default
-                (1e-5). Used for the shared shapely pre-pass (polygon buffer
-                + InterfaceTag snap distance).
+                before the sequential cut cascade. Default ``0.0``
+                (canonical-exact mode); mirrors cad_gmsh. Used for the shared
+                shapely pre-pass (polygon buffer + InterfaceTag snap distance).
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.perturbation = perturbation if perturbation is not None else 1e-5
+        self.perturbation = perturbation if perturbation is not None else 0.0
         self.fragment_fuzzy_value = (
             point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
         )
@@ -471,7 +471,7 @@ class CAD_OCC:
             # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
             # resolved strip is wide enough for non-degenerate panels (at
             # least 2*point_tolerance per side). Without this override OCC
-            # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
+            # defaults snap to ``perturbation`` (0 by default) and InterfaceTags can
             # produce zero-area panels at user scale.
             prepare_entities(
                 entities_list,

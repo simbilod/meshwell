@@ -105,32 +105,36 @@ class CAD_GMSH:
                 the processor does not finalize gmsh on exit -- the caller
                 owns the lifecycle.
             perturbation: Outward shapely buffer applied to polygon entities
-                before the sequential cut cascade. Default ``1e-5`` (sub-
-                tolerance, ~1% of the default ``point_tolerance = 1e-3``).
-                Can be overridden per scene for complex-geometry robustness.
+                before the sequential cut cascade. Default ``0.0``
+                (canonical-exact mode: both sides of a shared boundary emit
+                identical geometry). A small positive value (e.g. ``1e-5``)
+                can be set per scene for complex-geometry robustness.
         """
-        if perturbation is not None:
-            self.perturbation = perturbation
+        self.perturbation = perturbation if perturbation is not None else 0.0
+        if self.perturbation > 0:
+            # Tolerance ladder:
+            #   geometry_tolerance < tolerance_boolean < perturbation
+            # so BOP can resolve the small offset cleanly. tolerance_boolean
+            # matches cad_occ's default cut fuzzy (0.8*perturbation) to keep
+            # the two backends numerically aligned; gmsh has no tangency
+            # sliver of its own (its XAO loader snaps points to curves), but
+            # the wider value is harmless here and preserves parity.
+            geometry_tolerance = self.perturbation / 100
+            tolerance_boolean = 0.8 * self.perturbation
         else:
-            # Sub-tolerance default. Empirically must remain meaningfully
-            # larger than FP noise (~1e-7); 1e-5 is two orders below
-            # default point_tolerance, giving ~1% distortion at user scale.
-            self.perturbation = 1e-5
+            # Canonical-exact mode: no offset strip to protect. Mirror
+            # cad_occ's cut fuzzy (0.5 * fragment fuzzy == 0.5 *
+            # point_tolerance) and keep geometry_tolerance well below it.
+            geometry_tolerance = 1e-4 * point_tolerance
+            tolerance_boolean = 0.5 * point_tolerance
 
         if model is None:
             self.model_manager = ModelManager(
                 n_threads=n_threads,
                 filename=filename,
                 point_tolerance=point_tolerance,
-                # Tolerance ladder:
-                #   geometry_tolerance < tolerance_boolean < perturbation
-                # so BOP can resolve the small offset cleanly. tolerance_boolean
-                # matches cad_occ's default cut fuzzy (0.8*perturbation) to keep
-                # the two backends numerically aligned; gmsh has no tangency
-                # sliver of its own (its XAO loader snaps points to curves), but
-                # the wider value is harmless here and preserves parity.
-                geometry_tolerance=self.perturbation / 100,
-                tolerance_boolean=0.8 * self.perturbation,
+                geometry_tolerance=geometry_tolerance,
+                tolerance_boolean=tolerance_boolean,
             )
             self._owns_model = True
         else:

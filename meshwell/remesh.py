@@ -889,7 +889,7 @@ def _sweep_band_frames(sweeps, tol: float = 1e-4) -> dict:
     the current gmsh model.
 
     ``tol`` excludes extent-end endpoints. It must exceed the CAD
-    perturbation (default 1e-5), which offsets face corner points from the
+    perturbation (if non-zero, e.g. 1e-5), which offsets face corner points from the
     src-curve bounding box by up to that amount; splits closer than ``tol``
     to a band end are dropped.
     """
