@@ -37,10 +37,49 @@ logger = logging.getLogger(__name__)
 _DEDUP_GEOMETRY_TOLERANCE = 1e-6
 
 
+def _strip_degenerate_elements() -> None:
+    """Remove any 1D/2D/3D mesh elements that have duplicate node tags after node deduplication.
+
+    When ``gmsh.model.mesh.removeDuplicateNodes`` merges two vertices A and B
+    that belong to the same sliver element (e.g. a tetrahedron ``(u, v, A, B)``
+    or triangle ``(u, A, B)``), Gmsh rewrites ``B -> A`` in-place, leaving a
+    collapsed zero-volume/zero-area element ``(u, v, A, A)`` whose remaining
+    face ``(u, v, A)`` duplicates the shared face between the two adjacent
+    valid elements ``(u, v, w1, A)`` and ``(u, v, w2, A)``.
+    """
+    for dim in (1, 2, 3):
+        for _, ent_tag in gmsh.model.getEntities(dim):
+            etypes, etags, enodes = gmsh.model.mesh.getElements(dim, ent_tag)
+            if not len(etypes):
+                continue
+            has_degen = False
+            kept_by_type: list[tuple[int, list[int], list[int]]] = []
+            for et, tags, nodes in zip(etypes, etags, enodes):
+                n_per = gmsh.model.mesh.getElementProperties(int(et))[3]
+                arr = nodes.reshape(-1, n_per)
+                kept_tags: list[int] = []
+                kept_nodes: list[int] = []
+                for t, row in zip(tags, arr):
+                    r = [int(x) for x in row]
+                    if len(set(r)) < n_per:
+                        has_degen = True
+                    else:
+                        kept_tags.append(int(t))
+                        kept_nodes.extend(r)
+                kept_by_type.append((int(et), kept_tags, kept_nodes))
+            if has_degen:
+                gmsh.model.mesh.removeElements(dim, ent_tag)
+                for et, kept_tags, kept_nodes in kept_by_type:
+                    if kept_tags:
+                        gmsh.model.mesh.addElementsByType(
+                            ent_tag, et, kept_tags, kept_nodes
+                        )
+
+
 def _remove_duplicate_nodes_tight(
     dimtags: list[tuple[int, int]] | None = None,
 ) -> None:
-    """Run ``removeDuplicateNodes`` under a tightened geometry tolerance.
+    """Run ``removeDuplicateNodes`` under a tightened geometry tolerance and strip collapsed elements.
 
     Pass ``dimtags`` to scope the dedup to specific entities, or ``None``
     for a global pass. The previous ``Geometry.Tolerance`` is restored.
@@ -52,6 +91,7 @@ def _remove_duplicate_nodes_tight(
             gmsh.model.mesh.removeDuplicateNodes()
         else:
             gmsh.model.mesh.removeDuplicateNodes(dimtags)
+        _strip_degenerate_elements()
     finally:
         gmsh.option.setNumber("Geometry.Tolerance", old_tol)
 
