@@ -314,9 +314,7 @@ def build_cohort_arrangement(
             dangling = v_fp.difference(covered_bounds)
             if dangling.is_empty or dangling.length <= point_tolerance:
                 continue
-            strip_width = max(
-                10.0 * point_tolerance, min(0.25 * dangling.length, 1.0)
-            )
+            strip_width = max(10.0 * point_tolerance, min(0.25 * dangling.length, 1.0))
             aux_strip = shapely.set_precision(
                 dangling.buffer(strip_width, single_sided=True, join_style="mitre"),
                 grid_size=point_tolerance,

@@ -91,3 +91,27 @@ model.mesh.save_to_file("geometry.msh") # Save mesh
 - Work entirely in memory or save/load selectively
 - Fine-grained control over each step
 - Useful when both CAD and Mesh will live within the same session
+
+## CAD settings across separate stages
+
+The CAD and mesh stages share numerical settings such as `point_tolerance`,
+arc fitting options, and boolean fuzzy values. You can collect these in a
+`CADSettings` object and pass it to `cad()` or `generate_mesh()`:
+
+```python
+from meshwell.cad_settings import CADSettings
+from meshwell.orchestrator import cad
+from meshwell.mesh import mesh
+
+settings = CADSettings(point_tolerance=1e-3, perturbation=0.0)
+cad(entities, output_file="geometry.xao", cad_settings=settings)
+
+# The settings are stored in the XAO and recovered by the separate mesh step.
+mesh(input_file="geometry.xao", output_file="geometry.msh", dim=3)
+```
+
+If you pass individual settings instead, omitted values use the package
+defaults. `perturbation=0.0` keeps boundaries exact; set a positive value to
+apply the analytic offset used to separate same-order boundaries. When
+meshing an XAO produced by Meshwell, its saved settings are reused. Explicit
+settings supplied at mesh time must agree with the saved values.

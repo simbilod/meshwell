@@ -251,7 +251,11 @@ class InterfaceTag(GeometryEntity):
         has_structured_target = self.structured or any(
             getattr(t, "structured", False) for t in targets
         )
-        if has_structured_target and self.snap_distance is None and self.point_tolerance > 0:
+        if (
+            has_structured_target
+            and self.snap_distance is None
+            and self.point_tolerance > 0
+        ):
             snap = min(snap, 0.25 * self.point_tolerance)
 
         # Flat caps: do not extend past the user's linestring endpoints,

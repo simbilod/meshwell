@@ -76,7 +76,7 @@ def test_n_layers_mismatch_lateral_touch_raises(tmp_path):
         )
 
 
-def test_mixed_identify_arcs_raises(tmp_path):
+def test_mixed_identify_arcs_raises():
     """When structured entities exist and any PolyPrism opts into arcs, all must.
 
     ``identify_arcs`` is a pipeline-level stamp: ``cad`` / ``generate_mesh``

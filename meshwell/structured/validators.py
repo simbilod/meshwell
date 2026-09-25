@@ -56,11 +56,7 @@ def _entity_xy_at(ent: Any, z: float):
         return ent.polygons
     if isinstance(ent, StructuredPolySurface) and abs(ent.z - z) <= 1e-9:
         return unary_union(ent.polygons)
-    if (
-        isinstance(ent, InterfaceTag)
-        and ent.structured
-        and ent.zmin <= z <= ent.zmax
-    ):
+    if isinstance(ent, InterfaceTag) and ent.structured and ent.zmin <= z <= ent.zmax:
         lss = ent.resolved_linestrings or ent.linestrings
         return MultiLineString(lss) if lss else None
     return None

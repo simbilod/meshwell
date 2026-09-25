@@ -77,14 +77,18 @@ def test_horizontal_structured_polysurface_interior_interface(tmp_path):
     # Every tagged face must be bound to both 3D volumes (0 floating 2D entities).
     for ftag in port_faces:
         upward_vols, _downward = gmsh.model.getAdjacencies(2, ftag)
-        assert len(upward_vols) == 2, f"Expected 2 adjacent volumes for face {ftag}, got {upward_vols}"
+        assert (
+            len(upward_vols) == 2
+        ), f"Expected 2 adjacent volumes for face {ftag}, got {upward_vols}"
 
     # Every 2D mesh node on the port must exist in the 3D volume elements
     vol_tags = groups[(3, "slab_bot")] + groups[(3, "slab_top")]
     vol_nodes = _get_entity_mesh_nodes(3, vol_tags)
     port_nodes = _get_entity_mesh_nodes(2, port_faces)
     assert port_nodes, "Port should have 2D elements"
-    assert port_nodes.issubset(vol_nodes), "All 2D port nodes must belong to 3D volume elements"
+    assert port_nodes.issubset(
+        vol_nodes
+    ), "All 2D port nodes must belong to 3D volume elements"
 
     # Natural solid-to-solid interface is preserved, while Solid___Port groups are not emitted.
     assert (2, "slab_bot___slab_top") in groups or (2, "slab_top___slab_bot") in groups
@@ -122,7 +126,9 @@ def test_horizontal_structured_polysurface_exterior_subtracts_from_none(tmp_path
     assert (2, "slab___None") in groups
     patch_faces = set(groups[(2, "top_patch")])
     none_faces = set(groups[(2, "slab___None")])
-    assert patch_faces.isdisjoint(none_faces), "Tagged exterior face must be subtracted from slab___None"
+    assert patch_faces.isdisjoint(
+        none_faces
+    ), "Tagged exterior face must be subtracted from slab___None"
     for ftag in patch_faces:
         upward_vols, _ = gmsh.model.getAdjacencies(2, ftag)
         assert len(upward_vols) == 1
@@ -172,12 +178,15 @@ def test_vertical_interfacetag_chord_and_interior_dangling(tmp_path):
     assert len(v_faces) == 2
     for ftag in v_faces:
         upward_vols, _ = gmsh.model.getAdjacencies(2, ftag)
-        assert len(upward_vols) == 2, f"Interior vertical port face {ftag} must bound 2 sub-solids"
+        assert (
+            len(upward_vols) == 2
+        ), f"Interior vertical port face {ftag} must bound 2 sub-solids"
 
     vol_tags = groups[(3, "slab_bot")] + groups[(3, "slab_top")]
     vol_nodes = _get_entity_mesh_nodes(3, vol_tags)
     port_nodes = _get_entity_mesh_nodes(2, v_faces)
-    assert port_nodes and port_nodes.issubset(vol_nodes)
+    assert port_nodes
+    assert port_nodes.issubset(vol_nodes)
 
 
 def test_structured_polysurface_zstack_error():
@@ -253,7 +262,8 @@ def test_structured_polysurface_mesh_order_priority(tmp_path):
     groups = _get_physical_group_map()
     inner_faces = set(groups[(2, "inner_tag")])
     outer_faces = set(groups[(2, "outer_tag")])
-    assert inner_faces and outer_faces
+    assert inner_faces
+    assert outer_faces
     assert inner_faces.isdisjoint(outer_faces)
 
 

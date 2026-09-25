@@ -724,7 +724,9 @@ def _resolve_mesh_cad_settings(
     else:
         if model_settings is not None:
             model_settings.check_matches(
-                cad_settings, self_label="model.cad_settings", other_label="cad_settings"
+                cad_settings,
+                self_label="model.cad_settings",
+                other_label="cad_settings",
             )
         elif cad_settings is not None and not isinstance(cad_settings, CADSettings):
             raise TypeError(

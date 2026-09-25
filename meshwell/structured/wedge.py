@@ -116,11 +116,11 @@ def _check_no_degenerate_elements() -> None:
                 if not bad.size:
                     continue
                 count_by_dim[dim] = count_by_dim.get(dim, 0) + int(bad.size)
-                for i in bad[: max(0, _MAX_REPORTED_EXAMPLES - len(examples))]:
-                    examples.append(
-                        f"dim={dim} entity={ent_tag} element={int(tags[i])} "
-                        f"nodes={rows[i].tolist()} at {_node_coords_str(rows[i])}"
-                    )
+                examples.extend(
+                    f"dim={dim} entity={ent_tag} element={int(tags[i])} "
+                    f"nodes={rows[i].tolist()} at {_node_coords_str(rows[i])}"
+                    for i in bad[: max(0, _MAX_REPORTED_EXAMPLES - len(examples))]
+                )
     if count_by_dim:
         raise DegenerateElementsAfterDedupError(count_by_dim, examples)
 
@@ -158,8 +158,8 @@ def _remove_duplicate_nodes_tight(
     search_radius = _DEDUP_SEARCH_FACTOR * point_tolerance
     n_snapped = _snap_duplicate_node_clusters(dimtags, search_radius)
 
-    rel_tol = _DEDUP_EXACT_ABS_TOL_FACTOR * point_tolerance / (
-        _model_characteristic_length()
+    rel_tol = (
+        _DEDUP_EXACT_ABS_TOL_FACTOR * point_tolerance / (_model_characteristic_length())
     )
     old_tol = gmsh.option.getNumber("Geometry.Tolerance")
     gmsh.option.setNumber("Geometry.Tolerance", rel_tol)
@@ -170,7 +170,9 @@ def _remove_duplicate_nodes_tight(
             gmsh.model.mesh.removeDuplicateNodes(dimtags)
     finally:
         gmsh.option.setNumber("Geometry.Tolerance", old_tol)
-    logger.info("Node dedup: snapped %d duplicate nodes onto representatives", n_snapped)
+    logger.info(
+        "Node dedup: snapped %d duplicate nodes onto representatives", n_snapped
+    )
     _check_no_degenerate_elements()
 
 
@@ -246,9 +248,7 @@ def _snap_duplicate_node_clusters(
             continue
         mi = members.get(ri, [int(tags[ri])])
         mj = members.get(rj, [int(tags[rj])])
-        if any(
-            (min(a, b), max(a, b)) in forbidden for a in mi for b in mj
-        ):
+        if any((min(a, b), max(a, b)) in forbidden for a in mi for b in mj):
             n_rejected += 1
             continue
         parent[rj] = ri
@@ -367,9 +367,7 @@ def validate_mesh_topology() -> None:
     if sf.shape[0]:
         orphan = np.flatnonzero(vol_counts[inverse[n_vf:]] == 0)
         if orphan.size:
-            surf_ent = np.concatenate(
-                [np.full(t.size, s) for s, t in surf_owner]
-            )
+            surf_ent = np.concatenate([np.full(t.size, s) for s, t in surf_owner])
             surf_tags = np.concatenate([t for _, t in surf_owner])
             ex = []
             for i in orphan[:_MAX_REPORTED_EXAMPLES]:
@@ -415,9 +413,7 @@ def has_cohort_groups() -> bool:
     return False
 
 
-def discover_cohorts() -> tuple[
-    dict[str, SlabMeta], dict[str, int], dict[str, int]
-]:
+def discover_cohorts() -> tuple[dict[str, SlabMeta], dict[str, int], dict[str, int]]:
     """Scan the loaded gmsh model's physical groups for ``__cohort_*`` synthetics.
 
     Reconstructs ``(slab_meta, face_tag_by_key, sub_solid_tag_by_key)`` via
@@ -446,12 +442,10 @@ def discover_cohorts() -> tuple[
             for tag in entities:
                 fallback_names_by_vol[int(tag)].append(gname)
 
-    slab_meta, face_tag_by_key, sub_solid_tag_by_key = (
-        SlabMeta.from_synthetic_groups(
-            solid_groups=solid_groups,
-            face_groups=face_groups,
-            fallback_names_by_vol=fallback_names_by_vol,
-        )
+    slab_meta, face_tag_by_key, sub_solid_tag_by_key = SlabMeta.from_synthetic_groups(
+        solid_groups=solid_groups,
+        face_groups=face_groups,
+        fallback_names_by_vol=fallback_names_by_vol,
     )
 
     # Fallback for legacy XAOs where dim=2 face groups were not present:
@@ -462,16 +456,12 @@ def discover_cohorts() -> tuple[
         ):
             continue
         vtag = sub_solid_tag_by_key[sub_key]
-        bnds = [
-            int(t)
-            for _, t in gmsh.model.getBoundary([(3, vtag)], oriented=False)
-        ]
+        bnds = [int(t) for _, t in gmsh.model.getBoundary([(3, vtag)], oriented=False)]
         horiz = sorted(
             (round(gmsh.model.getBoundingBox(2, t)[2], 6), t)
             for t in bnds
             if abs(
-                gmsh.model.getBoundingBox(2, t)[5]
-                - gmsh.model.getBoundingBox(2, t)[2]
+                gmsh.model.getBoundingBox(2, t)[5] - gmsh.model.getBoundingBox(2, t)[2]
             )
             < 1e-5
         )
@@ -543,9 +533,7 @@ def make_cohort_hooks(
                 point_tolerance=point_tolerance,
             )
             gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
-            structured_vol_dimtags = [
-                (3, tag) for tag in sub_solid_tag_by_key.values()
-            ]
+            structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
             _remove_duplicate_nodes_tight(
                 structured_vol_dimtags, point_tolerance=point_tolerance
             )
@@ -580,11 +568,7 @@ def resolve_n_layers(
 
     if not resolution_specs:
         return 1
-    names = (
-        (physical_name,)
-        if isinstance(physical_name, str)
-        else tuple(physical_name)
-    )
+    names = (physical_name,) if isinstance(physical_name, str) else tuple(physical_name)
     matched_specs: list[StructuredExtrusionResolutionSpec] = []
     for key in names:
         specs = [
@@ -974,9 +958,7 @@ def freeze_lateral_mesh(
     for _dim, gtag in gmsh.model.getPhysicalGroups(2):
         if gmsh.model.getPhysicalName(2, gtag).startswith("__sweep|"):
             for ftag in gmsh.model.getEntitiesForPhysicalGroup(2, gtag):
-                for _d, ct in gmsh.model.getBoundary(
-                    [(2, int(ftag))], oriented=False
-                ):
+                for _d, ct in gmsh.model.getBoundary([(2, int(ftag))], oriented=False):
                     sweep_curve_tags.add(abs(int(ct)))
 
     # Step 2: setTransfiniteCurve on vertical edges and setPeriodic on top/bot curves.
@@ -1024,9 +1006,7 @@ def freeze_lateral_mesh(
                     1.0,
                 ]
                 try:
-                    gmsh.model.mesh.setPeriodic(
-                        1, [top_edge], [bot_edge], transform
-                    )
+                    gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
                 except Exception as per_err:
                     logger.warning(
                         "Failed to set periodic constraint for top_edge %s -> "

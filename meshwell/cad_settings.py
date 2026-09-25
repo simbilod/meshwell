@@ -124,7 +124,10 @@ class CADSettings:
             raise TypeError(
                 f"CADSettings.identify_arcs must be a bool, got {self.identify_arcs!r}"
             )
-        if isinstance(self.min_arc_points, bool) or int(self.min_arc_points) != self.min_arc_points:
+        if (
+            isinstance(self.min_arc_points, bool)
+            or int(self.min_arc_points) != self.min_arc_points
+        ):
             raise TypeError(
                 f"CADSettings.min_arc_points must be an int, got {self.min_arc_points!r}"
             )
@@ -323,7 +326,9 @@ class CADSettings:
             # cannot carry a DTD, so entity-expansion attacks do not apply.
             element = ET.fromstring(matches[-1].group(0))  # noqa: S314
         except ET.ParseError as exc:
-            raise CADSettingsError(f"Malformed meshwell metadata in {path}: {exc}") from exc
+            raise CADSettingsError(
+                f"Malformed meshwell metadata in {path}: {exc}"
+            ) from exc
         version = element.get("version")
         if version != XAO_METADATA_SCHEMA_VERSION:
             raise CADSettingsError(
@@ -375,7 +380,9 @@ class CADSettings:
             )
             raise CADSettingsMismatchError(f"CAD settings mismatch -- {lines}")
 
-    def check_point_tolerance(self, point_tolerance: float | None, *, label: str) -> None:
+    def check_point_tolerance(
+        self, point_tolerance: float | None, *, label: str
+    ) -> None:
         """Raise if an explicitly supplied ``point_tolerance`` disagrees."""
         if point_tolerance is None:
             return
@@ -420,7 +427,9 @@ class CADSettings:
             settings = stored
         else:
             settings = supplied
-        settings.check_point_tolerance(point_tolerance, label="point_tolerance argument")
+        settings.check_point_tolerance(
+            point_tolerance, label="point_tolerance argument"
+        )
         return settings
 
 

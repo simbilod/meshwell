@@ -24,8 +24,8 @@ import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRep import BRep_Tool
+from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.BRepTools import BRepTools_ReShape
 from OCP.GeomLProp import GeomLProp_SLProps
 from OCP.gp import gp_Pnt, gp_Vec
@@ -100,7 +100,9 @@ def _same_sense_face(a: TopoDS_Shape, b: TopoDS_Shape) -> bool:
     return na.Dot(nb) > 0.0
 
 
-def _aligned_original(original: TopoDS_Shape, image: TopoDS_Shape, kind) -> TopoDS_Shape:
+def _aligned_original(
+    original: TopoDS_Shape, image: TopoDS_Shape, kind
+) -> TopoDS_Shape:
     """Return ``original`` oriented to match ``image.Oriented(FORWARD)``."""
     orig_f = original.Oriented(TopAbs_FORWARD)
     img_f = image.Oriented(TopAbs_FORWARD)
@@ -119,7 +121,9 @@ def _collect_replacements(
     builder: BOPAlgo_Builder,
 ) -> tuple[list[tuple[TopoDS_Shape, TopoDS_Shape, Any]], dict[Any, int]]:
     """``(image, original, kind)`` for every 1:1 BOP replacement of a cohort sub-shape."""
-    candidates: dict[int, list[tuple[TopoDS_Shape, TopoDS_Shape, Any]]] = defaultdict(list)
+    candidates: dict[int, list[tuple[TopoDS_Shape, TopoDS_Shape, Any]]] = defaultdict(
+        list
+    )
     for kind in (TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE):
         for shape in cohort_shapes:
             sub_map = TopTools_IndexedMapOfShape()
@@ -178,11 +182,13 @@ def rebind_to_cohort_topology(entities: list[Any], builder: BOPAlgo_Builder) -> 
         reshaper.Replace(
             image.Oriented(TopAbs_FORWARD), _aligned_original(original, image, kind)
         )
-        counts[{TopAbs_VERTEX: "vertex", TopAbs_EDGE: "edge", TopAbs_FACE: "face"}[kind]] += 1
+        counts[
+            {TopAbs_VERTEX: "vertex", TopAbs_EDGE: "edge", TopAbs_FACE: "face"}[kind]
+        ] += 1
 
     for ent in entities:
         if ent._is_cohort:
             continue
         ent.shapes = [reshaper.Apply(s) for s in ent.shapes]
-    logger.info("Cohort re-bind: re-used cohort sub-shapes %s", dict(counts))
+    logger.info("Cohort re-bind: reused cohort sub-shapes %s", dict(counts))
     return len(replacements)

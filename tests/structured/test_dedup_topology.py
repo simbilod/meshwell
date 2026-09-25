@@ -42,7 +42,8 @@ def _n_nodes() -> int:
 
 
 @pytest.mark.parametrize("model_size", [1.0, 100.0, 3000.0])
-def test_dedup_keeps_one_dbu_gap_regardless_of_model_size(gmsh_session, model_size):
+@pytest.mark.usefixtures("gmsh_session")
+def test_dedup_keeps_one_dbu_gap_regardless_of_model_size(model_size):
     """A 1 nm gap (== point_tolerance) survives dedup even on mm-scale models."""
     _add_point_nodes([(0, 0, 0), (1e-3, 0, 0), (model_size, model_size, 0)])
     _remove_duplicate_nodes_tight(point_tolerance=1e-3)
@@ -51,14 +52,16 @@ def test_dedup_keeps_one_dbu_gap_regardless_of_model_size(gmsh_session, model_si
 
 @pytest.mark.parametrize("gap", [1e-10, 7.1e-6, 3.5e-5])
 @pytest.mark.parametrize("model_size", [1.0, 3000.0])
-def test_dedup_merges_perturbation_scale_duplicates(gmsh_session, model_size, gap):
+@pytest.mark.usefixtures("gmsh_session")
+def test_dedup_merges_perturbation_scale_duplicates(model_size, gap):
     """Unshared duplicates separated by float noise or the 1e-5 perturbation still merge."""
     _add_point_nodes([(0, 0, 0), (gap, 0, 0), (model_size, model_size, 0)])
     _remove_duplicate_nodes_tight(point_tolerance=1e-3)
     assert _n_nodes() == 2
 
 
-def test_dedup_never_merges_nodes_sharing_an_element(gmsh_session):
+@pytest.mark.usefixtures("gmsh_session")
+def test_dedup_never_merges_nodes_sharing_an_element():
     """Two close nodes of the same element are real geometry and are kept distinct."""
     v = gmsh.model.addDiscreteEntity(3)
     coords = [0, 0, 0, 1, 0, 0, 0, 1, 0, 1e-5, 0, 1e-6]  # node 4 ~ node 1
@@ -68,7 +71,8 @@ def test_dedup_never_merges_nodes_sharing_an_element(gmsh_session):
     assert _n_nodes() == 4
 
 
-def test_degenerate_element_check_raises(gmsh_session):
+@pytest.mark.usefixtures("gmsh_session")
+def test_degenerate_element_check_raises():
     """A collapsed element (repeated node) is reported, not silently stripped."""
     v = gmsh.model.addDiscreteEntity(3)
     gmsh.model.mesh.addNodes(3, v, [1, 2, 3], [0, 0, 0, 1, 0, 0, 0, 1, 0])
@@ -84,12 +88,14 @@ def _mesh_box() -> None:
     gmsh.model.mesh.generate(3)
 
 
-def test_validate_mesh_topology_accepts_valid_mesh(gmsh_session):
+@pytest.mark.usefixtures("gmsh_session")
+def test_validate_mesh_topology_accepts_valid_mesh():
     _mesh_box()
     validate_mesh_topology()
 
 
-def test_validate_mesh_topology_detects_face_shared_by_three(gmsh_session):
+@pytest.mark.usefixtures("gmsh_session")
+def test_validate_mesh_topology_detects_face_shared_by_three():
     _mesh_box()
     _, etags, enodes = gmsh.model.mesh.getElements(3, 1)
     first = [int(n) for n in np.asarray(enodes[0])[:4]]
@@ -99,7 +105,8 @@ def test_validate_mesh_topology_detects_face_shared_by_three(gmsh_session):
         validate_mesh_topology()
 
 
-def test_validate_mesh_topology_detects_orphan_surface_element(gmsh_session):
+@pytest.mark.usefixtures("gmsh_session")
+def test_validate_mesh_topology_detects_orphan_surface_element():
     _mesh_box()
     s = gmsh.model.getBoundary([(3, 1)], oriented=False)[0][1]
     _, _, enodes = gmsh.model.mesh.getElements(3, 1)
@@ -154,7 +161,7 @@ def test_one_dbu_jog_in_mm_domain_meshes_without_collapse(tmp_path):
     # post_3d hook already ran validate_mesh_topology(); re-check on final model
     # and confirm both stub endpoints survive as distinct nodes on each z-plane.
     validate_mesh_topology()
-    tags, xyz, _ = gmsh.model.mesh.getNodes()
+    _, xyz, _ = gmsh.model.mesh.getNodes()
     xyz = xyz.reshape(-1, 3)
     for z in (1.0, 2.0):
         for y in (4.0, 4.002):

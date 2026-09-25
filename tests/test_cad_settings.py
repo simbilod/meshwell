@@ -177,7 +177,9 @@ def test_append_to_xao_is_idempotent_and_replaces(tmp_path):
 def test_unsupported_metadata_version_raises(tmp_path):
     xao = tmp_path / "m.xao"
     write_xao(cad_occ(_scene()), xao, cad_settings=CADSettings())
-    xao.write_text(xao.read_text().replace('<meshwell version="1"', '<meshwell version="99"'))
+    xao.write_text(
+        xao.read_text().replace('<meshwell version="1"', '<meshwell version="99"')
+    )
     with pytest.raises(CADSettingsError, match="version"):
         CADSettings.from_xao(xao)
 

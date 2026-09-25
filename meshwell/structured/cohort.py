@@ -71,7 +71,9 @@ def build_cohorts(
     return cohorts
 
 
-def _snap_z_to_cohort(z: float, z_planes: tuple[float, ...], tol: float = 1e-9) -> float | None:
+def _snap_z_to_cohort(
+    z: float, z_planes: tuple[float, ...], tol: float = 1e-9
+) -> float | None:
     for zp in z_planes:
         if abs(z - zp) <= tol:
             return zp
@@ -96,9 +98,7 @@ def attach_planes_to_cohorts(
                 z_snap = _snap_z_to_cohort(plane.zmin, cohort.z_planes)
                 if z_snap is None:
                     continue
-                active_slabs = [
-                    s for s in cohort.slabs if s.zlo <= z_snap <= s.zhi
-                ]
+                active_slabs = [s for s in cohort.slabs if s.zlo <= z_snap <= s.zhi]
                 if any(s.footprint.intersects(plane.footprint) for s in active_slabs):
                     planes_by_cohort[ci].append(
                         replace(plane, zmin=z_snap, zmax=z_snap)
@@ -111,9 +111,7 @@ def attach_planes_to_cohorts(
                 if zmin_snap is None or zmax_snap is None or zmin_snap >= zmax_snap:
                     continue
                 active_slabs = [
-                    s
-                    for s in cohort.slabs
-                    if s.zlo < zmax_snap and s.zhi > zmin_snap
+                    s for s in cohort.slabs if s.zlo < zmax_snap and s.zhi > zmin_snap
                 ]
                 if any(s.footprint.intersects(plane.footprint) for s in active_slabs):
                     planes_by_cohort[ci].append(

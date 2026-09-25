@@ -132,15 +132,13 @@ def _bind_cohort_planes_to_roles(
 
         if vert_planes:
             active_vert = [
-                p
-                for p in vert_planes
-                if zlo >= p.zmin - 1e-9 and zhi <= p.zmax + 1e-9
+                p for p in vert_planes if zlo >= p.zmin - 1e-9 and zhi <= p.zmax + 1e-9
             ]
             if active_vert:
                 s = slab_by_source[sp.source_slab_indices[0]]
-                use_arcs = z_plane_id_arcs.get(zlo, s.identify_arcs) or z_plane_id_arcs.get(
-                    zhi, s.identify_arcs
-                )
+                use_arcs = z_plane_id_arcs.get(
+                    zlo, s.identify_arcs
+                ) or z_plane_id_arcs.get(zhi, s.identify_arcs)
                 min_arc_pts = max(
                     z_plane_min_arc_pts.get(zlo, s.min_arc_points),
                     z_plane_min_arc_pts.get(zhi, s.min_arc_points),
