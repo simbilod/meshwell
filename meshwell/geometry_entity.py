@@ -697,6 +697,26 @@ def canonicalize_ring_segments(segments, registry, *, eps, match_tolerance, slac
                 )
             else:
                 continue  # arc without canonical: legacy passthrough
+            # Guard: an exact intersection far from the original shared
+            # vertex means an ill-conditioned root -- nearly coincident
+            # circles meet far away, a grazing line meets its circle at a
+            # distant root. Moving the junction there re-trims the arc and
+            # can flip the 3-point emission to the long way round. Offsets
+            # and canonical snapping only justify moves of order
+            # |eps| + match_tolerance, so fall back to radial projection.
+            if (seg.is_arc and seg.canonical) or (nxt.is_arc and nxt.canonical):
+                max_move = 4.0 * (abs(eps) + match_tolerance)
+                p_xy = (p_orig[0], p_orig[1])
+                if np.hypot(j[0] - p_xy[0], j[1] - p_xy[1]) > max_move:
+                    projections = [
+                        _project_to_circle(s.canonical[0], s.canonical[1], p_xy)
+                        for s in (seg, nxt)
+                        if s.is_arc and s.canonical
+                    ]
+                    j = (
+                        sum(q[0] for q in projections) / len(projections),
+                        sum(q[1] for q in projections) / len(projections),
+                    )
             seg.points[-1] = (j[0], j[1], z)
             nxt.points[0] = (j[0], j[1], z)
     return segments

@@ -53,7 +53,12 @@ DEFAULT_POINT_TOLERANCE: float = 1e-3
 DEFAULT_PERTURBATION: float = 0.0
 DEFAULT_IDENTIFY_ARCS: bool = False
 DEFAULT_MIN_ARC_POINTS: int = 5
-DEFAULT_ARC_TOLERANCE: float = 1e-3
+# Must sit clearly above the point_tolerance snap noise (up to ~0.7 grid
+# cells radially, amplified by the 3-point emission gate). At 1x the grid
+# the greedy detector fragmented snapped arcs into pieces on drifting
+# circles, which canonicalization then joined far from the shared vertex
+# (wrong-way arcs, segfaults). 2x the default grid keeps arcs whole.
+DEFAULT_ARC_TOLERANCE: float = 2e-3
 
 XAO_METADATA_TAG = "meshwell"
 XAO_SETTINGS_TAG = "cad_settings"
