@@ -2,10 +2,19 @@
 
 ## Unreleased
 
+## 2.5.1
+
 - Persist CAD settings in XAO files so separate CAD and mesh stages use the same tolerances and arc settings;
 - `perturbation` defaults to exact mode (`0.0`).
 - Harden structured/unstructured interfaces with topology checks
 - Harden structured/unstructured interfaces with safer node deduplication
+
+## 2.5.0
+
+- Remeshing for 1D structured resolutionspecs
+- Add structured sweeps (1D structured mesh)
+- `BoundaryLayerResolutionSpec` based on equivalent GMSH principle
+- Improve arc identification with scene-wide canonical circle fitting and analytic offsets
 
 ## 2.4.0
 
