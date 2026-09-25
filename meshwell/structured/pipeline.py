@@ -243,7 +243,11 @@ def structured_pre_pass(
             carve_ids_per_cohort[ci].add(id(entities[ent_idx]))
     # decompose_cohorts returns the unstructured list unchanged (third slot).
     subpieces_per_cohort, unstructured_out, arrangements = decompose_cohorts(
-        cohorts, unstructured, point_tolerance=point_tolerance, sweeps=sweeps
+        cohorts,
+        unstructured,
+        point_tolerance=point_tolerance,
+        sweeps=sweeps,
+        carve_ids_per_cohort=carve_ids_per_cohort,
     )
 
     cohort_entities: list[_CohortEntity] = []

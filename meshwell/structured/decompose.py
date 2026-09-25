@@ -453,8 +453,15 @@ def decompose_cohorts(
     unstructured_entities: list[Any],
     point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     sweeps: list[Any] | None = None,
+    carve_ids_per_cohort: list[set[int]] | None = None,
 ) -> tuple[list[list[SubPiece]], list[Any], list[Arrangement]]:
     """Stage 3 driver — cohort-global arrangement edition.
+
+    ``carve_ids_per_cohort`` (parallel to ``cohorts``) holds the ``id()`` of
+    the unstructured entities each cohort carves (``classify_cohort_overlaps``).
+    Such an entity contributes only the outline of its carved cross-section
+    to the arrangement, so its carved-away outline does not split cohort
+    regions.
 
     Returns:
         - subpieces_per_cohort: parallel to ``cohorts``. Each cohort gets
@@ -496,21 +503,51 @@ def decompose_cohorts(
     # include in the cohort's arrangement linework.
     adjacency_lines_per_cohort: list[list] = []
     interface_lines_per_cohort: list[list] = []
-    for cohort in cohorts:
+    if carve_ids_per_cohort is None:
+        carve_ids_per_cohort = [set() for _ in cohorts]
+    for ci, cohort in enumerate(cohorts):
         lines = []
         iface_lines = []
         for ent in unstructured_entities:
             if isinstance(ent, PolyPrism) and ent.extrude:
                 z_keys = sorted(ent.buffers.keys())
-                touches = False
-                for z in (z_keys[0], z_keys[-1]):
-                    z_snap = _snap_to_cohort_plane(z, cohort)
-                    if z_snap is None:
+                if id(ent) in carve_ids_per_cohort[ci]:
+                    # The cohort carves this entity, so its outline inside
+                    # the cohort is not an interface. What survives the
+                    # carve can meet a cohort face at EVERY cohort plane the
+                    # entity spans (not only its end planes), on each side
+                    # of the plane where the entity exists: contribute the
+                    # boundary of the carved cross-section there.
+                    zmin, zmax, tol = z_keys[0], z_keys[-1], 1e-9
+                    outlines = []
+                    for zp in cohort.z_planes:
+                        if not zmin - tol <= zp <= zmax + tol:
+                            continue
+                        cohort_xy = _cohort_xy_at(cohort, zp)
+                        for side, exists in (
+                            (1, zp < zmax - tol),
+                            (-1, zp > zmin + tol),
+                        ):
+                            if not exists:
+                                continue
+                            outline = ent.polygons.difference(
+                                _cohort_xy_beside(cohort, zp, side)
+                            ).boundary
+                            if cohort_xy.intersects(outline):
+                                outlines.append(outline)
+                else:
+                    touches = False
+                    for z in (z_keys[0], z_keys[-1]):
+                        z_snap = _snap_to_cohort_plane(z, cohort)
+                        if z_snap is None:
+                            continue
+                        if _cohort_xy_at(cohort, z_snap).intersects(ent.polygons):
+                            touches = True
+                            break
+                    outlines = [ent.polygons.boundary] if touches else []
+                for outline in outlines:
+                    if outline.is_empty:
                         continue
-                    if _cohort_xy_at(cohort, z_snap).intersects(ent.polygons):
-                        touches = True
-                        break
-                if touches:
                     # Snap to the same grid the cohort slab footprints were
                     # snapped to in structured_pre_pass. Without this, the
                     # (optional, non-zero) perturbation from prepare_entities makes the
@@ -519,7 +556,7 @@ def decompose_cohorts(
                     # cohort sub-piece covers.
                     lines.append(
                         shapely.set_precision(
-                            ent.polygons.boundary,
+                            outline,
                             grid_size=point_tolerance,
                             mode="valid_output",
                         )
@@ -615,6 +652,20 @@ def _cohort_xy_at(cohort: Cohort, z: float):
     """Return the union of all slab footprints active at height z."""
     polys = [s.footprint for s in cohort.slabs if s.zlo <= z <= s.zhi]
     return unary_union(polys)
+
+
+def _cohort_xy_beside(cohort: Cohort, z: float, side: int):
+    """Cohort footprint just above (``side=1``) or below (``side=-1``) plane ``z``.
+
+    Sampled at the midpoint of the adjacent cohort z-interval; empty when
+    ``z`` is the cohort's top (resp. bottom) plane.
+    """
+    planes = cohort.z_planes
+    i = planes.index(z)
+    j = i + side
+    if not 0 <= j < len(planes):
+        return Polygon()
+    return _cohort_xy_at(cohort, 0.5 * (planes[i] + planes[j]))
 
 
 def _snap_to_cohort_plane(z: float, cohort: Cohort, tol: float = 1e-9) -> float | None:

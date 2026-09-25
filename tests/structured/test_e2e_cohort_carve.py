@@ -177,3 +177,47 @@ def test_equal_or_higher_priority_cladding_raises(clad_order):
                 _prism(DOM, -1, 1, "clad", False, clad_order),
             ]
         )
+
+
+def _n_subpieces(entities) -> int:
+    from meshwell.structured.pipeline import structured_pre_pass
+
+    state = structured_pre_pass(entities, point_tolerance=1e-3)
+    return sum(
+        len(e.slab_meta) for e in state.entities_out if getattr(e, "is_cohort", False)
+    )
+
+
+def test_carved_outline_does_not_split_cohort_regions():
+    # The cladding's own outline (x=2) crosses the cohort, but the cohort
+    # carves it there, so it must not split the cohort into two regions.
+    clad = shapely.box(2, 0, 5, 3)
+    ents = [
+        _prism(BOX, 0, 0.4, "core", True, 1),
+        _prism(clad, 0, 0.4, "clad", False, 5),
+    ]
+    assert _n_subpieces(ents) == 1
+    mesh = _mesh(ents)
+    assert _group_volume(mesh, "core") == pytest.approx(BOX.area * 0.4, rel=2e-3)
+    assert _group_volume(mesh, "clad") == pytest.approx(
+        clad.difference(BOX).area * 0.4, rel=2e-3
+    )
+
+
+def test_carved_outline_on_lower_step_is_kept_as_interface():
+    # Cladding z 0.4..1 overlaps the upper step. What survives the carve
+    # sits on the lower slab's top for x > 2, so x=2 IS an interface there.
+    upper = shapely.box(1.5, 1.2, 2.5, 1.8)
+    clad = shapely.box(2, 0, 5, 3)
+    ents = [
+        _prism(BOX, 0, 0.4, "core", True, 1),
+        _prism(upper, 0.4, 0.8, "core", True, 1),
+        _prism(clad, 0.4, 1.0, "clad", False, 5),
+    ]
+    mesh = _mesh(ents)
+    assert _group_volume(mesh, "core") == pytest.approx(
+        (BOX.area + upper.area) * 0.4, rel=2e-3
+    )
+    assert _group_volume(mesh, "clad") == pytest.approx(
+        clad.area * 0.6 - clad.intersection(upper).area * 0.4, rel=2e-3
+    )
