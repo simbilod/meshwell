@@ -813,6 +813,96 @@ class StructuredExtrusionResolutionSpec(StructuredSweepResolutionSpec):
     n_layers: int = Field(default=1, ge=1)
 
 
+class RecombinedInterfaceError(ValueError):
+    """Quad-meshed surfaces are shared by two volumes gmsh still has to tet-mesh.
+
+    gmsh bridges quads to tets with one pyramid per quad face, built on the
+    tet side. That works on a volume's outer boundary and on a face shared
+    with an already-stamped structured cohort (flagged so gmsh skips it),
+    but a quad surface between two unstructured volumes would need a pyramid
+    apex on each side and fails inside gmsh ("non-manifold quad boundaries
+    not supported yet"). Raised at mesh time, before ``generate(3)``.
+    """
+
+    def __init__(self, offending: dict[int, list[int]]):
+        self.offending = offending
+        examples = ", ".join(
+            f"surface {s} (volumes {vols})" for s, vols in list(offending.items())[:5]
+        )
+        super().__init__(
+            f"{len(offending)} quad-meshed surface(s) are shared by two "
+            f"unstructured (tet-meshed) volumes: {examples}. gmsh can close quads "
+            "with pyramids on one side of a face only (a tet volume's outer "
+            "boundary, or a face shared with a structured cohort). Quads come from "
+            "RecombineResolutionSpec or from structured-cohort faces: attach "
+            "RecombineResolutionSpec to the '<name>___None' boundary group instead "
+            "of the volume, or make one of the neighbouring volumes structured."
+        )
+
+
+class RecombineResolutionSpec(ResolutionSpec):
+    """Recombine the triangles of the targeted surfaces into quadrangles.
+
+    Controls the element *type*, not the element size: sizes still come from
+    the other specs / the default characteristic length. Registered directly
+    on the gmsh model (``setRecombine``), NOT combined into the Min background
+    size field, hence ``apply`` returns ``None``.
+
+    Targets:
+      * Unstructured surfaces: the filtered surfaces of the physical are
+        recombined (quad-dominant). For a volume physical this means its
+        boundary surfaces.
+      * Structured cohorts (structured PolyPrism physicals): the 2D mesh of a
+        cohort xy column is generated once on the column's seed face (its
+        lowest bottom face) and stamped upward, so the spec recombines the
+        seed face of every column the physical occupies -- even when that
+        face belongs to a lower slab of another physical. Quads are stamped
+        into hexahedra, giving hex-dominant cohort volumes. Only
+        ``min_mass``/``max_mass`` (seed-face area) filter this cohort path.
+
+    In 3D, quad surfaces may only border structured cohorts or the domain
+    boundary (where gmsh closes tets with pyramids). A quad surface shared
+    with a tet-meshed volume raises :class:`RecombinedInterfaceError` at
+    mesh time.
+
+    Attributes:
+        angle: gmsh recombination angle threshold in degrees (``setRecombine``).
+        mesh_algorithm_2d: Optional per-surface gmsh 2D algorithm applied to the
+            recombined surfaces. Defaults to 8 (Frontal-Delaunay for quads),
+            which yields right-angled triangles that recombine well. ``None``
+            keeps the global 2D algorithm. Overrides the global (and
+            fallback) 2D algorithm on these surfaces.
+    """
+
+    apply_to: Literal["surfaces"] = "surfaces"
+    angle: float = Field(default=45.0, gt=0, le=90)
+    mesh_algorithm_2d: int | None = 8
+
+    def recombine_surface(self, model: Any, tag: int) -> None:
+        """Mark one surface for recombination on ``model``."""
+        if self.mesh_algorithm_2d is not None:
+            model.mesh.setAlgorithm(2, tag, self.mesh_algorithm_2d)
+        model.mesh.setRecombine(2, tag, self.angle)
+
+    def apply(self, model: Any, entities_mass_dict, **_kwargs) -> None:
+        """Mark the given surfaces for recombination.
+
+        Args:
+            model: The gmsh model.
+            entities_mass_dict: Dictionary mapping surface tags to their areas.
+            **_kwargs: Unused kwargs (restrict_to_str, restrict_to_tags).
+
+        Returns:
+            None: not a size field.
+        """
+        for tag in entities_mass_dict:
+            self.recombine_surface(model, tag)
+
+    def refine(self, resolution_factor: float) -> "RecombineResolutionSpec":  # noqa: ARG002
+        """Element type is size-independent: return an unchanged copy."""
+        return copy.copy(self)
+
+
 class BoundaryLayerResolutionSpec(ResolutionSpec):
     """Configure a gmsh BoundaryLayer field on a 1D physical name.
 

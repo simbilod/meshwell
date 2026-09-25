@@ -45,6 +45,44 @@ def _pair_algos(
     ]
 
 
+def _check_quad_tet_interfaces() -> bool:
+    """Raise if a quad-meshed surface is shared by two volumes gmsh will tet-mesh.
+
+    Called after the 2D mesh (and structured stamping) and right before
+    ``generate(3)``. A volume still without elements at this point is one
+    gmsh's 3D mesher will fill; gmsh closes quads with one pyramid per quad
+    face on the tet side. Already-meshed volumes (stamped structured cohorts,
+    flagged transfinite so gmsh's pyramid builder skips them) need none, so a
+    quad face is only a problem when two or more of its volumes are empty.
+
+    Returns:
+        True if gmsh will build pyramids (some quad face touches a volume
+        still to be tet-meshed).
+    """
+    from meshwell.resolution import RecombinedInterfaceError
+
+    unmeshed: dict[int, bool] = {}
+
+    def _is_unmeshed(vol: int) -> bool:
+        if vol not in unmeshed:
+            unmeshed[vol] = len(gmsh.model.mesh.getElementTypes(3, vol)) == 0
+        return unmeshed[vol]
+
+    offending: dict[int, list[int]] = {}
+    pyramids = False
+    for _, surf in gmsh.model.getEntities(2):
+        if 3 not in gmsh.model.mesh.getElementTypes(2, surf):
+            continue
+        vols = [int(v) for v in gmsh.model.getAdjacencies(2, surf)[0]]
+        n_unmeshed = sum(_is_unmeshed(v) for v in vols)
+        pyramids = pyramids or n_unmeshed > 0
+        if n_unmeshed >= 2:
+            offending[int(surf)] = vols
+    if offending:
+        raise RecombinedInterfaceError(offending)
+    return pyramids
+
+
 class Mesh:
     """Mesh class for generating meshes from cad models."""
 
@@ -440,6 +478,7 @@ class Mesh:
         pre_2d_hook: Callable[[], None] | None = None,
         pre_3d_hook: Callable[[], None] | None = None,
         post_3d_hook: Callable[[], None] | None = None,
+        check_quad_interfaces: bool = False,
     ) -> meshio.Mesh:
         """Generate mesh and return meshio object (no file I/O).
 
@@ -448,6 +487,13 @@ class Mesh:
         Retry-on-failure logic lives in ``process_geometry`` because a raised
         ``mesh.generate()`` leaves the gmsh runtime in a "busy" state that only
         a full finalize+reinit will clear.
+
+        ``check_quad_interfaces`` forces the 2D/3D split in 3D (as hooks do)
+        so quad surfaces shared with a tet-meshed volume raise
+        ``RecombinedInterfaceError`` before gmsh's 3D mesher. The check runs
+        whenever the split is taken. When gmsh will close quads with
+        pyramids, ``generate(3)`` runs with ``Mesh.OptimizePyramids=1`` and
+        the final mesh goes through ``validate_mesh_topology``.
         """
         gmsh.option.setNumber("Mesh.ScalingFactor", global_scaling)
         gmsh.option.setNumber("Mesh.AngleToleranceFacetOverlap", 1e-5)
@@ -455,18 +501,44 @@ class Mesh:
         if global_3D_algorithm == 1 and verbosity:
             gmsh.logger.start()
 
+        pyramids = False
         if dim >= 2 and (
             pre_2d_hook is not None
-            or (dim >= 3 and (pre_3d_hook is not None or post_3d_hook is not None))
+            or (
+                dim >= 3
+                and (
+                    pre_3d_hook is not None
+                    or post_3d_hook is not None
+                    or check_quad_interfaces
+                )
+            )
         ):
-            # Call hooks at the appropriate generate boundaries
+            # Call hooks at the appropriate generate boundaries. The split
+            # also lets quad/tet interfaces be checked before gmsh's 3D
+            # mesher; without hooks or recombination a single generate(dim)
+            # is kept so existing meshes are unchanged.
             if pre_2d_hook is not None:
                 pre_2d_hook()
             self.model_manager.model.mesh.generate(2)
             if dim >= 3:
                 if pre_3d_hook is not None:
                     pre_3d_hook()
-                self.model_manager.model.mesh.generate(3)
+                pyramids = _check_quad_tet_interfaces()
+                if pyramids:
+                    # gmsh's default pyramid smoother (OptimizePyramids=0,
+                    # RelocateVerticesOfPyramids) moves vertices up to two
+                    # rings from each apex while checking only part of their
+                    # star, which can fold the tet mesh (overlapping, yet
+                    # positively oriented, elements). The Winslow untangler
+                    # (1) does not.
+                    old = gmsh.option.getNumber("Mesh.OptimizePyramids")
+                    gmsh.option.setNumber("Mesh.OptimizePyramids", 1)
+                    try:
+                        self.model_manager.model.mesh.generate(3)
+                    finally:
+                        gmsh.option.setNumber("Mesh.OptimizePyramids", old)
+                else:
+                    self.model_manager.model.mesh.generate(3)
                 if post_3d_hook is not None:
                     post_3d_hook()
         else:
@@ -475,6 +547,13 @@ class Mesh:
         if optimization_flags:
             for optimization_flag, niter in optimization_flags:
                 self.model_manager.model.mesh.optimize(optimization_flag, niter=niter)
+
+        if pyramids:
+            # Safety net for hybrid meshes (folds, faces shared by > 2
+            # elements, unmatched surface elements).
+            from meshwell.structured.wedge import validate_mesh_topology
+
+            validate_mesh_topology()
 
         # Return mesh object without writing to file
         with contextlib.redirect_stdout(
@@ -638,6 +717,14 @@ class Mesh:
                 user_post_3d=post_3d_hook,
             )
 
+        from meshwell.resolution import RecombineResolutionSpec
+
+        has_recombine = any(
+            isinstance(spec, RecombineResolutionSpec)
+            for specs in (resolution_specs or {}).values()
+            for spec in specs
+        )
+
         def _run_once(algo2d: int, algo3d: int) -> meshio.Mesh:
             self._initialize_mesh_settings(
                 verbosity=verbosity,
@@ -662,6 +749,7 @@ class Mesh:
                 pre_2d_hook=pre_2d_hook,
                 pre_3d_hook=pre_3d_hook,
                 post_3d_hook=post_3d_hook,
+                check_quad_interfaces=has_recombine,
             )
 
         if len(attempts) == 1:
@@ -679,7 +767,11 @@ class Mesh:
                 try:
                     return _run_once(algo2d, algo3d)
                 except Exception as exc:
-                    if attempt_idx == len(attempts) - 1:
+                    from meshwell.resolution import RecombinedInterfaceError
+
+                    if attempt_idx == len(attempts) - 1 or isinstance(
+                        exc, RecombinedInterfaceError
+                    ):
                         raise
                     print(
                         f"mesh attempt {attempt_idx + 1}/{len(attempts)} "

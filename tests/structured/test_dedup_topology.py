@@ -122,6 +122,28 @@ def test_validate_mesh_topology_detects_orphan_surface_element():
         validate_mesh_topology()
 
 
+def _two_tets_on_face(apex_b: tuple[float, float, float]) -> None:
+    """Two tets sharing face (1, 2, 3); apex 4 above it, apex 5 at ``apex_b``."""
+    v = gmsh.model.addDiscreteEntity(3)
+    coords = [0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, 0.2, 1, *apex_b]
+    gmsh.model.mesh.addNodes(3, v, [1, 2, 3, 4, 5], coords)
+    gmsh.model.mesh.addElementsByType(v, 4, [1, 2], [1, 2, 3, 4, 1, 3, 2, 5])
+
+
+@pytest.mark.usefixtures("gmsh_session")
+def test_validate_mesh_topology_accepts_opposite_sides():
+    _two_tets_on_face((0.3, 0.3, -0.5))
+    validate_mesh_topology()
+
+
+@pytest.mark.usefixtures("gmsh_session")
+def test_validate_mesh_topology_detects_fold():
+    """Both tets on the same side of their shared face overlap (a fold)."""
+    _two_tets_on_face((0.3, 0.3, 0.5))
+    with pytest.raises(InvalidMeshTopologyError, match="folded"):
+        validate_mesh_topology()
+
+
 def test_one_dbu_jog_in_mm_domain_meshes_without_collapse(tmp_path):
     """Regression: 2 nm jog in a ~3 mm domain (structured cohort on unstructured slab).
 

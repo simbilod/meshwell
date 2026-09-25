@@ -279,6 +279,9 @@ def validate_mesh_topology() -> None:
 
     * no volume element references the same node twice;
     * every face is shared by at most two volume elements;
+    * the two elements sharing a face lie on opposite sides of it (no
+      folds: gmsh orients every element positively on its own, so a
+      region covered twice is invisible to per-element checks);
     * every 2D element on a surface that bounds a volume coincides with a
       face of some volume element.
 
@@ -290,8 +293,17 @@ def validate_mesh_topology() -> None:
     width = 4  # widest face (quad); triangles padded with -1
     vol_faces: list[np.ndarray] = []
     vol_face_owner: list[np.ndarray] = []
+    vol_face_centroid: list[np.ndarray] = []
     problems: list[str] = []
     n_degenerate = 0
+
+    node_tags, node_xyz, _ = gmsh.model.mesh.getNodes()
+    node_order = np.argsort(node_tags)
+    node_tags_sorted = np.asarray(node_tags)[node_order]
+    node_xyz = np.asarray(node_xyz).reshape(-1, 3)[node_order]
+
+    def _xyz(tags_: np.ndarray) -> np.ndarray:
+        return node_xyz[np.searchsorted(node_tags_sorted, tags_)]
 
     for _, ent_tag in gmsh.model.getEntities(3):
         etypes, etags, enodes = gmsh.model.mesh.getElements(3, ent_tag)
@@ -305,11 +317,13 @@ def validate_mesh_topology() -> None:
             rows = _primary_node_rows(et, np.asarray(nodes))
             n_degenerate += int(_rows_with_repeated_nodes(rows).sum())
             tags = np.asarray(tags)
+            centroids = _xyz(rows).mean(axis=1)
             for fd in face_defs:
                 f = np.full((rows.shape[0], width), -1, dtype=np.int64)
                 f[:, : len(fd)] = rows[:, list(fd)]
                 vol_faces.append(f)
                 vol_face_owner.append(tags)
+                vol_face_centroid.append(centroids)
 
     if not vol_faces:
         if problems:
@@ -363,6 +377,39 @@ def validate_mesh_topology() -> None:
             f"{over.size} faces shared by more than two volume elements: "
             + "; ".join(ex)
         )
+
+    # Folds: the two elements of an interior face must be on opposite sides.
+    # Element centroids are inside their (convex) element, hence strictly on
+    # the element's side of each of its faces.
+    inv_v = inverse[:n_vf]
+    paired = np.flatnonzero(vol_counts[inv_v] == 2)
+    if paired.size:
+        paired = paired[np.argsort(inv_v[paired], kind="stable")]
+        ia, ib = paired[0::2], paired[1::2]
+        centroids = np.concatenate(vol_face_centroid)
+        fa = vf[ia]
+        is_quad = fa[:, 3] >= 0
+        p = _xyz(np.where(fa >= 0, fa, fa[:, :1]))  # pad triangles with node 0
+        normal = np.where(
+            is_quad[:, None],
+            np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 1]),
+            np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]),
+        )
+        side_a = np.einsum("ij,ij->i", normal, centroids[ia] - p[:, 0])
+        side_b = np.einsum("ij,ij->i", normal, centroids[ib] - p[:, 0])
+        folded = np.flatnonzero(side_a * side_b > 0)
+        if folded.size:
+            ex = []
+            for k in folded[:_MAX_REPORTED_EXAMPLES]:
+                face_nodes = fa[k][fa[k] >= 0]
+                ex.append(
+                    f"face {face_nodes.tolist()} at {_node_coords_str(face_nodes)} "
+                    f"(elements {int(owners[ia[k]])}, {int(owners[ib[k]])})"
+                )
+            problems.append(
+                f"{folded.size} folded faces (both elements on the same side, "
+                "i.e. overlapping elements): " + "; ".join(ex)
+            )
 
     if sf.shape[0]:
         orphan = np.flatnonzero(vol_counts[inverse[n_vf:]] == 0)
@@ -510,6 +557,7 @@ def make_cohort_hooks(
         state["face_tag_by_key"] = face_tag_by_key
         state["sub_solid_tag_by_key"] = sub_solid_tag_by_key
         if slab_meta and face_tag_by_key:
+            recombine_cohort_columns(slab_meta, face_tag_by_key, resolution_specs)
             freeze_lateral_mesh(
                 slab_meta,
                 face_tag_by_key,
@@ -533,6 +581,13 @@ def make_cohort_hooks(
                 point_tolerance=point_tolerance,
             )
             gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
+            # gmsh's quad->tet pyramid builder (splitQuadRecovery) adds a
+            # pyramid in every region adjacent to a quad face except
+            # transfinite/extruded ones. Flag the (already stamped) cohort
+            # volumes so pyramids are built on the tet side only; with
+            # MeshOnlyEmpty they are not re-meshed.
+            for tag in sub_solid_tag_by_key.values():
+                gmsh.model.mesh.setTransfiniteVolume(tag)
             structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
             _remove_duplicate_nodes_tight(
                 structured_vol_dimtags, point_tolerance=point_tolerance
@@ -592,6 +647,100 @@ def resolve_n_layers(
             f"StructuredExtrusionResolutionSpec n_layers {sorted(distinct_n_layers)}."
         )
     return matched_specs[0].n_layers
+
+
+def column_seed_faces(
+    slab_meta: dict[str, SlabMeta],
+    face_tag_by_key: dict[str, int],
+) -> dict[str, int]:
+    """Map every kept cohort sub-solid to the seed face of its xy column.
+
+    Only a column's lowest bottom face (its *seed*) is meshed by gmsh's 2D
+    mesher: every kept slab's top face is filled by stamping from the slab
+    below, so a slab's bottom face that is another kept slab's top face
+    inherits that slab's mesh. Walking down through such shared faces yields
+    the seed that decides the whole column's 2D mesh. Voids (``keep=False``)
+    break a column: the face above a void is a seed.
+    """
+    top_owner: dict[int, str] = {}
+    for key, meta in slab_meta.items():
+        if not meta.keep:
+            continue
+        top = face_tag_by_key.get(meta.top_face_key)
+        if top is not None:
+            top_owner[top] = key
+
+    seeds: dict[str, int] = {}
+    for key, meta in slab_meta.items():
+        if not meta.keep:
+            continue
+        face = face_tag_by_key.get(meta.bot_face_key)
+        if face is None:
+            continue
+        visited = {key}
+        while face in top_owner and top_owner[face] not in visited:
+            below = top_owner[face]
+            visited.add(below)
+            nxt = face_tag_by_key.get(slab_meta[below].bot_face_key)
+            if nxt is None:
+                break
+            face = nxt
+        seeds[key] = face
+    return seeds
+
+
+def recombine_cohort_columns(
+    slab_meta: dict[str, SlabMeta],
+    face_tag_by_key: dict[str, int],
+    resolution_specs: dict | None,
+) -> list[int]:
+    """Recombine the seed face of every column holding a RecombineResolutionSpec slab.
+
+    A ``RecombineResolutionSpec`` on any slab of a column applies to the
+    column's seed face, so the quads are stamped into hexahedra through the
+    whole column. When several slabs of a column carry a spec, the lowest
+    slab's spec wins. ``min_mass``/``max_mass`` filter on the seed-face area.
+
+    Returns the recombined seed-face tags.
+    """
+    from meshwell.resolution import RecombineResolutionSpec
+
+    if not resolution_specs:
+        return []
+
+    def _spec_for(meta: SlabMeta) -> RecombineResolutionSpec | None:
+        names = (
+            (meta.physical_name,)
+            if isinstance(meta.physical_name, str)
+            else tuple(meta.physical_name)
+        )
+        for name in names:
+            for spec in resolution_specs.get(name, []):
+                if isinstance(spec, RecombineResolutionSpec):
+                    return spec
+        return None
+
+    seeds = column_seed_faces(slab_meta, face_tag_by_key)
+    # Lowest slab first so its spec wins for the column.
+    order = sorted(
+        seeds,
+        key=lambda k: _face_centroid_z(face_tag_by_key[slab_meta[k].bot_face_key]),
+    )
+    spec_by_seed: dict[int, RecombineResolutionSpec] = {}
+    for key in order:
+        spec = _spec_for(slab_meta[key])
+        if spec is not None:
+            spec_by_seed.setdefault(seeds[key], spec)
+
+    recombined: list[int] = []
+    for seed, spec in spec_by_seed.items():
+        area = gmsh.model.occ.getMass(2, seed)
+        if not (spec.min_mass < area < spec.max_mass):
+            continue
+        spec.recombine_surface(gmsh.model, seed)
+        recombined.append(seed)
+    logger.debug("recombine_cohort_columns: recombined seed faces %s", recombined)
+    return recombined
 
 
 # ---------------------------------------------------------------------------
