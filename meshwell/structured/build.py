@@ -32,6 +32,7 @@ from OCP.TopoDS import (
     TopoDS_Vertex,
 )
 
+from meshwell.cad_settings import DEFAULT_ARC_TOLERANCE, DEFAULT_MIN_ARC_POINTS
 from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.exceptions import CanonicalArrangementError
 from meshwell.structured.types import (
@@ -158,8 +159,8 @@ class EdgeRegistry:
         coords: list[tuple[float, float]],
         z: float,
         identify_arcs: bool,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
+        min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+        arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
         arrangement: "Arrangement | None" = None,
     ) -> list[TopoDS_Edge]:
         """Return the list of edges (lines and/or arcs) covering coords.

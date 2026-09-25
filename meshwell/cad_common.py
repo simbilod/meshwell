@@ -32,6 +32,7 @@ from typing import Any
 import shapely
 from shapely.geometry import box
 
+from meshwell.cad_settings import DEFAULT_ARC_TOLERANCE, DEFAULT_MIN_ARC_POINTS
 from meshwell.interface_tag import InterfaceTag
 
 logger = logging.getLogger(__name__)
@@ -167,8 +168,8 @@ def apply_arc_params(
     entities: list,
     *,
     identify_arcs: bool,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+    arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
 ) -> None:
     """Stamp pipeline-level arc-identification parameters onto entities.
 

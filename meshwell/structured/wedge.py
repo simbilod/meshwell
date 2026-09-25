@@ -21,6 +21,7 @@ import gmsh
 import numpy as np
 from scipy.spatial import KDTree
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.structured.exceptions import (
     DegenerateElementsAfterDedupError,
     InvalidMeshTopologyError,
@@ -100,8 +101,8 @@ def _check_no_degenerate_elements() -> None:
     belong to the same element (e.g. a thin tetrahedron ``(u, v, A, B)``
     built across a short real edge), gmsh rewrites ``B -> A`` in place and
     leaves a collapsed element ``(u, v, A, A)``. Its surviving face then
-    duplicates the face shared by the two neighbouring valid elements. 
-    Silently stripping such elements would hide the underlying tolerance 
+    duplicates the face shared by the two neighbouring valid elements.
+    Silently stripping such elements would hide the underlying tolerance
     or topology bug, so fail loudly instead.
     """
     count_by_dim: dict[int, int] = {}
@@ -126,7 +127,7 @@ def _check_no_degenerate_elements() -> None:
 
 def _remove_duplicate_nodes_tight(
     dimtags: list[tuple[int, int]] | None = None,
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
 ) -> None:
     """Merge duplicate mesh nodes without ever merging real geometry, then verify no element collapsed.
 
@@ -500,7 +501,7 @@ def discover_cohorts() -> tuple[
 
 def make_cohort_hooks(
     resolution_specs: dict | None = None,
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     user_pre_2d: Callable[[], None] | None = None,
     user_pre_3d: Callable[[], None] | None = None,
     user_post_3d: Callable[[], None] | None = None,
@@ -1104,7 +1105,7 @@ def stamp_wedges(
     face_tag_by_key: dict[ShapeKey, int],
     sub_solid_tag_by_key: dict[ShapeKey, int],
     resolution_specs: dict | None = None,
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
 ) -> None:
     """For each cohort sub-solid: read bot tri mesh, stamp on top.
 

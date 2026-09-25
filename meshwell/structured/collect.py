@@ -81,9 +81,9 @@ def collect_structured_entities(
                         mesh_order=ent.mesh_order,
                         mesh_bool=ent.mesh_bool,
                         physical_name=ent.physical_name,
-                        identify_arcs=getattr(ent, "identify_arcs", False),
-                        arc_tolerance=getattr(ent, "arc_tolerance", 1e-3),
-                        min_arc_points=getattr(ent, "min_arc_points", 5),
+                        identify_arcs=ent.identify_arcs,
+                        arc_tolerance=ent.arc_tolerance,
+                        min_arc_points=ent.min_arc_points,
                     )
                 )
             else:
@@ -152,9 +152,9 @@ def collect_structured_entities(
                         mesh_order=ent.mesh_order,
                         mesh_bool=ent.mesh_bool,
                         physical_name=ent.physical_name,
-                        identify_arcs=getattr(ent, "identify_arcs", False),
-                        arc_tolerance=getattr(ent, "arc_tolerance", 1e-3),
-                        min_arc_points=getattr(ent, "min_arc_points", 5),
+                        identify_arcs=ent.identify_arcs,
+                        arc_tolerance=ent.arc_tolerance,
+                        min_arc_points=ent.min_arc_points,
                     )
                 )
             else:

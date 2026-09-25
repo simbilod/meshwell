@@ -17,6 +17,7 @@ import numpy as np
 from scipy.interpolate import NearestNDInterpolator
 from scipy.spatial import cKDTree
 
+from meshwell.cad_settings import CADSettings
 from meshwell.model import ModelManager
 from meshwell.resolution import (
     DirectSizeSpecification,
@@ -159,6 +160,26 @@ class Remesher:
         self.vxyz = None
         self.triangles_tags = None
         self.triangles = None
+
+    def _resolve_intake(
+        self, geometry_file: Path | str, cad_settings: CADSettings | None
+    ) -> CADSettings:
+        """Apply the mesh-stage ``.xao`` intake rules (raise on missing/mismatch).
+
+        A caller-supplied model is checked for consistency; an internally
+        created one (``_owns_model``) is not, since its ``point_tolerance``
+        was never chosen by the caller.
+        """
+        from meshwell.mesh import _resolve_mesh_cad_settings
+
+        settings = _resolve_mesh_cad_settings(
+            input_file=geometry_file,
+            model=None if self._owns_model else self.model_manager,
+            cad_settings=cad_settings,
+            point_tolerance=None,
+        )
+        self.model_manager.cad_settings = settings
+        return settings
 
     def _load_mesh_data(self, input_mesh: Path | meshio.Mesh | ModelManager) -> None:
         """Load mesh data from file, meshio object, or ModelManager.
@@ -446,6 +467,7 @@ class RemeshGMSH(Remesher):
         optimization_flags: tuple[tuple[str, int]] | None = None,
         output_mesh: Path | None = None,
         default_characteristic_length: float = 1.0,
+        cad_settings: CADSettings | None = None,
     ) -> np.ndarray:
         """Remesh using GMSH.
 
@@ -460,10 +482,15 @@ class RemeshGMSH(Remesher):
             optimization_flags: Optimization flags.
             output_mesh: Optional output path (if not provided, result is in model).
             default_characteristic_length: Default characteristic length.
+            cad_settings: CAD settings of ``geometry_file``; required when
+                the ``.xao`` carries no meshwell metadata, must match it
+                otherwise (see :func:`meshwell.mesh.mesh`).
 
         Returns:
             np.ndarray: The generated size map.
         """
+        settings = self._resolve_intake(geometry_file, cad_settings)
+
         # 1. Load Mesh Data (Baseline)
         self._load_mesh_data(input_mesh)
 
@@ -488,7 +515,7 @@ class RemeshGMSH(Remesher):
         gmsh.model.occ.synchronize()
 
         # Create Mesh instance attached to our model manager
-        mesh_gen = Mesh(model=self.model_manager)
+        mesh_gen = Mesh(model=self.model_manager, cad_settings=settings)
 
         # Process geometry with our resolution spec
         # Note: We pass the spec as a global resolution spec
@@ -790,6 +817,7 @@ def remesh_gmsh(
     filename: str = "temp_remesh",
     model: ModelManager | None = None,
     default_characteristic_length: float = 1.0,
+    cad_settings: CADSettings | None = None,
 ) -> np.ndarray:
     """Utility function for adaptive mesh refinement using GMSH."""
     remesher = RemeshGMSH(
@@ -810,6 +838,7 @@ def remesh_gmsh(
         optimization_flags=optimization_flags,
         output_mesh=output_mesh,
         default_characteristic_length=default_characteristic_length,
+        cad_settings=cad_settings,
     )
 
     remesher.finalize()
@@ -991,6 +1020,7 @@ def remesh_structured(
     n_threads: int = cpu_count(),
     filename: str = "temp_remesh_structured",
     model: ModelManager | None = None,
+    cad_settings: CADSettings | None = None,
 ) -> tuple[meshio.Mesh, dict]:
     """Adapt every ResolutionSpec to a size map and regenerate from the .xao.
 
@@ -999,6 +1029,10 @@ def remesh_structured(
     gradation-limited map via a global DirectSizeSpecification. Returns
     ``(new_mesh, adapted_resolution_specs)``; feed the specs back in to
     iterate the adaptive loop.
+
+    ``cad_settings`` follows the :func:`meshwell.mesh.mesh` intake rules:
+    required when ``geometry_file`` carries no meshwell metadata, must match
+    the embedded settings otherwise.
     """
     if size_map is None:
         if strategies is None:
@@ -1011,6 +1045,7 @@ def remesh_structured(
     remesher = RemeshGMSH(
         n_threads=n_threads, filename=filename, model=model, verbosity=verbosity
     )
+    settings = remesher._resolve_intake(geometry_file, cad_settings)
     try:
         remesher.model_manager.ensure_initialized(str(remesher.model_manager.filename))
         # OCCBoundsUseStl must be ON *before* open: gmsh only builds the
@@ -1027,7 +1062,7 @@ def remesh_structured(
         gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 0)
         # The stamping kernel snaps stamped nodes onto this lattice, so the
         # returned spec arrays are snapped to match (see _snap_offsets).
-        q = remesher.model_manager.point_tolerance or 1e-3
+        q = settings.point_tolerance
         # gmsh (4.15) deadlocks in generate() when a PostView background field
         # (the DirectSizeSpecification below) is meshed multi-threaded -- the
         # sweep stamping's generate(1) never returns. The whole point of this

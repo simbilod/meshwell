@@ -27,6 +27,7 @@ from shapely.geometry import (
 )
 from shapely.ops import unary_union
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
@@ -135,7 +136,7 @@ class InterfaceTag(GeometryEntity):
         snap_distance: float | None = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         structured: bool = False,
     ):
         super().__init__(point_tolerance=point_tolerance)

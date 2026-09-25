@@ -33,6 +33,12 @@ import gmsh
 from tqdm.auto import tqdm
 
 from meshwell.cad_common import prepare_entities
+from meshwell.cad_settings import (
+    DEFAULT_ARC_TOLERANCE,
+    DEFAULT_MIN_ARC_POINTS,
+    DEFAULT_POINT_TOLERANCE,
+    CADSettings,
+)
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
 
@@ -86,7 +92,7 @@ class CAD_GMSH:
 
     def __init__(
         self,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         n_threads: int = cpu_count(),
         filename: str = "temp",
         model: ModelManager | None = None,
@@ -498,7 +504,7 @@ def _add_physical_group(name: str, dimtags) -> None:
 
 def cad_gmsh(
     entities_list: list[Any],
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
     filename: str = "temp",
@@ -507,8 +513,8 @@ def cad_gmsh(
     boundary_delimiter: str = "None",
     perturbation: float | None = None,
     identify_arcs: bool | None = None,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+    arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
 ) -> tuple[list[GMSHLabeledEntity], ModelManager]:
     """Build + fragment + tag ``entities_list`` in a gmsh model.
 
@@ -543,5 +549,14 @@ def cad_gmsh(
         progress_bars=progress_bars,
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
+    )
+    # Provenance for the mesh stage / ModelManager.save_to_xao. The OCC
+    # fuzzy fields are recorded at their derived values (unused by gmsh).
+    processor.model_manager.cad_settings = CADSettings(
+        point_tolerance=point_tolerance,
+        perturbation=processor.perturbation,
+        identify_arcs=bool(identify_arcs),
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
     )
     return labeled, processor.model_manager

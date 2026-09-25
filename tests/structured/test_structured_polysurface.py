@@ -79,7 +79,7 @@ def test_horizontal_structured_polysurface_interior_interface(tmp_path):
         upward_vols, _downward = gmsh.model.getAdjacencies(2, ftag)
         assert len(upward_vols) == 2, f"Expected 2 adjacent volumes for face {ftag}, got {upward_vols}"
 
-    # Every 2D mesh node on the port must exist in the 3D volume elements (MFEM STable3D invariant).
+    # Every 2D mesh node on the port must exist in the 3D volume elements
     vol_tags = groups[(3, "slab_bot")] + groups[(3, "slab_top")]
     vol_nodes = _get_entity_mesh_nodes(3, vol_tags)
     port_nodes = _get_entity_mesh_nodes(2, port_faces)

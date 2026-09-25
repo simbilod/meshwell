@@ -79,19 +79,18 @@ def test_n_layers_mismatch_lateral_touch_raises(tmp_path):
 def test_mixed_identify_arcs_raises(tmp_path):
     """When structured entities exist and any PolyPrism opts into arcs, all must.
 
-    ``identify_arcs`` is now a pipeline-level stamp (apply_arc_params), so a
-    mismatch can no longer arise from the public ``generate_mesh`` kwarg
-    (which stamps every entity uniformly); it can still arise from direct
-    attribute assignment, which is what this test exercises to keep
-    ``MixedIdentifyArcsError`` covered as a safety net.
+    ``identify_arcs`` is a pipeline-level stamp: ``cad`` / ``generate_mesh``
+    resolve ``CADSettings.identify_arcs`` onto every entity (apply_arc_params)
+    before the structured pre-pass, overriding any per-entity assignment, so
+    a mismatch cannot arise through the public pipeline. It can still arise
+    when the pre-pass is driven directly after direct attribute assignment,
+    which is what this test exercises to keep ``MixedIdentifyArcsError``
+    covered as a safety net.
     """
+    from meshwell.structured.pipeline import structured_pre_pass
+
     a = PolyPrism(SQ, {0.0: 0.0, 1.0: 0.0}, physical_name="a", structured=True)
     a.identify_arcs = True
     b = PolyPrism(SQ2, {0.0: 0.0, 1.0: 0.0}, physical_name="b", structured=True)
     with pytest.raises(MixedIdentifyArcsError):
-        generate_mesh(
-            [a, b],
-            dim=3,
-            output_mesh=tmp_path / "x.msh",
-            default_characteristic_length=1.0,
-        )
+        structured_pre_pass([a, b], point_tolerance=1e-3)

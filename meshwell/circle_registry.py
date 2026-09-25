@@ -144,7 +144,7 @@ def build_circle_registry(
         polygons = getattr(e, "polygons", None)
         if polygons is None:
             continue
-        max_arc_tol = max(max_arc_tol, getattr(e, "arc_tolerance", 1e-3))
+        max_arc_tol = max(max_arc_tol, e.arc_tolerance)
         polys = (
             polygons.geoms
             if hasattr(polygons, "geoms")
@@ -157,8 +157,8 @@ def build_circle_registry(
                     z=0.0,
                     point_tolerance=e.point_tolerance,
                     identify_arcs=True,
-                    min_arc_points=getattr(e, "min_arc_points", 5),
-                    arc_tolerance=getattr(e, "arc_tolerance", 1e-3),
+                    min_arc_points=e.min_arc_points,
+                    arc_tolerance=e.arc_tolerance,
                 )
                 for seg in segments:
                     if not seg.is_arc:

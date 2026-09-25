@@ -10,6 +10,7 @@ import gmsh
 
 from meshwell.cad_common import apply_arc_params, prepare_entities
 from meshwell.cad_occ import cad_occ
+from meshwell.cad_settings import CADSettings
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
 from meshwell.occ_xao_writer import default_interface_aabb_tolerance, write_xao
@@ -28,11 +29,11 @@ def cad(
     output_file: Path | str | None = None,
     registry: dict[str, Callable[..., Any]] | None = None,
     sweeps: list[Any] | None = None,
-    point_tolerance: float = 1e-3,
-    perturbation: float | None = 0.0,
+    point_tolerance: float | None = None,
+    perturbation: float | None = None,
     identify_arcs: bool | None = None,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int | None = None,
+    arc_tolerance: float | None = None,
     cut_fuzzy_value: float | None = None,
     fragment_fuzzy_value: float | None = None,
     canonicalize_topology: bool | None = None,
@@ -41,6 +42,7 @@ def cad(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     model_name: str = "meshwell",
+    cad_settings: CADSettings | None = None,
 ) -> list[Any]:
     """Run the OpenCASCADE + structured CAD pipeline and optionally write a self-describing ``.xao``.
 
@@ -49,7 +51,13 @@ def cad(
     encode their metadata into synthetic physical groups in the output
     entities / ``.xao`` so a subsequent :func:`meshwell.mesh.mesh` call
     with ``input_file=output_file`` automatically discovers and executes
-    the appropriate structured meshing hooks.
+    the appropriate structured meshing hooks. The resolved
+    :class:`~meshwell.cad_settings.CADSettings` are embedded in the
+    ``.xao`` as well, so the mesh stage uses the same ``point_tolerance``.
+
+    Numerical settings are given EITHER as ``cad_settings`` OR as the
+    individual kwargs below (``None`` = package default from
+    :mod:`meshwell.cad_settings`); mixing both raises ``TypeError``.
 
     Args:
         entities: List of meshwell entities or their ``to_dict()`` dicts.
@@ -58,7 +66,7 @@ def cad(
         sweeps: Optional list of ``StructuredSweep`` instances or dicts.
         point_tolerance: Coordinate quantization and grid-snap tolerance.
         perturbation: Analytic outward offset for same-``mesh_order`` boundaries.
-        identify_arcs: Optional scene-level arc identification override.
+        identify_arcs: Scene-wide arc identification flag.
         min_arc_points: Minimum run length for arc fitting when ``identify_arcs`` is set.
         arc_tolerance: Circle-fit tolerance when ``identify_arcs`` is set.
         cut_fuzzy_value: Optional ``BRepAlgoAPI_Cut`` fuzzy override.
@@ -69,27 +77,39 @@ def cad(
         interface_delimiter: Delimiter for ``A___B`` interface physical groups.
         boundary_delimiter: Delimiter for ``A___None`` exterior boundary groups.
         model_name: XAO ``<geometry name=...>`` attribute.
+        cad_settings: Complete :class:`~meshwell.cad_settings.CADSettings`.
 
     Returns:
         list[OCCLabeledEntity]: Post-BOP labeled OCC entities ready for XAO serialization.
     """
+    settings = CADSettings.from_kwargs(
+        cad_settings,
+        point_tolerance=point_tolerance,
+        perturbation=perturbation,
+        identify_arcs=identify_arcs,
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
+    )
+    point_tolerance = settings.point_tolerance
+
     entities = deserialize(entities, registry=registry)
 
-    if identify_arcs is not None:
-        apply_arc_params(
-            entities,
-            identify_arcs=identify_arcs,
-            min_arc_points=min_arc_points,
-            arc_tolerance=arc_tolerance,
-        )
-
-    if perturbation is None:
-        perturbation = 0.0
+    # Arc identification is a scene-level setting (see apply_arc_params):
+    # resolve it onto every entity once, here, so downstream code reads
+    # the entity attributes directly instead of guessing defaults.
+    apply_arc_params(
+        entities,
+        identify_arcs=settings.identify_arcs,
+        min_arc_points=settings.min_arc_points,
+        arc_tolerance=settings.arc_tolerance,
+    )
 
     prepare_entities(
         entities,
-        perturbation=perturbation,
-        resolve_snap=max(perturbation, point_tolerance),
+        perturbation=settings.perturbation,
+        resolve_snap=settings.resolve_snap,
         buffer_polygons=False,
     )
 
@@ -107,13 +127,11 @@ def cad(
 
     cad_kwargs: dict[str, Any] = {
         "point_tolerance": point_tolerance,
-        "perturbation": perturbation,
+        "perturbation": settings.perturbation,
+        "cut_fuzzy_value": settings.cut_fuzzy_value,
+        "fragment_fuzzy_value": settings.fragment_fuzzy_value,
         "progress_bars": progress_bars,
     }
-    if cut_fuzzy_value is not None:
-        cad_kwargs["cut_fuzzy_value"] = cut_fuzzy_value
-    if fragment_fuzzy_value is not None:
-        cad_kwargs["fragment_fuzzy_value"] = fragment_fuzzy_value
     if canonicalize_topology is not None:
         cad_kwargs["canonicalize_topology"] = canonicalize_topology
     if n_threads is not None:
@@ -140,6 +158,11 @@ def cad(
             occ_entities, parsed_sweeps, entities, point_tolerance
         )
 
+    # Provenance travels with the entities (write_xao / load_occ_entities
+    # pick it up); the pipeline-level settings are authoritative.
+    for ent in occ_entities:
+        ent.cad_settings = settings
+
     if output_file is not None:
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +173,7 @@ def cad(
             interface_delimiter=interface_delimiter,
             boundary_delimiter=boundary_delimiter,
             interface_aabb_tolerance=default_interface_aabb_tolerance(point_tolerance),
+            cad_settings=settings,
         )
 
     return occ_entities
@@ -182,16 +206,27 @@ def generate_mesh(
         )
 
     identify_arcs = mesh_kwargs.pop("identify_arcs", None)
-    arc_min_points = mesh_kwargs.pop("min_arc_points", 5)
-    arc_fit_tolerance = mesh_kwargs.pop("arc_tolerance", 1e-3)
+    arc_min_points = mesh_kwargs.pop("min_arc_points", None)
+    arc_fit_tolerance = mesh_kwargs.pop("arc_tolerance", None)
     cut_fuzzy_value = mesh_kwargs.pop("cut_fuzzy_value", None)
     fragment_fuzzy_value = mesh_kwargs.pop("fragment_fuzzy_value", None)
     canonicalize_topology = mesh_kwargs.pop("canonicalize_topology", None)
     perturbation = mesh_kwargs.pop("perturbation", None)
     progress_bars = mesh_kwargs.pop("progress_bars", False)
     remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
+    cad_settings = mesh_kwargs.pop("cad_settings", None)
 
-    point_tolerance = mesh_kwargs.get("point_tolerance", 1e-3)
+    settings = CADSettings.from_kwargs(
+        cad_settings,
+        point_tolerance=mesh_kwargs.pop("point_tolerance", None),
+        perturbation=perturbation,
+        identify_arcs=identify_arcs,
+        min_arc_points=arc_min_points,
+        arc_tolerance=arc_fit_tolerance,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
+    )
+    point_tolerance = settings.point_tolerance
     n_threads = mesh_kwargs.get("n_threads")
     interface_delimiter = mesh_kwargs.get("interface_delimiter", "___")
     boundary_delimiter = mesh_kwargs.get("boundary_delimiter", "None")
@@ -200,13 +235,7 @@ def generate_mesh(
         entities=entities,
         registry=registry,
         sweeps=sweeps,
-        point_tolerance=point_tolerance,
-        perturbation=perturbation,
-        identify_arcs=identify_arcs,
-        min_arc_points=arc_min_points,
-        arc_tolerance=arc_fit_tolerance,
-        cut_fuzzy_value=cut_fuzzy_value,
-        fragment_fuzzy_value=fragment_fuzzy_value,
+        cad_settings=settings,
         canonicalize_topology=canonicalize_topology,
         n_threads=n_threads,
         progress_bars=progress_bars,
@@ -214,7 +243,8 @@ def generate_mesh(
         boundary_delimiter=boundary_delimiter,
     )
 
-    mm = ModelManager()
+    mm = ModelManager(point_tolerance=point_tolerance)
+    mm.cad_settings = settings
     mm.ensure_initialized(str(mm.filename))
     gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
 

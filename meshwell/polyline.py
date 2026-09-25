@@ -7,6 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import LineString, MultiLineString
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 
 if TYPE_CHECKING:
@@ -33,7 +34,7 @@ class PolyLine(GeometryEntity):
         mesh_order: float | None = None,
         mesh_bool: bool = True,
         additive: bool = False,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,

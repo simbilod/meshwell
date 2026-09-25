@@ -13,6 +13,7 @@ import shapely
 from shapely.geometry import Polygon
 from shapely.ops import polygonize, unary_union
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.exceptions import CanonicalArrangementError
 from meshwell.structured.types import (
@@ -214,7 +215,7 @@ def build_cohort_arrangement(
     cohort_index: int,
     cohort: Cohort,
     adjacent_unstructured: list,
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     interface_lines: list | None = None,
 ) -> Arrangement:
     """One shapely polygonize over the union of all relevant boundaries.
@@ -452,7 +453,7 @@ def _horizontal_face_footprints(
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     sweeps: list[Any] | None = None,
 ) -> tuple[list[list[SubPiece]], list[Any], list[Arrangement]]:
     """Stage 3 driver — cohort-global arrangement edition.

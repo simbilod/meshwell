@@ -6,6 +6,8 @@ from pathlib import Path
 
 import gmsh
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
+
 
 class ModelManager:
     """Base model class that handles common GMSH model functionality.
@@ -20,7 +22,7 @@ class ModelManager:
         self,
         n_threads: int = cpu_count(),
         filename: str = "temp",
-        point_tolerance: float | None = 1e-3,
+        point_tolerance: float | None = DEFAULT_POINT_TOLERANCE,
         geometry_tolerance: float | None = None,
         tolerance_boolean: float | None = None,
     ):
@@ -67,6 +69,12 @@ class ModelManager:
 
         # CAD and Mesh instances (created lazily)
         self._mesh = None
+
+        # CAD-stage settings the loaded geometry was generated with
+        # (:class:`meshwell.cad_settings.CADSettings`). Set by
+        # ``generate_mesh`` / ``cad_gmsh`` / mesh-stage intake; embedded by
+        # :meth:`save_to_xao` and :meth:`load_occ_entities`.
+        self.cad_settings = None
 
     def _initialize(self, model_name: str | None = None) -> None:
         """Initialize GMSH model and set basic configuration.
@@ -190,6 +198,8 @@ class ModelManager:
             write_xao_kwargs[
                 "interface_aabb_tolerance"
             ] = default_interface_aabb_tolerance(self.point_tolerance)
+        if self.cad_settings is not None:
+            write_xao_kwargs.setdefault("cad_settings", self.cad_settings)
 
         self.ensure_initialized("temp")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,6 +232,8 @@ class ModelManager:
         """
         output_file = Path(output_file).with_suffix(".xao")
         gmsh.write(str(output_file))
+        if self.cad_settings is not None:
+            self.cad_settings.append_to_xao(output_file)
 
     def save_to_mesh(self, output_file: Path, format: str = "msh") -> None:
         """Save current mesh to file.
