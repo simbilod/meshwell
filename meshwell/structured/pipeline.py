@@ -21,6 +21,8 @@ from meshwell.structured.build import (
     VertexRegistry,
     _ring_coords,
     build_cohort_compound,
+    build_cohort_hull,
+    build_void_carve_tools,
     polyline_segments,
 )
 from meshwell.structured.cohort import build_cohorts
@@ -29,7 +31,7 @@ from meshwell.structured.collect import collect_structured_entities
 from meshwell.structured.decompose import decompose_cohorts
 from meshwell.structured.types import ShapeKey, SlabMeta, StructuredPlane, SubPiece
 from meshwell.structured.validators import (
-    validate_no_volumetric_cohort_overlap,
+    classify_cohort_overlaps,
     validate_z_stacks,
 )
 
@@ -232,7 +234,13 @@ def structured_pre_pass(
     ]
     cohorts = build_cohorts(structured_slabs, planes=structured_planes)
     validate_z_stacks(cohorts, entities)
-    validate_no_volumetric_cohort_overlap(cohorts, entities)
+    # Lower-priority unstructured entities overlapping a cohort are carved
+    # by it in cad_occ; equal/higher priority overlaps raise here.
+    carve_by_entity = classify_cohort_overlaps(cohorts, entities)
+    carve_ids_per_cohort: list[set[int]] = [set() for _ in cohorts]
+    for ent_idx, cohort_idxs in carve_by_entity.items():
+        for ci in cohort_idxs:
+            carve_ids_per_cohort[ci].add(id(entities[ent_idx]))
     # decompose_cohorts returns the unstructured list unchanged (third slot).
     subpieces_per_cohort, unstructured_out, arrangements = decompose_cohorts(
         cohorts, unstructured, point_tolerance=point_tolerance, sweeps=sweeps
@@ -264,6 +272,13 @@ def structured_pre_pass(
             slab_meta=slab_meta,
             cohort=cohort,
             cohort_index=ci,
+            carve_tools=(
+                build_cohort_hull(compound, slab_meta, subs)
+                + build_void_carve_tools(cohort, subs, point_tolerance)
+                if carve_ids_per_cohort[ci]
+                else []
+            ),
+            carve_targets=frozenset(carve_ids_per_cohort[ci]),
         )
         cohort_entities.append(ce)
         all_slab_meta.update(slab_meta)

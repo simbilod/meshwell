@@ -27,6 +27,14 @@ class _CohortEntity:
     slab_meta: dict[ShapeKey, SlabMeta]
     cohort: Cohort
     cohort_index: int = 0
+    # OCC-valid solids covering the cohort (``build_cohort_hull`` plus
+    # ``build_void_carve_tools``; cut-cascade tools only, never meshed)
+    # and ``id()`` of every lower-priority unstructured entity object that
+    # overlaps it (``classify_cohort_overlaps``). cad_occ cuts exactly
+    # those entities with these tools; everything else keeps skipping
+    # cohort cuts.
+    carve_tools: list = field(default_factory=list)
+    carve_targets: frozenset[int] = frozenset()
 
     dimension: int = field(init=False, default=3)
     mesh_bool: bool = field(init=False, default=True)

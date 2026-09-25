@@ -165,21 +165,27 @@ def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
                 )
 
 
-def validate_no_volumetric_cohort_overlap(
+def classify_cohort_overlaps(
     cohorts: list[Cohort], entities: list[Any], tol: float = 1e-9
-) -> None:
-    """Raise if a non-cohort entity shares a 3D interior with a cohort.
+) -> dict[int, set[int]]:
+    """Resolve 3D overlaps between unstructured entities and cohorts.
 
-    For each cohort, for each non-cohort entity: compute the strict
+    For each cohort slab and each non-cohort entity: compute the strict
     z-overlap and, if positive, sample a representative z inside the
-    open overlap interval and test XY-intersection. If the entity's
-    XY at that z intersects the cohort's XY at that z, raise.
+    open overlap interval and test XY-intersection. A positive-area
+    intersection is a volumetric overlap, resolved by ``mesh_order``
+    (lower wins; ``None`` counts as lowest priority):
 
-    Cohorts and unstructured entities must live in disjoint 3D volumes
-    (touching only at z-planes). The cad_occ cut cascade is skipped
-    between cohorts and non-cohorts (cohort sub-solids are OCC-invalid
-    bottom-up builds), so any genuine 3D overlap would corrupt the
-    fragment pass.
+    - the entity has LOWER priority than every slab it overlaps: the
+      cohort carves it. cad_occ cuts the entity with the cohort's carve
+      tools (see ``build_cohort_hull``) instead of skipping the
+      cut, so the entity ends up disjoint from the cohort;
+    - the entity has EQUAL or HIGHER priority than any slab it overlaps:
+      raise ``StructuredVolumetricOverlapError``. Cohorts are never cut
+      (their pre-baked shell faces must survive BOP intact).
+
+    Returns ``{entity_index: {cohort_index, ...}}`` for the entities to
+    carve.
 
     Caveat: this check validates NOMINAL shapely geometry (``ent.polygons``
     / the cohort's own footprint), not the geometry cad_occ actually
@@ -191,16 +197,12 @@ def validate_no_volumetric_cohort_overlap(
     orders of magnitude larger than eps), not caught -- or needing to be
     caught -- by this nominal-geometry check.
     """
+    carve: dict[int, set[int]] = {}
     for cohort_idx, cohort in enumerate(cohorts):
         for ent_idx, ent in enumerate(entities):
             # Skip cohort entities themselves and non-extruded primitives
             # that have no z-extent we can reason about.
             if not isinstance(ent, PolyPrism) or not ent.extrude:
-                continue
-            ent_zmin = ent.zmin
-            ent_zmax = ent.zmax
-            z_overlap = min(cohort.zmax, ent_zmax) - max(cohort.zmin, ent_zmin)
-            if z_overlap <= tol:
                 continue
             # Skip if this entity IS one of the cohort's source slabs
             # (a structured slab); we only care about unstructured
@@ -208,24 +210,35 @@ def validate_no_volumetric_cohort_overlap(
             # whose source_index matches ent_idx is part of the cohort.
             if any(s.source_index == ent_idx for s in cohort.slabs):
                 continue
-            # Sample a z strictly inside the open overlap interval.
-            z_mid = 0.5 * (max(cohort.zmin, ent_zmin) + min(cohort.zmax, ent_zmax))
-            ent_xy = _entity_xy_at(ent, z_mid)
-            if ent_xy is None:
-                continue
-            cohort_xy = _cohort_xy_at(cohort, z_mid)
-            if cohort_xy.is_empty:
-                continue
-            if cohort_xy.intersects(ent_xy):
-                inter = cohort_xy.intersection(ent_xy)
+            ent_zmin = ent.zmin
+            ent_zmax = ent.zmax
+            ent_order = ent.mesh_order if ent.mesh_order is not None else float("inf")
+            for slab in cohort.slabs:
+                z_overlap = min(slab.zhi, ent_zmax) - max(slab.zlo, ent_zmin)
+                if z_overlap <= tol:
+                    continue
+                # Sample a z strictly inside the open overlap interval.
+                z_mid = 0.5 * (max(slab.zlo, ent_zmin) + min(slab.zhi, ent_zmax))
+                ent_xy = _entity_xy_at(ent, z_mid)
+                if ent_xy is None or not slab.footprint.intersects(ent_xy):
+                    continue
+                inter = slab.footprint.intersection(ent_xy)
                 # Skip zero-area boundary touches (lines/points only)
                 if hasattr(inter, "area") and inter.area <= tol:
                     continue
-                raise StructuredVolumetricOverlapError(
-                    entity_index=ent_idx,
-                    cohort_index=cohort_idx,
-                    z_overlap=z_overlap,
+                slab_order = (
+                    slab.mesh_order if slab.mesh_order is not None else float("inf")
                 )
+                if ent_order <= slab_order:
+                    raise StructuredVolumetricOverlapError(
+                        entity_index=ent_idx,
+                        cohort_index=cohort_idx,
+                        z_overlap=z_overlap,
+                        entity_mesh_order=ent.mesh_order,
+                        slab_mesh_order=slab.mesh_order,
+                    )
+                carve.setdefault(ent_idx, set()).add(cohort_idx)
+    return carve
 
 
 def validate_cohort_shells(

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import cpu_count
 from typing import TYPE_CHECKING, Any
 
@@ -84,6 +84,10 @@ class OCCLabeledEntity:
     # Provenance: settings of the cad_occ run that produced this entity.
     # write_xao embeds it in the .xao when not given explicitly.
     cad_settings: CADSettings | None = None
+    # Cohorts only: OCC-valid carve tools and ``id()`` of the entity
+    # objects they must carve (see ``_CohortEntity``).
+    _carve_tools: list = field(default_factory=list)
+    _carve_targets: frozenset[int] = frozenset()
 
 
 logger = logging.getLogger(__name__)
@@ -354,6 +358,8 @@ class CAD_OCC:
             dim=dim,
             mesh_order=getattr(entity_obj, "mesh_order", None),
             _is_cohort=getattr(entity_obj, "is_cohort", False),
+            _carve_tools=list(getattr(entity_obj, "carve_tools", ())),
+            _carve_targets=frozenset(getattr(entity_obj, "carve_targets", ())),
         )
 
     def _fragment_all(
@@ -550,29 +556,45 @@ class CAD_OCC:
                 p_ord = prev.mesh_order if prev.mesh_order is not None else float("inf")
                 if p_ord >= l_ord:
                     continue
-                # SKIP: if either side is a cohort, the cut is unsafe and
-                # unnecessary. Cohort sub-solids are OCC-invalid (built
-                # bottom-up with shared TShapes); BRepAlgoAPI_Cut silently
-                # produces empty results on them. By design cohorts are
-                # disjoint in 3D from non-cohorts (enforced by
-                # validate_no_volumetric_cohort_overlap), so the cut would
-                # be a no-op in volume but corrupts via fuzzy. fragment_all
-                # handles their boundary-plane merging cleanly.
+                # Cohort sub-solids are OCC-invalid (built bottom-up with
+                # shared TShapes); BRepAlgoAPI_Cut silently produces empty
+                # results on them, so they are never cut and never used as
+                # tools. The one exception: a cohort CARVES the
+                # lower-priority unstructured entities that overlap it
+                # (resolved by classify_cohort_overlaps, which raises on
+                # equal/higher priority), using its OCC-valid hull solid
+                # built from the cohort's own boundary faces
+                # (build_cohort_hull) plus void-region prisms
+                # (build_void_carve_tools).
+                # Every other cohort pairing is disjoint in 3D by that
+                # invariant, so the cut would be a no-op in volume but
+                # corrupts via fuzzy; fragment_all handles their
+                # boundary-plane merging cleanly.
+                candidate_tools = prev.shapes
                 if prev._is_cohort or labeled._is_cohort:
-                    logger.debug(
-                        "cad_occ: skipping pre-fragment cut between %s and %s "
-                        "(cohort involved; cut is unsafe on shared-TShape "
-                        "sub-solids and unnecessary since cohorts are "
-                        "disjoint by invariant). Boundary merging deferred "
-                        "to fragment.",
-                        prev.physical_name,
-                        labeled.physical_name,
-                    )
-                    # MANUAL_NOTE: treat cohort hull as its own solid to cut
-                    # unstructured around? Then only need to validate higher
-                    # priority cohort mesh order
-                    continue
-                for ts in prev.shapes:
+                    if (
+                        prev._is_cohort
+                        and not labeled._is_cohort
+                        and id(ent) in prev._carve_targets
+                    ):
+                        candidate_tools = prev._carve_tools
+                        logger.debug(
+                            "cad_occ: cohort %s carves lower-priority %s",
+                            prev.physical_name,
+                            labeled.physical_name,
+                        )
+                    else:
+                        logger.debug(
+                            "cad_occ: skipping pre-fragment cut between %s and %s "
+                            "(cohort involved; cut is unsafe on shared-TShape "
+                            "sub-solids and unnecessary since cohorts are "
+                            "disjoint by invariant). Boundary merging deferred "
+                            "to fragment.",
+                            prev.physical_name,
+                            labeled.physical_name,
+                        )
+                        continue
+                for ts in candidate_tools:
                     tb = self._shape_bbox(ts)
                     if tb is None:
                         continue

@@ -50,22 +50,37 @@ class StructuredZStackError(StructuredError):
 
 
 class StructuredVolumetricOverlapError(StructuredError):
-    """Unstructured entity volumetrically overlaps a cohort.
+    """Unstructured entity overlaps a cohort slab with equal or higher priority.
 
-    v1 requires cohorts and unstructured entities to live in disjoint
-    3D volumes (sharing only z-plane boundaries). Place the entity
-    above, below, or to the side of the cohort, or split the cohort.
+    Cohorts carve overlapping unstructured entities of LOWER priority
+    (larger ``mesh_order``). An overlapping entity with equal or higher
+    priority would have to carve the cohort instead, which is not
+    supported: cohort shell faces are pre-baked and must survive BOP
+    intact. Give the entity a larger ``mesh_order`` than the structured
+    slab, or restructure so it sits above, below, or beside the cohort.
     """
 
-    def __init__(self, entity_index, cohort_index, z_overlap):
+    def __init__(
+        self,
+        entity_index,
+        cohort_index,
+        z_overlap,
+        entity_mesh_order=None,
+        slab_mesh_order=None,
+    ):
         self.entity_index = entity_index
         self.cohort_index = cohort_index
         self.z_overlap = z_overlap
+        self.entity_mesh_order = entity_mesh_order
+        self.slab_mesh_order = slab_mesh_order
         super().__init__(
-            f"Entity #{entity_index} has volumetric overlap (Δz={z_overlap:.4g}) "
-            f"with cohort #{cohort_index} AND XY-intersection in the overlap. "
-            "v1 does not support unstructured material occupying cohort space. "
-            "Restructure so the entity sits above, below, or laterally outside the cohort."
+            f"Entity #{entity_index} (mesh_order={entity_mesh_order}) has "
+            f"volumetric overlap (Δz={z_overlap:.4g}) with a slab of cohort "
+            f"#{cohort_index} (mesh_order={slab_mesh_order}). Cohorts only "
+            "carve unstructured entities of strictly lower priority (larger "
+            "mesh_order; None counts as lowest). Give the entity a larger "
+            "mesh_order than the structured slab, or restructure so it sits "
+            "above, below, or laterally outside the cohort."
         )
 
 

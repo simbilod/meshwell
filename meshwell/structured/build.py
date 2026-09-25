@@ -24,15 +24,21 @@ from OCP.BRepBuilderAPI import (
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.gp import gp_Pnt
 from OCP.TopoDS import (
+    TopoDS,
     TopoDS_Compound,
     TopoDS_Edge,
     TopoDS_Face,
+    TopoDS_Shape,
     TopoDS_Shell,
     TopoDS_Solid,
     TopoDS_Vertex,
 )
 
-from meshwell.cad_settings import DEFAULT_ARC_TOLERANCE, DEFAULT_MIN_ARC_POINTS
+from meshwell.cad_settings import (
+    DEFAULT_ARC_TOLERANCE,
+    DEFAULT_MIN_ARC_POINTS,
+    DEFAULT_POINT_TOLERANCE,
+)
 from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.exceptions import CanonicalArrangementError
 from meshwell.structured.types import (
@@ -745,6 +751,7 @@ def _build_horizontal_face(
         mw.Add(e)
     outer_wire = mw.Wire()
     mf = BRepBuilderAPI_MakeFace(outer_wire)
+    outer_face = None
     for interior in polygon.interiors:
         hole_coords = _ring_coords(interior)
         hole_edges = ereg.polyline_xy(
@@ -758,8 +765,28 @@ def _build_horizontal_face(
         mw_h = BRepBuilderAPI_MakeWire()
         for e in hole_edges:
             mw_h.Add(e)
-        mf.Add(mw_h.Wire())
+        hole_wire = mw_h.Wire()
+        # Registry-shared hole edges keep the direction they were first
+        # built in, so the hole wire may run the same way as the outer
+        # wire; the face would then ADD the hole's area (OCC-invalid, and
+        # an inside-out patch in the cohort hull). Reverse such holes.
+        if outer_face is None:
+            outer_face = BRepBuilderAPI_MakeFace(outer_wire).Face()
+        if _face_area(
+            BRepBuilderAPI_MakeFace(outer_face, hole_wire).Face()
+        ) > _face_area(outer_face):
+            hole_wire = TopoDS.Wire_s(hole_wire.Reversed())
+        mf.Add(hole_wire)
     return mf.Face()
+
+
+def _face_area(face: TopoDS_Face) -> float:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    return props.Mass()
 
 
 def _is_arc_edge(edge: "TopoDS_Edge") -> bool:
@@ -885,8 +912,24 @@ def _build_cylindrical_lateral_face(
     # "BRepCheck_UnorientableShape" for the second half-arc of a closed
     # circle (its arc spans π → 2π on a cylinder whose +X reference points
     # at u=0).
+    #
+    # The reference must be the endpoint from which the arc runs
+    # counter-clockwise (the cylinder's +u sense about +Z). For an arc whose
+    # curve runs clockwise, the first vertex would put the PCurve at
+    # u in (-delta, 0], straddling the seam for BOTH wire orders; the
+    # ThruSections fallback then creates fresh, unshared vertical edges
+    # that duplicate the neighbouring laterals' edges.
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
     center = gp_circ.Location()
-    start_pt = BRep_Tool.Pnt_s(v_bot_first)
+    arc = BRepAdaptor_Curve(edge_low)
+    p_first = arc.Value(arc.FirstParameter())
+    p_mid = arc.Value(0.5 * (arc.FirstParameter() + arc.LastParameter()))
+    p_last = arc.Value(arc.LastParameter())
+    turn = (p_mid.X() - p_first.X()) * (p_last.Y() - p_mid.Y()) - (
+        p_mid.Y() - p_first.Y()
+    ) * (p_last.X() - p_mid.X())
+    start_pt = p_first if turn >= 0.0 else p_last
     dx = start_pt.X() - center.X()
     dy = start_pt.Y() - center.Y()
     norm = (dx * dx + dy * dy) ** 0.5
@@ -1350,3 +1393,147 @@ def build_cohort_compound(
             keep=source_slab.mesh_bool,
         )
     return compound, slab_meta
+
+
+def build_cohort_hull(
+    compound: TopoDS_Compound,
+    slab_meta: dict[ShapeKey, SlabMeta],
+    subpieces: list[SubPiece],
+) -> list[TopoDS_Solid]:
+    """Return the cohort's outer hull as an OCC-valid solid, for carving neighbours.
+
+    The cohort sub-solids themselves cannot be BOP tools: they are
+    bottom-up builds with shared TShapes whose face orientations are not
+    consistent per solid, and ``BRepAlgoAPI_Cut`` silently leaves the
+    object untouched. The hull is instead assembled from the faces owned
+    by exactly one sub-solid (internal faces are shared by two). Only the
+    face *orientations* change; the face TShapes are the cohort's own, so a
+    carved neighbour's cavity walls are the cohort's lateral / cap faces.
+
+    Each hull face is oriented outward from its (single) owning sub-piece,
+    which is a vertical prism: the bottom / top caps (``SlabMeta``) point
+    to -Z / +Z, and a lateral face points away from the sub-polygon (a
+    point stepped along its normal must fall outside it).
+    ``ShapeFix_Shell.FixFaceOrientation`` is not used: it leaves stepped
+    hulls partially inside-out.
+
+    The hull is a cut-cascade tool only: the cohort compound (sub-solids)
+    remains what goes through fragment, XAO and meshing.
+
+    Args:
+        compound: Cohort compound from ``build_cohort_compound``.
+        slab_meta: Its per-sub-solid metadata (same order as ``subpieces``).
+        subpieces: The sub-pieces the compound was built from.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.gp import gp_Vec
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import (
+        TopTools_IndexedDataMapOfShapeListOfShape,
+        TopTools_IndexedMapOfShape,
+    )
+    from shapely.geometry import Point
+
+    step = 1e-6
+    piece_by_solid = dict(zip(slab_meta.keys(), subpieces, strict=True))
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(compound, TopAbs_FACE, TopAbs_SOLID, owners)
+
+    def _normal(face) -> tuple[gp_Pnt, gp_Vec]:
+        ad = BRepAdaptor_Surface(face)
+        u = 0.5 * (ad.FirstUParameter() + ad.LastUParameter())
+        v = 0.5 * (ad.FirstVParameter() + ad.LastVParameter())
+        pnt, nrm = gp_Pnt(), gp_Vec()
+        BRepGProp_Face(face).Normal(u, v, pnt, nrm)  # accounts for orientation
+        return pnt, nrm
+
+    builder = BRep_Builder()
+    shell = TopoDS_Shell()
+    builder.MakeShell(shell)
+    n_faces = 0
+    for i in range(1, owners.Extent() + 1):
+        solids = TopTools_IndexedMapOfShape()
+        for solid in owners.FindFromIndex(i):
+            solids.Add(solid)
+        if solids.Extent() != 1:
+            continue
+        face = TopoDS.Face_s(owners.FindKey(i))
+        solid_key = _shape_key(solids.FindKey(1))
+        meta = slab_meta[solid_key]
+        pnt, nrm = _normal(face)
+        face_key = _shape_key(face)
+        if face_key == meta.bot_face_key:
+            outward = nrm.Z() < 0.0
+        elif face_key == meta.top_face_key:
+            outward = nrm.Z() > 0.0
+        else:
+            length = (nrm.X() ** 2 + nrm.Y() ** 2) ** 0.5 or 1.0
+            probe = Point(
+                pnt.X() + step * nrm.X() / length, pnt.Y() + step * nrm.Y() / length
+            )
+            outward = not piece_by_solid[solid_key].sub_polygon.contains(probe)
+        builder.Add(shell, face if outward else TopoDS.Face_s(face.Reversed()))
+        n_faces += 1
+    if n_faces == 0:
+        return []
+    shell.Closed(True)
+    solid = TopoDS_Solid()
+    builder.MakeSolid(solid)
+    builder.Add(solid, shell)
+    return [solid]
+
+
+def build_void_carve_tools(
+    cohort: Cohort,
+    subpieces: list[SubPiece],
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
+) -> list[TopoDS_Shape]:
+    """Return carve prisms for void regions that have no cohort sub-solid.
+
+    A void (``mesh_bool=False``) slab only emits keep=False sub-solids where
+    it carves a structured slab (``zinterval_footprint``). Where it overlaps
+    nothing structured -- e.g. a standalone structured void -- the cohort
+    has no faces there, so ``build_cohort_hull`` cannot cover it.
+    Those leftover regions carve lower-priority neighbours exactly like an
+    unstructured void; they border no cohort face that the neighbour must
+    share, so a plain ``PolyPrism`` tool is sufficient.
+    """
+    from shapely.ops import unary_union
+
+    from meshwell.polyprism import PolyPrism
+
+    tol = 1e-9
+    tools: list[TopoDS_Shape] = []
+    for z_a, z_b in zip(cohort.z_planes[:-1], cohort.z_planes[1:], strict=True):
+        voids = [
+            s
+            for s in cohort.slabs
+            if not s.mesh_bool and s.zlo <= z_a + tol and s.zhi >= z_b - tol
+        ]
+        if not voids:
+            continue
+        covered = unary_union(
+            [
+                sp.sub_polygon
+                for sp in subpieces
+                if abs(sp.z_interval[0] - z_a) <= tol
+                and abs(sp.z_interval[1] - z_b) <= tol
+            ]
+        )
+        leftover = unary_union([s.footprint for s in voids]).difference(covered)
+        if leftover.is_empty or leftover.area <= tol:
+            continue
+        tool = PolyPrism(
+            polygons=leftover,
+            buffers={z_a: 0.0, z_b: 0.0},
+            point_tolerance=point_tolerance,
+        )
+        tool.identify_arcs = any(s.identify_arcs for s in voids)
+        tool.arc_tolerance = min(s.arc_tolerance for s in voids)
+        tool.min_arc_points = max(s.min_arc_points for s in voids)
+        tools.append(tool.instanciate_occ())
+    return tools
+
