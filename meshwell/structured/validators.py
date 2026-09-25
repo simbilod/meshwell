@@ -25,15 +25,28 @@ if TYPE_CHECKING:
 
 def _entity_z_boundaries(ent: Any) -> list[float]:
     """List of z-boundaries this entity introduces."""
+    from meshwell.interface_tag import InterfaceTag
+    from meshwell.polysurface import StructuredPolySurface
+
     if isinstance(ent, PolyPrism):
         if ent.extrude:
             return [ent.zmin, ent.zmax]
         return sorted(ent.buffers.keys())
+    if isinstance(ent, StructuredPolySurface):
+        return [ent.z]
+    if isinstance(ent, InterfaceTag) and ent.structured:
+        return [ent.zmin, ent.zmax]
     return []
 
 
 def _entity_xy_at(ent: Any, z: float):
     """Shapely geometry of entity's footprint at z, or None if no overlap."""
+    from shapely.geometry import MultiLineString
+    from shapely.ops import unary_union
+
+    from meshwell.interface_tag import InterfaceTag
+    from meshwell.polysurface import StructuredPolySurface
+
     # v1: only extrude=True PolyPrisms are considered for z-stack
     # overlap checks. Buffered PolyPrisms are not structured-eligible
     # upstream, and their z-boundaries are returned by
@@ -41,17 +54,29 @@ def _entity_xy_at(ent: Any, z: float):
     # is variable — out of scope for v1.
     if isinstance(ent, PolyPrism) and ent.extrude and ent.zmin <= z <= ent.zmax:
         return ent.polygons
+    if isinstance(ent, StructuredPolySurface) and abs(ent.z - z) <= 1e-9:
+        return unary_union(ent.polygons)
+    if isinstance(ent, InterfaceTag) and ent.structured and ent.zmin <= z <= ent.zmax:
+        lss = ent.resolved_linestrings or ent.linestrings
+        return MultiLineString(lss) if lss else None
     return None
 
 
 def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
-    """Stage 3a — raise on any mid-height z-boundary intersecting a cohort.
+    """Stage 3a — raise on any mid-height z-boundary intersecting a cohort, or unaligned structured planes.
 
     For every entity's zlo/zhi, check each cohort: if the z lies
     strictly inside the cohort's z-range AND the entity's XY at that
     z intersects the cohort's XY at that z, raise unless z coincides
     with one of the cohort's own z-planes.
+
+    Additionally, for every explicit structured surface (StructuredPolySurface or
+    InterfaceTag(structured=True)), verify that its z-boundary(ies) match at least
+    one cohort's z_planes with XY intersection; otherwise raise StructuredZStackError.
     """
+    from meshwell.interface_tag import InterfaceTag
+    from meshwell.polysurface import StructuredPolySurface
+
     for cohort_idx, cohort in enumerate(cohorts):
         cohort_z_set = set(cohort.z_planes)
         for ent_idx, ent in enumerate(entities):
@@ -71,6 +96,73 @@ def validate_z_stacks(cohorts: list[Cohort], entities: list[Any]) -> None:
                     raise StructuredZStackError(
                         entity_index=ent_idx, z=z, cohort_index=cohort_idx
                     )
+
+    if not cohorts:
+        return
+
+    for ent_idx, ent in enumerate(entities):
+        if isinstance(ent, StructuredPolySurface):
+            matched_any = False
+            for cohort in cohorts:
+                cohort_z_set = set(cohort.z_planes)
+                if approx_in(ent.z, cohort_z_set):
+                    ent_xy = _entity_xy_at(ent, ent.z)
+                    for zp in cohort.z_planes:
+                        if abs(zp - ent.z) <= 1e-9 and _cohort_xy_at(
+                            cohort, zp
+                        ).intersects(ent_xy):
+                            matched_any = True
+                            break
+                if matched_any:
+                    break
+            if not matched_any:
+                raise StructuredZStackError(
+                    entity_index=ent_idx, z=ent.z, cohort_index=0
+                )
+        elif isinstance(ent, InterfaceTag) and ent.structured:
+            matched_any = False
+            ent_xy = _entity_xy_at(ent, ent.zmin)
+            for cohort_idx, cohort in enumerate(cohorts):
+                cohort_z_set = set(cohort.z_planes)
+                zmin_ok = approx_in(ent.zmin, cohort_z_set)
+                zmax_ok = approx_in(ent.zmax, cohort_z_set)
+                if not zmin_ok:
+                    if ent_xy is not None and any(
+                        s.footprint.intersects(ent_xy) for s in cohort.slabs
+                    ):
+                        raise StructuredZStackError(
+                            entity_index=ent_idx, z=ent.zmin, cohort_index=cohort_idx
+                        )
+                    continue
+                if not zmax_ok:
+                    if ent_xy is not None and any(
+                        s.footprint.intersects(ent_xy) for s in cohort.slabs
+                    ):
+                        raise StructuredZStackError(
+                            entity_index=ent_idx, z=ent.zmax, cohort_index=cohort_idx
+                        )
+                    continue
+                if (
+                    ent.zmin < ent.zmax
+                    and ent_xy is not None
+                    and any(
+                        s.zlo < ent.zmax
+                        and s.zhi > ent.zmin
+                        and s.footprint.intersects(ent_xy)
+                        for s in cohort.slabs
+                    )
+                ):
+                    matched_any = True
+                    break
+            if not matched_any:
+                bad_z = (
+                    ent.zmin
+                    if not approx_in(ent.zmin, set(cohorts[0].z_planes))
+                    else ent.zmax
+                )
+                raise StructuredZStackError(
+                    entity_index=ent_idx, z=bad_z, cohort_index=0
+                )
 
 
 def validate_no_volumetric_cohort_overlap(

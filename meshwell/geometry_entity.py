@@ -8,6 +8,14 @@ from typing import TYPE_CHECKING, Any
 import gmsh
 import numpy as np
 
+from meshwell.cad_settings import (
+    DEFAULT_ARC_TOLERANCE,
+    DEFAULT_IDENTIFY_ARCS,
+    DEFAULT_MIN_ARC_POINTS,
+    DEFAULT_PERTURBATION,
+    DEFAULT_POINT_TOLERANCE,
+)
+
 if TYPE_CHECKING:
     from OCP.gp import gp_Pnt
     from OCP.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire
@@ -116,7 +124,7 @@ def _strip_consecutive_duplicates(
 
 def _find_canonical_seam(
     vertices: list[tuple[float, float, float]],
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     sharp_cos_threshold: float = _ARC_MAX_TURN_COS,
 ) -> int:
     """Return index at which to start a closed polyline so arc runs don't straddle the seam.
@@ -180,8 +188,8 @@ def decompose_vertices_2d(
     z: float,
     point_tolerance: float,
     identify_arcs: bool = False,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+    arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
 ) -> list["DecompositionSegment"]:
     """Decompose a 2D coordinate sequence into line and arc segments.
 
@@ -219,8 +227,8 @@ def _decompose_vertices_3d(
     vertices: list[tuple[float, float, float]],
     point_tolerance: float,
     identify_arcs: bool = False,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+    arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
 ) -> list["DecompositionSegment"]:
     """Free-function form of ``GeometryEntity.decompose_vertices``.
 
@@ -735,15 +743,15 @@ class GeometryEntity:
     # Pipeline-level parameters, stamped by cad_common.apply_arc_params /
     # CAD_OCC.process_entities. Class defaults keep standalone entity use
     # working (no arcs, no offset, no registry).
-    identify_arcs = False
-    min_arc_points = 5
-    arc_tolerance = 1e-3
+    identify_arcs = DEFAULT_IDENTIFY_ARCS
+    min_arc_points = DEFAULT_MIN_ARC_POINTS
+    arc_tolerance = DEFAULT_ARC_TOLERANCE
     circle_registry = None
-    perturbation = 0.0
+    perturbation = DEFAULT_PERTURBATION
 
     def __init__(
         self,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,
@@ -847,8 +855,8 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
+        min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+        arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
     ) -> int:
         """Create a GMSH surface from vertex coordinates with optional arc identification."""
         vertices = _strip_consecutive_duplicates(list(vertices), self.point_tolerance)
@@ -938,8 +946,8 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
+        min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+        arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
     ) -> list[DecompositionSegment]:
         """Decompose a sequence of vertices into line segments and circular arcs.
 
@@ -977,8 +985,8 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
+        min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+        arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
     ) -> TopoDS_Wire:
         """Create an OCC wire from vertex coordinates with optional arc identification.
 
@@ -1184,8 +1192,8 @@ class GeometryEntity:
         self,
         vertices: list[tuple[float, float, float]],
         identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
+        min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+        arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
     ) -> TopoDS_Face:
         """Create an OCC face from a wire built from the given vertices."""
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
@@ -1206,8 +1214,8 @@ class GeometryEntity:
         arc_color: str = "red",
         show_centers: bool = True,
         identify_arcs: bool = False,
-        min_arc_points: int = 5,
-        arc_tolerance: float = 1e-3,
+        min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+        arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
         **kwargs,
     ):
         """Visualize the decomposition of vertices into lines and arcs."""

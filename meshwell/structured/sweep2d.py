@@ -197,9 +197,15 @@ def _stamp_all(
                 [(2, ftag)], oriented=False, recursive=False
             ):
                 sweep_curves.add(abs(ct))
-    for ctag in sweep_curves:
-        gmsh.model.mesh.setTransfiniteCurve(ctag, 2)
-    gmsh.model.mesh.generate(1)
+    need_1d = any(
+        len(gmsh.model.mesh.getNodes(0, abs(pt))[0]) == 0
+        for ctag in sweep_curves
+        for _d, pt in gmsh.model.getBoundary([(1, ctag)], oriented=False)
+    )
+    if need_1d:
+        for ctag in sweep_curves:
+            gmsh.model.mesh.setTransfiniteCurve(ctag, 2)
+        gmsh.model.mesh.generate(1)
 
     stamped_curves: set[int] = set()
     for name, groups in discovered.items():

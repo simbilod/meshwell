@@ -150,6 +150,33 @@ class WedgeBotNodeMismatchError(StructuredError):
         )
 
 
+class DegenerateElementsAfterDedupError(StructuredError):
+    """Raised when node deduplication collapses mesh elements.
+
+    Dedup is only meant to merge coincident nodes produced by meshing
+    duplicate (unshared) interface entities. Collapsing an element means
+    two distinct geometric nodes were merged — a tolerance or topology bug.
+    """
+
+    def __init__(self, count_by_dim: dict[int, int], examples: list[str]):
+        self.count_by_dim = count_by_dim
+        self.examples = examples
+        detail = "\n  ".join(examples)
+        super().__init__(
+            "Node deduplication collapsed mesh elements "
+            f"(count by dim: {count_by_dim}). Examples:\n  {detail}"
+        )
+
+
+class InvalidMeshTopologyError(StructuredError):
+    """Raised when the final mesh is not a valid conforming FE mesh."""
+
+    def __init__(self, problems: list[str]):
+        self.problems = problems
+        detail = "\n  ".join(problems)
+        super().__init__(f"Invalid mesh topology:\n  {detail}")
+
+
 class StructuredVoidMeshOrderRequiredError(StructuredError):
     """A structured void (mesh_bool=False) must declare mesh_order.
 

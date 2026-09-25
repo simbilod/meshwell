@@ -27,6 +27,7 @@ from shapely.geometry import (
 )
 from shapely.ops import unary_union
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.geometry_entity import GeometryEntity
 
 if TYPE_CHECKING:
@@ -135,7 +136,8 @@ class InterfaceTag(GeometryEntity):
         snap_distance: float | None = None,
         mesh_order: float | None = None,
         mesh_bool: bool = True,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
+        structured: bool = False,
     ):
         super().__init__(point_tolerance=point_tolerance)
 
@@ -175,6 +177,7 @@ class InterfaceTag(GeometryEntity):
         self.snap_distance = snap_distance
         self.mesh_order = mesh_order
         self.mesh_bool = mesh_bool
+        self.structured = bool(structured)
         self.dimension = 2
 
         # Populated by :meth:`resolve` before :meth:`instanciate` runs.
@@ -245,6 +248,15 @@ class InterfaceTag(GeometryEntity):
             )
         )
         targets = [t for _, t in targets_with_pos]
+        has_structured_target = self.structured or any(
+            getattr(t, "structured", False) for t in targets
+        )
+        if (
+            has_structured_target
+            and self.snap_distance is None
+            and self.point_tolerance > 0
+        ):
+            snap = min(snap, 0.25 * self.point_tolerance)
 
         # Flat caps: do not extend past the user's linestring endpoints,
         # so we don't pick up corner artifacts where the strip crosses
@@ -283,13 +295,23 @@ class InterfaceTag(GeometryEntity):
         if snapped:
             merged = unary_union(snapped)
             flat = _flatten_to_linestrings([merged])
-            # Extend endpoints by snap so the InterfaceTag panel fully
-            # covers the buffered polygon face it sits on. Without this
-            # extension, BOP fragment fails on the partial coincidence
-            # (panel is a strict subset of the polygon face in y).
-            self.resolved_linestrings = [
-                _extend_linestring_endpoints(ls, snap) for ls in flat
-            ]
+            if has_structured_target:
+                # Structured cohorts operate at exact quantized coordinates
+                # (no perturbation buffer); do not overshoot endpoints.
+                self.resolved_linestrings = list(flat)
+            else:
+                # Extend endpoints by snap so the InterfaceTag panel fully
+                # covers the buffered polygon face it sits on. Without this
+                # extension, BOP fragment fails on the partial coincidence
+                # (panel is a strict subset of the polygon face in y).
+                self.resolved_linestrings = [
+                    _extend_linestring_endpoints(ls, snap) for ls in flat
+                ]
+        elif has_structured_target:
+            # Interior vertical plane within a structured cohort slab (does not
+            # sit on a pre-existing polygon boundary): preserve nominal linestrings
+            # so the cohort arrangement imprints and closes the trace directly.
+            self.resolved_linestrings = list(self.linestrings)
         else:
             self.resolved_linestrings = []
 
@@ -406,3 +428,42 @@ class InterfaceTag(GeometryEntity):
         if face_count == 1:
             return single_face
         return compound
+
+    def to_dict(self) -> dict:
+        """Convert InterfaceTag to dictionary representation."""
+        import shapely.wkt
+
+        return {
+            "type": "InterfaceTag",
+            "linestrings_wkt": [
+                shapely.wkt.dumps(ls, rounding_precision=12) for ls in self.linestrings
+            ],
+            "zmin": self.zmin,
+            "zmax": self.zmax,
+            "physical_name": self.physical_name,
+            "targets": self.targets,
+            "snap_distance": self.snap_distance,
+            "mesh_order": self.mesh_order,
+            "mesh_bool": self.mesh_bool,
+            "point_tolerance": self.point_tolerance,
+            "structured": self.structured,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "InterfaceTag":
+        """Reconstruct InterfaceTag from dictionary representation."""
+        import shapely.wkt
+
+        linestrings = [shapely.wkt.loads(wkt) for wkt in data["linestrings_wkt"]]
+        return cls(
+            linestrings=linestrings,
+            zmin=float(data["zmin"]),
+            zmax=float(data["zmax"]),
+            physical_name=data["physical_name"],
+            targets=data.get("targets"),
+            snap_distance=data.get("snap_distance"),
+            mesh_order=data.get("mesh_order"),
+            mesh_bool=data.get("mesh_bool", True),
+            point_tolerance=data.get("point_tolerance", 1e-3),
+            structured=data.get("structured", False),
+        )

@@ -52,6 +52,13 @@ from OCP.TopTools import TopTools_ShapeMapHasher
 from tqdm.auto import tqdm
 
 from meshwell.cad_common import prepare_entities
+from meshwell.cad_settings import (
+    DEFAULT_ARC_TOLERANCE,
+    DEFAULT_MIN_ARC_POINTS,
+    DEFAULT_PERTURBATION,
+    DEFAULT_POINT_TOLERANCE,
+    CADSettings,
+)
 from meshwell.validation import validate_tolerance_ladder
 
 if TYPE_CHECKING:
@@ -73,6 +80,10 @@ class OCCLabeledEntity:
     dim: int
     mesh_order: float | None = None
     _is_cohort: bool = False
+    is_surface_tag: bool = False
+    # Provenance: settings of the cad_occ run that produced this entity.
+    # write_xao embeds it in the .xao when not given explicitly.
+    cad_settings: CADSettings | None = None
 
 
 logger = logging.getLogger(__name__)
@@ -117,7 +128,7 @@ class CAD_OCC:
 
     def __init__(
         self,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         n_threads: int = cpu_count(),
         cut_fuzzy_value: float | None = None,
         fragment_fuzzy_value: float | None = None,
@@ -136,7 +147,7 @@ class CAD_OCC:
                 fragment_fuzzy_value resolved first since the
                 ``perturbation == 0`` branch depends on it:
 
-                * ``perturbation > 0`` (default): ``0.8 * perturbation``.
+                * ``perturbation > 0``: ``0.8 * perturbation``.
                   Must stay below ``perturbation``: a cut fuzzy at/above it
                   merges the buffered overlap into the lower entity and
                   erases the carved face. It must also clear the
@@ -150,9 +161,9 @@ class CAD_OCC:
                   (gmsh has no sliver of its own -- its XAO loader snaps
                   points to curves -- but the shared value is harmless
                   there).
-                * ``perturbation == 0`` (canonical-exact mode): ``0.5 *
-                  fragment_fuzzy_value``. There is no overlap strip to
-                  protect (both sides emit the identical canonical
+                * ``perturbation == 0`` (default, canonical-exact mode):
+                  ``0.5 * fragment_fuzzy_value``. There is no overlap strip
+                  to protect (both sides emit the identical canonical
                   geometry), so the ceiling is the fragment fuzzy instead;
                   ``0.5 * fragment_fuzzy_value`` heals grid-snap / T-junction
                   noise while staying strictly below the fragment's merge
@@ -161,30 +172,26 @@ class CAD_OCC:
                 all-fragment pass. Defaults to ``point_tolerance``,
                 intentionally LOOSER than the cut fuzzy: cad_occ tags
                 interfaces via raw ``TShape`` identity on per-entity leaves;
-                tightening this below the perturbation gap (~2e-5) leaves
-                coincident faces with distinct TShapes and drops ``A___B``
-                interfaces.
+                tightening this below the perturbation gap (~2e-5 when
+                ``perturbation=1e-5``) leaves coincident faces with distinct
+                TShapes and drops ``A___B`` interfaces.
             perturbation: Outward shapely buffer applied to polygon entities
-                before the sequential cut cascade. Mirrors cad_gmsh default
-                (1e-5). Used for the shared shapely pre-pass (polygon buffer
-                + InterfaceTag snap distance).
+                before the sequential cut cascade. Default ``0.0``
+                (canonical-exact mode); mirrors cad_gmsh. Used for the shared
+                shapely pre-pass (polygon buffer + InterfaceTag snap distance).
         """
         self.point_tolerance = point_tolerance
         self.n_threads = n_threads
-        self.perturbation = perturbation if perturbation is not None else 1e-5
-        self.fragment_fuzzy_value = (
-            point_tolerance if fragment_fuzzy_value is None else fragment_fuzzy_value
+        self.perturbation = (
+            perturbation if perturbation is not None else DEFAULT_PERTURBATION
         )
-        if cut_fuzzy_value is not None:
-            self.cut_fuzzy_value = cut_fuzzy_value
-        elif self.perturbation > 0:
-            self.cut_fuzzy_value = 0.8 * self.perturbation
-        else:
-            # Canonical-exact mode (perturbation=0): no overlap strip to
-            # protect; ceiling is the fragment fuzzy. 0.5*fragment heals
-            # grid-snap / T-junction noise while staying strictly below
-            # the fragment's merge authority.
-            self.cut_fuzzy_value = 0.5 * self.fragment_fuzzy_value
+        # Regime rules documented above; implemented once in CADSettings.
+        self.cut_fuzzy_value, self.fragment_fuzzy_value = CADSettings.resolve_fuzzy(
+            point_tolerance=point_tolerance,
+            perturbation=self.perturbation,
+            cut_fuzzy_value=cut_fuzzy_value,
+            fragment_fuzzy_value=fragment_fuzzy_value,
+        )
         validate_tolerance_ladder(
             perturbation=self.perturbation,
             cut_fuzzy_value=self.cut_fuzzy_value,
@@ -429,6 +436,14 @@ class CAD_OCC:
         for key, ent_idx in owners.items():
             entities[ent_idx].shapes.append(piece_shapes[key])
 
+        # Cohorts keep their pre-BOP compound (Modified(compound) is empty);
+        # make unstructured neighbours reuse the cohort sub-shapes BOP
+        # re-created so coincident interface faces are shared, not duplicated.
+        if any(ent._is_cohort for ent in entities):
+            from meshwell.structured.rebind import rebind_to_cohort_topology
+
+            rebind_to_cohort_topology(entities, builder)
+
         # Stash the builder so callers can query Modified() post-BOP.
         self.last_fragment_builder = builder
 
@@ -462,7 +477,7 @@ class CAD_OCC:
             # cad_gmsh: pass ``max(perturbation, point_tolerance)`` so the
             # resolved strip is wide enough for non-degenerate panels (at
             # least 2*point_tolerance per side). Without this override OCC
-            # defaults snap to ``perturbation`` (1e-5) and InterfaceTags can
+            # defaults snap to ``perturbation`` (0 by default) and InterfaceTags can
             # produce zero-area panels at user scale.
             prepare_entities(
                 entities_list,
@@ -694,9 +709,38 @@ class CAD_OCC:
         return self._fragment_all(labeled_entities, progress_bars=progress_bars)
 
 
+def _effective_arc_settings(
+    entities_list: list[Any],
+    identify_arcs: bool | None,
+    min_arc_points: int,
+    arc_tolerance: float,
+) -> dict[str, Any]:
+    """Arc settings actually in effect for a cad_occ run (for provenance).
+
+    When ``identify_arcs`` was passed it was stamped scene-wide, so the
+    arguments are authoritative. Otherwise the entities' own attributes
+    were used: report them when arcs are on anywhere (first arc-enabled
+    entity's fit parameters), else the plain defaults.
+    """
+    if identify_arcs is not None:
+        return {
+            "identify_arcs": bool(identify_arcs),
+            "min_arc_points": min_arc_points,
+            "arc_tolerance": arc_tolerance,
+        }
+    for ent in entities_list:
+        if getattr(ent, "identify_arcs", False):
+            return {
+                "identify_arcs": True,
+                "min_arc_points": ent.min_arc_points,
+                "arc_tolerance": ent.arc_tolerance,
+            }
+    return {"identify_arcs": False}
+
+
 def cad_occ(
     entities_list: list[Any],
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
     cut_fuzzy_value: float | None = None,
@@ -705,8 +749,8 @@ def cad_occ(
     return_processor: bool = False,
     prepared: bool = False,
     identify_arcs: bool | None = None,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+    arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
 ) -> list[OCCLabeledEntity] | tuple[list[OCCLabeledEntity], CAD_OCC]:
     """Utility function for OCC-based CAD processing.
 
@@ -746,6 +790,17 @@ def cad_occ(
     out = processor.process_entities(
         entities_list, progress_bars=progress_bars, prepared=prepared
     )
+    settings = CADSettings(
+        point_tolerance=point_tolerance,
+        perturbation=processor.perturbation,
+        cut_fuzzy_value=processor.cut_fuzzy_value,
+        fragment_fuzzy_value=processor.fragment_fuzzy_value,
+        **_effective_arc_settings(
+            entities_list, identify_arcs, min_arc_points, arc_tolerance
+        ),
+    )
+    for ent in out:
+        ent.cad_settings = settings
     # MANUAL_NOTE: unify these two return values?
     if return_processor:
         return out, processor

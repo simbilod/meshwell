@@ -33,6 +33,12 @@ import gmsh
 from tqdm.auto import tqdm
 
 from meshwell.cad_common import prepare_entities
+from meshwell.cad_settings import (
+    DEFAULT_ARC_TOLERANCE,
+    DEFAULT_MIN_ARC_POINTS,
+    DEFAULT_POINT_TOLERANCE,
+    CADSettings,
+)
 from meshwell.model import ModelManager
 from meshwell.validation import unpack_dimtags
 
@@ -86,7 +92,7 @@ class CAD_GMSH:
 
     def __init__(
         self,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         n_threads: int = cpu_count(),
         filename: str = "temp",
         model: ModelManager | None = None,
@@ -105,32 +111,36 @@ class CAD_GMSH:
                 the processor does not finalize gmsh on exit -- the caller
                 owns the lifecycle.
             perturbation: Outward shapely buffer applied to polygon entities
-                before the sequential cut cascade. Default ``1e-5`` (sub-
-                tolerance, ~1% of the default ``point_tolerance = 1e-3``).
-                Can be overridden per scene for complex-geometry robustness.
+                before the sequential cut cascade. Default ``0.0``
+                (canonical-exact mode: both sides of a shared boundary emit
+                identical geometry). A small positive value (e.g. ``1e-5``)
+                can be set per scene for complex-geometry robustness.
         """
-        if perturbation is not None:
-            self.perturbation = perturbation
+        self.perturbation = perturbation if perturbation is not None else 0.0
+        if self.perturbation > 0:
+            # Tolerance ladder:
+            #   geometry_tolerance < tolerance_boolean < perturbation
+            # so BOP can resolve the small offset cleanly. tolerance_boolean
+            # matches cad_occ's default cut fuzzy (0.8*perturbation) to keep
+            # the two backends numerically aligned; gmsh has no tangency
+            # sliver of its own (its XAO loader snaps points to curves), but
+            # the wider value is harmless here and preserves parity.
+            geometry_tolerance = self.perturbation / 100
+            tolerance_boolean = 0.8 * self.perturbation
         else:
-            # Sub-tolerance default. Empirically must remain meaningfully
-            # larger than FP noise (~1e-7); 1e-5 is two orders below
-            # default point_tolerance, giving ~1% distortion at user scale.
-            self.perturbation = 1e-5
+            # Canonical-exact mode: no offset strip to protect. Mirror
+            # cad_occ's cut fuzzy (0.5 * fragment fuzzy == 0.5 *
+            # point_tolerance) and keep geometry_tolerance well below it.
+            geometry_tolerance = 1e-4 * point_tolerance
+            tolerance_boolean = 0.5 * point_tolerance
 
         if model is None:
             self.model_manager = ModelManager(
                 n_threads=n_threads,
                 filename=filename,
                 point_tolerance=point_tolerance,
-                # Tolerance ladder:
-                #   geometry_tolerance < tolerance_boolean < perturbation
-                # so BOP can resolve the small offset cleanly. tolerance_boolean
-                # matches cad_occ's default cut fuzzy (0.8*perturbation) to keep
-                # the two backends numerically aligned; gmsh has no tangency
-                # sliver of its own (its XAO loader snaps points to curves), but
-                # the wider value is harmless here and preserves parity.
-                geometry_tolerance=self.perturbation / 100,
-                tolerance_boolean=0.8 * self.perturbation,
+                geometry_tolerance=geometry_tolerance,
+                tolerance_boolean=tolerance_boolean,
             )
             self._owns_model = True
         else:
@@ -494,7 +504,7 @@ def _add_physical_group(name: str, dimtags) -> None:
 
 def cad_gmsh(
     entities_list: list[Any],
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     n_threads: int = cpu_count(),
     progress_bars: bool = False,
     filename: str = "temp",
@@ -503,8 +513,8 @@ def cad_gmsh(
     boundary_delimiter: str = "None",
     perturbation: float | None = None,
     identify_arcs: bool | None = None,
-    min_arc_points: int = 5,
-    arc_tolerance: float = 1e-3,
+    min_arc_points: int = DEFAULT_MIN_ARC_POINTS,
+    arc_tolerance: float = DEFAULT_ARC_TOLERANCE,
 ) -> tuple[list[GMSHLabeledEntity], ModelManager]:
     """Build + fragment + tag ``entities_list`` in a gmsh model.
 
@@ -539,5 +549,14 @@ def cad_gmsh(
         progress_bars=progress_bars,
         interface_delimiter=interface_delimiter,
         boundary_delimiter=boundary_delimiter,
+    )
+    # Provenance for the mesh stage / ModelManager.save_to_xao. The OCC
+    # fuzzy fields are recorded at their derived values (unused by gmsh).
+    processor.model_manager.cad_settings = CADSettings(
+        point_tolerance=point_tolerance,
+        perturbation=processor.perturbation,
+        identify_arcs=bool(identify_arcs),
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
     )
     return labeled, processor.model_manager

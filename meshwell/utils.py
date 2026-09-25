@@ -141,6 +141,14 @@ def deserialize(data: Any, registry: dict[str, callable] | None = None) -> Any:
                 from meshwell.polysurface import PolySurface
 
                 return PolySurface.from_dict(data)
+            if t == "StructuredPolySurface":
+                from meshwell.polysurface import StructuredPolySurface
+
+                return StructuredPolySurface.from_dict(data)
+            if t == "InterfaceTag":
+                from meshwell.interface_tag import InterfaceTag
+
+                return InterfaceTag.from_dict(data)
             if t == "PolyPrism":
                 from meshwell.polyprism import PolyPrism
 

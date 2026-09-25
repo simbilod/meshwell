@@ -7,6 +7,7 @@ import gmsh
 import shapely
 from shapely.geometry import MultiPolygon, Polygon
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.geometry_entity import GeometryEntity, warn_legacy_arc_keys
 from meshwell.structured.exceptions import StructuredExtrudeRequiredError
 from meshwell.validation import format_physical_name
@@ -40,7 +41,7 @@ class PolyPrism(GeometryEntity):
         mesh_bool: bool = True,
         additive: bool = False,
         subdivision: tuple[int, int, int] | None = None,
-        point_tolerance: float = 1e-3,
+        point_tolerance: float = DEFAULT_POINT_TOLERANCE,
         translation: tuple[float, float, float] | None = None,
         rotation_axis: tuple[float, float, float] | None = None,
         rotation_point: tuple[float, float, float] | None = None,

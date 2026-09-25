@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Persist CAD settings in XAO files so separate CAD and mesh stages use the same tolerances and arc settings;
+- `perturbation` defaults to exact mode (`0.0`).
+- Harden structured/unstructured interfaces with topology checks
+- Harden structured/unstructured interfaces with safer node deduplication
+
 ## 2.4.0
 
 - cad_occ focus

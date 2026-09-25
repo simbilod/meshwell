@@ -314,39 +314,12 @@ def _polyline_target_region(p0, p1, n_dir, region_polys):
     )
 
 
-def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
-    """Clip + imprint every sweep; emit synthetic __sweep/__sweepsrc entities.
-
-    A second, sweeps-only BOP fragment over all dim-2 entity shapes with the
-    clipped sweep rectangles as tool faces ("highest mesh order, last").
-    Sub-faces inherit their entity's physical name (shapes are replaced by
-    their Modified() pieces in place); pieces inside a sweep rectangle
-    additionally get a synthetic dim-2 annotator entity, and edges of those
-    pieces lying on the source segment get one dim-1 __sweepsrc entity.
-    """
-    from OCP.BOPAlgo import BOPAlgo_Builder
-    from OCP.BRepBuilderAPI import (
-        BRepBuilderAPI_MakeEdge,
-        BRepBuilderAPI_MakeFace,
-        BRepBuilderAPI_MakeWire,
-    )
-    from OCP.BRepGProp import BRepGProp
-    from OCP.gp import gp_Pnt
-    from OCP.GProp import GProp_GProps
-    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_ShapeEnum
-    from OCP.TopExp import TopExp_Explorer
-    from OCP.TopoDS import TopoDS
-
-    from meshwell.cad_occ import OCCLabeledEntity
-
+def resolve_sweep_rectangles(entities, sweeps, point_tolerance: float) -> list:
+    """Resolve all sweeps into ``(sweep, side, rect_polygon, p0, p1, n_dir)`` tuples."""
     if not sweeps:
-        return occ_entities
-
+        return []
     region_polys = final_region_polygons(entities)
-
-    # ---- resolve every sweep side into rectangles -----------------------
-    resolved = []  # (sweep, side, rect_polygon, p0, p1, n_dir)
-    all_rects = []
+    resolved = []
     for sweep in sweeps:
         p0, p1 = resolve_attachment(sweep, entities, region_polys, point_tolerance)
         for side, thick in sweep.thickness.items():
@@ -362,10 +335,41 @@ def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
                     if rect.intersection(other_rect).area > (10 * point_tolerance) ** 2:
                         raise SweepOverlapError(sweep.name, other_sweep.name)
                 resolved.append((sweep, side, rect, p0, p1, n_dir))
-                all_rects.append(rect)
+    return resolved
 
+
+def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
+    """Clip + imprint every sweep; emit synthetic __sweep/__sweepsrc entities.
+
+    A second, sweeps-only BOP fragment over all dim-2 and dim-3 entity shapes
+    with the clipped sweep rectangles as tool faces ("highest mesh order, last").
+    Sub-faces inherit their entity's physical name (shapes are replaced by
+    their Modified() pieces in place); pieces inside a sweep rectangle
+    additionally get a synthetic dim-2 annotator entity, and edges of those
+    pieces lying on the source segment get one dim-1 __sweepsrc entity.
+    """
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeWire,
+    )
+    from OCP.BRepGProp import BRepGProp
+    from OCP.gp import gp_Pnt
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_ShapeEnum, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshwell.cad_occ import OCCLabeledEntity
+
+    if not sweeps:
+        return occ_entities
+
+    resolved = resolve_sweep_rectangles(entities, sweeps, point_tolerance)
     if not resolved:
         return occ_entities
+    all_rects = [rect for _sw, _side, rect, *_ in resolved]
 
     # ---- tool faces -----------------------------------------------------
     def _face_from_polygon(poly):
@@ -383,7 +387,7 @@ def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
     # ---- fragment -------------------------------------------------------
     builder = BOPAlgo_Builder()
     for ent in occ_entities:
-        if ent.dim != 2:
+        if ent.dim not in (2, 3):
             continue
         for shape in ent.shapes:
             builder.AddArgument(shape)
@@ -398,28 +402,39 @@ def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
             return [shape]
         return list(modified)
 
-    # replace each dim-2 entity's shapes by their pieces (faces only)
+    # replace each dim-2 / dim-3 entity's shapes by their pieces so TShapes stay shared
     for ent in occ_entities:
-        if ent.dim != 2:
-            continue
-        new_shapes = []
-        for shape in ent.shapes:
-            for piece in _pieces(shape):
-                if piece.ShapeType() == TopAbs_ShapeEnum.TopAbs_FACE:
-                    new_shapes.append(piece)
-                else:
-                    exp = TopExp_Explorer(piece, TopAbs_FACE)
-                    while exp.More():
-                        new_shapes.append(exp.Current())
-                        exp.Next()
-        ent.shapes = new_shapes
+        if ent.dim == 2:
+            new_shapes = []
+            for shape in ent.shapes:
+                for piece in _pieces(shape):
+                    if piece.ShapeType() == TopAbs_ShapeEnum.TopAbs_FACE:
+                        new_shapes.append(piece)
+                    else:
+                        exp = TopExp_Explorer(piece, TopAbs_FACE)
+                        while exp.More():
+                            new_shapes.append(exp.Current())
+                            exp.Next()
+            ent.shapes = new_shapes
+        elif ent.dim == 3:
+            new_shapes = []
+            for shape in ent.shapes:
+                for piece in _pieces(shape):
+                    if piece.ShapeType() == TopAbs_ShapeEnum.TopAbs_SOLID:
+                        new_shapes.append(piece)
+                    else:
+                        exp = TopExp_Explorer(piece, TopAbs_SOLID)
+                        while exp.More():
+                            new_shapes.append(exp.Current())
+                            exp.Next()
+            ent.shapes = new_shapes
 
     # ---- synthetic annotators ------------------------------------------
     def _face_centroid(face):
         props = GProp_GProps()
         BRepGProp.SurfaceProperties_s(face, props)
         p = props.CentreOfMass()
-        return np.array([p.X(), p.Y()])
+        return np.array([p.X(), p.Y()]), float(p.Z())
 
     def _edge_midpoint(edge):
         props = GProp_GProps()
@@ -437,9 +452,11 @@ def sweep_imprint_pass(occ_entities, sweeps, entities, point_tolerance):
         for ent in occ_entities:
             if ent.dim != 2 or not ent.keep:
                 continue
+            if any(n.startswith("__cohort_") for n in (ent.physical_name or ())):
+                continue
             for face in ent.shapes:
-                c = _face_centroid(face)
-                if rect.contains(Point(*c)):
+                c, z_c = _face_centroid(face)
+                if abs(z_c) <= 10 * point_tolerance and rect.contains(Point(*c)):
                     band_faces.append(face)
         for face in band_faces:
             out.append(

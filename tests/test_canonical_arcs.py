@@ -610,7 +610,7 @@ def test_cad_occ_canonical_concentric_default_eps():
     from meshwell.cad_occ import cad_occ
 
     ents = _disc_and_plate()
-    out = cad_occ(ents, identify_arcs=True)
+    out = cad_occ(ents, identify_arcs=True, perturbation=1e-5)
     solids = _assert_two_clean_solids(out)
     circles = [c for e in solids for s in e.shapes for c in _circle_edges(s)]
     assert circles
@@ -688,9 +688,7 @@ def test_fuzzy_defaults_by_regime():
     assert proc.cut_fuzzy_value == pytest.approx(0.8e-5)
     proc0 = CAD_OCC(point_tolerance=1e-3, perturbation=0.0)
     assert proc0.cut_fuzzy_value == pytest.approx(0.5e-3)
-    assert CAD_OCC(point_tolerance=1e-3).perturbation == pytest.approx(
-        1e-5
-    )  # None = default
+    assert CAD_OCC(point_tolerance=1e-3).perturbation == 0.0  # None = default
 
 
 def test_ladder_warns_on_degenerate_zero_cut_fuzzy():

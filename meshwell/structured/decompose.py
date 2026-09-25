@@ -13,6 +13,7 @@ import shapely
 from shapely.geometry import Polygon
 from shapely.ops import polygonize, unary_union
 
+from meshwell.cad_settings import DEFAULT_POINT_TOLERANCE
 from meshwell.geometry_entity import decompose_vertices_2d
 from meshwell.structured.exceptions import CanonicalArrangementError
 from meshwell.structured.types import (
@@ -214,7 +215,7 @@ def build_cohort_arrangement(
     cohort_index: int,
     cohort: Cohort,
     adjacent_unstructured: list,
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
     interface_lines: list | None = None,
 ) -> Arrangement:
     """One shapely polygonize over the union of all relevant boundaries.
@@ -241,7 +242,11 @@ def build_cohort_arrangement(
     parameters use the strictest (largest `min_arc_points`, smallest
     `arc_tolerance`) across the cohort's slabs.
     """
-    raw_boundaries = [s.footprint.boundary for s in cohort.slabs]
+    raw_boundaries = [s.footprint.boundary for s in cohort.slabs] + [
+        p.footprint.boundary
+        for p in cohort.planes
+        if p.orientation == "horizontal" and not p.footprint.is_empty
+    ]
     # Deduplicate cohort boundaries progressively so that shared arc
     # sections (e.g. the outer U-turn arc shared between two adjacent
     # meander slabs, or a disc boundary duplicated by an adjacent base/
@@ -284,21 +289,63 @@ def build_cohort_arrangement(
                 continue
         linework.append(line)
 
+    vertical_planes = [
+        p.footprint
+        for p in cohort.planes
+        if p.orientation == "vertical" and not p.footprint.is_empty
+    ]
+    if vertical_planes:
+        linework.extend(vertical_planes)
+
     if interface_lines:
         linework.extend(interface_lines)
     merged = unary_union(linework)
     pieces = tuple(polygonize(merged))
 
-    # OR identify_arcs across the cohort's slabs; pick strictest arc
+    # If any vertical StructuredPlane has a dangling segment (degree-1 endpoint
+    # strictly inside a cohort polygon that polygonize dropped), close it with a
+    # one-sided auxiliary strip clipped to the cohort footprint so the trace
+    # becomes a manifold boundary edge shared by two SubPieces of the same material.
+    if vertical_planes and pieces:
+        covered_bounds = unary_union([p.boundary for p in pieces])
+        cohort_hull = unary_union([s.footprint for s in cohort.slabs])
+        added_closure = False
+        for v_fp in vertical_planes:
+            dangling = v_fp.difference(covered_bounds)
+            if dangling.is_empty or dangling.length <= point_tolerance:
+                continue
+            strip_width = max(10.0 * point_tolerance, min(0.25 * dangling.length, 1.0))
+            aux_strip = shapely.set_precision(
+                dangling.buffer(strip_width, single_sided=True, join_style="mitre"),
+                grid_size=point_tolerance,
+                mode="valid_output",
+            ).intersection(cohort_hull)
+            if aux_strip.is_empty or getattr(aux_strip, "area", 0.0) <= 0:
+                aux_strip = shapely.set_precision(
+                    dangling.buffer(
+                        -strip_width, single_sided=True, join_style="mitre"
+                    ),
+                    grid_size=point_tolerance,
+                    mode="valid_output",
+                ).intersection(cohort_hull)
+            if not aux_strip.is_empty and getattr(aux_strip, "area", 0.0) > 0:
+                linework.append(aux_strip.boundary)
+                added_closure = True
+        if added_closure:
+            merged = unary_union(linework)
+            pieces = tuple(polygonize(merged))
+
+    # OR identify_arcs across the cohort's slabs and planes; pick strictest arc
     # params so the canonical fit never violates any contributor's
     # preference.
-    identify_arcs = any(s.identify_arcs for s in cohort.slabs)
+    all_members = (*cohort.slabs, *cohort.planes)
+    identify_arcs = any(m.identify_arcs for m in all_members)
     min_arc_points = max(
-        (s.min_arc_points for s in cohort.slabs if s.identify_arcs),
+        (m.min_arc_points for m in all_members if m.identify_arcs),
         default=5,
     )
     arc_tolerance = min(
-        (s.arc_tolerance for s in cohort.slabs if s.identify_arcs),
+        (m.arc_tolerance for m in all_members if m.identify_arcs),
         default=1e-3,
     )
     # Canonical edges live at the cohort's z-planes; use the first plane
@@ -366,10 +413,46 @@ def arrangement_subpieces_for_interval(
     return subs
 
 
+def _horizontal_face_footprints(
+    shape: object, z_tolerance: float = 1e-9
+) -> list[tuple["Polygon", float]]:
+    """Return ``[(Polygon, z), ...]`` for horizontal planar faces in ``shape``."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from shapely.geometry import Polygon
+
+    footprints: list[tuple[Polygon, float]] = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face_s(explorer.Current())
+        explorer.Next()
+        points: list[tuple[float, float, float]] = []
+        wire_explorer = BRepTools_WireExplorer(BRepTools.OuterWire_s(face))
+        while wire_explorer.More():
+            pnt = BRep_Tool.Pnt_s(wire_explorer.CurrentVertex())
+            points.append((pnt.X(), pnt.Y(), pnt.Z()))
+            wire_explorer.Next()
+        if len(points) < 3:
+            continue
+        zs = [p[2] for p in points]
+        if max(zs) - min(zs) > z_tolerance:
+            continue
+        polygon = Polygon([(x, y) for x, y, _ in points])
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        if not polygon.is_empty:
+            footprints.append((polygon, zs[0]))
+    return footprints
+
+
 def decompose_cohorts(
     cohorts: list[Cohort],
     unstructured_entities: list[Any],
-    point_tolerance: float = 1e-3,
+    point_tolerance: float = DEFAULT_POINT_TOLERANCE,
+    sweeps: list[Any] | None = None,
 ) -> tuple[list[list[SubPiece]], list[Any], list[Arrangement]]:
     """Stage 3 driver — cohort-global arrangement edition.
 
@@ -398,6 +481,17 @@ def decompose_cohorts(
     from meshwell.interface_tag import InterfaceTag
     from meshwell.polyprism import PolyPrism
 
+    sweep_rects = []
+    if sweeps:
+        from meshwell.structured.sweep_cad import resolve_sweep_rectangles
+
+        sweep_rects = [
+            rect
+            for _sw, _side, rect, *_ in resolve_sweep_rectangles(
+                unstructured_entities, sweeps, point_tolerance
+            )
+        ]
+
     # 1. For each cohort, collect adjacent unstructured boundaries to
     # include in the cohort's arrangement linework.
     adjacency_lines_per_cohort: list[list] = []
@@ -419,7 +513,7 @@ def decompose_cohorts(
                 if touches:
                     # Snap to the same grid the cohort slab footprints were
                     # snapped to in structured_pre_pass. Without this, the
-                    # 1e-5 perturbation from prepare_entities makes the
+                    # (optional, non-zero) perturbation from prepare_entities makes the
                     # cladding boundary live on a different grid than the
                     # cohort, and polygonize produces a thin annulus that no
                     # cohort sub-piece covers.
@@ -458,6 +552,34 @@ def decompose_cohorts(
                                 break
                         if touches:
                             iface_lines.extend(snapped_lss)
+            elif getattr(ent, "dimension", None) == 2 and hasattr(
+                ent, "instanciate_occ"
+            ):
+                for fp_poly, z in _horizontal_face_footprints(ent.instanciate_occ()):
+                    z_snap = _snap_to_cohort_plane(z, cohort)
+                    if z_snap is None:
+                        continue
+                    if _cohort_xy_at(cohort, z_snap).intersects(fp_poly):
+                        lines.append(
+                            shapely.set_precision(
+                                fp_poly.boundary,
+                                grid_size=point_tolerance,
+                                mode="valid_output",
+                            )
+                        )
+        if sweep_rects:
+            z_snap = _snap_to_cohort_plane(0.0, cohort)
+            if z_snap is not None:
+                cohort_xy = _cohort_xy_at(cohort, z_snap)
+                lines.extend(
+                    shapely.set_precision(
+                        rect.boundary,
+                        grid_size=point_tolerance,
+                        mode="valid_output",
+                    )
+                    for rect in sweep_rects
+                    if cohort_xy.intersects(rect)
+                )
         adjacency_lines_per_cohort.append(lines)
         interface_lines_per_cohort.append(iface_lines)
 

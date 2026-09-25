@@ -14,6 +14,11 @@ import meshio
 import numpy as np
 
 from meshwell._mesh_entity import _MeshEntity
+from meshwell.cad_settings import (
+    CADSettings,
+    CADSettingsMismatchError,
+    MissingCADSettingsError,
+)
 from meshwell.model import ModelManager
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,7 @@ class Mesh:
         filename: str = "temp",
         model: ModelManager | None = None,
         point_tolerance: float | None = None,
+        cad_settings: CADSettings | None = None,
     ):
         """Initialize mesh generator.
 
@@ -57,6 +63,9 @@ class Mesh:
             filename: Base filename for the model
             model: Optional Model instance to use (creates new if None)
             point_tolerance: Optional point tolerance for the model
+            cad_settings: CAD-stage settings of the geometry being meshed.
+                Stored on the model manager; supplies ``point_tolerance``
+                for the structured stamping hooks.
 
         """
         # Use provided model or create new one
@@ -70,6 +79,21 @@ class Mesh:
         else:
             self.model_manager = model
             self._owns_model = False
+        if cad_settings is not None:
+            self.model_manager.cad_settings = cad_settings
+
+    def _cad_point_tolerance(self) -> float:
+        """CAD-stage ``point_tolerance`` (quantization lattice for stamping)."""
+        settings = self.model_manager.cad_settings
+        if settings is not None:
+            return settings.point_tolerance
+        if self.model_manager.point_tolerance is not None:
+            return self.model_manager.point_tolerance
+        raise MissingCADSettingsError(
+            "Structured meshing needs the CAD-stage point_tolerance, but no "
+            "CADSettings are attached to the model and ModelManager."
+            "point_tolerance is None. Pass cad_settings=CADSettings(...)."
+        )
 
     def _initialize_model(self, input_file: Path | None = None) -> None:
         """Initialize GMSH model and optionally load .xao file."""
@@ -221,9 +245,17 @@ class Mesh:
         final_entity_list = []
         final_entity_dict = {}
 
-        # We address entities by "named" physicals (not default):
-        top_physical_names = self.get_top_physical_names()
-        all_physical_names = self.get_all_physical_names()
+        # We address entities by "named" physicals (not default or synthetic bookkeeping):
+        top_physical_names = [
+            n
+            for n in self.get_top_physical_names()
+            if not n.startswith(("__cohort_", "__sweep"))
+        ]
+        all_physical_names = [
+            n
+            for n in self.get_all_physical_names()
+            if not n.startswith(("__cohort_", "__sweep"))
+        ]
 
         # Collect all base names from interfaces to handle removed entities (voids)
         base_names = set(all_physical_names)
@@ -558,6 +590,7 @@ class Mesh:
         # ``mesh(input_file=xao, ...)`` step -- both flow through here.
         # Composed once, before the (possibly multi-attempt) retry loop,
         # so a fallback retry doesn't stamp/validate more than once.
+        from meshwell.structured import wedge as _wedge
         from meshwell.structured.sweep2d import (
             discover_sweeps,
             make_sweep_pre_2d_hook,
@@ -581,17 +614,29 @@ class Mesh:
                     "gmsh boundary-layer generation. Mesh them in separate models."
                 )
             specs_by_name = validate_sweep_pairing(discovered, resolution_specs)
-            sweep_hook = make_sweep_pre_2d_hook(
-                discovered,
-                specs_by_name,
-                self.model_manager.point_tolerance or 1e-3,
-            )
-            user_pre_2d = pre_2d_hook
+            user_pre_2d_before_sweep = pre_2d_hook
 
             def pre_2d_hook() -> None:
-                if user_pre_2d is not None:
-                    user_pre_2d()
+                if user_pre_2d_before_sweep is not None:
+                    user_pre_2d_before_sweep()
+                cur_discovered = discover_sweeps() or discovered
+                sweep_hook = make_sweep_pre_2d_hook(
+                    cur_discovered,
+                    specs_by_name,
+                    self._cad_point_tolerance(),
+                )
                 sweep_hook()
+
+        if getattr(_wedge, "has_cohort_groups", lambda: False)() and hasattr(
+            _wedge, "make_cohort_hooks"
+        ):
+            pre_2d_hook, pre_3d_hook, post_3d_hook = _wedge.make_cohort_hooks(
+                resolution_specs=resolution_specs or None,
+                point_tolerance=self._cad_point_tolerance(),
+                user_pre_2d=pre_2d_hook,
+                user_pre_3d=pre_3d_hook,
+                user_post_3d=post_3d_hook,
+            )
 
         def _run_once(algo2d: int, algo3d: int) -> meshio.Mesh:
             self._initialize_mesh_settings(
@@ -649,6 +694,63 @@ class Mesh:
         raise RuntimeError("unreachable: retry loop exited without returning")
 
 
+def _resolve_mesh_cad_settings(
+    *,
+    input_file: Path | str | None,
+    model: ModelManager | None,
+    cad_settings: CADSettings | None,
+    point_tolerance: float | None,
+) -> CADSettings | None:
+    """Reconcile every source of CAD settings for a mesh-stage call.
+
+    * ``.xao`` intake: :meth:`CADSettings.resolve_for_intake` (raises when
+      the file has no metadata and nothing is supplied, or on mismatch).
+    * in-memory ``model``: ``model.cad_settings`` and ``cad_settings`` must
+      agree when both are set.
+    * any explicit ``point_tolerance`` and a non-``None``
+      ``model.point_tolerance`` must equal the resolved CAD value.
+
+    Returns ``None`` only for in-memory models without any settings (the
+    ModelManager's own ``point_tolerance`` is then used).
+    """
+    model_settings = model.cad_settings if model is not None else None
+    if input_file is not None:
+        settings = CADSettings.resolve_for_intake(
+            input_file, cad_settings, point_tolerance=point_tolerance
+        )
+        settings.check_matches(
+            model_settings, self_label="xao", other_label="model.cad_settings"
+        )
+    else:
+        if model_settings is not None:
+            model_settings.check_matches(
+                cad_settings,
+                self_label="model.cad_settings",
+                other_label="cad_settings",
+            )
+        elif cad_settings is not None and not isinstance(cad_settings, CADSettings):
+            raise TypeError(
+                f"cad_settings must be a CADSettings, got {type(cad_settings).__name__}"
+            )
+        settings = model_settings or cad_settings
+        if settings is not None:
+            settings.check_point_tolerance(
+                point_tolerance, label="point_tolerance argument"
+            )
+    if (
+        settings is not None
+        and model is not None
+        and model.point_tolerance is not None
+        and model.point_tolerance != settings.point_tolerance
+    ):
+        raise CADSettingsMismatchError(
+            "CAD settings mismatch -- point_tolerance: CAD stage used "
+            f"{settings.point_tolerance!r} but model.point_tolerance="
+            f"{model.point_tolerance!r}"
+        )
+    return settings
+
+
 def mesh(
     dim: int,
     default_characteristic_length: float,
@@ -673,6 +775,7 @@ def mesh(
     pre_2d_hook: Callable[[], None] | None = None,
     pre_3d_hook: Callable[[], None] | None = None,
     post_3d_hook: Callable[[], None] | None = None,
+    cad_settings: CADSettings | None = None,
 ) -> meshio.Mesh | None:
     """Utility function that wraps the Mesh class for easier usage.
 
@@ -697,21 +800,40 @@ def mesh(
         filename: Temporary filename for GMSH model
         model: Optional Model instance to use (creates new if None)
         gmsh_version: GMSH MSH file version (e.g. 2.2 or 4.1)
-        point_tolerance: used to set GMSH global variables. Should be similar to used in CAD.
+        point_tolerance: used to set GMSH global variables. If given, must
+            equal the CAD-stage ``point_tolerance`` (raises otherwise).
         interface_delimiter: String used to separate names in an interface
         pre_2d_hook: Optional callable invoked immediately before generate(2)
         pre_3d_hook: Optional callable invoked immediately before generate(3)
         post_3d_hook: Optional callable invoked immediately after generate(3)
+        cad_settings: :class:`~meshwell.cad_settings.CADSettings` the
+            geometry was generated with. Required when ``input_file`` lacks
+            meshwell metadata; must match the embedded settings otherwise.
+
+    Raises:
+        MissingCADSettingsError: ``input_file`` has no meshwell metadata and
+            no ``cad_settings`` was supplied.
+        CADSettingsMismatchError: the ``.xao`` metadata, ``cad_settings``,
+            ``model.cad_settings``, ``model.point_tolerance`` or
+            ``point_tolerance`` disagree.
 
     Returns:
         Optional[meshio.Mesh]: Generated mesh object
 
     """
+    settings = _resolve_mesh_cad_settings(
+        input_file=input_file,
+        model=model,
+        cad_settings=cad_settings,
+        point_tolerance=point_tolerance,
+    )
+
     mesh_generator = Mesh(
         n_threads=n_threads,
         filename=filename,
         model=model,
         point_tolerance=point_tolerance,
+        cad_settings=settings,
     )
 
     if resolution_specs is None:

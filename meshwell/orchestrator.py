@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -11,9 +10,10 @@ import gmsh
 
 from meshwell.cad_common import apply_arc_params, prepare_entities
 from meshwell.cad_occ import cad_occ
+from meshwell.cad_settings import CADSettings
 from meshwell.mesh import mesh
 from meshwell.model import ModelManager
-from meshwell.occ_xao_writer import default_interface_aabb_tolerance
+from meshwell.occ_xao_writer import default_interface_aabb_tolerance, write_xao
 from meshwell.structured.pipeline import (
     StructuredState,
     structured_post_pass,
@@ -21,32 +21,165 @@ from meshwell.structured.pipeline import (
 )
 from meshwell.structured.types import ShapeKey
 from meshwell.structured.validators import validate_cohort_shells
-from meshwell.structured.wedge import (
-    freeze_lateral_mesh,
-    stamp_wedges,
-)
 from meshwell.utils import deserialize
 
-# Tight gmsh geometry tolerance used while deduplicating mesh nodes, so
-# distinct-but-close points (e.g. on adjacent fine curves) are not merged.
-_DEDUP_GEOMETRY_TOLERANCE = 1e-6
 
+def cad(
+    entities: list[Any],
+    output_file: Path | str | None = None,
+    registry: dict[str, Callable[..., Any]] | None = None,
+    sweeps: list[Any] | None = None,
+    point_tolerance: float | None = None,
+    perturbation: float | None = None,
+    identify_arcs: bool | None = None,
+    min_arc_points: int | None = None,
+    arc_tolerance: float | None = None,
+    cut_fuzzy_value: float | None = None,
+    fragment_fuzzy_value: float | None = None,
+    canonicalize_topology: bool | None = None,
+    n_threads: int | None = None,
+    progress_bars: bool = False,
+    interface_delimiter: str = "___",
+    boundary_delimiter: str = "None",
+    model_name: str = "meshwell",
+    cad_settings: CADSettings | None = None,
+) -> list[Any]:
+    """Run the OpenCASCADE + structured CAD pipeline and optionally write a self-describing ``.xao``.
 
-def _remove_duplicate_nodes_tight(dimtags: list[tuple[int, int]] | None = None) -> None:
-    """Run ``removeDuplicateNodes`` under a tightened geometry tolerance.
+    Does not initialize or require Gmsh. Both 3D structured cohorts
+    (``PolyPrism(structured=True)``) and 2D structured sweeps (``sweeps``)
+    encode their metadata into synthetic physical groups in the output
+    entities / ``.xao`` so a subsequent :func:`meshwell.mesh.mesh` call
+    with ``input_file=output_file`` automatically discovers and executes
+    the appropriate structured meshing hooks. The resolved
+    :class:`~meshwell.cad_settings.CADSettings` are embedded in the
+    ``.xao`` as well, so the mesh stage uses the same ``point_tolerance``.
 
-    Pass ``dimtags`` to scope the dedup to specific entities, or ``None``
-    for a global pass. The previous ``Geometry.Tolerance`` is restored.
+    Numerical settings are given EITHER as ``cad_settings`` OR as the
+    individual kwargs below (``None`` = package default from
+    :mod:`meshwell.cad_settings`); mixing both raises ``TypeError``.
+
+    Args:
+        entities: List of meshwell entities or their ``to_dict()`` dicts.
+        output_file: Optional destination ``.xao`` path.
+        registry: Optional callable registry for ``OCC_entity`` deserialization.
+        sweeps: Optional list of ``StructuredSweep`` instances or dicts.
+        point_tolerance: Coordinate quantization and grid-snap tolerance.
+        perturbation: Analytic outward offset for same-``mesh_order`` boundaries.
+        identify_arcs: Scene-wide arc identification flag.
+        min_arc_points: Minimum run length for arc fitting when ``identify_arcs`` is set.
+        arc_tolerance: Circle-fit tolerance when ``identify_arcs`` is set.
+        cut_fuzzy_value: Optional ``BRepAlgoAPI_Cut`` fuzzy override.
+        fragment_fuzzy_value: Optional ``BOPAlgo_Builder`` fragment fuzzy override.
+        canonicalize_topology: Optional post-fragment TShape canonicalization flag.
+        n_threads: Optional thread count for OCC boolean fragmentation.
+        progress_bars: Whether to display progress bars during CAD booleans.
+        interface_delimiter: Delimiter for ``A___B`` interface physical groups.
+        boundary_delimiter: Delimiter for ``A___None`` exterior boundary groups.
+        model_name: XAO ``<geometry name=...>`` attribute.
+        cad_settings: Complete :class:`~meshwell.cad_settings.CADSettings`.
+
+    Returns:
+        list[OCCLabeledEntity]: Post-BOP labeled OCC entities ready for XAO serialization.
     """
-    old_tol = gmsh.option.getNumber("Geometry.Tolerance")
-    gmsh.option.setNumber("Geometry.Tolerance", _DEDUP_GEOMETRY_TOLERANCE)
-    try:
-        if dimtags is None:
-            gmsh.model.mesh.removeDuplicateNodes()
-        else:
-            gmsh.model.mesh.removeDuplicateNodes(dimtags)
-    finally:
-        gmsh.option.setNumber("Geometry.Tolerance", old_tol)
+    settings = CADSettings.from_kwargs(
+        cad_settings,
+        point_tolerance=point_tolerance,
+        perturbation=perturbation,
+        identify_arcs=identify_arcs,
+        min_arc_points=min_arc_points,
+        arc_tolerance=arc_tolerance,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
+    )
+    point_tolerance = settings.point_tolerance
+
+    entities = deserialize(entities, registry=registry)
+
+    # Arc identification is a scene-level setting (see apply_arc_params):
+    # resolve it onto every entity once, here, so downstream code reads
+    # the entity attributes directly instead of guessing defaults.
+    apply_arc_params(
+        entities,
+        identify_arcs=settings.identify_arcs,
+        min_arc_points=settings.min_arc_points,
+        arc_tolerance=settings.arc_tolerance,
+    )
+
+    prepare_entities(
+        entities,
+        perturbation=settings.perturbation,
+        resolve_snap=settings.resolve_snap,
+        buffer_polygons=False,
+    )
+
+    parsed_sweeps = None
+    if sweeps:
+        from meshwell.structured.sweep import StructuredSweep
+
+        parsed_sweeps = [
+            StructuredSweep.from_dict(s) if isinstance(s, dict) else s for s in sweeps
+        ]
+
+    state = structured_pre_pass(
+        entities, point_tolerance=point_tolerance, sweeps=parsed_sweeps
+    )
+
+    cad_kwargs: dict[str, Any] = {
+        "point_tolerance": point_tolerance,
+        "perturbation": settings.perturbation,
+        "cut_fuzzy_value": settings.cut_fuzzy_value,
+        "fragment_fuzzy_value": settings.fragment_fuzzy_value,
+        "progress_bars": progress_bars,
+    }
+    if canonicalize_topology is not None:
+        cad_kwargs["canonicalize_topology"] = canonicalize_topology
+    if n_threads is not None:
+        cad_kwargs["n_threads"] = n_threads
+
+    occ_entities_raw, _cad_processor = cad_occ(
+        state.entities_out, return_processor=True, prepared=True, **cad_kwargs
+    )
+
+    if state.slab_meta and _cad_processor.last_fragment_builder is not None:
+        faces_by_key = _collect_faces_by_key(state)
+        validate_cohort_shells(
+            state.slab_meta,
+            faces_by_key,
+            builder=_cad_processor.last_fragment_builder,
+        )
+
+    occ_entities = structured_post_pass(occ_entities_raw, state)
+
+    if parsed_sweeps:
+        from meshwell.structured.sweep_cad import sweep_imprint_pass
+
+        occ_entities = sweep_imprint_pass(
+            occ_entities, parsed_sweeps, entities, point_tolerance
+        )
+
+    # Provenance travels with the entities (write_xao / load_occ_entities
+    # pick it up); the pipeline-level settings are authoritative.
+    for ent in occ_entities:
+        ent.cad_settings = settings
+
+    if output_file is not None:
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_xao(
+            occ_entities,
+            output_path,
+            model_name=model_name,
+            interface_delimiter=interface_delimiter,
+            boundary_delimiter=boundary_delimiter,
+            interface_aabb_tolerance=default_interface_aabb_tolerance(point_tolerance),
+            cad_settings=settings,
+        )
+
+    return occ_entities
+
+
+generate_cad = cad
 
 
 def generate_mesh(
@@ -61,65 +194,10 @@ def generate_mesh(
 ) -> Any:
     """Generate a mesh from a list of entities.
 
-    Pipeline: structured pre-pass -> ``cad_occ`` fragments -> structured
-    post-pass -> :func:`write_xao` serializes to a tagged XAO -> gmsh load
-    -> structured pre-2D/pre-3D wedge hooks -> :func:`mesh`.
-
-    Args:
-        entities: List of meshwell entities or their dictionary representations.
-        dim: Dimension of the mesh to generate.
-        output_mesh: Optional path to save the generated mesh (.msh).
-        checkpoint_cad: Optional path to save the CAD state (.xao).
-        registry: Optional registry for ``OCC_entity`` function resolution.
-        backend: Deprecated; only ``"occ"`` or ``None`` is accepted.
-        sweeps: Optional list of structured-sweep resolution specs.
-        **mesh_kwargs: Additional arguments forwarded to :func:`mesh`,
-            plus a few CAD-side kwargs consumed here:
-
-            - ``progress_bars`` (bool): status output during the bridge.
-            - ``cut_fuzzy_value`` (float): ``BRepAlgoAPI_Cut`` fuzzy
-              for the sequential per-entity cut cascade.
-            - ``fragment_fuzzy_value`` (float): ``BOPAlgo_Builder``
-              fuzzy for the all-fragment pass.
-            - ``canonicalize_topology`` (bool): run the OCP post-fragment
-              TShape canonicalization pass.
-            - ``remove_all_duplicates`` (bool, default ``False``):
-              gmsh-level fragment safety net after XAO load. Opt-in;
-              only catches OCC-identical coincident TShapes.
-            - ``interface_delimiter``, ``boundary_delimiter``: XAO group
-              name delimiters.
-            - ``pre_2d_hook`` / ``pre_3d_hook`` (callables): composed with
-              the structured wedge hooks (run after the structured pass),
-              not replacing them.
-            - ``identify_arcs`` (bool | None, default ``None``): stamp
-              pipeline-level arc identification onto every polygon
-              entity before the structured pre-pass. ``None`` leaves
-              entities untouched (scene-level semantics: both sides of
-              a shared circular boundary must classify it identically).
-            - ``min_arc_points`` (int, default 5): minimum run length
-              considered for arc fitting, forwarded to
-              :func:`meshwell.cad_common.apply_arc_params`.
-            - ``arc_tolerance`` (float, default 1e-3): circle-fit
-              tolerance, forwarded to
-              :func:`meshwell.cad_common.apply_arc_params`.
-            - ``perturbation`` (float, default ``1e-5``): outward offset
-              disambiguating overlapping same-mesh_order boundaries so the
-              per-entity cut cascade has a non-degenerate strip to carve.
-              Applied ANALYTICALLY at OCC wire-emission time (canonical
-              circle/line offsets keyed off the pipeline's circle
-              registry) rather than via a shapely buffer -- entities stay
-              at nominal coordinates through the structured pre-pass and
-              registry build. ``perturbation=0.0`` is supported
-              (canonical-exact mode: both sides of a shared boundary emit
-              the identical geometry; ownership resolves by exact
-              coincidence plus the final fragment merge). Only the legacy
-              cad_gmsh mirror still realizes this via the shapely
-              round-join buffer.
-
-    Returns:
-        meshio.Mesh: The generated mesh object (or ``None`` if
-        ``output_mesh`` is provided and the mesh pipeline does not
-        return in-memory).
+    Pipeline: :func:`cad` (structured pre-pass -> ``cad_occ`` -> structured
+    post-pass -> sweep imprint pass) -> XAO load into :class:`ModelManager`
+    -> :func:`mesh` (which auto-discovers structured cohort and sweep
+    physical groups from the loaded model).
     """
     if backend is not None and backend != "occ":
         raise ValueError(
@@ -127,114 +205,46 @@ def generate_mesh(
             "Meshwell now uses OCC exclusively for CAD."
         )
 
-    entities = deserialize(entities, registry=registry)
-
-    # Pipeline-level arc identification (scene-level semantics: both
-    # sides of a shared circular boundary must classify it identically).
     identify_arcs = mesh_kwargs.pop("identify_arcs", None)
-    arc_min_points = mesh_kwargs.pop("min_arc_points", 5)
-    arc_fit_tolerance = mesh_kwargs.pop("arc_tolerance", 1e-3)
-    if identify_arcs is not None:
-        apply_arc_params(
-            entities,
-            identify_arcs=identify_arcs,
-            min_arc_points=arc_min_points,
-            arc_tolerance=arc_fit_tolerance,
-        )
-
-    # --- Stage 1: OCC fragmentation (cad_occ kwargs). -------------------
-    cad_kwargs: dict[str, Any] = {}
-    if "n_threads" in mesh_kwargs:
-        cad_kwargs["n_threads"] = mesh_kwargs["n_threads"]
-    if "point_tolerance" in mesh_kwargs:
-        cad_kwargs["point_tolerance"] = mesh_kwargs["point_tolerance"]
-    if "cut_fuzzy_value" in mesh_kwargs:
-        cad_kwargs["cut_fuzzy_value"] = mesh_kwargs.pop("cut_fuzzy_value")
-    if "fragment_fuzzy_value" in mesh_kwargs:
-        cad_kwargs["fragment_fuzzy_value"] = mesh_kwargs.pop("fragment_fuzzy_value")
-    if "canonicalize_topology" in mesh_kwargs:
-        cad_kwargs["canonicalize_topology"] = mesh_kwargs.pop("canonicalize_topology")
-    if "perturbation" in mesh_kwargs:
-        cad_kwargs["perturbation"] = mesh_kwargs.pop("perturbation")
+    arc_min_points = mesh_kwargs.pop("min_arc_points", None)
+    arc_fit_tolerance = mesh_kwargs.pop("arc_tolerance", None)
+    cut_fuzzy_value = mesh_kwargs.pop("cut_fuzzy_value", None)
+    fragment_fuzzy_value = mesh_kwargs.pop("fragment_fuzzy_value", None)
+    canonicalize_topology = mesh_kwargs.pop("canonicalize_topology", None)
+    perturbation = mesh_kwargs.pop("perturbation", None)
     progress_bars = mesh_kwargs.pop("progress_bars", False)
-    cad_kwargs["progress_bars"] = progress_bars
-
-    point_tolerance = cad_kwargs.get(
-        "point_tolerance", mesh_kwargs.get("point_tolerance", 1e-3)
-    )
-    # Default mirrors ``CAD_OCC.__init__`` (perturbation=1e-5 when None);
-    # use ``is None`` so an explicit ``perturbation=0.0`` is respected.
-    perturbation = cad_kwargs.get("perturbation")
-    if perturbation is None:
-        perturbation = 1e-5
-
-    # --- Stage 1a: shapely intake pre-pass. -----------------------------
-    # Resolve InterfaceTags against NOMINAL polygon coordinates before the
-    # structured pre-pass. Cohort solids are baked (bottom-up, via
-    # ``structured/wedge.py``) directly from these NOMINAL coordinates --
-    # they never see a buffer. Unstructured neighbours, by contrast, are
-    # emitted by cad_occ with the analytic canonical epsilon (eps) offset
-    # applied at OCC wire-emission time (canonical circle/line offsets
-    # keyed off the circle registry; see
-    # ``GeometryEntity._make_occ_wire_from_vertices``). That offset is
-    # XY-only, so a shared z-plane face between a cohort and an
-    # unstructured neighbour still coincides exactly; only the LATERAL
-    # (vertical) footprint differs, by eps. That eps-sized lateral gap
-    # is what the fragment fuzzy (1e-3, orders of magnitude larger than
-    # the default eps=1e-5) is relied on to absorb during the final BOP
-    # fragment pass -- it is not a coincidence, it's the designed
-    # tolerance ladder. ``cad_occ`` is called here with
-    # ``buffer_polygons=False`` so entities stay nominal through this
-    # pre-pass and the structured pre-pass / registry build.
-    # ``prepare_entities`` is NOT idempotent when ``buffer_polygons=True``
-    # (the compounding buffer case); cad_occ is invoked with
-    # ``prepared=True`` below to skip its own duplicate call regardless.
-    prepare_entities(
-        entities,
-        perturbation=perturbation,
-        resolve_snap=max(perturbation, point_tolerance),
-        buffer_polygons=False,
-    )
-
-    # --- Stage 1b: structured pre-pass. ---------------------------------
-    state = structured_pre_pass(entities, point_tolerance=point_tolerance)
-
-    occ_entities_raw, _cad_processor = cad_occ(
-        state.entities_out, return_processor=True, prepared=True, **cad_kwargs
-    )
-
-    # Diagnostic: confirm BOP didn't subdivide any pre-baked cohort
-    # shell face. Walks every cohort compound, collects the original
-    # TopoDS_Face by ShapeKey, then calls validate_cohort_shells, which
-    # raises CohortShellModifiedError on a >1 fragment count.
-    if state.slab_meta and _cad_processor.last_fragment_builder is not None:
-        faces_by_key = _collect_faces_by_key(state)
-        validate_cohort_shells(
-            state.slab_meta,
-            faces_by_key,
-            builder=_cad_processor.last_fragment_builder,
-        )
-
-    occ_entities = structured_post_pass(occ_entities_raw, state)
-
-    # --- Stage 1c: structured-sweep clip + imprint pass. ----------------
-    if sweeps:
-        from meshwell.structured.sweep import StructuredSweep
-        from meshwell.structured.sweep_cad import sweep_imprint_pass
-
-        sweeps = [
-            StructuredSweep.from_dict(s) if isinstance(s, dict) else s for s in sweeps
-        ]
-        occ_entities = sweep_imprint_pass(
-            occ_entities, sweeps, entities, point_tolerance
-        )
-
-    # --- Stage 2: XAO emit (+ optional checkpoint) + gmsh load. ---------
-    interface_delimiter = mesh_kwargs.pop("interface_delimiter", "___")
-    boundary_delimiter = mesh_kwargs.pop("boundary_delimiter", "None")
     remove_all_duplicates = mesh_kwargs.pop("remove_all_duplicates", False)
+    cad_settings = mesh_kwargs.pop("cad_settings", None)
 
-    mm = ModelManager()
+    settings = CADSettings.from_kwargs(
+        cad_settings,
+        point_tolerance=mesh_kwargs.pop("point_tolerance", None),
+        perturbation=perturbation,
+        identify_arcs=identify_arcs,
+        min_arc_points=arc_min_points,
+        arc_tolerance=arc_fit_tolerance,
+        cut_fuzzy_value=cut_fuzzy_value,
+        fragment_fuzzy_value=fragment_fuzzy_value,
+    )
+    point_tolerance = settings.point_tolerance
+    n_threads = mesh_kwargs.get("n_threads")
+    interface_delimiter = mesh_kwargs.get("interface_delimiter", "___")
+    boundary_delimiter = mesh_kwargs.get("boundary_delimiter", "None")
+
+    occ_entities = cad(
+        entities=entities,
+        registry=registry,
+        sweeps=sweeps,
+        cad_settings=settings,
+        canonicalize_topology=canonicalize_topology,
+        n_threads=n_threads,
+        progress_bars=progress_bars,
+        interface_delimiter=interface_delimiter,
+        boundary_delimiter=boundary_delimiter,
+    )
+
+    mm = ModelManager(point_tolerance=point_tolerance)
+    mm.cad_settings = settings
     mm.ensure_initialized(str(mm.filename))
     gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
 
@@ -249,93 +259,10 @@ def generate_mesh(
     if checkpoint_cad:
         mm.save_to_xao(Path(checkpoint_cad))
 
-    # --- Stage 2a: build ShapeKey -> gmsh-tag maps for the wedge hooks. -
-    face_tag_by_key: dict[ShapeKey, int] = {}
-    sub_solid_tag_by_key: dict[ShapeKey, int] = {}
-    if state.slab_meta:
-        face_tag_by_key, sub_solid_tag_by_key = _build_tag_maps_from_names(state)
-
-    # --- Stage 2b: hook wiring. -----------------------------------------
-    user_pre_2d = mesh_kwargs.pop("pre_2d_hook", None)
-    user_pre_3d = mesh_kwargs.pop("pre_3d_hook", None)
-    resolution_specs_for_wedge = mesh_kwargs.get("resolution_specs")
-
-    def _structured_pre_2d() -> None:
-        if state.slab_meta and face_tag_by_key:
-            freeze_lateral_mesh(
-                state.slab_meta,
-                face_tag_by_key,
-                resolution_specs=resolution_specs_for_wedge,
-            )
-        if user_pre_2d is not None:
-            user_pre_2d()
-        # Strip synthetic ``__cohort_*`` bookkeeping groups so they
-        # don't leak into the .msh output. Done after the user's hook
-        # so user code can still inspect them if needed. (Face and
-        # solid tag maps were resolved before this hook runs, so the
-        # synthetic groups are no longer needed downstream.)
-        if state.slab_meta or sweeps:
-            _strip_synthetic_physical_groups()
-
-    def _structured_pre_3d() -> None:
-        if state.slab_meta and face_tag_by_key and sub_solid_tag_by_key:
-            stamp_wedges(
-                state.slab_meta,
-                face_tag_by_key,
-                sub_solid_tag_by_key,
-                resolution_specs=resolution_specs_for_wedge,
-                point_tolerance=point_tolerance,
-            )
-            # The cohort sub-solids are now fully meshed with wedges;
-            # tell gmsh's tet algorithm to only fill the remaining
-            # unstructured volumes.
-            gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
-            # Deduplicate nodes only within the structured sub-solid volumes.
-            # A global removeDuplicateNodes() can corrupt boundary meshes of
-            # adjacent unstructured volumes: BOP sometimes produces duplicate
-            # topological curves/faces at the interface between structured and
-            # unstructured regions.  The duplicate curves have their own node
-            # sets; after global dedup one curve's nodes survive and the other
-            # curve's elements reference those surviving nodes, which may be
-            # classified on the wrong topological entity, causing generate(3)
-            # to fail for the unstructured volume.
-            #
-            # Scoping dedup to the structured volumes is safe because the
-            # intermediate-layer duplicate nodes (z_layer from stamp_wedges vs
-            # lateral transfinite edge nodes) are eliminated upstream in
-            # _stamp_one (step 4 reuses existing nodes instead of creating new
-            # ones).  No genuine duplicates remain within the structured volumes
-            # after stamp_wedges; the scoped call is a safe no-op for them
-            # while leaving the unstructured boundary mesh untouched.
-            structured_vol_dimtags = [(3, tag) for tag in sub_solid_tag_by_key.values()]
-            _remove_duplicate_nodes_tight(structured_vol_dimtags)
-        if user_pre_3d is not None:
-            user_pre_3d()
-
-    def _structured_post_3d() -> None:
-        if state.slab_meta and face_tag_by_key and sub_solid_tag_by_key:
-            # After generate(3) has filled all unstructured volumes, perform a
-            # global removeDuplicateNodes() to clean up the z-interface dups
-            # that were intentionally left by the scoped pre-3D dedup.  At
-            # this point all volumes are fully meshed, so the dedup cannot
-            # corrupt any pending generate() pass.
-            _remove_duplicate_nodes_tight()
-
-    has_structured = bool(state.slab_meta)
-    pre_2d_hook = (
-        _structured_pre_2d if (has_structured or sweeps or user_pre_2d) else None
-    )
-    pre_3d_hook = _structured_pre_3d if (has_structured or user_pre_3d) else None
-    post_3d_hook = _structured_post_3d if has_structured else None
-
-    # --- Stage 3: mesh. -------------------------------------------------
     return mesh(
         dim=dim,
         model=mm,
         output_file=Path(output_mesh) if output_mesh else None,
-        pre_2d_hook=pre_2d_hook,
-        pre_3d_hook=pre_3d_hook,
-        post_3d_hook=post_3d_hook,
         **mesh_kwargs,
     )
 
@@ -409,23 +336,3 @@ def _build_tag_maps_from_names(
             sub_solid_tag_by_key[sk] = hit[1]
 
     return face_tag_by_key, sub_solid_tag_by_key
-
-
-def _strip_synthetic_physical_groups() -> None:
-    """Remove ``__cohort_`` synthetic groups (and their now-stale names) from gmsh.
-
-    Called right before :func:`mesh` writes the .msh so synthetic
-    bookkeeping groups don't leak into the output.
-    """
-    to_remove: list[tuple[int, int]] = []
-    names_to_drop: list[str] = []
-    for dim, gtag in gmsh.model.getPhysicalGroups():
-        gname = gmsh.model.getPhysicalName(dim, gtag)
-        if gname.startswith(("__cohort_", "__sweep")):
-            to_remove.append((dim, gtag))
-            names_to_drop.append(gname)
-    if to_remove:
-        gmsh.model.removePhysicalGroups(to_remove)
-        for gname in names_to_drop:
-            with contextlib.suppress(Exception):
-                gmsh.model.removePhysicalName(gname)

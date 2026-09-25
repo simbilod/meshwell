@@ -62,6 +62,7 @@ from OCP.TopTools import TopTools_IndexedMapOfShape, TopTools_ShapeMapHasher
 
 if TYPE_CHECKING:
     from meshwell.cad_occ import OCCLabeledEntity
+    from meshwell.cad_settings import CADSettings
 
 
 _HASHER = TopTools_ShapeMapHasher()
@@ -234,14 +235,14 @@ def _is_purely_synthetic(ent: OCCLabeledEntity) -> bool:
 
 
 def _filter_real_names(names: tuple[str, ...]) -> tuple[str, ...]:
-    """Drop synthetic ``__cohort_*`` names; keep the user-visible names only.
+    """Drop synthetic ``__cohort_*`` and ``__sweep*`` names; keep the user-visible names only.
 
-    Used when forming ``A___B`` interface group names from a pair of real
-    cohort sub-solids: their ``physical_name`` tuple has a synthetic name
-    appended, but we only want the user-visible ``A___B``, not also the
-    spurious ``A_____cohort_X``, ``__cohort_X___B``, ``__cohort_X_____cohort_Y``.
+    Used when forming ``A___B`` interface group names and ``A___None`` exterior
+    boundary group names from real entities: their ``physical_name`` tuple may
+    have a synthetic name appended, and we only want user-visible groups, not
+    spurious ``__cohort_X___B`` or ``__cohort_X___None`` groups.
     """
-    return tuple(n for n in names if not n.startswith("__cohort_"))
+    return tuple(n for n in names if not n.startswith(("__cohort_", "__sweep")))
 
 
 def _compute_physical_groups(
@@ -416,7 +417,12 @@ def _compute_physical_groups(
         # their tuple (e.g. ``("lower", "__cohort_0__slab_0")``) but they
         # are real geometry — their interfaces still need to be detected
         # normally. ``_is_purely_synthetic`` distinguishes the two flavours.
-        if _is_purely_synthetic(ent1) or _is_purely_synthetic(ent2):
+        if (
+            _is_purely_synthetic(ent1)
+            or _is_purely_synthetic(ent2)
+            or getattr(ent1, "is_surface_tag", False)
+            or getattr(ent2, "is_surface_tag", False)
+        ):
             continue
         entity_interface_ids[i1].update(common)
         # For TShape-identity matches, ``common`` ⊆ entity 2's bids
@@ -481,7 +487,7 @@ def _compute_physical_groups(
         exterior_shapes = [entity_boundary[i][bid] for bid in exterior]
         if not exterior_shapes:
             continue
-        for name in ent.physical_name:
+        for name in _filter_real_names(ent.physical_name):
             full_name = f"{name}{interface_delimiter}{boundary_delimiter}"
             groups.setdefault((boundary_dim, full_name), []).extend(exterior_shapes)
 
@@ -493,6 +499,28 @@ def _compute_physical_groups(
 # ---------------------------------------------------------------------------
 
 
+def _settings_from_entities(entities: list[OCCLabeledEntity]) -> CADSettings | None:
+    """Recover the provenance ``CADSettings`` stamped on entities by ``cad_occ``.
+
+    Returns ``None`` when no entity carries settings. Entities produced by
+    different CAD runs with different settings cannot be serialized as one
+    self-describing file.
+    """
+    found = {
+        s for s in (getattr(e, "cad_settings", None) for e in entities) if s is not None
+    }
+    if not found:
+        return None
+    if len(found) > 1:
+        from meshwell.cad_settings import CADSettingsMismatchError
+
+        raise CADSettingsMismatchError(
+            "write_xao: entities come from CAD runs with different settings "
+            f"({len(found)} distinct CADSettings); pass cad_settings= explicitly."
+        )
+    return next(iter(found))
+
+
 def write_xao(
     entities: list[OCCLabeledEntity],
     xao_path: Path,
@@ -500,6 +528,7 @@ def write_xao(
     interface_delimiter: str = "___",
     boundary_delimiter: str = "None",
     interface_aabb_tolerance: float = _DEFAULT_AABB_INTERFACE_TOL,
+    cad_settings: CADSettings | None = None,
 ) -> None:
     """Serialize ``entities`` into a self-contained XAO file.
 
@@ -514,6 +543,12 @@ def write_xao(
             no shared boundaries. Should be at least the BOP
             ``fragment_fuzzy_value``; recommended ``10 * point_tolerance``
             for safety against combined shapely + BOP drift.
+        cad_settings: Settings the entities were generated with. Embedded
+            as a ``<meshwell>`` metadata block (last child of ``<XAO>``) so
+            :func:`meshwell.mesh.mesh` can recover them on intake. When
+            ``None``, the settings stamped on the entities by ``cad_occ``
+            are used; if there are none, no block is written and mesh-stage
+            intake will then require an explicit ``cad_settings``.
 
     keep=False entities are **not** serialized into the BREP -- only
     their OCP sub-boundaries already shared (via BOPAlgo TShape identity)
@@ -521,6 +556,9 @@ def write_xao(
     entity's solid.
     """
     xao_path = Path(xao_path)
+
+    if cad_settings is None:
+        cad_settings = _settings_from_entities(entities)
 
     max_dim = max((e.dim for e in entities if e.shapes), default=0)
 
@@ -630,6 +668,12 @@ def write_xao(
         )
         for local in local_indices:
             ET.SubElement(group_el, "element", index=str(local))
+
+    if cad_settings is not None:
+        # Must be the LAST child of <XAO>: gmsh's XAO reader fails on any
+        # extra content placed before <geometry>, but ignores trailing
+        # children after </geometry>.
+        root.append(cad_settings.to_xao_element())
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ")

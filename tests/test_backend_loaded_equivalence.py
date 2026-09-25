@@ -553,9 +553,13 @@ _SCENES: list[tuple[str, Callable[[], list], dict, str | None]] = [
         # independently-offset boundary, picking up a slightly larger
         # (observed ~2.4e-3) but still perturbation-scale cross-backend
         # mass discrepancy.
+        # With the canonical-exact default (perturbation=0) the iface panel
+        # is exactly coincident with the A/B face, so gmsh's split of that
+        # face also shows up in A's and B's per-entity boundary signatures
+        # (e.g. 10 vs 6 faces for A); volume and total boundary area match.
         {
             "ignore_entity_count_dims": {0, 1, 2},
-            "mass_only_groups": {"iface", "A___B"},
+            "mass_only_groups": {"iface", "A___B", "A", "B"},
             "rel_tol": 5e-3,
         },
         None,

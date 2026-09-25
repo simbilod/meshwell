@@ -19,13 +19,15 @@ from meshwell.structured.build import (
     EdgeRegistry,
     FaceRegistry,
     VertexRegistry,
+    _ring_coords,
     build_cohort_compound,
+    polyline_segments,
 )
 from meshwell.structured.cohort import build_cohorts
 from meshwell.structured.cohort_entity import _CohortEntity
-from meshwell.structured.collect import collect_structured_slabs
+from meshwell.structured.collect import collect_structured_entities
 from meshwell.structured.decompose import decompose_cohorts
-from meshwell.structured.types import ShapeKey, SlabMeta
+from meshwell.structured.types import ShapeKey, SlabMeta, StructuredPlane, SubPiece
 from meshwell.structured.validators import (
     validate_no_volumetric_cohort_overlap,
     validate_z_stacks,
@@ -49,6 +51,13 @@ class StructuredState:
     cohort_entities: list[_CohortEntity] = field(default_factory=list)
     face_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
     sub_solid_name_by_key: dict[ShapeKey, str] = field(default_factory=dict)
+    sub_solid_index_by_key: dict[ShapeKey, tuple[int, int]] = field(
+        default_factory=dict
+    )
+    structured_planes: list[StructuredPlane] = field(default_factory=list)
+    plane_roles_by_slab_key: dict[ShapeKey, dict[str, StructuredPlane]] = field(
+        default_factory=dict
+    )
 
     # Per-cohort (VertexRegistry, EdgeRegistry, FaceRegistry) triples,
     # indexed by cohort_index. Constructed in structured_pre_pass and
@@ -61,27 +70,148 @@ class StructuredState:
     )
 
 
+def _bind_cohort_planes_to_roles(
+    cohort,
+    subs: list[SubPiece],
+    slab_meta: dict[ShapeKey, SlabMeta],
+    arrangement,
+    point_tolerance: float,
+) -> dict[ShapeKey, dict[str, StructuredPlane]]:
+    """Map each kept sub-solid ShapeKey to ``{role: winning_StructuredPlane}``."""
+    from shapely.geometry import Point
+
+    if not cohort.planes:
+        return {}
+
+    horiz_planes = [p for p in cohort.planes if p.orientation == "horizontal"]
+    vert_planes = [p for p in cohort.planes if p.orientation == "vertical"]
+
+    slab_by_source = {s.source_index: s for s in cohort.slabs}
+    z_plane_id_arcs: dict[float, bool] = {}
+    z_plane_min_arc_pts: dict[float, int] = {}
+    z_plane_arc_tol: dict[float, float] = {}
+    for slab in cohort.slabs:
+        for z in (slab.zlo, slab.zhi):
+            if slab.identify_arcs:
+                z_plane_id_arcs[z] = True
+                if z not in z_plane_arc_tol or slab.arc_tolerance < z_plane_arc_tol[z]:
+                    z_plane_arc_tol[z] = slab.arc_tolerance
+                if (
+                    z not in z_plane_min_arc_pts
+                    or slab.min_arc_points > z_plane_min_arc_pts[z]
+                ):
+                    z_plane_min_arc_pts[z] = slab.min_arc_points
+            else:
+                z_plane_id_arcs.setdefault(z, False)
+                z_plane_arc_tol.setdefault(z, slab.arc_tolerance)
+                z_plane_min_arc_pts.setdefault(z, slab.min_arc_points)
+
+    def _priority(p: StructuredPlane) -> tuple[float, int]:
+        return (
+            p.mesh_order if p.mesh_order is not None else float("inf"),
+            p.source_index,
+        )
+
+    out: dict[ShapeKey, dict[str, StructuredPlane]] = {}
+    for sp, (sub_key, meta) in zip(subs, slab_meta.items()):
+        if not meta.keep:
+            continue
+        role_map: dict[str, StructuredPlane] = {}
+        zlo, zhi = sp.z_interval
+
+        if horiz_planes:
+            rep_pt = sp.sub_polygon.representative_point()
+            for role, z_face in (("bot", zlo), ("top", zhi)):
+                candidates = [
+                    p
+                    for p in horiz_planes
+                    if abs(p.zmin - z_face) <= 1e-9 and p.footprint.contains(rep_pt)
+                ]
+                if candidates:
+                    role_map[role] = min(candidates, key=_priority)
+
+        if vert_planes:
+            active_vert = [
+                p for p in vert_planes if zlo >= p.zmin - 1e-9 and zhi <= p.zmax + 1e-9
+            ]
+            if active_vert:
+                s = slab_by_source[sp.source_slab_indices[0]]
+                use_arcs = z_plane_id_arcs.get(
+                    zlo, s.identify_arcs
+                ) or z_plane_id_arcs.get(zhi, s.identify_arcs)
+                min_arc_pts = max(
+                    z_plane_min_arc_pts.get(zlo, s.min_arc_points),
+                    z_plane_min_arc_pts.get(zhi, s.min_arc_points),
+                )
+                arc_tol = min(
+                    z_plane_arc_tol.get(zlo, s.arc_tolerance),
+                    z_plane_arc_tol.get(zhi, s.arc_tolerance),
+                )
+                segs = list(
+                    polyline_segments(
+                        _ring_coords(sp.sub_polygon.exterior),
+                        identify_arcs=use_arcs,
+                        min_arc_points=min_arc_pts,
+                        arc_tolerance=arc_tol,
+                        point_tolerance=point_tolerance,
+                        arrangement=arrangement,
+                        z=zlo,
+                    )
+                )
+                for interior_ring in sp.sub_polygon.interiors:
+                    segs.extend(
+                        polyline_segments(
+                            _ring_coords(interior_ring),
+                            identify_arcs=use_arcs,
+                            min_arc_points=min_arc_pts,
+                            arc_tolerance=arc_tol,
+                            point_tolerance=point_tolerance,
+                            arrangement=arrangement,
+                            z=zlo,
+                        )
+                    )
+                tol_dist = max(point_tolerance * 1.5, 1e-6)
+                for li, seg in enumerate(segs):
+                    if li >= len(meta.lateral_face_keys):
+                        break
+                    mid_pt = (
+                        seg.mid
+                        if seg.mid is not None
+                        else (
+                            0.5 * (seg.start[0] + seg.end[0]),
+                            0.5 * (seg.start[1] + seg.end[1]),
+                        )
+                    )
+                    pts = (Point(seg.start), Point(mid_pt), Point(seg.end))
+                    candidates = [
+                        p
+                        for p in active_vert
+                        if all(p.footprint.distance(pt) <= tol_dist for pt in pts)
+                    ]
+                    if candidates:
+                        role_map[f"lat_{li}"] = min(candidates, key=_priority)
+
+        if role_map:
+            out[sub_key] = role_map
+    return out
+
+
 def structured_pre_pass(
     entities: list[Any],
     point_tolerance: float,
+    sweeps: list[Any] | None = None,
 ) -> StructuredState:
     """Run Stages 1-4 and return entities_out for cad_occ.
 
     If no structured entities are present, returns the input list
     unchanged with an empty slab_meta.
     """
-    structured_slabs, unstructured = collect_structured_slabs(entities)
-    if not structured_slabs:
+    structured_slabs, structured_planes, unstructured = collect_structured_entities(
+        entities
+    )
+    if not structured_slabs and not structured_planes:
         return StructuredState(entities_out=entities)
-    # Snap every structured slab footprint to the point_tolerance grid.
-    # Without this, the cad_common.prepare_entities intake perturbation
-    # (default 1e-5 outward buffer applied BEFORE this pre-pass) turns
-    # laterally-touching polygons into polygons that overlap by ~2e-5.
-    # The cohort decomposition then produces sliver subpieces whose
-    # endpoints all dedupe to the same vertex (point_tolerance ~ 1e-3),
-    # which makes BRepBuilderAPI_MakeEdge raise StdFail_NotDone. Snap
-    # restores the original touch geometry while keeping the buffered
-    # XY available to cad_occ for the BOP step.
+    # Snap every structured slab and plane footprint to the point_tolerance grid.
     structured_slabs = [
         dataclasses.replace(
             s,
@@ -91,18 +221,29 @@ def structured_pre_pass(
         )
         for s in structured_slabs
     ]
-    cohorts = build_cohorts(structured_slabs)
+    structured_planes = [
+        dataclasses.replace(
+            p,
+            footprint=shapely.set_precision(
+                p.footprint, grid_size=point_tolerance, mode="valid_output"
+            ),
+        )
+        for p in structured_planes
+    ]
+    cohorts = build_cohorts(structured_slabs, planes=structured_planes)
     validate_z_stacks(cohorts, entities)
     validate_no_volumetric_cohort_overlap(cohorts, entities)
     # decompose_cohorts returns the unstructured list unchanged (third slot).
     subpieces_per_cohort, unstructured_out, arrangements = decompose_cohorts(
-        cohorts, unstructured, point_tolerance=point_tolerance
+        cohorts, unstructured, point_tolerance=point_tolerance, sweeps=sweeps
     )
 
     cohort_entities: list[_CohortEntity] = []
     all_slab_meta: dict[ShapeKey, SlabMeta] = {}
     face_name_by_key: dict[ShapeKey, str] = {}
     sub_solid_name_by_key: dict[ShapeKey, str] = {}
+    sub_solid_index_by_key: dict[ShapeKey, tuple[int, int]] = {}
+    plane_roles_by_slab_key: dict[ShapeKey, dict[str, StructuredPlane]] = {}
     cohort_registries: list[tuple[VertexRegistry, EdgeRegistry, FaceRegistry]] = []
     for ci, (cohort, subs) in enumerate(zip(cohorts, subpieces_per_cohort)):
         vreg = VertexRegistry(point_tolerance=point_tolerance)
@@ -126,18 +267,30 @@ def structured_pre_pass(
         )
         cohort_entities.append(ce)
         all_slab_meta.update(slab_meta)
-        # Assign synthetic per-face / per-sub-solid names. The orchestrator
-        # writes these into the XAO via synthetic 2D / 3D entities so it
-        # can recover ShapeKey -> gmsh-tag mappings by name lookup after
-        # XAO load.
-        # MANUAL_NOTE: investigate alternative, e.g. brep sidecar w/
-        # deterministic import
+        plane_roles_by_slab_key.update(
+            _bind_cohort_planes_to_roles(
+                cohort, subs, slab_meta, arrangements[ci], point_tolerance
+            )
+        )
+        # Assign synthetic per-face / per-sub-solid names for kept slabs.
+        # These names are written into the XAO via synthetic 2D / 3D
+        # entities so meshwell.mesh() can recover SlabMeta and gmsh-tag
+        # mappings directly from the XAO without in-memory CAD state.
         for si, (sub_key, meta) in enumerate(slab_meta.items()):
-            sub_solid_name_by_key[sub_key] = f"__cohort_{ci}__slab_{si}"
-            face_name_by_key[meta.bot_face_key] = f"__cohort_{ci}__slab_{si}__bot"
-            face_name_by_key[meta.top_face_key] = f"__cohort_{ci}__slab_{si}__top"
+            if not meta.keep:
+                continue
+            sub_solid_index_by_key[sub_key] = (ci, si)
+            sub_solid_name_by_key[sub_key] = meta.to_synthetic_solid_name(ci, si)
+            face_name_by_key[meta.bot_face_key] = SlabMeta.to_synthetic_face_name(
+                ci, si, "bot"
+            )
+            face_name_by_key[meta.top_face_key] = SlabMeta.to_synthetic_face_name(
+                ci, si, "top"
+            )
             for li, lk in enumerate(meta.lateral_face_keys):
-                face_name_by_key[lk] = f"__cohort_{ci}__slab_{si}__lat_{li}"
+                face_name_by_key[lk] = SlabMeta.to_synthetic_face_name(
+                    ci, si, f"lat_{li}"
+                )
 
     entities_out = cohort_entities + unstructured_out
     return StructuredState(
@@ -146,6 +299,9 @@ def structured_pre_pass(
         cohort_entities=cohort_entities,
         face_name_by_key=face_name_by_key,
         sub_solid_name_by_key=sub_solid_name_by_key,
+        sub_solid_index_by_key=sub_solid_index_by_key,
+        structured_planes=structured_planes,
+        plane_roles_by_slab_key=plane_roles_by_slab_key,
         cohort_registries=cohort_registries,
     )
 
@@ -167,11 +323,12 @@ def structured_post_pass(
     Additionally emits synthetic dim=2 OCCLabeledEntities for every
     tracked cohort face (bot / top / lateral) carrying the synthetic
     ``__cohort_<ci>__slab_<si>__<role>`` name from
-    ``state.face_name_by_key``. Each sub-solid entity gets its synthetic
-    ``__cohort_<ci>__slab_<si>`` name appended to its ``physical_name``
-    tuple. These synthetic names give the orchestrator a stable lookup
-    from pre-BOP ShapeKey to post-XAO-load gmsh entity tag.
+    ``state.face_name_by_key``, plus user dim=2 OCCLabeledEntities for
+    every StructuredPlane (StructuredPolySurface / InterfaceTag) bound
+    to those faces.
     """
+    from collections import defaultdict
+
     from OCP.TopAbs import TopAbs_FACE, TopAbs_ShapeEnum, TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
 
@@ -197,17 +354,8 @@ def structured_post_pass(
     expanded: list = []
     next_index = max((e.index for e in occ_entities), default=-1) + 1
     cohort_pnames = {ce.physical_name for ce in state.cohort_entities}
+    plane_faces_by_src: dict[int, list[tuple[int, Any]]] = defaultdict(list)
 
-    # Walk every post-BOP cohort sub-solid and emit:
-    #   - one dim=3 OCCLabeledEntity per sub-solid, with the source
-    #     slab's physical name PLUS the synthetic
-    #     __cohort_<ci>__slab_<si> name.
-    #   - one dim=2 OCCLabeledEntity per (slab, face_role) tracked in
-    #     SlabMeta — driven by the meta's per-role face keys (bot, top,
-    #     lateral_<i>), so two slabs that share a lateral face TShape
-    #     each emit their OWN synthetic group; post-XAO-load both names
-    #     resolve to the same gmsh entity tag (the merged face), which
-    #     is what the lateral-n_layers-mismatch check needs.
     for ent in occ_entities:
         if ent.physical_name not in cohort_pnames:
             expanded.append(ent)
@@ -228,16 +376,14 @@ def structured_post_pass(
                     expanded.append(_copy_with(ent, [shape], next_index))
                     next_index += 1
                     continue
-                # Recover the SlabMeta's pre-BOP sub-solid ShapeKey so we
-                # can look up the synthetic name. If we hit the fast path,
-                # ``key`` is the meta's own key. If we fell back to bbox,
-                # we need the original slab_meta key.
                 sub_key = (
                     key
                     if key in state.slab_meta
                     else _find_slab_key(state.slab_meta, meta)
                 )
-                sub_solid_name = state.sub_solid_name_by_key.get(sub_key)
+                sub_solid_name = (
+                    state.sub_solid_name_by_key.get(sub_key) if meta.keep else None
+                )
                 names: tuple[str, ...] = meta.physical_name
                 if sub_solid_name is not None:
                     names = (*meta.physical_name, sub_solid_name)
@@ -252,9 +398,9 @@ def structured_post_pass(
                 expanded.append(sub_ent)
                 next_index += 1
 
-                # Pre-compute (z_centroid, z_extent, face) tuples for
-                # every face in this sub-solid so the per-role match
-                # below is O(role_count) without re-walking the solid.
+                if not meta.keep:
+                    continue
+
                 solid_faces: list = []
                 exp_f = TopExp_Explorer(shape, TopAbs_FACE)
                 seen_face_keys: set[ShapeKey] = set()
@@ -266,9 +412,6 @@ def structured_post_pass(
                         solid_faces.append((fk_, f))
                     exp_f.Next()
 
-                # Emit one synthetic 2D entity per (slab, role) in the
-                # SlabMeta. Match by ShapeKey first (fast path when the
-                # face TShape survived BOP) then by bbox fallback.
                 roles: list[tuple[str, ShapeKey]] = [
                     ("bot", meta.bot_face_key),
                     ("top", meta.top_face_key),
@@ -276,8 +419,16 @@ def structured_post_pass(
                 pre_fp_for_meta = {
                     rk: face_fp_by_key[rk] for _r, rk in roles if rk in face_fp_by_key
                 }
+                ci_si = state.sub_solid_index_by_key.get(sub_key)
+                slab_plane_roles = state.plane_roles_by_slab_key.get(sub_key, {})
                 for _role, fk in roles:
-                    face_name = state.face_name_by_key.get(fk)
+                    if ci_si is not None:
+                        face_name = SlabMeta.to_synthetic_face_name(
+                            ci_si[0], ci_si[1], _role
+                        )
+                        state.face_name_by_key[fk] = face_name
+                    else:
+                        face_name = state.face_name_by_key.get(fk)
                     if face_name is None:
                         continue
                     matched = _match_role_face(fk, pre_fp_for_meta, solid_faces)
@@ -293,6 +444,36 @@ def structured_post_pass(
                     )
                     expanded.append(face_ent)
                     next_index += 1
+
+                    bound_plane = slab_plane_roles.get(_role)
+                    if bound_plane is not None:
+                        plane_faces_by_src[bound_plane.source_index].append(
+                            (_shape_key(matched).tshape_id, matched)
+                        )
+
+    for plane in state.structured_planes:
+        entries = plane_faces_by_src.get(plane.source_index, ())
+        if not entries:
+            continue
+        seen_tids: set[int] = set()
+        deduped_faces: list = []
+        for tid, f_shape in entries:
+            if tid not in seen_tids:
+                seen_tids.add(tid)
+                deduped_faces.append(f_shape)
+        expanded.append(
+            OCCLabeledEntity(
+                shapes=deduped_faces,
+                physical_name=plane.physical_name,
+                index=next_index,
+                keep=plane.mesh_bool,
+                dim=2,
+                mesh_order=plane.mesh_order,
+                is_surface_tag=True,
+            )
+        )
+        next_index += 1
+
     return expanded
 
 

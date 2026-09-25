@@ -6,7 +6,10 @@ are disjoint by construction.
 """
 from __future__ import annotations
 
-from meshwell.structured.types import Cohort, StructuredSlab
+from dataclasses import replace
+
+from meshwell.structured._zmath import approx_in
+from meshwell.structured.types import Cohort, StructuredPlane, StructuredSlab
 
 
 class _UnionFind:
@@ -33,8 +36,11 @@ def _xy_overlaps(a: StructuredSlab, b: StructuredSlab) -> bool:
     return not inter.is_empty
 
 
-def build_cohorts(slabs: list[StructuredSlab]) -> list[Cohort]:
-    """Group slabs into cohorts."""
+def build_cohorts(
+    slabs: list[StructuredSlab],
+    planes: list[StructuredPlane] | None = None,
+) -> list[Cohort]:
+    """Group slabs into cohorts and attach matching StructuredPlanes."""
     n = len(slabs)
     if n == 0:
         return []
@@ -58,4 +64,61 @@ def build_cohorts(slabs: list[StructuredSlab]) -> list[Cohort]:
     for members in groups.values():
         z_planes = tuple(sorted({m.zlo for m in members} | {m.zhi for m in members}))
         cohorts.append(Cohort(slabs=tuple(members), z_planes=z_planes))
+
+    if planes:
+        cohorts = attach_planes_to_cohorts(cohorts, planes)
+
     return cohorts
+
+
+def _snap_z_to_cohort(
+    z: float, z_planes: tuple[float, ...], tol: float = 1e-9
+) -> float | None:
+    for zp in z_planes:
+        if abs(z - zp) <= tol:
+            return zp
+    return None
+
+
+def attach_planes_to_cohorts(
+    cohorts: list[Cohort],
+    planes: list[StructuredPlane],
+) -> list[Cohort]:
+    """Attach each StructuredPlane to the cohort(s) it intersects and snap its z to cohort.z_planes."""
+    if not planes:
+        return cohorts
+
+    planes_by_cohort: list[list[StructuredPlane]] = [[] for _ in cohorts]
+    for plane in planes:
+        for ci, cohort in enumerate(cohorts):
+            z_set = set(cohort.z_planes)
+            if plane.orientation == "horizontal":
+                if not approx_in(plane.zmin, z_set):
+                    continue
+                z_snap = _snap_z_to_cohort(plane.zmin, cohort.z_planes)
+                if z_snap is None:
+                    continue
+                active_slabs = [s for s in cohort.slabs if s.zlo <= z_snap <= s.zhi]
+                if any(s.footprint.intersects(plane.footprint) for s in active_slabs):
+                    planes_by_cohort[ci].append(
+                        replace(plane, zmin=z_snap, zmax=z_snap)
+                    )
+            else:
+                if not (approx_in(plane.zmin, z_set) and approx_in(plane.zmax, z_set)):
+                    continue
+                zmin_snap = _snap_z_to_cohort(plane.zmin, cohort.z_planes)
+                zmax_snap = _snap_z_to_cohort(plane.zmax, cohort.z_planes)
+                if zmin_snap is None or zmax_snap is None or zmin_snap >= zmax_snap:
+                    continue
+                active_slabs = [
+                    s for s in cohort.slabs if s.zlo < zmax_snap and s.zhi > zmin_snap
+                ]
+                if any(s.footprint.intersects(plane.footprint) for s in active_slabs):
+                    planes_by_cohort[ci].append(
+                        replace(plane, zmin=zmin_snap, zmax=zmax_snap)
+                    )
+
+    return [
+        replace(cohort, planes=tuple(planes_by_cohort[ci]))
+        for ci, cohort in enumerate(cohorts)
+    ]

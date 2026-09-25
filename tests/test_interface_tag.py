@@ -352,6 +352,12 @@ def test_e2e_targets_explicit_subset():
 
     Same 3-prism scene, but targets=['A','B']. Only the A/B interface is
     tagged; the B/C interface is not. The C entity must remain unsplit.
+
+    The linestring endpoints lie strictly inside A and B. An endpoint placed
+    exactly on the B/C edge (x=5) is ill-posed: B is a target, so its x=5
+    boundary touches the flat-capped strip and is legitimately picked up.
+    (This used to be masked by the old 1e-5 default outward perturbation,
+    which pushed B's edge just outside the strip.)
     """
     A = shapely.Polygon([(0, 0), (2, 0), (2, 5), (0, 5)])
     B = shapely.Polygon([(2, 0), (5, 0), (5, 5), (2, 5)])
@@ -364,7 +370,7 @@ def test_e2e_targets_explicit_subset():
                 PolyPrism(polygons=B, buffers=buffers, physical_name="B", mesh_order=2),
                 PolyPrism(polygons=C, buffers=buffers, physical_name="C", mesh_order=3),
                 InterfaceTag(
-                    linestrings=LineString([(2, 2.5), (5, 2.5)]),
+                    linestrings=LineString([(1.5, 2.5), (4.5, 2.5)]),
                     zmin=0.0,
                     zmax=1.0,
                     physical_name="iface_AB",
