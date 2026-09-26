@@ -716,6 +716,18 @@ class Mesh:
                 user_pre_3d=pre_3d_hook,
                 user_post_3d=post_3d_hook,
             )
+        else:
+            from meshwell.structured.transfinite import transfinite_specs
+
+            targets = sorted(transfinite_specs(resolution_specs))
+            if targets:
+                from meshwell.structured.exceptions import StructuredError
+
+                raise StructuredError(
+                    f"TransfiniteResolutionSpec targets {targets}, but the model "
+                    "has no structured cohorts; the spec applies to structured "
+                    "PolyPrism physical names only."
+                )
 
         from meshwell.resolution import RecombineResolutionSpec
 

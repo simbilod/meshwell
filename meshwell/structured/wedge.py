@@ -31,6 +31,10 @@ from meshwell.structured.exceptions import (
     WedgeBotNodeMismatchError,
     WedgeCountMismatchError,
 )
+from meshwell.structured.transfinite import (
+    transfinite_cohort_columns,
+    validate_transfinite_grids,
+)
 from meshwell.structured.types import ShapeKey, SlabMeta
 
 logger = logging.getLogger(__name__)
@@ -558,6 +562,11 @@ def make_cohort_hooks(
         state["sub_solid_tag_by_key"] = sub_solid_tag_by_key
         if slab_meta and face_tag_by_key:
             recombine_cohort_columns(slab_meta, face_tag_by_key, resolution_specs)
+            # Transfinite curves/surfaces must be set before generate(1),
+            # which freeze_lateral_mesh runs.
+            state["transfinite_grids"] = transfinite_cohort_columns(
+                slab_meta, face_tag_by_key, resolution_specs
+            )
             freeze_lateral_mesh(
                 slab_meta,
                 face_tag_by_key,
@@ -573,6 +582,7 @@ def make_cohort_hooks(
         face_tag_by_key = state.get("face_tag_by_key")
         sub_solid_tag_by_key = state.get("sub_solid_tag_by_key")
         if slab_meta and face_tag_by_key and sub_solid_tag_by_key:
+            validate_transfinite_grids(state.get("transfinite_grids", []))
             stamp_wedges(
                 slab_meta,
                 face_tag_by_key,

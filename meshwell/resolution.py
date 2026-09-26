@@ -903,6 +903,55 @@ class RecombineResolutionSpec(ResolutionSpec):
         return copy.copy(self)
 
 
+class TransfiniteResolutionSpec(ResolutionSpec):
+    """Structured (transfinite) 2D grid on the cohort regions a physical owns.
+
+    Cohorts only: key it on a structured PolyPrism's physical name. Every
+    cohort column seed face the physical occupies (the regions left after
+    cohort decomposition) must be a single four-sided loop; corners are
+    detected from curve end tangents, so arcs that meet smoothly are not
+    corners and curved sides work. Geometry is never modified: a region
+    that is not four-sided raises ``StructuredTransfiniteShapeError``.
+
+    Sides are classified long/short by propagation: in each connected piece
+    of the physical's regions, the largest region takes its longer opposite
+    pair as long, and classes spread across shared curves (a shared curve
+    has the same class on both sides; opposite sides of a region share a
+    class). Conflicting classes fall back to the finer spacing.
+
+    Node counts start at ``round(length / spacing)`` per curve and only go
+    up (finest wins) until opposite sides of every region match; curves are
+    shared between regions, so adjacent (and stacked) transfinite physicals
+    couple through them. The grid is stamped up the column like any cohort
+    2D mesh. Element type is separate: add ``RecombineResolutionSpec`` for
+    quads (hexahedra); otherwise the grid is structured triangles (wedges).
+
+    All checks run at mesh time. Consumed by the cohort pre-2D hook, not by
+    gmsh size fields, hence the no-op ``apply``.
+
+    Attributes:
+        long_axis: Target spacing along the regions' long sides.
+        short_axis: Target spacing along the regions' short sides.
+        corner_angle_tol: Turning angle (degrees) between consecutive
+            boundary curves above which their junction is a corner.
+    """
+
+    apply_to: Literal["volumes"] = "volumes"
+    long_axis: float = Field(gt=0)
+    short_axis: float = Field(gt=0)
+    corner_angle_tol: float = Field(default=30.0, gt=0, lt=180)
+
+    def apply(self, **_kwargs) -> None:
+        """No-op: consumed by the cohort pre-2D hook."""
+
+    def refine(self, resolution_factor: float) -> "TransfiniteResolutionSpec":
+        """Copy with both spacings scaled by ``resolution_factor``."""
+        result = copy.copy(self)
+        result.long_axis = self.long_axis * resolution_factor
+        result.short_axis = self.short_axis * resolution_factor
+        return result
+
+
 class BoundaryLayerResolutionSpec(ResolutionSpec):
     """Configure a gmsh BoundaryLayer field on a 1D physical name.
 

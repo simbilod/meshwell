@@ -140,6 +140,68 @@ class StructuredTransfiniteRejectedError(StructuredError):
         )
 
 
+class StructuredTransfiniteShapeError(StructuredError):
+    """A cohort region targeted by ``TransfiniteResolutionSpec`` is not four-sided.
+
+    Every region (cohort column seed face) a transfinite physical owns must
+    be a single loop with exactly four corners. Geometry is never modified:
+    fix it by changing the input polygons so every region is four-sided
+    (e.g. split an L-shape into two rectangles).
+    """
+
+    def __init__(
+        self,
+        physical_name: str,
+        face_tag: int,
+        reason: str,
+        bbox: tuple[float, float, float, float] | None = None,
+    ):
+        self.physical_name = physical_name
+        self.face_tag = face_tag
+        self.reason = reason
+        self.bbox = bbox
+        where = (
+            f" (xy bbox [{bbox[0]:.6g}, {bbox[1]:.6g}] - [{bbox[2]:.6g}, {bbox[3]:.6g}])"
+            if bbox is not None
+            else ""
+        )
+        super().__init__(
+            f"TransfiniteResolutionSpec on {physical_name!r}: cohort region "
+            f"(surface {face_tag}){where} {reason}. Transfinite regions must be "
+            "a single four-sided loop; change the input polygons so every "
+            "region is four-sided."
+        )
+
+
+class StructuredTransfiniteSolverError(StructuredError):
+    """The transfinite node-count solver did not converge."""
+
+    def __init__(self, iterations: int):
+        self.iterations = iterations
+        super().__init__(
+            f"TransfiniteResolutionSpec: node counts did not converge within "
+            f"{iterations} iterations (opposite sides of the coupled regions "
+            "cannot be balanced)."
+        )
+
+
+class StructuredTransfiniteGridError(StructuredError):
+    """gmsh did not mesh a transfinite region with the requested structured grid.
+
+    gmsh silently falls back to an unstructured 2D mesh when the transfinite
+    constraints of a surface are inconsistent (e.g. a curve whose node count
+    is dictated by a periodic partner), so the grid is verified after 2D
+    meshing.
+    """
+
+    def __init__(self, face_tag: int, expected: str, got: str):
+        self.face_tag = face_tag
+        super().__init__(
+            f"TransfiniteResolutionSpec: surface {face_tag} was not meshed as the "
+            f"requested structured grid (expected {expected}, got {got})."
+        )
+
+
 class WedgeCountMismatchError(StructuredError):
     """Raised when the number of emitted wedges does not match expectations."""
 

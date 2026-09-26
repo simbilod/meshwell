@@ -281,12 +281,15 @@ def build_cohort_arrangement(
     # union: an adjacent unstructured PolyPrism whose footprint matches
     # a cohort slab contributes the same LineRing and would cause the
     # same over-noding.  Only keep adjacent lines that introduce a cut
-    # the cohort doesn't already have.
+    # the cohort doesn't already have, and only that residual: re-adding
+    # the part that coincides with a cohort boundary (e.g. cladding carved
+    # around an arc cohort) shatters the arc just the same.
     for line in adjacent_unstructured:
         if cohort_union is not None:
             residual = line.difference(cohort_union)
             if residual.is_empty or residual.length < point_tolerance:
                 continue
+            line = residual
         linework.append(line)
 
     vertical_planes = [
