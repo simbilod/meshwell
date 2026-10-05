@@ -45,6 +45,10 @@ def _gmsh_summary(xao) -> dict:
     gmsh.option.setNumber("General.Terminal", 0)
     try:
         gmsh.open(str(xao))
+        # gmsh's parallel mesher is not deterministic, and the node count
+        # below is compared exactly.
+        for d in "123":
+            gmsh.option.setNumber(f"Mesh.MaxNumThreads{d}D", 1)
         ents = {d: len(gmsh.model.getEntities(d)) for d in range(4)}
         groups = {
             (d, gmsh.model.getPhysicalName(d, t)): tuple(
