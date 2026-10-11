@@ -18,6 +18,9 @@ import numpy as np
 
 from meshwell.geometry_entity import decompose_vertices_2d, fit_circle_2d
 
+# Bounds the (chunk x fits) float64 temporaries to roughly 100 MB at peak.
+_PAIR_CHUNK_ELEMENTS = 1 << 22
+
 
 @dataclass(frozen=True)
 class ArcFit:
@@ -59,17 +62,33 @@ class CircleRegistry:
                 i = parent[i]
             return i
 
-        for i in range(len(fits)):
-            for j in range(i + 1, len(fits)):
-                a, b = fits[i], fits[j]
-                d = np.hypot(a.center[0] - b.center[0], a.center[1] - b.center[1])
-                if (
-                    d <= cluster_tolerance
-                    and abs(a.radius - b.radius) <= cluster_tolerance
-                ):
-                    ri, rj = find(i), find(j)
-                    if ri != rj:
-                        parent[rj] = ri
+        # Pairs are visited in row-major order, so cluster order is deterministic.
+        centers = np.asarray([f.center for f in fits], dtype=float)
+        radii = np.asarray([f.radius for f in fits], dtype=float)
+        n = len(fits)
+        chunk = max(1, _PAIR_CHUNK_ELEMENTS // n)
+        for start in range(0, n, chunk):
+            stop = min(start + chunk, n)
+            rows = np.arange(start, stop)[:, None]
+            cols = np.arange(n)[None, :]
+            with np.errstate(invalid="ignore"):
+                # Non-finite centres compare False, so they never merge.
+                close = (cols > rows) & (
+                    np.hypot(
+                        centers[start:stop, 0, None] - centers[None, :, 0],
+                        centers[start:stop, 1, None] - centers[None, :, 1],
+                    )
+                    <= cluster_tolerance
+                )
+                close &= (
+                    np.abs(radii[start:stop, None] - radii[None, :])
+                    <= cluster_tolerance
+                )
+            hit_rows, hit_cols = np.nonzero(close)
+            for offset, j in zip(hit_rows, hit_cols, strict=True):
+                ri, rj = find(start + offset), find(j)
+                if ri != rj:
+                    parent[rj] = ri
 
         groups: dict[int, list[ArcFit]] = {}
         for i, f in enumerate(fits):
