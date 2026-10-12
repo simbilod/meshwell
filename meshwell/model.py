@@ -285,6 +285,16 @@ class ModelManager:
         max_dim = max(dim for dim, _ in physical_groups)
         return self.get_physical_names(dim=max_dim)
 
+    def _get_physical_groups_by_name(self) -> dict[str, list[tuple[int, int]]]:
+        """Index physical groups by name once: name -> list of (dim, tag)."""
+        if getattr(self, "_physical_groups_by_name", None) is None:
+            groups_by_name: dict[str, list[tuple[int, int]]] = {}
+            for dim, tag in self.model.getPhysicalGroups():
+                name = self.model.getPhysicalName(dim, tag)
+                groups_by_name.setdefault(name, []).append((dim, tag))
+            self._physical_groups_by_name = groups_by_name
+        return self._physical_groups_by_name
+
     def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
         """Get dimtags for a physical group name.
 
@@ -298,14 +308,13 @@ class ModelManager:
         if not self._is_initialized or self.model is None:
             return []
 
-        physical_groups = self.model.getPhysicalGroups()
+        # Use pre-indexed physical groups by name to avoid repeated O(groups) entity scans
+        groups_by_name = self._get_physical_groups_by_name()
 
         dimtags = []
-        for dim, tag in physical_groups:
-            current_name = self.model.getPhysicalName(dim, tag)
-            if current_name == physical_name:
-                entity_tags = self.model.getEntitiesForPhysicalGroup(dim, tag)
-                dimtags.extend([(dim, int(t)) for t in set(entity_tags)])
+        for dim, tag in groups_by_name.get(physical_name, []):
+            entity_tags = self.model.getEntitiesForPhysicalGroup(dim, tag)
+            dimtags.extend([(dim, int(t)) for t in set(entity_tags)])
 
         return dimtags
 

@@ -151,24 +151,48 @@ def _candidate_pair_mask(
     n = union_aabbs.shape[0]
     if n < 2:
         return np.zeros((0, 2), dtype=int)
-    mins = union_aabbs[:, :3]  # (N, 3)
-    maxs = union_aabbs[:, 3:]  # (N, 3)
-    # overlap[i, j] = True iff inflated AABB i overlaps AABB j on all axes.
-    # Broadcasting: (N, 1, 3) vs (1, N, 3).
-    overlap_axes = (mins[:, None, :] - tol < maxs[None, :, :]) & (
-        mins[None, :, :] - tol < maxs[:, None, :]
-    )
-    overlap = overlap_axes.all(axis=2)  # (N, N)
-    # Degenerate entities (valid=False) override: they overlap everything.
-    # Set their rows AND columns to True.
-    degenerate = ~valid_mask
-    if degenerate.any():
-        overlap[degenerate, :] = True
-        overlap[:, degenerate] = True
-    # Upper triangle (i < j) — NumPy's triu returns row-major order which
-    # is lexicographic (i, j) order. ``np.argwhere`` then preserves it.
-    upper = np.triu(overlap, k=1)
-    return np.argwhere(upper)
+    # 1D sort-and-sweep along the x-axis to prune non-overlapping pairs in
+    # O(N log N) before performing full 3D AABB overlap checks.
+    mins = union_aabbs[:, :3]
+    maxs = union_aabbs[:, 3:]
+    valid_idx = np.flatnonzero(valid_mask)
+    degenerate_idx = np.flatnonzero(~valid_mask)
+    pairs_i: list[np.ndarray] = []
+    pairs_j: list[np.ndarray] = []
+    if valid_idx.size >= 2:
+        order = valid_idx[np.argsort(mins[valid_idx, 0], kind="stable")]
+        xmin_sorted = mins[order, 0]
+        for pos, i in enumerate(order):
+            # candidates j with xmin_j - tol < xmax_i (and, by symmetry of the
+            # sweep, xmin_i - tol < xmax_j is checked below)
+            hi = np.searchsorted(
+                xmin_sorted,
+                maxs[i, 0] + tol + 1e-9 * (1.0 + abs(maxs[i, 0]) + tol),
+                side="right",
+            )
+            if hi <= pos + 1:
+                # still need j after pos with xmin_j < xmax_i + tol
+                continue
+            cand = order[pos + 1 : hi]
+            ok = np.all(
+                (mins[i] - tol < maxs[cand]) & (mins[cand] - tol < maxs[i]), axis=1
+            )
+            if ok.any():
+                c = cand[ok]
+                pairs_i.append(np.minimum(i, c))
+                pairs_j.append(np.maximum(i, c))
+    if degenerate_idx.size:
+        all_idx = np.arange(n)
+        for d in degenerate_idx:
+            others = all_idx[all_idx != d]
+            pairs_i.append(np.minimum(d, others))
+            pairs_j.append(np.maximum(d, others))
+    if not pairs_i:
+        return np.zeros((0, 2), dtype=int)
+    pi = np.concatenate(pairs_i)
+    pj = np.concatenate(pairs_j)
+    keys = np.unique(pi.astype(np.int64) * n + pj.astype(np.int64))
+    return np.stack([keys // n, keys % n], axis=1).astype(int)
 
 
 # ---------------------------------------------------------------------------
@@ -387,19 +411,28 @@ def _compute_physical_groups(
         if not common and entity_aabbs[i1] and entity_aabbs[i2]:
             arr2 = entity_aabb_arr[i2]
             sids2 = entity_sids[i2]
-            for sid1, b1 in entity_aabbs[i1].items():
-                b1_arr = np.asarray(b1, dtype=float)
-                # Per-row L_inf corner distance to b1 across all of entity 2.
-                dists = np.abs(arr2 - b1_arr).max(axis=1)
-                matches = np.where(dists < interface_aabb_tolerance)[0]
-                if matches.size == 0:
+            # Match touching faces by computing pairwise L_inf bounding-box
+            # corner distances in memory-bounded blocks.
+            arr1 = entity_aabb_arr[i1]
+            sids1 = entity_sids[i1]
+            # Chunk rows so the (rows, F2, 6) temporary stays ~100 MB.
+            chunk = max(1, int(2_000_000 // max(1, arr2.shape[0])))
+            for c0 in range(0, arr1.shape[0], chunk):
+                blk = arr1[c0 : c0 + chunk]
+                close = (
+                    np.abs(blk[:, None, :] - arr2[None, :, :]).max(axis=2)
+                    < interface_aabb_tolerance
+                )
+                has = close.any(axis=1)
+                if not has.any():
                     continue
-                # Preserve "pick first match by sid-array order" semantics
-                # for determinism.
-                sid2 = sids2[int(matches[0])]
-                common.add(sid1)
-                i2_matched_sids.add(sid2)
-                entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
+                first = close.argmax(axis=1)
+                for k in np.flatnonzero(has):
+                    sid1 = sids1[c0 + int(k)]
+                    sid2 = sids2[int(first[k])]
+                    common.add(sid1)
+                    i2_matched_sids.add(sid2)
+                    entity_boundary[i1][sid1] = entity_boundary[i2][sid2]
 
         if not common:
             continue
