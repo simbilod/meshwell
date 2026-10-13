@@ -123,6 +123,50 @@ def _resolve_piece_ownership(
     return owners
 
 
+def _cohort_bop_proxy(cohort: TopoDS_Shape, lowdim_boxes: list) -> TopoDS_Shape:
+    """Construct a compound of cohort boundary faces that can interact with neighbours.
+
+    ``_fragment_all`` discards the direct BOP solid results of a cohort compound
+    (it retains the pre-BOP compound, and ``rebind_to_cohort_topology`` queries
+    the history of cohort sub-shapes). Because sequential cuts guarantee no solid
+    neighbour penetrates the cohort interior, only the cohort's outer boundary faces
+    (faces owned by exactly one sub-solid) can touch solid neighbours.
+    Lower-dimensional neighbours (e.g. sheets or curves) may lie inside the cohort,
+    so internal faces whose bounding boxes overlap with lower-dimensional entities
+    are included as well.
+
+    The proxy shares underlying TShapes with the cohort, ensuring identical
+    sub-shape history while preventing the Boolean builder from redundantly splitting
+    internal sub-solids.
+    """
+    from OCP.BRep import BRep_Builder
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopTools import (
+        TopTools_IndexedDataMapOfShapeListOfShape,
+        TopTools_IndexedMapOfShape,
+    )
+
+    face_solids = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(cohort, TopAbs_FACE, TopAbs_SOLID, face_solids)
+    comp = TopoDS_Compound()
+    bb = BRep_Builder()
+    bb.MakeCompound(comp)
+    for i in range(1, face_solids.Extent() + 1):
+        face = face_solids.FindKey(i)
+        owners = TopTools_IndexedMapOfShape()
+        for s in face_solids.FindFromIndex(i):
+            owners.Add(s)
+        keep = owners.Extent() <= 1
+        if not keep and lowdim_boxes:
+            fb = Bnd_Box()
+            BRepBndLib.Add_s(face, fb)
+            keep = any(not fb.IsOut(b) for b in lowdim_boxes)
+        if keep:
+            bb.Add(comp, face)
+    return comp
+
+
 class CAD_OCC:
     """OCP-driven CAD processor: fragment + mesh_order ownership."""
 
@@ -383,6 +427,22 @@ class CAD_OCC:
         builder.SetRunParallel(self.n_threads > 1)
         builder.SetFuzzyValue(self.fragment_fuzzy_value)
         builder.SetNonDestructive(False)
+        import os as _os
+
+        _use_proxy = _os.environ.get("MESHWELL_BOP_COHORT_BOUNDARY", "1") not in (
+            "0",
+            "false",
+            "False",
+        ) and any(ent._is_cohort for ent in entities)
+        _lowdim_boxes = []
+        if _use_proxy:
+            for ent in entities:
+                if not ent._is_cohort and ent.dim is not None and ent.dim < 3:
+                    for s in ent.shapes:
+                        bx = Bnd_Box()
+                        BRepBndLib.Add_s(s, bx)
+                        bx.Enlarge(max(self.fragment_fuzzy_value, 1e-6) * 10)
+                        _lowdim_boxes.append(bx)
 
         originals_per_entity: list[list[TopoDS_Shape]] = []
         for ent in tqdm(
@@ -393,7 +453,10 @@ class CAD_OCC:
         ):
             originals_per_entity.append(list(ent.shapes))
             for s in ent.shapes:
-                builder.AddArgument(s)
+                if _use_proxy and ent._is_cohort:
+                    builder.AddArgument(_cohort_bop_proxy(s, _lowdim_boxes))
+                else:
+                    builder.AddArgument(s)
 
         if progress_bars:
             print(
