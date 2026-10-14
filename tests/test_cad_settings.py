@@ -41,12 +41,16 @@ def _scene():
 
 def _gmsh_summary(xao) -> dict:
     """Entity counts, named physical groups and a coarse 3D mesh size."""
+    # Another test in this worker may have left gmsh initialized, in which
+    # case the call below is a no-op and this one would mesh with that
+    # session's options. Threads are pinned because the node count is
+    # compared exactly and gmsh's parallel mesher is not deterministic.
+    if gmsh.isInitialized():
+        gmsh.finalize()
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 0)
     try:
         gmsh.open(str(xao))
-        # gmsh's parallel mesher is not deterministic, and the node count
-        # below is compared exactly.
         for d in "123":
             gmsh.option.setNumber(f"Mesh.MaxNumThreads{d}D", 1)
         ents = {d: len(gmsh.model.getEntities(d)) for d in range(4)}

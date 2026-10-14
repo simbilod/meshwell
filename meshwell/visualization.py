@@ -1,6 +1,8 @@
 """Plotting routines."""
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import PolyCollection
+from matplotlib.colors import to_rgba
 
 """From https://en.wikipedia.org/wiki/Help:Distinguishable_colors"""
 colors = [
@@ -153,7 +155,7 @@ def plot2D(
         if (
             physicals is not None
             and "gmsh:physical" in mesh.cell_data_dict
-            and not any(name in physicals for name in id_to_name[group])
+            and not any(name in physicals for name in id_to_name.get(group, ["mesh"]))
         ):
             continue
 
@@ -161,9 +163,11 @@ def plot2D(
         color = colors[i % len(colors)]
 
         # Get group name for legend
-        group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
+        group_name = ", ".join(id_to_name.get(group, ["mesh"]))
 
-        # Plot each surface cell type belonging to this group
+        # Gather all surface cells of this group (across cell types) first:
+        # a fill + plot pair per cell is 200k artists on a 100k-triangle mesh.
+        group_polys = []
         for cell_type in cell_types_2D:
             if "gmsh:physical" in mesh.cell_data_dict:
                 if cell_type not in mesh.cell_data_dict["gmsh:physical"]:
@@ -173,29 +177,43 @@ def plot2D(
                 ]
             else:
                 group_cells = mesh.cells_dict[cell_type]
+            if len(group_cells) > 0:
+                group_polys.append(mesh.points[group_cells][..., :2])
 
-            for cell in group_cells:
-                x = mesh.points[cell, 0]
-                y = mesh.points[cell, 1]
-                # Close the polygon (works for triangles and quads alike)
-                x = np.append(x, x[0])
-                y = np.append(y, y[0])
+        if not group_polys:
+            continue
 
-                if wireframe:
-                    ax.plot(
-                        x,
-                        y,
-                        color=color,
-                        marker="o" if wireframe else None,
-                        markersize=3 if wireframe else None,
-                        label=group_name,
-                    )
-                else:
-                    ax.fill(x, y, color=color, alpha=0.5, label=group_name)
-                    ax.plot(x, y, color=color, linewidth=0.5)
+        # Ragged list of per-cell (k, 2) arrays: triangles and quads cannot be
+        # stacked into one array, and PolyCollection takes them as-is.
+        verts = [poly for arr in group_polys for poly in arr]
 
+        if wireframe:
+            # One Line2D per cell: the per-node markers are the point of
+            # wireframe mode and PolyCollection cannot draw those.
+            for poly in verts:
+                ax.plot(
+                    np.append(poly[:, 0], poly[0, 0]),
+                    np.append(poly[:, 1], poly[0, 1]),
+                    color=color,
+                    marker="o",
+                    markersize=3,
+                    label=group_name,
+                )
                 # Only include label once in legend
                 group_name = "_nolegend_"
+        else:
+            ax.add_collection(
+                PolyCollection(
+                    verts,
+                    facecolors=to_rgba(color, 0.5),
+                    edgecolors=color,
+                    linewidths=0.5,
+                    label=group_name,
+                )
+            )
+
+    # add_collection, unlike fill, does not request an autoscale on its own
+    ax.autoscale_view()
 
     # Plot lines for each 1D physical group
     if not ignore_lines:
@@ -204,7 +222,9 @@ def plot2D(
             if (
                 physicals is not None
                 and "gmsh:physical" in mesh.cell_data_dict
-                and not any(name in physicals for name in id_to_name[group])
+                and not any(
+                    name in physicals for name in id_to_name.get(group, ["mesh"])
+                )
             ):
                 continue
 
@@ -221,7 +241,7 @@ def plot2D(
 
             # Get color and group name
             color = colors[(i + len(physical_groups_2D)) % len(colors)]
-            group_name = ", ".join(id_to_name[group]) if group in id_to_name else "mesh"
+            group_name = ", ".join(id_to_name.get(group, ["mesh"]))
 
             # Plot lines
             for line in group_cells:

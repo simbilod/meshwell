@@ -29,6 +29,13 @@ from meshwell.resolution import (
     _insert_required,
 )
 
+# Local node index pairs spanning each element's edges, keyed by the number
+# of nodes per element: triangle perimeter, then the tetrahedron's six edges.
+_ELEMENT_EDGE_PAIRS = {
+    3: ((0, 1), (1, 2), (2, 0)),
+    4: ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)),
+}
+
 
 def _identity_threshold_func(
     _metric_values: np.ndarray, current_sizes: np.ndarray
@@ -259,29 +266,22 @@ class Remesher:
             except:  # noqa: E722
                 self.triangles = None
 
-    def _extract_edges(self) -> set[tuple[int, int]]:
+    def _extract_edges(self) -> np.ndarray:
         """Extract unique edges from the loaded mesh elements.
 
         Returns:
-            Set of tuples (n1, n2) where n1 < n2.
+            (M, 2) array of node index pairs, each row sorted ascending.
         """
-        edges = set()
-        if self.triangles is not None:
-            num_nodes_per_elem = self.triangles.shape[1]
-            if num_nodes_per_elem == 3:  # Triangles
-                for elem in self.triangles:
-                    edges.add(tuple(sorted((elem[0], elem[1]))))
-                    edges.add(tuple(sorted((elem[1], elem[2]))))
-                    edges.add(tuple(sorted((elem[2], elem[0]))))
-            elif num_nodes_per_elem == 4:  # Tetrahedra
-                for elem in self.triangles:
-                    edges.add(tuple(sorted((elem[0], elem[1]))))
-                    edges.add(tuple(sorted((elem[0], elem[2]))))
-                    edges.add(tuple(sorted((elem[0], elem[3]))))
-                    edges.add(tuple(sorted((elem[1], elem[2]))))
-                    edges.add(tuple(sorted((elem[1], elem[3]))))
-                    edges.add(tuple(sorted((elem[2], elem[3]))))
-        return edges
+        pairs = (
+            None
+            if self.triangles is None
+            else _ELEMENT_EDGE_PAIRS.get(self.triangles.shape[1])
+        )
+        if pairs is None:
+            return np.empty((0, 2), dtype=np.int64)
+
+        edges = self.triangles[:, pairs].reshape(-1, 2)
+        return np.unique(np.sort(edges, axis=1), axis=0)
 
     def get_current_mesh_sizes(self) -> np.ndarray:
         """Calculate current mesh size at each node (average connected edge length).
@@ -294,18 +294,13 @@ class Remesher:
 
         edges = self._extract_edges()
 
-        node_sum_lengths = np.zeros(len(self.vxyz))
-        node_counts = np.zeros(len(self.vxyz))
-
-        for n1, n2 in edges:
-            p1 = self.vxyz[n1]
-            p2 = self.vxyz[n2]
-            length = np.linalg.norm(p1 - p2)
-
-            node_sum_lengths[n1] += length
-            node_counts[n1] += 1
-            node_sum_lengths[n2] += length
-            node_counts[n2] += 1
+        lengths = np.linalg.norm(
+            self.vxyz[edges[:, 0]] - self.vxyz[edges[:, 1]], axis=1
+        )
+        node_sum_lengths = np.bincount(
+            edges[:, 0], weights=lengths, minlength=len(self.vxyz)
+        ) + np.bincount(edges[:, 1], weights=lengths, minlength=len(self.vxyz))
+        node_counts = np.bincount(edges.ravel(), minlength=len(self.vxyz))
 
         with np.errstate(divide="ignore", invalid="ignore"):
             node_sizes = node_sum_lengths / node_counts
