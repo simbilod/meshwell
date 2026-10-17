@@ -6,17 +6,18 @@
 
 ---
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23430914.svg)](https://doi.org/10.5281/zenodo.23430914)
+
 Robust, efficient Python-based 2.5D meshing.
 
 ## 🧱 Key Features
 
 * Preprocessing of [Shapely](https://shapely.readthedocs.io/en/stable/)-based inputs:
-  * vertex snapping + sub-tolerance buffering for robustness against arbitrary inputs with minimal distortion
   * automated curve fitting for seamless curvilinear meshing
-  * Prismatic or tetrahedral elements
-* Shared-memory parallel CAD with [OpenCASCADE](https://dev.opencascade.org/)
-* Shared-memory parallel meshing with [GMSH](https://gmsh.info/)
-* Simplified remeshing with [MMG](https://github.com/MmgTools/MMG)
+  * prismatic or tetrahedral elements
+* Simple CAD interface to [OpenCASCADE](https://dev.opencascade.org/)
+* Simple meshing interface to [GMSH](https://gmsh.info/)
+* Remeshing utilities, including [MMG](https://github.com/MmgTools/MMG)
 
 ## 📦 Installation
 

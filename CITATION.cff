@@ -9,6 +9,7 @@ authors:
 repository-code: "https://github.com/simbilod/meshwell"
 url: "https://github.com/simbilod/meshwell"
 license: GPL-3.0-or-later
+doi: 10.5281/zenodo.23430914
 version: 2.5.2
 date-released: "2026-10-16"
 keywords:
