@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.5.2
+
+Performance release (no API changes):
+- Fast direct XAO XML loader and cohort boundary BOP proxy
+- Batch structured element insertion via binary MSH 4.1 merge
+- Optimize XAO candidate pair search and physical group name lookups
+- Vectorize remesh size computation and `plot2D`
+- Pin gmsh mesh threads and start `_gmsh_summary` from a clean gmsh session
+- Add benchmark script for remesh sizes and `plot2D`
+
 ## 2.5.1
 
 - Persist CAD settings in XAO files so separate CAD and mesh stages use the same tolerances and arc settings;
