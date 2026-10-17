@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: meshwell
+abstract: "OpenCascade+GMSH wrapper for convenient mesh generation."
+type: software
+authors:
+  - family-names: Bilodeau
+    given-names: Simon
+repository-code: "https://github.com/simbilod/meshwell"
+url: "https://github.com/simbilod/meshwell"
+license: GPL-3.0-or-later
+version: 2.5.2
+date-released: "2026-10-16"
+keywords:
+  - opencascade
+  - gmsh
+  - mesh
+  - remesh
+  - fem
+  - fvm
+  - python
