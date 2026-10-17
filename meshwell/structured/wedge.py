@@ -391,18 +391,32 @@ def strip_synthetic_physical_groups() -> None:
     Called before writing the .msh so synthetic bookkeeping groups don't
     leak into the output.
     """
-    to_remove: list[tuple[int, int]] = []
+    # In Gmsh, removePhysicalGroups(list) scales as O(groups x entities).
+    # Instead, record the real groups using an inverse map (O(entities)),
+    # clear all groups at once, and re-add the preserved groups with their
+    # original tags, names, and members.
+    group_ents: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for d in range(4):
+        for _, etag in gmsh.model.getEntities(d):
+            for ptag in gmsh.model.getPhysicalGroupsForEntity(d, etag):
+                group_ents[(d, int(ptag))].append(int(etag))
+    keep: list[tuple[int, int, str, list[int]]] = []
     names_to_drop: list[str] = []
     for dim, gtag in gmsh.model.getPhysicalGroups():
         gname = gmsh.model.getPhysicalName(dim, gtag)
         if gname.startswith(("__cohort_", "__sweep")):
-            to_remove.append((dim, gtag))
             names_to_drop.append(gname)
-    if to_remove:
-        gmsh.model.removePhysicalGroups(to_remove)
+        else:
+            keep.append((dim, gtag, gname, sorted(group_ents.get((dim, gtag), []))))
+    if names_to_drop:
+        gmsh.model.removePhysicalGroups()
+        # removePhysicalGroups() only clears entity membership; the name map
+        # (GModel::_physicalNames) survives and would be written to the .msh.
         for gname in names_to_drop:
             with contextlib.suppress(Exception):
                 gmsh.model.removePhysicalName(gname)
+        for dim, gtag, gname, ents in keep:
+            gmsh.model.addPhysicalGroup(dim, ents, tag=gtag, name=gname)
 
 
 def has_cohort_groups() -> bool:
@@ -421,20 +435,30 @@ def discover_cohorts() -> tuple[dict[str, SlabMeta], dict[str, int], dict[str, i
     synthetic face groups, falls back to inspecting the 3D volume's boundary
     faces in gmsh.
     """
+    # gmsh.model.getEntitiesForPhysicalGroup scans all entities of the dimension
+    # on each call. Calling it per group scales as O(groups x entities).
+    # Build an inverted group_ents map once via getPhysicalGroupsForEntity
+    # (O(entities)) instead.
+    group_ents: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for d in (2, 3):
+        for _, etag in gmsh.model.getEntities(d):
+            for ptag in gmsh.model.getPhysicalGroupsForEntity(d, etag):
+                group_ents[(d, int(ptag))].append(int(etag))
+
     face_groups: dict[str, int] = {}
     for _, gtag in gmsh.model.getPhysicalGroups(2):
         gname = gmsh.model.getPhysicalName(2, gtag)
         if not gname.startswith("__cohort_"):
             continue
-        entities = gmsh.model.getEntitiesForPhysicalGroup(2, gtag)
+        entities = group_ents.get((2, gtag), [])
         if len(entities) >= 1:
-            face_groups[gname] = int(entities[0])
+            face_groups[gname] = min(entities)
 
     solid_groups: dict[str, int] = {}
     fallback_names_by_vol: dict[int, list[str]] = defaultdict(list)
     for _, gtag in gmsh.model.getPhysicalGroups(3):
         gname = gmsh.model.getPhysicalName(3, gtag)
-        entities = gmsh.model.getEntitiesForPhysicalGroup(3, gtag)
+        entities = sorted(group_ents.get((3, gtag), []))
         if gname.startswith("__cohort_"):
             if len(entities) >= 1:
                 solid_groups[gname] = int(entities[0])
@@ -780,6 +804,7 @@ def _emit_lateral_face_quads(
     z_top: float,
     n_layers: int,
     owners_per_face: dict[int, list[tuple[int, int]]],
+    batcher=None,
 ) -> None:
     """Emit the structured quad mesh for one cohort lateral face.
 
@@ -873,7 +898,10 @@ def _emit_lateral_face_quads(
                 ]
             )
     if quad_nodes:
-        gmsh.model.mesh.addElementsByType(face_tag, 3, [], quad_nodes)
+        if batcher is not None:
+            batcher.add(2, face_tag, 3, quad_nodes)
+        else:
+            gmsh.model.mesh.addElementsByType(face_tag, 3, [], quad_nodes)
 
 
 def freeze_lateral_mesh(
@@ -1034,20 +1062,30 @@ def freeze_lateral_mesh(
             )
 
     # Step 4: emit lateral-face quads.
+    # Buffer quads and insert via single MSH4 merge to avoid repeated cache rebuilds
+    from meshwell.structured._batch_elements import ElementBatcher
+
+    batcher = ElementBatcher()
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
         _emit_lateral_face_quads(
-            face_tag, z_bot, z_top, face_n_layers[face_tag], owners_per_face
+            face_tag,
+            z_bot,
+            z_top,
+            face_n_layers[face_tag],
+            owners_per_face,
+            batcher=batcher,
         )
 
     # Step 4.5: prevent generate(2) from meshing cohort top faces.
     # We will mesh them in stamp_wedges. If generate(2) meshes them,
     # its interior nodes become orphaned when we overwrite the elements,
     # causing PLC errors in the 3D mesher.
+    placeholder_done: set[int] = set()
     for meta in slab_meta.values():
         if not meta.keep:
             continue
         top_tag = face_tag_by_key.get(meta.top_face_key)
-        if top_tag is None:
+        if top_tag is None or top_tag in placeholder_done:
             continue
         elem_types, _, _ = gmsh.model.mesh.getElements(2, top_tag)
         if len(elem_types) == 0:
@@ -1060,16 +1098,19 @@ def freeze_lateral_mesh(
                 boundary_nodes.extend(tags)
             boundary_nodes = list(set(boundary_nodes))
             if len(boundary_nodes) >= 3:
-                gmsh.model.mesh.addElementsByType(
+                placeholder_done.add(top_tag)
+                batcher.add(
+                    2,
                     top_tag,
                     2,
-                    [],
                     [
                         int(boundary_nodes[0]),
                         int(boundary_nodes[1]),
                         int(boundary_nodes[2]),
                     ],
                 )
+    n_batched = batcher.flush()
+    logger.info("freeze_lateral_mesh: batched %d elements in one merge", n_batched)
 
     # Step 5: tell outer generate(2) to skip already-meshed faces.
     gmsh.option.setNumber("Mesh.MeshOnlyEmpty", 1)
@@ -1112,6 +1153,12 @@ def stamp_wedges(
         order.append((z, k, meta))
     order.sort(key=lambda t: t[0])
 
+    from meshwell.structured._batch_elements import ElementBatcher
+
+    vol_batcher = ElementBatcher()
+    # When batching, top-face restamps are deferred; in-memory face_override
+    # lets subsequent slabs query bottom face topology without calling Gmsh.
+    face_override = None if vol_batcher._direct else {}
     for idx, (_, sub_key, meta) in enumerate(order):
         bot_tag = face_tag_by_key[meta.bot_face_key]
         top_tag = face_tag_by_key[meta.top_face_key]
@@ -1136,7 +1183,11 @@ def stamp_wedges(
             n_layers,
             point_tolerance,
             face_tag_by_key,
+            batcher=vol_batcher,
+            face_override=face_override,
         )
+    n_vol = vol_batcher.flush()
+    logger.info("stamp_wedges: batched %d volume elements in one merge", n_vol)
 
 
 def _face_centroid_z(face_tag: int) -> float:
@@ -1215,23 +1266,30 @@ def _stamp_one(
     n_layers: int,
     point_tolerance: float,
     face_tag_by_key: dict[ShapeKey, int],
+    batcher=None,
+    face_override=None,
 ) -> None:
     """Read bot triangulation, stamp on top, emit wedges into volume."""
     snap_tolerance = max(1e-5, point_tolerance * 0.1)
     # 1) Read bot triangulation / quad mesh.
-    elem_types, _elem_tags, node_tags = gmsh.model.mesh.getElements(2, bot_tag)
-    if 2 not in elem_types and 3 not in elem_types:
-        return
-    if 2 in elem_types:
-        tri_idx = list(elem_types).index(2)
-        tris = np.array(node_tags[tri_idx]).reshape(-1, 3)
+    if face_override is not None and bot_tag in face_override:
+        tris, quads = face_override[bot_tag]
+        if not len(tris) and not len(quads):
+            return
     else:
-        tris = np.zeros((0, 3), dtype=int)
-    if 3 in elem_types:
-        quad_idx = list(elem_types).index(3)
-        quads = np.array(node_tags[quad_idx]).reshape(-1, 4)
-    else:
-        quads = np.zeros((0, 4), dtype=int)
+        elem_types, _elem_tags, node_tags = gmsh.model.mesh.getElements(2, bot_tag)
+        if 2 not in elem_types and 3 not in elem_types:
+            return
+        if 2 in elem_types:
+            tri_idx = list(elem_types).index(2)
+            tris = np.array(node_tags[tri_idx]).reshape(-1, 3)
+        else:
+            tris = np.zeros((0, 3), dtype=int)
+        if 3 in elem_types:
+            quad_idx = list(elem_types).index(3)
+            quads = np.array(node_tags[quad_idx]).reshape(-1, 4)
+        else:
+            quads = np.zeros((0, 4), dtype=int)
     bot_node_tags, bot_coord, _ = gmsh.model.mesh.getNodes(
         2, bot_tag, includeBoundary=True
     )
@@ -1309,16 +1367,25 @@ def _stamp_one(
     # not orphan interior nodes that are shared with adjacent volumes).
     # Then re-stamp with the bot-matched triangulation / quad mesh.
     gmsh.model.mesh.removeElements(2, top_tag)
-    if len(tris):
-        top_tri_nodes: list[int] = []
-        for tri in tris:
-            top_tri_nodes.extend(bot_to_top[int(t)] for t in tri)
-        gmsh.model.mesh.addElementsByType(top_tag, 2, [], top_tri_nodes)
-    if len(quads):
-        top_quad_nodes: list[int] = []
-        for quad in quads:
-            top_quad_nodes.extend(bot_to_top[int(t)] for t in quad)
-        gmsh.model.mesh.addElementsByType(top_tag, 3, [], top_quad_nodes)
+    top_tri_nodes: list[int] = []
+    top_quad_nodes: list[int] = []
+    for tri in tris:
+        top_tri_nodes.extend(bot_to_top[int(t)] for t in tri)
+    for quad in quads:
+        top_quad_nodes.extend(bot_to_top[int(t)] for t in quad)
+    if face_override is not None:
+        # Defer element insertion to the volume batcher
+        batcher.add(2, top_tag, 2, top_tri_nodes)
+        batcher.add(2, top_tag, 3, top_quad_nodes)
+        face_override[top_tag] = (
+            np.array(top_tri_nodes, dtype=np.int64).reshape(-1, 3),
+            np.array(top_quad_nodes, dtype=np.int64).reshape(-1, 4),
+        )
+    else:
+        if top_tri_nodes:
+            gmsh.model.mesh.addElementsByType(top_tag, 2, [], top_tri_nodes)
+        if top_quad_nodes:
+            gmsh.model.mesh.addElementsByType(top_tag, 3, [], top_quad_nodes)
 
     # 4) Intermediate layer nodes (for n_layers > 1).
     #
@@ -1461,10 +1528,14 @@ def _stamp_one(
                 ]
             )
             expected += 1
-    if wedge_node_tags:
-        gmsh.model.mesh.addElementsByType(vol_tag, 6, [], wedge_node_tags)
-    if hex_node_tags:
-        gmsh.model.mesh.addElementsByType(vol_tag, 5, [], hex_node_tags)
+    if batcher is not None:
+        batcher.add(3, vol_tag, 6, wedge_node_tags)
+        batcher.add(3, vol_tag, 5, hex_node_tags)
+    else:
+        if wedge_node_tags:
+            gmsh.model.mesh.addElementsByType(vol_tag, 6, [], wedge_node_tags)
+        if hex_node_tags:
+            gmsh.model.mesh.addElementsByType(vol_tag, 5, [], hex_node_tags)
     emitted = (len(wedge_node_tags) // 6) + (len(hex_node_tags) // 8)
     if emitted != expected:
         raise WedgeCountMismatchError(
