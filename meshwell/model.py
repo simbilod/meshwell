@@ -156,7 +156,22 @@ class ModelManager:
         """
         self.ensure_initialized("temp")
         input_file = Path(input_file)
-        gmsh.open(str(input_file.with_suffix(".xao")))
+        from meshwell import _fast_xao
+
+        if _fast_xao.enabled():
+            try:
+                _fast_xao.load(input_file.with_suffix(".xao"))
+            except Exception as e:
+                import warnings
+
+                warnings.warn(
+                    f"Fast XAO loader failed ({e}); falling back to gmsh.open()",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                gmsh.open(str(input_file.with_suffix(".xao")))
+        else:
+            gmsh.open(str(input_file.with_suffix(".xao")))
         self.model.occ.synchronize()
         if remove_all_duplicates:
             self._fragment_all_loaded_dimtags()
