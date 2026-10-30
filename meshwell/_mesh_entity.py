@@ -13,6 +13,33 @@ import gmsh
 from meshwell.resolution import CURVE_SUBTYPE_MAP, ResolutionSpec
 
 
+def _global_exterior_tags(
+    all_entities_dict: dict,
+    target_dim: int,
+    cache: dict[int, set[int]] | None = None,
+) -> set[int]:
+    """Tags of dimension ``target_dim`` lying on the domain exterior.
+
+    The exterior is the union of every entity's ``<name>___<boundary_delimiter>``
+    groups (``mesh_edge_name_interfaces``), lowered to ``target_dim``.
+    If ``cache`` is provided (e.g. per-build dict owned by ``mesh()``),
+    tags for each ``target_dim`` are computed once and reused across all
+    entities and specs.
+    """
+    if cache is not None and target_dim in cache:
+        return cache[target_dim]
+
+    tags: set[int] = set()
+    for entity in all_entities_dict.values():
+        if not entity.mesh_edge_name_interfaces or entity.dim - target_dim < 1:
+            continue
+        tags.update(entity.filter_mesh_boundary_tags_by_target_dimension(target_dim))
+
+    if cache is not None:
+        cache[target_dim] = tags
+    return tags
+
+
 class _MeshEntity:
     """General class to track the gmsh entities that result from the geometry definition."""
 
@@ -205,9 +232,9 @@ class _MeshEntity:
                             logging.getLogger(__name__).debug(
                                 f"Failed to get curve loops for {b}: {e}"
                             )
-            case -1:
+            case _:
                 warnings.warn(
-                    "Target dimension requested is 3, but entity is 2D; "
+                    f"Target dimension {target_dimension} incompatible with entity dim {self.dim}; "
                     "skipping resolution assignment.",
                     stacklevel=2,
                 )
@@ -246,7 +273,7 @@ class _MeshEntity:
                         logging.getLogger(__name__).debug(
                             f"Failed to get curve loops for {b}: {e}"
                         )
-            case -1:
+            case _:
                 raise ValueError("Not a boundary!")
 
         return tags
@@ -323,6 +350,7 @@ class _MeshEntity:
         boundary_delimiter,
         constant_collector=None,
         tag_to_entity_names=None,
+        exterior_tags_cache=None,
     ):
         """Adds refinement fields to the model based on base_resolution and resolution info."""
         from meshwell.resolution import ConstantInField
@@ -364,42 +392,25 @@ class _MeshEntity:
                     else:
                         self_names = set(self.physical_name)
 
-                    boundary_tags = set()
-
-                    if not include_boundary:
-                        boundary_tags = set(
-                            self.filter_mesh_boundary_tags_by_target_dimension(
-                                target_dim
-                            )
+                    # Tags on the outer domain wall: the union of every entity's
+                    # ``<name>___<boundary_delimiter>`` groups. Entities removed
+                    # from the mesh (voids, mesh_bool=False) have no such group
+                    # of their own, so a per-entity lookup would miss them.
+                    exterior_tags = (
+                        set()
+                        if include_boundary
+                        else _global_exterior_tags(
+                            all_entities_dict, target_dim, exterior_tags_cache
                         )
+                    )
 
                     for tag, mass in entities_mass_dict.items():
                         tag_owners = tag_to_entity_names.get((target_dim, tag), set())
 
                         # If tag is owned by self or by any entity in superset
                         if (tag_owners & self_names) or (tag_owners & superset):
-                            # Handle boundary filtering
-                            if (
-                                not include_boundary
-                                and target_dim == 1
-                                and tag in boundary_tags
-                            ):
-                                # Handle tag being boundary of self
-                                is_shared_boundary = False
-                                other_owners = tag_owners - self_names
-                                for owner_name in other_owners:
-                                    if owner_name in superset:
-                                        other_entity = all_entities_dict[owner_name]
-                                        other_boundary_tags = other_entity.filter_mesh_boundary_tags_by_target_dimension(
-                                            target_dim
-                                        )
-                                        if tag not in other_boundary_tags:
-                                            is_shared_boundary = True
-                                            break
-
-                                if not is_shared_boundary:
-                                    continue
-
+                            if target_dim in (1, 2) and tag in exterior_tags:
+                                continue
                             entities_mass_dict_sharing[tag] = mass
 
                 else:

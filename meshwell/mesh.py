@@ -373,6 +373,7 @@ class Mesh:
 
         # Collect constant fields for batching
         constant_collector = defaultdict(lambda: defaultdict(list))
+        exterior_tags_cache = {}
 
         for entity in final_entity_list:
             refinement_field_indices.extend(
@@ -381,6 +382,7 @@ class Mesh:
                     boundary_delimiter,
                     constant_collector=constant_collector,
                     tag_to_entity_names=tag_to_entity_names,
+                    exterior_tags_cache=exterior_tags_cache,
                 )
             )
 
