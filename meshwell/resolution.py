@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 # Mapping from apply_to sub-types to gmsh entity type strings.
 # To add more curve subtypes in the future, simply add entries here
@@ -338,6 +338,192 @@ class ThresholdField(SampledField):
             result.sizemin *= resolution_factor
 
         return result
+
+
+class RegionThresholdField(ThresholdField):
+    """ThresholdField applied only to entities inside/outside given XY boxes.
+
+    Same grading as ThresholdField, but the source entities are first
+    filtered by their XY position. Boxes are (xmin, ymin, xmax, ymax).
+
+    Attributes:
+        within: Keep only entities in at least one of these boxes. None keeps
+            all entities; an empty list keeps none.
+        outside: Drop entities that touch any of these boxes. Also accepted
+            as ``exclude``.
+        within_tol: Tolerance added around every box, in model units.
+        n_probe: Number of points sampled along each curve in "inside" mode.
+        mode: "overlap" keeps an entity if its bounding box overlaps a box
+            (fast). "inside" keeps it only if it lies inside the boxes
+            (curves: every probe point is in some box; surfaces: the
+            bounding box fits in one box).
+        clip_to_within: Also limit the refinement in space to the within
+            boxes. Without it, a kept entity is refined along its whole
+            extent, even where it leaves the boxes. With it, the mesh is
+            not refined below sizemax outside the boxes.
+        clip_transition: Width of the sizemin-to-sizemax ramp outside the
+            boxes when clipping (0 gives a sharp jump).
+        clip_z: (zmin, zmax) of the clip boxes. Defaults to the model extent.
+    """
+
+    within: list[tuple[float, float, float, float]] | None = None
+    outside: list[tuple[float, float, float, float]] | None = Field(
+        default=None, validation_alias=AliasChoices("outside", "exclude")
+    )
+    within_tol: float = 0.0
+    n_probe: int = 7
+    mode: Literal["overlap", "inside"] = "overlap"
+    clip_to_within: bool = False
+    clip_transition: float = 0.0
+    clip_z: tuple[float, float] | None = None
+
+    def _filter_entities(
+        self, model: Any, entities_mass_dict: dict[int, Any]
+    ) -> dict[int, Any]:
+        """Return the subset of {tag: mass} that passes the box filters."""
+        if self.within is not None and len(self.within) == 0:
+            return {}
+        dim, tol = self.target_dimension, self.within_tol
+        w = np.asarray(self.within, dtype=float) if self.within else None
+        o = np.asarray(self.outside, dtype=float) if self.outside else None
+        probe = self.mode == "inside" and dim == 1
+
+        def overlaps(b, boxes):
+            return bool(
+                (
+                    (b[3] >= boxes[:, 0] - tol)
+                    & (b[0] <= boxes[:, 2] + tol)
+                    & (b[4] >= boxes[:, 1] - tol)
+                    & (b[1] <= boxes[:, 3] + tol)
+                ).any()
+            )
+
+        def encloses(b, boxes):
+            return bool(
+                (
+                    (b[0] >= boxes[:, 0] - tol)
+                    & (b[3] <= boxes[:, 2] + tol)
+                    & (b[1] >= boxes[:, 1] - tol)
+                    & (b[4] <= boxes[:, 3] + tol)
+                ).any()
+            )
+
+        def points_in(xy, boxes):
+            x, y = xy[:, None, 0], xy[:, None, 1]
+            return (
+                (x >= boxes[:, 0] - tol)
+                & (x <= boxes[:, 2] + tol)
+                & (y >= boxes[:, 1] - tol)
+                & (y <= boxes[:, 3] + tol)
+            ).any(axis=1)
+
+        kept: dict[int, Any] = {}
+        for tag, mass in entities_mass_dict.items():
+            b = model.getBoundingBox(dim, tag)
+            if probe:
+                lo, hi = model.getParametrizationBounds(1, tag)
+                ts = np.linspace(lo[0], hi[0], self.n_probe)
+                xy = np.asarray(model.getValue(1, tag, ts)).reshape(-1, 3)[:, :2]
+            if w is not None:
+                if self.mode == "overlap":
+                    ok = overlaps(b, w)
+                else:
+                    ok = points_in(xy, w).all() if probe else encloses(b, w)
+                if not ok:
+                    continue
+            if o is not None and (points_in(xy, o).any() if probe else overlaps(b, o)):
+                continue
+            kept[tag] = mass
+        return kept
+
+    def apply(
+        self,
+        model: Any,
+        entities_mass_dict: dict[int, Any],
+        restrict_to_str: str,
+        restrict_to_tags: list[int] | None = None,
+    ) -> int | None:
+        """Apply the threshold field to entities filtered by the region criteria."""
+        kept = self._filter_entities(model, entities_mass_dict)
+        if not kept:
+            return None
+        field = super().apply(model, kept, restrict_to_str, restrict_to_tags)
+        if field is None or not (self.clip_to_within and self.within):
+            return field
+        # Box fields give sizemin inside the within boxes and sizemax outside
+        # (with a linear ramp of width clip_transition). Max() with them keeps
+        # the threshold size inside the boxes and caps it at sizemax outside.
+        bbox = model.getBoundingBox(-1, -1)
+        z0, z1 = self.clip_z or (bbox[2], bbox[5])
+        tol = self.within_tol
+        boxes = []
+        for x0, y0, x1, y1 in self.within:
+            b = model.mesh.field.add("Box")
+            for name, val in [
+                ("VIn", self.sizemin),
+                ("VOut", self.sizemax),
+                ("XMin", x0 - tol),
+                ("XMax", x1 + tol),
+                ("YMin", y0 - tol),
+                ("YMax", y1 + tol),
+                ("ZMin", z0 - tol),
+                ("ZMax", z1 + tol),
+                ("Thickness", self.clip_transition),
+            ]:
+                model.mesh.field.setNumber(b, name, val)
+            boxes.append(b)
+        if len(boxes) > 1:
+            union = model.mesh.field.add("Min")
+            model.mesh.field.setNumbers(union, "FieldsList", boxes)
+            boxes = [union]
+        clipped = model.mesh.field.add("Max")
+        model.mesh.field.setNumbers(clipped, "FieldsList", [field, boxes[0]])
+        return clipped
+
+
+class BoxField(ResolutionSpec):
+    """Constant mesh size inside an axis-aligned 3D box (gmsh "Box" field).
+
+    Unlike the other specs, this does not depend on any entity: it sizes the
+    region of space inside the box.
+
+    Attributes:
+        vin: Mesh size inside the box.
+        vout: Mesh size outside the box.
+        xmin, xmax, ymin, ymax, zmin, zmax: Box extent.
+        thickness: Width of the transition layer from vin to vout outside
+            the box (0 gives a sharp jump).
+    """
+
+    apply_to: Literal[
+        "volumes", "surfaces", "curves", "lines", "circles", "points"
+    ] = "volumes"
+    vin: float
+    vout: float
+    xmin: float
+    xmax: float
+    ymin: float
+    ymax: float
+    zmin: float
+    zmax: float
+    thickness: float = 0.0
+
+    def apply(self, model: Any, *args: Any, **kwargs: Any) -> int:  # noqa: ARG002
+        """Create and configure a Gmsh Box field."""
+        b = model.mesh.field.add("Box")
+        for name, val in [
+            ("VIn", self.vin),
+            ("VOut", self.vout),
+            ("XMin", self.xmin),
+            ("XMax", self.xmax),
+            ("YMin", self.ymin),
+            ("YMax", self.ymax),
+            ("ZMin", self.zmin),
+            ("ZMax", self.zmax),
+            ("Thickness", self.thickness),
+        ]:
+            model.mesh.field.setNumber(b, name, val)
+        return b
 
 
 class ExponentialField(SampledField):

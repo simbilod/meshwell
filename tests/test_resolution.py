@@ -11,7 +11,13 @@ from meshwell.mesh import mesh
 from meshwell.occ_xao_writer import write_xao
 from meshwell.polyprism import PolyPrism
 from meshwell.polysurface import PolySurface
-from meshwell.resolution import ConstantInField, ExponentialField, ThresholdField
+from meshwell.resolution import (
+    BoxField,
+    ConstantInField,
+    ExponentialField,
+    RegionThresholdField,
+    ThresholdField,
+)
 from meshwell.utils import compare_gmsh_files
 
 
@@ -721,6 +727,190 @@ def test_mass_filter_curves_excludes_short_edges(tmp_path):
     unfiltered = _count_physical_lines(run(min_mass=0), "slab___None")
 
     assert unfiltered > filtered
+
+
+@pytest.mark.parametrize(
+    ("within", "outside", "mode", "expected_counts"),
+    [
+        ([(-1.0, -1.0, 12.0, 5.0)], None, "overlap", (True, True, False)),
+        ([(-1.0, -1.0, 5.0, 5.0)], None, "inside", (True, False, False)),
+        (
+            [(-1.0, -1.0, 25.0, 5.0)],
+            [(8.0, -1.0, 16.0, 5.0)],
+            "overlap",
+            (True, False, True),
+        ),
+    ],
+)
+def test_region_threshold_field_modes(tmp_path, within, outside, mode, expected_counts):
+    """Test RegionThresholdField in overlap vs inside modes and with outside exclusion."""
+    from meshwell.utils import deserialize
+
+    polys = [
+        PolySurface(
+            polygons=shapely.Polygon([[x, 0], [x + 4, 0], [x + 4, 4], [x, 4]]),
+            mesh_order=1,
+            physical_name=n,
+        )
+        for x, n in [(0, "A"), (10, "B"), (20, "C")]
+    ]
+    xao = tmp_path / "regions.xao"
+    write_xao(cad_occ(polys), xao)
+
+    spec = RegionThresholdField(
+        apply_to="curves",
+        within=within,
+        outside=outside,
+        mode=mode,
+        sizemin=0.2,
+        sizemax=5.0,
+        distmin=0.0,
+        distmax=0.5,
+    )
+    m = mesh(
+        dim=2,
+        input_file=xao,
+        output_file=tmp_path / "out.msh",
+        n_threads=1,
+        default_characteristic_length=5.0,
+        resolution_specs={n: [spec] for n in "ABC"},
+        verbosity=0,
+    )
+    for n, fine in zip("ABC", expected_counts):
+        lines = _count_physical_lines(m, f"{n}___None")
+        assert (lines > 30) if fine else (lines < 15), f"Failed for {n}: {lines}"
+
+    d = spec.to_dict()
+    assert d["resolution_type"] == "RegionThresholdField"
+    assert deserialize(d).mode == spec.mode
+
+
+def test_region_threshold_clip_to_within(tmp_path):
+    """A long strip crossing the box is refined only inside it when clipped."""
+    strip = PolySurface(
+        polygons=shapely.box(0, 0, 100, 2), mesh_order=1, physical_name="S"
+    )
+    xao = tmp_path / "strip.xao"
+    write_xao(cad_occ([strip]), xao)
+
+    def far_and_near_lines(clip):
+        spec = RegionThresholdField(
+            apply_to="curves",
+            within=[(0.0, -5.0, 20.0, 7.0)],
+            clip_to_within=clip,
+            sizemin=0.2,
+            sizemax=5.0,
+            distmax=1.0,
+            max_sampling=1000,
+        )
+        m = mesh(
+            dim=2,
+            input_file=xao,
+            output_file=tmp_path / f"strip_{clip}.msh",
+            n_threads=1,
+            default_characteristic_length=5.0,
+            resolution_specs={"S": [spec]},
+            verbosity=0,
+        )
+        lines = np.concatenate([c.data for c in m.cells if c.type == "line"])
+        x_mid = m.points[lines].mean(axis=1)[:, 0]
+        return (x_mid > 40).sum(), (x_mid < 15).sum()
+
+    far_full, near_full = far_and_near_lines(clip=False)
+    far_clip, near_clip = far_and_near_lines(clip=True)
+    assert near_clip > 0.8 * near_full  # still refined inside the box
+    assert far_clip < far_full / 5  # but not along the rest of the strip
+
+
+def test_box_field_refinement_and_serialization(tmp_path):
+    """Test BoxField volumetric refinement and serialization round-trip."""
+    from meshwell.utils import deserialize
+
+    prism = PolyPrism(
+        polygons=shapely.Polygon([[0, 0], [10, 0], [10, 10], [0, 10]]),
+        buffers={0.0: 0.0, 5.0: 0.0},
+        mesh_order=1,
+        physical_name="sub",
+    )
+    xao = tmp_path / "box.xao"
+    write_xao(cad_occ([prism]), xao)
+
+    spec = BoxField(
+        vin=1.0,
+        vout=5.0,
+        xmin=-1.0,
+        xmax=5.0,
+        ymin=-1.0,
+        ymax=5.0,
+        zmin=-1.0,
+        zmax=6.0,
+        thickness=0.5,
+    )
+    kw = dict(
+        dim=3,
+        input_file=xao,
+        n_threads=1,
+        default_characteristic_length=5.0,
+        verbosity=0,
+    )
+    m = mesh(output_file=tmp_path / "box.msh", resolution_specs={"sub": [spec]}, **kw)
+    m_c = mesh(output_file=tmp_path / "coarse.msh", resolution_specs={}, **kw)
+    assert len(m.points) > 5 * len(m_c.points)
+
+    d = spec.to_dict()
+    assert d["resolution_type"] == "BoxField"
+    assert deserialize(d).vin == spec.vin
+
+
+def test_region_threshold_surface_filters_and_aliases():
+    """Test 2D surface containment, exclusion, empty within, and exclude alias."""
+    import gmsh
+
+    gmsh.initialize()
+    try:
+        gmsh.model.add("test_surf")
+        s1 = gmsh.model.occ.addRectangle(1, 1, 0, 8, 8)
+        s2 = gmsh.model.occ.addRectangle(5, 5, 0, 100, 100)
+        s_far = gmsh.model.occ.addRectangle(200, 200, 0, 50, 50)
+        gmsh.model.occ.synchronize()
+
+        f_in = RegionThresholdField(
+            apply_to="surfaces",
+            within=[(0.0, 0.0, 10.0, 10.0), (100.0, 100.0, 110.0, 110.0)],
+            mode="inside",
+            sizemin=1.0,
+            sizemax=10.0,
+            distmax=10.0,
+        )
+        kept_in = f_in._filter_entities(gmsh.model, {s1: 64.0, s2: 10000.0})
+        assert s1 in kept_in
+        assert s2 not in kept_in
+
+        f_out = RegionThresholdField(
+            apply_to="surfaces",
+            within=[(0.0, 0.0, 300.0, 300.0)],
+            exclude=[(40.0, 40.0, 60.0, 60.0)],
+            mode="overlap",
+            sizemin=1.0,
+            sizemax=10.0,
+            distmax=10.0,
+        )
+        assert f_out.outside == [(40.0, 40.0, 60.0, 60.0)]
+        kept_out = f_out._filter_entities(gmsh.model, {s2: 10000.0, s_far: 2500.0})
+        assert s2 not in kept_out
+        assert s_far in kept_out
+
+        f_empty = RegionThresholdField(
+            apply_to="surfaces",
+            within=[],
+            mode="overlap",
+            sizemin=1.0,
+            sizemax=10.0,
+            distmax=10.0,
+        )
+        assert len(f_empty._filter_entities(gmsh.model, {s1: 100.0})) == 0
+    finally:
+        gmsh.finalize()
 
 
 if __name__ == "__main__":
