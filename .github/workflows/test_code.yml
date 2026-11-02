@@ -42,7 +42,7 @@ jobs:
       - name: Test
         run: uv run --extra dev pytest -n auto
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
