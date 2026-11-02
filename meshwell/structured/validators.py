@@ -225,6 +225,7 @@ def validate_no_volumetric_cohort_overlap(
                     entity_index=ent_idx,
                     cohort_index=cohort_idx,
                     z_overlap=z_overlap,
+                    entity_name=", ".join(ent.physical_name or ()),
                 )
 
 

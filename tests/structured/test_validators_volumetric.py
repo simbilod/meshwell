@@ -48,5 +48,5 @@ def test_unstructured_same_zinterval_overlapping_xy_raises():
     overlap = s_unstr("overlap", 0, 1)  # same z, same XY → volumetric overlap
     slabs, _ = collect_structured_slabs([cohort, overlap])
     cohorts = build_cohorts(slabs)
-    with pytest.raises(StructuredVolumetricOverlapError):
+    with pytest.raises(StructuredVolumetricOverlapError, match=r"#1 \('overlap'\)"):
         validate_no_volumetric_cohort_overlap(cohorts, [cohort, overlap])

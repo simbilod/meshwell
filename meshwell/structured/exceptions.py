@@ -57,15 +57,18 @@ class StructuredVolumetricOverlapError(StructuredError):
     above, below, or to the side of the cohort, or split the cohort.
     """
 
-    def __init__(self, entity_index, cohort_index, z_overlap):
+    def __init__(self, entity_index, cohort_index, z_overlap, entity_name=None):
         self.entity_index = entity_index
         self.cohort_index = cohort_index
         self.z_overlap = z_overlap
+        self.entity_name = entity_name
+        name = f" ({entity_name!r})" if entity_name else ""
         super().__init__(
-            f"Entity #{entity_index} has volumetric overlap (Δz={z_overlap:.4g}) "
+            f"Entity #{entity_index}{name} has volumetric overlap (Δz={z_overlap:.4g}) "
             f"with cohort #{cohort_index} AND XY-intersection in the overlap. "
             "v1 does not support unstructured material occupying cohort space. "
-            "Restructure so the entity sits above, below, or laterally outside the cohort."
+            "Mark the entity as structured, or restructure so it sits above, below, "
+            "or laterally outside the cohort."
         )
 
 
