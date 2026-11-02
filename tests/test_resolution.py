@@ -913,6 +913,118 @@ def test_region_threshold_surface_filters_and_aliases():
         gmsh.finalize()
 
 
+def test_unbound_local_dimtags_guard():
+    """filter_tags_by_target_dimension must not raise UnboundLocalError.
+
+    When target_dimension is incompatible with entity dim (e.g. 1D entity targeting 3D),
+    it should warn and return an empty tag list.
+    """
+    from meshwell._mesh_entity import _MeshEntity
+
+    ent = _MeshEntity(
+        index=0,
+        physical_name="line",
+        model=None,
+        dimtags=[(1, 10)],
+        resolutions=[],
+    )
+    with pytest.warns(UserWarning, match="incompatible with entity dim"):
+        tags = ent.filter_tags_by_target_dimension(3)
+    assert tags == []
+
+
+@pytest.fixture
+def box_scene_xao(tmp_path):
+    outer = PolyPrism(
+        polygons=shapely.box(0, 0, 10, 10),
+        buffers={0.0: 0.0, 10.0: 0.0},
+        physical_name="outer",
+        mesh_order=2,
+    )
+    inner = PolyPrism(
+        polygons=shapely.box(2, 2, 8, 8),
+        buffers={2.0: 0.0, 8.0: 0.0},
+        physical_name="inner",
+        mesh_order=1,
+    )
+    void = PolyPrism(
+        polygons=shapely.box(0, 2, 4, 8),
+        buffers={2.0: 0.0, 8.0: 0.0},
+        physical_name="void",
+        mesh_order=1,
+        mesh_bool=False,
+    )
+    xao = tmp_path / "shared_scene.xao"
+    write_xao(cad_occ([void, inner, outer]), xao)
+    return xao
+
+
+@pytest.mark.parametrize(
+    ("targets", "apply_to", "sizemin", "sharing_with", "interior"),
+    [
+        (["void"], "curves", 0.1, ["None", "outer"], "void___outer"),
+        (["outer"], "surfaces", 0.5, ["None", "inner"], "inner___outer"),
+        (["outer", "void"], "curves", 0.1, ["None", "outer"], "void___outer"),
+    ],
+)
+def test_not_sharing_none_drops_wall_refinement(
+    box_scene_xao, targets, apply_to, sizemin, sharing_with, interior
+):
+    """not_sharing=['None'] skips the domain wall but keeps interior refinement."""
+    kw = dict(apply_to=apply_to, sizemin=sizemin, sizemax=5.0, distmin=0, distmax=0.5)
+    f_ns = ThresholdField(not_sharing=["None"], **kw)
+    f_sh = ThresholdField(sharing=sharing_with, **kw)
+    m_ns, m_sh = (
+        mesh(
+            dim=3,
+            input_file=box_scene_xao,
+            n_threads=1,
+            default_characteristic_length=5.0,
+            resolution_specs={t: [f] for t in targets},
+            verbosity=0,
+        )
+        for f in (f_ns, f_sh)
+    )
+    assert (
+        _count_surface_triangles(m_ns, "outer___None")
+        < _count_surface_triangles(m_sh, "outer___None") / 2
+    )
+    assert _count_surface_triangles(m_ns, interior) > 0.5 * _count_surface_triangles(
+        m_sh, interior
+    )
+
+
+def test_not_sharing_none_curve_on_wall(tmp_path):
+    """A curve lying on the domain wall must not make not_sharing raise."""
+    from meshwell.polyline import PolyLine
+
+    outer = PolyPrism(
+        polygons=shapely.box(0, 0, 10, 10),
+        buffers={0.0: 0.0, 10.0: 0.0},
+        physical_name="outer",
+        mesh_order=2,
+    )
+    line = PolyLine(
+        linestrings=shapely.LineString([(0, 0, 5), (0, 10, 5)]),
+        physical_name="line",
+        mesh_order=1,
+    )
+    xao = tmp_path / "wall_line.xao"
+    write_xao(cad_occ([line, outer]), xao)
+    f_ns = ThresholdField(
+        apply_to="curves", sizemin=0.1, sizemax=5.0, distmax=0.5, not_sharing=["None"]
+    )
+    m = mesh(
+        dim=3,
+        input_file=xao,
+        n_threads=1,
+        default_characteristic_length=5.0,
+        resolution_specs={"outer": [f_ns], "line": [f_ns]},
+        verbosity=0,
+    )
+    assert len(m.points) > 0
+
+
 if __name__ == "__main__":
     test_2D_resolution()
     # test_refine(ConstantInField(apply_to="surfaces", resolution=1))
