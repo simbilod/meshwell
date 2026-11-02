@@ -233,3 +233,39 @@ def test_shared_lateral_between_two_subsolids(tmp_path):
     )
     assert a_wedges > 0
     assert b_wedges > 0
+
+
+def test_periodic_links_reset_after_1d():
+    """After 1D meshing, no structured curve keeps a periodic master."""
+    import gmsh
+
+    from meshwell.orchestrator import generate_mesh
+    from meshwell.polyprism import PolyPrism
+    from meshwell.resolution import StructuredExtrusionResolutionSpec
+
+    entities = [
+        PolyPrism(
+            polygons=SQ,
+            buffers={0.0: 0.0, 1.0: 0.0},
+            physical_name="s",
+            structured=True,
+        ),
+        PolyPrism(polygons=SQ, buffers={-1.0: 0.0, 0.0: 0.0}, physical_name="below"),
+        PolyPrism(polygons=SQ, buffers={1.0: 0.0, 2.0: 0.0}, physical_name="above"),
+    ]
+    linked: list[int] = []
+
+    def count_linked_curves() -> None:
+        for _, tag in gmsh.model.getEntities(1):
+            if gmsh.model.mesh.getPeriodicNodes(1, tag)[0] != tag:
+                linked.append(tag)
+
+    m = generate_mesh(
+        entities=entities,
+        dim=3,
+        default_characteristic_length=0.5,
+        resolution_specs={"s": [StructuredExtrusionResolutionSpec(n_layers=2)]},
+        pre_3d_hook=count_linked_curves,
+    )
+    assert linked == []
+    assert any(c.type == "wedge" for c in m.cells)

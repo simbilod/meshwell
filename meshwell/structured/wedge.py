@@ -920,6 +920,8 @@ def freeze_lateral_mesh(
       3. Call generate(1) explicitly so we have edge nodes available
          to walk in step 4 (and invoke ``after_1d_hook`` if present
          so 2D sweeps stamp their curves/faces after the single 1D pass).
+         Then reset the top curves to be their own periodic masters:
+         their nodes are fixed, so gmsh need not re-check the links later.
       4. For each lateral face: walk bot/top edge nodes in parametric
          order; reuse the vertical-edge transfinite nodes for the
          left/right endpoints at each layer; create face-interior
@@ -992,6 +994,7 @@ def freeze_lateral_mesh(
     # Step 2: setTransfiniteCurve on vertical edges and setPeriodic on top/bot curves.
     vertical_edges_done: set[int] = set()
     periodic_edges_done: set[int] = set()
+    periodic_top_edges: list[int] = []
     sweep_partner_pairs: list[tuple[int, int, float, float]] = []
     for face_tag, (z_bot, z_top) in face_z_bounds.items():
         n_layers = face_n_layers.get(face_tag, 1)
@@ -1035,6 +1038,7 @@ def freeze_lateral_mesh(
                 ]
                 try:
                     gmsh.model.mesh.setPeriodic(1, [top_edge], [bot_edge], transform)
+                    periodic_top_edges.append(top_edge)
                 except Exception as per_err:
                     logger.warning(
                         "Failed to set periodic constraint for top_edge %s -> "
@@ -1048,6 +1052,16 @@ def freeze_lateral_mesh(
     # stamping) so sweep curves and 2D sweep faces are stamped AFTER the single
     # generate(1) call without being wiped by a second generate(1).
     gmsh.model.mesh.generate(1)
+    if periodic_top_edges:
+        # Reset top curves to self; 1D nodes are already fixed and conform.
+        eye = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]  # 4x4 identity
+        try:
+            gmsh.model.mesh.setPeriodic(1, periodic_top_edges, periodic_top_edges, eye)
+        except Exception as per_reset_err:
+            logger.warning(
+                "Failed to reset periodic curve constraints: %s",
+                per_reset_err,
+            )
     if after_1d_hook is not None:
         after_1d_hook()
 
