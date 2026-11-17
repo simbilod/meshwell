@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 2.5.3
+
+- various small bugs and performance improvements
+
 ## 2.5.2
 
 Performance release (no API changes):
