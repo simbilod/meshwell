@@ -45,6 +45,25 @@ def _pair_algos(
     ]
 
 
+def _interfaces_by_side(
+    names: list[str], interface_delimiter: str
+) -> dict[str, list[tuple[str, bool, str]]]:
+    """Bucket ``"<A><delim><B>"`` group names under both sides.
+
+    Entries are ``(group_name, is_a_side, other_side)`` in the order of ``names``.
+    A self-named group (``A___A``) is listed once, as the first side.
+    """
+    by_side: dict[str, list[tuple[str, bool, str]]] = {}
+    for name in names:
+        parts = name.split(interface_delimiter)
+        if len(parts) != 2:
+            continue
+        by_side.setdefault(parts[0], []).append((name, True, parts[1]))
+        if parts[1] != parts[0]:
+            by_side.setdefault(parts[1], []).append((name, False, parts[0]))
+    return by_side
+
+
 class Mesh:
     """Mesh class for generating meshes from cad models."""
 
@@ -192,27 +211,6 @@ class Mesh:
         """
         return self.model_manager.get_top_physical_names()
 
-    def get_all_physical_names(self) -> list[str]:
-        """Get all physical names from the GMSH model.
-
-        Returns:
-            List of physical names as strings
-
-        """
-        return self.model_manager.get_physical_names()
-
-    def get_physical_dimtags(self, physical_name: str) -> list[tuple[int, int]]:
-        """Get the dimtags associated with a physical group name.
-
-        Args:
-            physical_name: Name of the physical group
-
-        Returns:
-            List of (dim, tag) tuples for entities in the physical group
-
-        """
-        return self.model_manager.get_physical_dimtags(physical_name)
-
     def _restore_structured_sweeps(self, blueprint: dict) -> None:
         """Analyze structured sweeps."""
         top_names = self.get_top_physical_names()
@@ -245,16 +243,35 @@ class Mesh:
         final_entity_list = []
         final_entity_dict = {}
 
+        # The model is not mutated below, so index its groups and entity tags once.
+        model = self.model_manager.model
+        all_physical_names: list[str] = []
+        dimtags_by_name: dict[str, list[tuple[int, int]]] = {}
+        existing_entities: dict[int, set[int]] | None = None
+        if model is not None:
+            for dim, group_tag in model.getPhysicalGroups():
+                name = model.getPhysicalName(dim, group_tag)
+                all_physical_names.append(name)
+                dimtags_by_name.setdefault(name, []).extend(
+                    (dim, int(t))
+                    for t in set(model.getEntitiesForPhysicalGroup(dim, group_tag))
+                )
+            # Same per-dim fallback as update_boundaries
+            existing_entities = {}
+            for dim in range(4):
+                try:
+                    existing_entities[dim] = {tag for _, tag in model.getEntities(dim)}
+                except Exception:
+                    existing_entities[dim] = set()
+
         # We address entities by "named" physicals (not default or synthetic bookkeeping):
-        top_physical_names = [
+        top_physical_names = {
             n
             for n in self.get_top_physical_names()
             if not n.startswith(("__cohort_", "__sweep"))
-        ]
+        }
         all_physical_names = [
-            n
-            for n in self.get_all_physical_names()
-            if not n.startswith(("__cohort_", "__sweep"))
+            n for n in all_physical_names if not n.startswith(("__cohort_", "__sweep"))
         ]
 
         # Collect all base names from interfaces to handle removed entities (voids)
@@ -267,6 +284,10 @@ class Mesh:
                 if parts[1] and parts[1] != boundary_delimiter:
                     base_names.add(parts[1])
 
+        interfaces_by_side = _interfaces_by_side(
+            all_physical_names, interface_delimiter
+        )
+
         for index, physical_name in enumerate(sorted(base_names)):
             resolutions = resolution_specs.get(physical_name, [])
 
@@ -277,49 +298,44 @@ class Mesh:
                 index=index,
                 physical_name=physical_name,
                 model=self.model_manager.model,
-                dimtags=self.get_physical_dimtags(physical_name=physical_name),
+                dimtags=list(dimtags_by_name.get(physical_name, ())),
                 resolutions=resolutions,
             )
-            entities.update_boundaries()
+            entities.update_boundaries(existing_entities)
 
             # Recover interfaces and boundaries from physical groups
             # We look for groups named "A___B" or "B___A" where A is physical_name
-            for other_p_name in all_physical_names:
-                parts = other_p_name.split(interface_delimiter)
-                if len(parts) == 2:
-                    if parts[0] == physical_name:
-                        suffix = parts[1]
-                        dimtags = self.get_physical_dimtags(other_p_name)
-                        if dimtags:
-                            for i_dim, i_tag in dimtags:
-                                if i_dim < entities.dim or entities.dim == -1:
-                                    if entities.dim == -1:
-                                        entities._explicit_dim = max(
-                                            entities._explicit_dim or 0, i_dim + 1
-                                        )
+            for other_p_name, first_side, suffix in interfaces_by_side.get(
+                physical_name, ()
+            ):
+                dimtags = dimtags_by_name.get(other_p_name)
+                if not dimtags:
+                    continue
+                if first_side:
+                    for i_dim, i_tag in dimtags:
+                        if i_dim < entities.dim or entities.dim == -1:
+                            if entities.dim == -1:
+                                entities._explicit_dim = max(
+                                    entities._explicit_dim or 0, i_dim + 1
+                                )
 
-                                    if suffix == boundary_delimiter:
-                                        entities.mesh_edge_name_interfaces.append(i_tag)
-                                    else:
-                                        entities.interfaces.append(i_tag)
+                            if suffix == boundary_delimiter:
+                                entities.mesh_edge_name_interfaces.append(i_tag)
+                            else:
+                                entities.interfaces.append(i_tag)
 
-                                    # Always treat interfaces as boundaries for refinement
-                                    entities.boundaries.append(i_tag)
+                            # Always treat interfaces as boundaries for refinement
+                            entities.boundaries.append(i_tag)
+                else:
+                    for i_dim, i_tag in dimtags:
+                        if i_dim < entities.dim or entities.dim == -1:
+                            if entities.dim == -1:
+                                entities._explicit_dim = max(entities.dim, i_dim + 1)
 
-                    elif parts[1] == physical_name:
-                        dimtags = self.get_physical_dimtags(other_p_name)
-                        if dimtags:
-                            for i_dim, i_tag in dimtags:
-                                if i_dim < entities.dim or entities.dim == -1:
-                                    if entities.dim == -1:
-                                        entities._explicit_dim = max(
-                                            entities.dim, i_dim + 1
-                                        )
+                            entities.interfaces.append(i_tag)
 
-                                    entities.interfaces.append(i_tag)
-
-                                    # Always treat interfaces as boundaries for refinement
-                                    entities.boundaries.append(i_tag)
+                            # Always treat interfaces as boundaries for refinement
+                            entities.boundaries.append(i_tag)
 
             final_entity_list.append(entities)
             final_entity_dict[physical_name] = entities
