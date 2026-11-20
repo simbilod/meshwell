@@ -27,6 +27,8 @@ class MeshQualityAnalyzer:
         self.mesh_dimension = None  # Will be determined during parsing
         self.gmsh_version = None  # GMSH format version
         self.file_type = 0  # 0=ASCII, 1=binary
+        # dim -> first physical tag, built lazily
+        self._first_tag_by_dim = None
 
     def check_mesh_file(self):
         """Check if mesh file exists and get basic info."""
@@ -129,6 +131,7 @@ class MeshQualityAnalyzer:
                 if len(parts) >= 3 and parts[0].isdigit():
                     dim, tag, name = int(parts[0]), int(parts[1]), parts[2].strip('"')
                     self.physical_names[tag] = (dim, name)
+        self._first_tag_by_dim = None
 
     def _parse_nodes(self, lines):
         """Parse Nodes section based on GMSH format version."""
@@ -143,6 +146,7 @@ class MeshQualityAnalyzer:
         expecting_node_ids = False
         expecting_coords = False
         current_node_ids = []
+        node_cursor = 0
         nodes_in_block = 0
 
         for line in lines:
@@ -170,6 +174,7 @@ class MeshQualityAnalyzer:
                             int, parts
                         )  # entity_dim, entity_tag, parametric, num_nodes
                         current_node_ids = []
+                        node_cursor = 0
                         nodes_in_block = num_nodes
                         expecting_node_ids = True
                         expecting_coords = False
@@ -189,10 +194,11 @@ class MeshQualityAnalyzer:
                 if expecting_coords and len(parts) == 3:
                     try:
                         coords = [float(parts[0]), float(parts[1]), float(parts[2])]
-                        if current_node_ids:
-                            node_id = current_node_ids.pop(0)
-                            self.nodes[node_id] = np.array(coords)
-                            if not current_node_ids:  # Reset when all coords processed
+                        if node_cursor < len(current_node_ids):
+                            # A cursor keeps the block parse linear.
+                            self.nodes[current_node_ids[node_cursor]] = np.array(coords)
+                            node_cursor += 1
+                            if node_cursor >= len(current_node_ids):
                                 expecting_coords = False
                     except ValueError:
                         pass
@@ -363,11 +369,14 @@ class MeshQualityAnalyzer:
 
     def _find_physical_tag_for_entity(self, _entity_tag, target_dim):
         """Find physical tag for a given entity tag and dimension."""
-        # In GMSH 4.x, physical tags are often the same as entity tags for their dimension
-        for tag, (dim, _) in self.physical_names.items():
-            if dim == target_dim:
-                return tag
-        return None
+        # In GMSH 4.x, physical tags are often the same as entity tags for their dimension.
+        # The result depends only on the dimension, so scan the groups once.
+        if self._first_tag_by_dim is None:
+            by_dim = {}
+            for tag, (dim, _) in self.physical_names.items():
+                by_dim.setdefault(dim, tag)
+            self._first_tag_by_dim = by_dim
+        return self._first_tag_by_dim.get(target_dim)
 
     def _determine_mesh_dimension(self):
         """Determine if this is a 2D or 3D mesh and classify triangular elements appropriately."""
