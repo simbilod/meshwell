@@ -1,17 +1,30 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
+message: >-
+  If you use Meshwell in research, cite the Zenodo DOI for the release you used.
+  Use the concept DOI when citing the project as a whole.
 title: meshwell
-abstract: "OpenCascade+GMSH wrapper for convenient mesh generation."
+abstract: >-
+  Meshwell is a Python library for generating 2.5D meshes from planar geometries
+  and their extrusions. It uses Open CASCADE for CAD and Gmsh for mesh
+  generation, with support for prismatic and tetrahedral meshes and remeshing.
 type: software
 authors:
   - family-names: Bilodeau
     given-names: Simon
+    affiliation: "Department of Electrical and Computer Engineering, Princeton University"
+    orcid: https://orcid.org/0000-0003-0667-2732
+  - family-names: Savola
+    given-names: Niko
+    affiliation: "Taara Connect, Inc."
+    orcid: https://orcid.org/0000-0002-8036-4984
+  - family-names: Gehring
+    given-names: Helge
+    affiliation: "@ X (formerly Google X)"
+    orcid: https://orcid.org/0000-0002-3034-3528
 repository-code: "https://github.com/simbilod/meshwell"
 url: "https://github.com/simbilod/meshwell"
 license: GPL-3.0-or-later
-doi: 10.5281/zenodo.23430914
-version: 2.5.2
-date-released: "2026-10-16"
+doi: 10.5281/zenodo.23430913
 keywords:
   - opencascade
   - gmsh
