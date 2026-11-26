@@ -98,30 +98,38 @@ class _MeshEntity:
             "mesh_edge_name_interfaces": self.mesh_edge_name_interfaces,
         }
 
-    def update_boundaries(self) -> list[int]:
+    def update_boundaries(
+        self, all_entities: dict[int, set[int]] | None = None
+    ) -> list[int]:
         """Update and return boundary tags for valid entities.
 
         Filters out non-existent entities before computing boundaries
         to avoid GMSH errors.
+
+        Args:
+            all_entities: Optional ``{dim: {tag}}`` snapshot of the model's
+                entities. Pass one when updating many entities in a row, to
+                avoid re-reading the model each time.
 
         Returns:
             List of boundary entity tags
         """
         # Filter out non-existent entities before getting boundaries
         valid_dimtags = []
-        all_entities = {}
 
-        # Get all existing entities by dimension
-        for dim in range(4):
-            try:
-                entities = gmsh.model.getEntities(dim)
-                all_entities[dim] = {tag for _, tag in entities}
-            except Exception:
-                all_entities[dim] = set()
+        if all_entities is None:
+            # Get all existing entities by dimension
+            all_entities = {}
+            for dim in range(4):
+                try:
+                    entities = gmsh.model.getEntities(dim)
+                    all_entities[dim] = {tag for _, tag in entities}
+                except Exception:
+                    all_entities[dim] = set()
 
         # Filter dimtags to only include existing entities
         for dim, tag in self.dimtags:
-            if tag in all_entities.get(dim, set()):
+            if tag in (all_entities.get(dim) or ()):
                 valid_dimtags.append((dim, tag))
 
         # Update dimtags to only valid ones
@@ -189,14 +197,6 @@ class _MeshEntity:
             return -1  # Invalid dimension for empty entities
 
         return next(dim for dim, tag in self.dimtags)
-
-    def boundaries(self) -> list[int]:
-        """Get boundary entity tags.
-
-        Returns:
-            List of boundary entity tags using safe update logic
-        """
-        return self.update_boundaries()
 
     def filter_tags_by_target_dimension(self, target_dimension: int) -> list[int]:
         """Filter entity tags based on target dimension.
