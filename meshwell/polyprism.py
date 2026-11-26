@@ -288,11 +288,11 @@ class PolyPrism(GeometryEntity):
                 if interior_surface != 0:
                     interior_surfaces.append(interior_surface)
 
-            # Cut holes from exterior surface
-            for interior_surface in interior_surfaces:
+            # Cut all holes from the exterior surface in one boolean
+            if interior_surfaces:
                 cut_result = gmsh.model.occ.cut(
                     [(2, exterior)],
-                    [(2, interior_surface)],
+                    [(2, interior) for interior in interior_surfaces],
                     removeObject=True,
                     removeTool=True,
                 )
