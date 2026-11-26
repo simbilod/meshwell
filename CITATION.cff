@@ -11,7 +11,7 @@ type: software
 authors:
   - family-names: Bilodeau
     given-names: Simon
-    affiliation: "@ X (formerly Google X)"
+    affiliation: "Department of Electrical and Computer Engineering, Princeton University"
     orcid: https://orcid.org/0000-0003-0667-2732
   - family-names: Savola
     given-names: Niko
